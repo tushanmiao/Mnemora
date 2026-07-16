@@ -1,0 +1,38 @@
+.message-list {
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-color: #cbd2cc transparent;
+  scrollbar-width: thin;
+}
+
+.message-content {
+  display: grid;
+  width: min(820px, calc(100% - 64px));
+  margin: 0 auto;
+  padding: 50px 0 32px;
+  gap: 28px;
+}
+
+.conversation-intro {
+  padding: 4px 44px 16px;
+  text-align: center;
+}
+
+.conversation-label {
+  color: #4f7864;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.conversation-intro h2 {
+  margin: 10px 0 8px;
+  font-size: 24px;
+  font-weight: 680;
+}
+
+.conversation-intro p {
+  margin: 0;
+  color: #69716c;
+  font-size: 14px;
+  line-height: 1.6;
+}
