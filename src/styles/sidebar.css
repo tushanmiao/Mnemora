@@ -6,8 +6,8 @@
   min-width: 220px;
   height: 100%;
   flex-direction: column;
-  border-right: 1px solid #dce1dc;
-  background: #eef1ed;
+  border-right: 1px solid var(--color-border);
+  background: var(--color-sidebar);
 }
 
 .sidebar-brand {
@@ -28,7 +28,7 @@
   place-items: center;
   border-radius: 6px;
   color: #ffffff;
-  background: #3f6f5a;
+  background: var(--color-accent);
   font-size: 14px;
   font-weight: 700;
 }
@@ -64,11 +64,11 @@
 .conversation-item:hover,
 .extension-item:hover,
 .empty-section-action:hover {
-  background: #e1e6e0;
+  background: var(--color-hover);
 }
 
 .sidebar-action-primary {
-  color: #2f5f4b;
+  color: var(--color-accent);
   font-weight: 600;
 }
 
@@ -86,19 +86,19 @@
   margin: 1px 0 4px 19px;
   padding-left: 11px;
   gap: 1px;
-  border-left: 1px solid #d0d8d1;
+  border-left: 1px solid var(--color-border);
 }
 
 .extension-item {
   height: 32px;
-  color: #55605a;
+  color: var(--color-text-secondary);
   font-size: 12px;
 }
 
 .sidebar-divider {
   height: 1px;
   margin: 8px 14px 0;
-  background: #d8ded8;
+  background: var(--color-border);
 }
 
 .conversation-section {
@@ -123,7 +123,7 @@
   padding: 0 7px;
   border: 0;
   border-radius: 5px;
-  color: #8a918c;
+  color: var(--color-muted);
   background: transparent;
   cursor: pointer;
   font-size: 12px;
@@ -131,12 +131,12 @@
 }
 
 .conversation-tab:hover {
-  color: #4f5852;
-  background: #e3e7e2;
+  color: var(--color-text-secondary);
+  background: var(--color-hover);
 }
 
 .conversation-tab-active {
-  color: #26342d;
+  color: var(--color-text);
 }
 
 .conversation-list-actions {
@@ -163,7 +163,7 @@
 
 .conversation-item {
   padding-right: 35px;
-  color: #4b524e;
+  color: var(--color-text-secondary);
   font-size: 13px;
 }
 
@@ -174,8 +174,8 @@
 }
 
 .conversation-item-active {
-  color: #24372e;
-  background: #dce4dd;
+  color: var(--color-text);
+  background: var(--color-active);
   font-weight: 600;
 }
 
@@ -201,7 +201,7 @@
 }
 
 .conversation-more:hover {
-  background: #cad4cc;
+  background: var(--color-hover);
 }
 
 .sidebar-menu {
@@ -209,10 +209,10 @@
   z-index: 50;
   width: 190px;
   padding: 6px;
-  border: 1px solid #d7ddd8;
+  border: 1px solid var(--color-border);
   border-radius: 8px;
-  background: #ffffff;
-  box-shadow: 0 10px 28px rgb(35 48 40 / 16%);
+  background: var(--color-surface-raised);
+  box-shadow: var(--shadow-menu);
 }
 
 .list-menu {
@@ -241,26 +241,26 @@
 }
 
 .sidebar-menu-item:hover {
-  background: #eef2ee;
+  background: var(--color-hover);
 }
 
 .sidebar-menu-danger {
-  color: #c33f3f;
+  color: var(--color-danger);
 }
 
 .sidebar-menu-danger:hover {
-  background: #fff0f0;
+  background: var(--color-danger-soft);
 }
 
 .sidebar-menu-separator {
   height: 1px;
   margin: 5px -6px;
-  background: #e4e7e4;
+  background: var(--color-border-soft);
 }
 
 .empty-section-action {
   margin-top: 4px;
-  color: #68716b;
+  color: var(--color-muted);
   font-size: 12px;
 }
 
@@ -270,7 +270,7 @@
   padding: 10px 12px;
   align-items: center;
   justify-content: space-between;
-  border-top: 1px solid #d8ded8;
+  border-top: 1px solid var(--color-border);
 }
 
 .user-profile {
@@ -286,10 +286,10 @@
   height: 30px;
   flex: 0 0 30px;
   place-items: center;
-  border: 1px solid #c9d2cb;
+  border: 1px solid var(--color-border);
   border-radius: 50%;
-  color: #365746;
-  background: #f9faf8;
+  color: var(--color-accent);
+  background: var(--color-surface-raised);
   font-size: 12px;
   font-weight: 700;
 }
@@ -312,6 +312,6 @@
 }
 
 .user-meta span {
-  color: #7a827d;
+  color: var(--color-muted);
   font-size: 11px;
 }

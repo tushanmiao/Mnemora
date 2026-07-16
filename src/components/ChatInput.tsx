@@ -26,7 +26,7 @@ export function ChatInput() {
               </button>
             </div>
 
-            <button className="send-button" type="button" title="发送消息">
+            <button className="send-button" type="button" title="发送消息" aria-label="发送消息">
               <ArrowUp size={19} />
             </button>
           </div>

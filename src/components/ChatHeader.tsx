@@ -1,10 +1,15 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, ChevronDown, MoreHorizontal, PanelRight, ShieldCheck } from "lucide-react";
+import { Check, ChevronDown, Moon, MoreHorizontal, PanelRight, ShieldCheck, Sun } from "lucide-react";
 import "../styles/chat-header.css";
 
 const permissionOptions = ["每次确认", "敏感确认", "完全访问"] as const;
 
-export function ChatHeader() {
+type ChatHeaderProps = {
+  theme: "light" | "dark";
+  onToggleTheme: () => void;
+};
+
+export function ChatHeader({ theme, onToggleTheme }: ChatHeaderProps) {
   const [permission, setPermission] = useState<(typeof permissionOptions)[number]>("敏感确认");
   const [permissionMenuOpen, setPermissionMenuOpen] = useState(false);
   const permissionMenuRef = useRef<HTMLDivElement>(null);
@@ -67,6 +72,14 @@ export function ChatHeader() {
             </div>
           ) : null}
         </div>
+        <button
+          className="icon-button"
+          type="button"
+          title={theme === "light" ? "切换到深色模式" : "切换到浅色模式"}
+          onClick={onToggleTheme}
+        >
+          {theme === "light" ? <Moon size={18} /> : <Sun size={18} />}
+        </button>
         <button className="icon-button" type="button" title="打开详情面板">
           <PanelRight size={18} />
         </button>

@@ -1,38 +1,120 @@
 .message-list {
   min-height: 0;
   overflow-y: auto;
-  scrollbar-color: #cbd2cc transparent;
+  scrollbar-color: var(--color-border) transparent;
   scrollbar-width: thin;
 }
 
-.message-content {
-  display: grid;
-  width: min(820px, calc(100% - 64px));
+.empty-chat-state {
+  display: flex;
+  width: min(760px, calc(100% - 64px));
+  min-height: 100%;
   margin: 0 auto;
-  padding: 50px 0 32px;
-  gap: 28px;
+  padding: 48px 0 36px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
 }
 
-.conversation-intro {
-  padding: 4px 44px 16px;
+.empty-chat-mark {
+  display: grid;
+  width: 52px;
+  height: 52px;
+  place-items: center;
+  border: 1px solid var(--color-border);
+  border-radius: 50%;
+  color: var(--color-accent);
+  background: var(--color-accent-soft);
+}
+
+.empty-chat-copy {
+  margin-top: 18px;
   text-align: center;
 }
 
 .conversation-label {
-  color: #4f7864;
+  color: var(--color-accent);
   font-size: 12px;
   font-weight: 700;
 }
 
-.conversation-intro h2 {
-  margin: 10px 0 8px;
+.empty-chat-copy h2 {
+  margin: 9px 0 7px;
   font-size: 24px;
   font-weight: 680;
 }
 
-.conversation-intro p {
+.empty-chat-copy p {
   margin: 0;
-  color: #69716c;
+  color: var(--color-muted);
   font-size: 14px;
   line-height: 1.6;
+}
+
+.suggestion-grid {
+  display: grid;
+  width: 100%;
+  margin-top: 34px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.suggestion-item {
+  display: grid;
+  min-width: 0;
+  min-height: 94px;
+  padding: 14px;
+  align-content: space-between;
+  gap: 14px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  color: var(--color-text-secondary);
+  background: var(--color-surface-raised);
+  cursor: pointer;
+  text-align: left;
+}
+
+.suggestion-item:hover {
+  border-color: var(--color-accent);
+  background: var(--color-accent-soft);
+}
+
+.suggestion-item > svg {
+  color: var(--color-accent);
+}
+
+.suggestion-item span {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.suggestion-item strong,
+.suggestion-item small {
+  overflow-wrap: anywhere;
+}
+
+.suggestion-item strong {
+  color: var(--color-text);
+  font-size: 13px;
+}
+
+.suggestion-item small {
+  color: var(--color-muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+@media (max-width: 900px) {
+  .suggestion-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .suggestion-item {
+    min-height: 68px;
+    grid-template-columns: 24px minmax(0, 1fr);
+    align-items: center;
+    align-content: center;
+    gap: 10px;
+  }
 }

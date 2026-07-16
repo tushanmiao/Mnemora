@@ -1,6 +1,6 @@
 .composer-area {
   padding: 12px 24px 16px;
-  background: #fbfcfa;
+  background: var(--color-surface);
 }
 
 .composer-inner {
@@ -10,10 +10,10 @@
 
 .composer-box {
   padding: 10px 10px 8px;
-  border: 1px solid #d7ddd8;
+  border: 1px solid var(--color-border);
   border-radius: 8px;
-  background: #ffffff;
-  box-shadow: 0 6px 20px rgb(42 56 47 / 8%);
+  background: var(--color-surface-raised);
+  box-shadow: var(--shadow-composer);
 }
 
 .composer-textarea {
@@ -25,13 +25,13 @@
   resize: none;
   border: 0;
   outline: 0;
-  color: #2b312d;
+  color: var(--color-text);
   background: transparent;
   line-height: 1.5;
 }
 
 .composer-textarea::placeholder {
-  color: #969d98;
+  color: var(--color-faint);
 }
 
 .composer-toolbar {
@@ -44,7 +44,7 @@
   display: flex;
   align-items: center;
   gap: 2px;
-  color: #6d756f;
+  color: var(--color-muted);
 }
 
 .send-button {
@@ -56,17 +56,17 @@
   border: 0;
   border-radius: 50%;
   color: #ffffff;
-  background: #3f6f5a;
+  background: var(--color-accent);
   cursor: pointer;
 }
 
 .send-button:hover {
-  background: #335d4a;
+  background: var(--color-accent-hover);
 }
 
 .composer-note {
   margin: 7px 0 0;
-  color: #949b96;
+  color: var(--color-faint);
   font-size: 11px;
   text-align: center;
 }

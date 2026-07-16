@@ -6,8 +6,8 @@
   padding: 0 20px;
   align-items: center;
   justify-content: space-between;
-  border-bottom: 1px solid #e3e7e2;
-  background: rgb(251 252 250 / 94%);
+  border-bottom: 1px solid var(--color-border-soft);
+  background: var(--color-surface);
 }
 
 .chat-heading {
@@ -27,7 +27,7 @@
 }
 
 .chat-heading span {
-  color: #8a918c;
+  color: var(--color-muted);
   font-size: 12px;
 }
 
@@ -45,9 +45,9 @@
   padding: 0 10px;
   align-items: center;
   gap: 7px;
-  border: 1px solid #dce1dc;
+  border: 1px solid var(--color-border);
   border-radius: 6px;
-  background: #ffffff;
+  background: var(--color-surface-raised);
   cursor: pointer;
   font-size: 12px;
   font-weight: 600;
@@ -55,14 +55,14 @@
 
 .model-button:hover,
 .permission-button:hover {
-  background: #f3f5f2;
+  background: var(--color-hover);
 }
 
 .model-status {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: #4c8067;
+  background: var(--color-accent);
 }
 
 .permission-control {
@@ -70,7 +70,7 @@
 }
 
 .permission-button {
-  color: #4c5650;
+  color: var(--color-text-secondary);
 }
 
 .permission-menu {
@@ -79,10 +79,10 @@
   right: 0;
   width: 168px;
   padding: 6px;
-  border: 1px solid #d8ddd8;
+  border: 1px solid var(--color-border);
   border-radius: 8px;
-  background: #ffffff;
-  box-shadow: 0 10px 28px rgb(35 48 40 / 14%);
+  background: var(--color-surface-raised);
+  box-shadow: var(--shadow-menu);
 }
 
 .permission-option {
@@ -101,5 +101,5 @@
 }
 
 .permission-option:hover {
-  background: #eef2ee;
+  background: var(--color-hover);
 }
