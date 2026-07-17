@@ -20,12 +20,51 @@ import {
   Sparkles,
   Trash2,
 } from "lucide-react";
+import type { ConversationListItem } from "../types/chat";
 import "../styles/sidebar.css";
 
-const conversations = [
-  "欢迎使用 Mnemora",
-  "整理本周阅读计划",
-  "Rust 与 Tauri 学习记录",
+const now = Date.now();
+
+const conversations: ConversationListItem[] = [
+  {
+    id: "welcome",
+    title: "欢迎使用 Mnemora",
+    preview: "提出一个问题，开始你的第一次对话。",
+    messageCount: 0,
+    assistantId: null,
+    modelId: null,
+    projectId: null,
+    collectionId: null,
+    pinned: true,
+    createdAt: now,
+    updatedAt: now,
+  },
+  {
+    id: "reading-plan",
+    title: "整理本周阅读计划",
+    preview: "整理本周需要阅读的论文和资料。",
+    messageCount: 4,
+    assistantId: null,
+    modelId: "gpt-5",
+    projectId: "project-learning",
+    collectionId: null,
+    pinned: false,
+    createdAt: now - 86_400_000,
+    updatedAt: now - 3_600_000,
+  },
+  {
+    id: "tauri-notes",
+    title: "Rust 与 Tauri 学习记录",
+    preview: "记录 Tauri 前后端通信的学习内容。",
+    messageCount: 8,
+    assistantId: "assistant-coding",
+    modelId: "gpt-5",
+    projectId: "project-learning",
+    collectionId: "collection-development",
+    pinned: false,
+    createdAt: now - 172_800_000,
+    updatedAt: now - 7_200_000,
+  },
 ];
 
 const extensionItems = [
@@ -154,29 +193,31 @@ export function Sidebar() {
 
         <div className="conversation-list">
           {activeSection === "recent" ? (
-            conversations.map((title, index) => (
-              <div className="conversation-item-wrap" key={title}>
+            conversations.map((conversation, index) => (
+              <div className="conversation-item-wrap" key={conversation.id}>
                 <button
                   className={`conversation-item${index === 0 ? " conversation-item-active" : ""}`}
                   type="button"
                 >
                   <FileText size={16} />
-                  <span>{title}</span>
+                  <span>{conversation.title}</span>
                 </button>
                 <button
                   className="conversation-more"
                   type="button"
                   title="对话操作"
-                  aria-expanded={conversationMenu === title}
+                  aria-expanded={conversationMenu === conversation.id}
                   onClick={() => {
-                    setConversationMenu((current) => (current === title ? null : title));
+                    setConversationMenu((current) =>
+                      current === conversation.id ? null : conversation.id,
+                    );
                     setListMenuOpen(false);
                   }}
                 >
                   <MoreHorizontal size={16} />
                 </button>
 
-                {conversationMenu === title ? <ConversationMenu /> : null}
+                {conversationMenu === conversation.id ? <ConversationMenu /> : null}
               </div>
             ))
           ) : activeSection === "projects" ? (

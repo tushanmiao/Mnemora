@@ -1,9 +1,10 @@
 import { Bot, UserRound } from "lucide-react";
 import type { ReactNode } from "react";
+import type { MessageRole } from "../types/chat";
 import "../styles/message-bubble.css";
 
 type MessageBubbleProps = {
-  role: "user" | "assistant";
+  role: MessageRole;
   children: ReactNode;
 };
 

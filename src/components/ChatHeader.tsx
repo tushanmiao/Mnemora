@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { Check, ChevronDown, Moon, MoreHorizontal, PanelRight, ShieldCheck, Sun } from "lucide-react";
+import { AI_PERMISSION_LABELS, type AiPermissionMode } from "../types/chat";
 import "../styles/chat-header.css";
 
-const permissionOptions = ["每次确认", "敏感确认", "完全访问"] as const;
+const permissionOptions = Object.keys(AI_PERMISSION_LABELS) as AiPermissionMode[];
 
 type ChatHeaderProps = {
   theme: "light" | "dark";
@@ -10,7 +11,7 @@ type ChatHeaderProps = {
 };
 
 export function ChatHeader({ theme, onToggleTheme }: ChatHeaderProps) {
-  const [permission, setPermission] = useState<(typeof permissionOptions)[number]>("敏感确认");
+  const [permission, setPermission] = useState<AiPermissionMode>("askSensitive");
   const [permissionMenuOpen, setPermissionMenuOpen] = useState(false);
   const permissionMenuRef = useRef<HTMLDivElement>(null);
 
@@ -47,7 +48,7 @@ export function ChatHeader({ theme, onToggleTheme }: ChatHeaderProps) {
             onClick={() => setPermissionMenuOpen((open) => !open)}
           >
             <ShieldCheck size={17} />
-            <span>{permission}</span>
+            <span>{AI_PERMISSION_LABELS[permission]}</span>
             <ChevronDown size={14} />
           </button>
 
@@ -65,7 +66,7 @@ export function ChatHeader({ theme, onToggleTheme }: ChatHeaderProps) {
                     setPermissionMenuOpen(false);
                   }}
                 >
-                  <span>{option}</span>
+                  <span>{AI_PERMISSION_LABELS[option]}</span>
                   {permission === option ? <Check size={16} /> : null}
                 </button>
               ))}
