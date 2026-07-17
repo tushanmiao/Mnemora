@@ -23,50 +23,6 @@ import {
 import type { ConversationListItem } from "../types/chat";
 import "../styles/sidebar.css";
 
-const now = Date.now();
-
-const conversations: ConversationListItem[] = [
-  {
-    id: "welcome",
-    title: "欢迎使用 Mnemora",
-    preview: "提出一个问题，开始你的第一次对话。",
-    messageCount: 0,
-    assistantId: null,
-    modelId: null,
-    projectId: null,
-    collectionId: null,
-    pinned: true,
-    createdAt: now,
-    updatedAt: now,
-  },
-  {
-    id: "reading-plan",
-    title: "整理本周阅读计划",
-    preview: "整理本周需要阅读的论文和资料。",
-    messageCount: 4,
-    assistantId: null,
-    modelId: "gpt-5",
-    projectId: "project-learning",
-    collectionId: null,
-    pinned: false,
-    createdAt: now - 86_400_000,
-    updatedAt: now - 3_600_000,
-  },
-  {
-    id: "tauri-notes",
-    title: "Rust 与 Tauri 学习记录",
-    preview: "记录 Tauri 前后端通信的学习内容。",
-    messageCount: 8,
-    assistantId: "assistant-coding",
-    modelId: "gpt-5",
-    projectId: "project-learning",
-    collectionId: "collection-development",
-    pinned: false,
-    createdAt: now - 172_800_000,
-    updatedAt: now - 7_200_000,
-  },
-];
-
 const extensionItems = [
   { label: "助手", icon: Bot },
   { label: "技能", icon: Sparkles },
@@ -74,7 +30,23 @@ const extensionItems = [
   { label: "插件", icon: Plug },
 ];
 
-export function Sidebar() {
+type SidebarProps = {
+  conversations: ConversationListItem[];
+  currentConversationId: string | null;
+  onCreateConversation: () => void;
+  onSelectConversation: (conversationId: string) => void;
+  onDeleteConversation: (conversationId: string) => void;
+  onClearConversations: () => void;
+};
+
+export function Sidebar({
+  conversations,
+  currentConversationId,
+  onCreateConversation,
+  onSelectConversation,
+  onDeleteConversation,
+  onClearConversations,
+}: SidebarProps) {
   const [extensionsOpen, setExtensionsOpen] = useState(true);
   const [activeSection, setActiveSection] = useState<"recent" | "collections" | "projects">("recent");
   const [listMenuOpen, setListMenuOpen] = useState(false);
@@ -106,7 +78,11 @@ export function Sidebar() {
       </div>
 
       <nav className="sidebar-actions" aria-label="主要功能">
-        <button className="sidebar-action sidebar-action-primary" type="button">
+        <button
+          className="sidebar-action sidebar-action-primary"
+          type="button"
+          onClick={onCreateConversation}
+        >
           <MessageSquarePlus size={18} />
           <span>新建聊天</span>
         </button>
@@ -176,13 +152,27 @@ export function Sidebar() {
             >
               <MoreHorizontal size={17} />
             </button>
-            <button className="icon-button" type="button" title="新建聊天">
+            <button
+              className="icon-button"
+              type="button"
+              title="新建聊天"
+              onClick={onCreateConversation}
+            >
               <MessageSquarePlus size={16} />
             </button>
 
             {listMenuOpen ? (
               <div className="sidebar-menu list-menu" role="menu">
-                <button className="sidebar-menu-item sidebar-menu-danger" type="button" role="menuitem">
+                <button
+                  className="sidebar-menu-item sidebar-menu-danger"
+                  type="button"
+                  role="menuitem"
+                  disabled={conversations.length === 0}
+                  onClick={() => {
+                    setListMenuOpen(false);
+                    onClearConversations();
+                  }}
+                >
                   <Trash2 size={16} />
                   <span>清空全部对话</span>
                 </button>
@@ -193,11 +183,19 @@ export function Sidebar() {
 
         <div className="conversation-list">
           {activeSection === "recent" ? (
-            conversations.map((conversation, index) => (
+            conversations.length > 0 ? conversations.map((conversation) => (
               <div className="conversation-item-wrap" key={conversation.id}>
                 <button
-                  className={`conversation-item${index === 0 ? " conversation-item-active" : ""}`}
+                  className={`conversation-item${
+                    currentConversationId === conversation.id ? " conversation-item-active" : ""
+                  }`}
                   type="button"
+                  aria-current={currentConversationId === conversation.id ? "page" : undefined}
+                  title={conversation.title}
+                  onClick={() => {
+                    onSelectConversation(conversation.id);
+                    setConversationMenu(null);
+                  }}
                 >
                   <FileText size={16} />
                   <span>{conversation.title}</span>
@@ -217,9 +215,21 @@ export function Sidebar() {
                   <MoreHorizontal size={16} />
                 </button>
 
-                {conversationMenu === conversation.id ? <ConversationMenu /> : null}
+                {conversationMenu === conversation.id ? (
+                  <ConversationMenu
+                    onDelete={() => {
+                      setConversationMenu(null);
+                      onDeleteConversation(conversation.id);
+                    }}
+                  />
+                ) : null}
               </div>
-            ))
+            )) : (
+              <button className="empty-section-action" type="button" onClick={onCreateConversation}>
+                <MessageSquarePlus size={17} />
+                <span>新建第一个对话</span>
+              </button>
+            )
           ) : activeSection === "projects" ? (
             <button className="empty-section-action" type="button">
               <Folder size={17} />
@@ -252,7 +262,11 @@ export function Sidebar() {
   );
 }
 
-function ConversationMenu() {
+type ConversationMenuProps = {
+  onDelete: () => void;
+};
+
+function ConversationMenu({ onDelete }: ConversationMenuProps) {
   return (
     <div className="sidebar-menu conversation-menu" role="menu">
       <button className="sidebar-menu-item" type="button" role="menuitem">
@@ -276,7 +290,12 @@ function ConversationMenu() {
         <span>导出</span>
       </button>
       <div className="sidebar-menu-separator" />
-      <button className="sidebar-menu-item sidebar-menu-danger" type="button" role="menuitem">
+      <button
+        className="sidebar-menu-item sidebar-menu-danger"
+        type="button"
+        role="menuitem"
+        onClick={onDelete}
+      >
         <Trash2 size={16} />
         <span>删除</span>
       </button>

@@ -3,12 +3,13 @@ import { ArrowUp, BookOpenText, Paperclip, SlidersHorizontal } from "lucide-reac
 import "../styles/chat-input.css";
 
 type ChatInputProps = {
+  disabled?: boolean;
   onSend: (content: string) => void;
 };
 
-export function ChatInput({ onSend }: ChatInputProps) {
+export function ChatInput({ disabled = false, onSend }: ChatInputProps) {
   const [draft, setDraft] = useState("");
-  const canSend = draft.trim().length > 0;
+  const canSend = !disabled && draft.trim().length > 0;
 
   const submitMessage = () => {
     if (!canSend) return;
@@ -36,8 +37,9 @@ export function ChatInput({ onSend }: ChatInputProps) {
           <textarea
             className="composer-textarea"
             rows={2}
-            placeholder="向 Mnemora 提问..."
+            placeholder={disabled ? "请先新建对话" : "向 Mnemora 提问..."}
             aria-label="消息输入框"
+            disabled={disabled}
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={handleKeyDown}

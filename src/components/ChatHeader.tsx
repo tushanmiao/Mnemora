@@ -6,12 +6,22 @@ import "../styles/chat-header.css";
 const permissionOptions = Object.keys(AI_PERMISSION_LABELS) as AiPermissionMode[];
 
 type ChatHeaderProps = {
+  title: string;
+  permission: AiPermissionMode;
+  permissionDisabled: boolean;
   theme: "light" | "dark";
+  onPermissionChange: (permission: AiPermissionMode) => void;
   onToggleTheme: () => void;
 };
 
-export function ChatHeader({ theme, onToggleTheme }: ChatHeaderProps) {
-  const [permission, setPermission] = useState<AiPermissionMode>("askSensitive");
+export function ChatHeader({
+  title,
+  permission,
+  permissionDisabled,
+  theme,
+  onPermissionChange,
+  onToggleTheme,
+}: ChatHeaderProps) {
   const [permissionMenuOpen, setPermissionMenuOpen] = useState(false);
   const permissionMenuRef = useRef<HTMLDivElement>(null);
 
@@ -29,7 +39,7 @@ export function ChatHeader({ theme, onToggleTheme }: ChatHeaderProps) {
   return (
     <header className="chat-header">
       <div className="chat-heading">
-        <h1>欢迎使用 Mnemora</h1>
+        <h1>{title}</h1>
         <span>今天</span>
       </div>
 
@@ -45,6 +55,7 @@ export function ChatHeader({ theme, onToggleTheme }: ChatHeaderProps) {
             type="button"
             title="AI 权限"
             aria-expanded={permissionMenuOpen}
+            disabled={permissionDisabled}
             onClick={() => setPermissionMenuOpen((open) => !open)}
           >
             <ShieldCheck size={17} />
@@ -62,7 +73,7 @@ export function ChatHeader({ theme, onToggleTheme }: ChatHeaderProps) {
                   aria-checked={permission === option}
                   key={option}
                   onClick={() => {
-                    setPermission(option);
+                    onPermissionChange(option);
                     setPermissionMenuOpen(false);
                   }}
                 >

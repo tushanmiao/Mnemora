@@ -34,6 +34,10 @@
   color: var(--color-faint);
 }
 
+.composer-textarea:disabled {
+  cursor: not-allowed;
+}
+
 .composer-toolbar {
   display: flex;
   align-items: center;

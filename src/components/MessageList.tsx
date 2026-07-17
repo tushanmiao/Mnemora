@@ -1,5 +1,11 @@
 import { useEffect, useRef } from "react";
-import { BookOpenText, Lightbulb, ListTodo, MessageCircleQuestion } from "lucide-react";
+import {
+  BookOpenText,
+  Lightbulb,
+  ListTodo,
+  MessageCircleQuestion,
+  MessageSquarePlus,
+} from "lucide-react";
 import type { ChatMessage } from "../types/chat";
 import { MessageBubble } from "./MessageBubble";
 import "../styles/message-list.css";
@@ -24,10 +30,17 @@ const suggestions = [
 
 type MessageListProps = {
   messages: ChatMessage[];
+  hasConversation: boolean;
+  onCreateConversation: () => void;
   onSuggestionSelect: (prompt: string) => void;
 };
 
-export function MessageList({ messages, onSuggestionSelect }: MessageListProps) {
+export function MessageList({
+  messages,
+  hasConversation,
+  onCreateConversation,
+  onSuggestionSelect,
+}: MessageListProps) {
   const listRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
@@ -42,7 +55,21 @@ export function MessageList({ messages, onSuggestionSelect }: MessageListProps) 
 
   return (
     <section className="message-list" aria-label="消息列表" ref={listRef}>
-      {messages.length === 0 ? (
+      {!hasConversation ? (
+        <div className="empty-chat-state">
+          <div className="empty-chat-mark" aria-hidden="true">
+            <MessageCircleQuestion size={28} />
+          </div>
+          <div className="empty-chat-copy">
+            <span className="conversation-label">对话</span>
+            <h2>还没有对话</h2>
+          </div>
+          <button className="empty-chat-action" type="button" onClick={onCreateConversation}>
+            <MessageSquarePlus size={17} />
+            <span>新建聊天</span>
+          </button>
+        </div>
+      ) : messages.length === 0 ? (
         <div className="empty-chat-state">
           <div className="empty-chat-mark" aria-hidden="true">
             <MessageCircleQuestion size={28} />
