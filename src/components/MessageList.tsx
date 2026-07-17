@@ -1,4 +1,7 @@
+import { useEffect, useRef } from "react";
 import { BookOpenText, Lightbulb, ListTodo, MessageCircleQuestion } from "lucide-react";
+import type { ChatMessage } from "../types/chat";
+import { MessageBubble } from "./MessageBubble";
 import "../styles/message-list.css";
 
 const suggestions = [
@@ -19,31 +22,61 @@ const suggestions = [
   },
 ];
 
-export function MessageList() {
-  return (
-    <section className="message-list" aria-label="消息列表">
-      <div className="empty-chat-state">
-        <div className="empty-chat-mark" aria-hidden="true">
-          <MessageCircleQuestion size={28} />
-        </div>
-        <div className="empty-chat-copy">
-          <span className="conversation-label">新对话</span>
-          <h2>今天想研究什么？</h2>
-          <p>提出一个问题，或者从下面的建议开始。</p>
-        </div>
+type MessageListProps = {
+  messages: ChatMessage[];
+  onSuggestionSelect: (prompt: string) => void;
+};
 
-        <div className="suggestion-grid" aria-label="提问建议">
-          {suggestions.map(({ icon: Icon, title, description }) => (
-            <button className="suggestion-item" type="button" key={title}>
-              <Icon size={18} />
-              <span>
-                <strong>{title}</strong>
-                <small>{description}</small>
-              </span>
-            </button>
+export function MessageList({ messages, onSuggestionSelect }: MessageListProps) {
+  const listRef = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    const list = listRef.current;
+    if (!list || messages.length === 0) return;
+
+    list.scrollTo({
+      top: list.scrollHeight,
+      behavior: messages.length > 1 ? "smooth" : "auto",
+    });
+  }, [messages]);
+
+  return (
+    <section className="message-list" aria-label="消息列表" ref={listRef}>
+      {messages.length === 0 ? (
+        <div className="empty-chat-state">
+          <div className="empty-chat-mark" aria-hidden="true">
+            <MessageCircleQuestion size={28} />
+          </div>
+          <div className="empty-chat-copy">
+            <span className="conversation-label">新对话</span>
+            <h2>今天想研究什么？</h2>
+            <p>提出一个问题，或者从下面的建议开始。</p>
+          </div>
+
+          <div className="suggestion-grid" aria-label="提问建议">
+            {suggestions.map(({ icon: Icon, title, description }) => (
+              <button
+                className="suggestion-item"
+                type="button"
+                key={title}
+                onClick={() => onSuggestionSelect(title)}
+              >
+                <Icon size={18} />
+                <span>
+                  <strong>{title}</strong>
+                  <small>{description}</small>
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <div className="message-thread">
+          {messages.map((message) => (
+            <MessageBubble message={message} key={message.id} />
           ))}
         </div>
-      </div>
+      )}
     </section>
   );
 }

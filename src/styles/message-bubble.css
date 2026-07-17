@@ -35,6 +35,8 @@
 
 .message-bubble p {
   margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .message-bubble p + p {

@@ -1,16 +1,46 @@
+import { useState, type FormEvent, type KeyboardEvent } from "react";
 import { ArrowUp, BookOpenText, Paperclip, SlidersHorizontal } from "lucide-react";
 import "../styles/chat-input.css";
 
-export function ChatInput() {
+type ChatInputProps = {
+  onSend: (content: string) => void;
+};
+
+export function ChatInput({ onSend }: ChatInputProps) {
+  const [draft, setDraft] = useState("");
+  const canSend = draft.trim().length > 0;
+
+  const submitMessage = () => {
+    if (!canSend) return;
+
+    onSend(draft);
+    setDraft("");
+  };
+
+  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    submitMessage();
+  };
+
+  const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
+
+    event.preventDefault();
+    submitMessage();
+  };
+
   return (
     <footer className="composer-area">
       <div className="composer-inner">
-        <div className="composer-box">
+        <form className="composer-box" onSubmit={handleSubmit}>
           <textarea
             className="composer-textarea"
             rows={2}
             placeholder="向 Mnemora 提问..."
             aria-label="消息输入框"
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={handleKeyDown}
           />
 
           <div className="composer-toolbar">
@@ -26,11 +56,17 @@ export function ChatInput() {
               </button>
             </div>
 
-            <button className="send-button" type="button" title="发送消息" aria-label="发送消息">
+            <button
+              className="send-button"
+              type="submit"
+              title="发送消息"
+              aria-label="发送消息"
+              disabled={!canSend}
+            >
               <ArrowUp size={19} />
             </button>
           </div>
-        </div>
+        </form>
 
         <p className="composer-note">Mnemora 可能会出错，请核对重要信息。</p>
       </div>
