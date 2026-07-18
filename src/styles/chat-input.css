@@ -51,6 +51,11 @@
   color: var(--color-muted);
 }
 
+.composer-tools .icon-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 .send-button {
   display: grid;
   width: 34px;
@@ -72,6 +77,22 @@
   color: var(--color-faint);
   background: var(--color-hover);
   cursor: not-allowed;
+}
+
+.composer-spin {
+  animation: composer-spin 0.9s linear infinite;
+}
+
+@keyframes composer-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .composer-spin {
+    animation: none;
+  }
 }
 
 .composer-note {

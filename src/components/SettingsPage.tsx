@@ -682,7 +682,10 @@ export function SettingsPage({
               </div>
             </aside>
 
-            <div className="provider-detail">
+            <div
+              className="provider-detail"
+              key={selectedProviderId ?? "provider-empty"}
+            >
               {selectedProvider ? (
                 <>
                   <section className="provider-section provider-section-header">

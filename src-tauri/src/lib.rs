@@ -1,4 +1,5 @@
 mod ai;
+mod chat;
 mod commands;
 mod settings;
 mod state;
@@ -16,6 +17,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::chat::chat_complete,
             commands::providers::fetch_provider_models,
             commands::providers::test_provider_connection,
             commands::settings::load_model_settings,

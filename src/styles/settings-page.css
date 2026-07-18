@@ -71,16 +71,18 @@
 .settings-content {
   display: flex;
   min-width: 0;
+  min-height: 0;
   padding: 24px clamp(20px, 4vw, 52px) 40px;
   flex-direction: column;
   gap: 18px;
-  overflow-y: auto;
+  overflow: hidden;
 }
 
 .settings-content-heading {
   display: flex;
   width: min(1120px, 100%);
   min-height: 44px;
+  flex: 0 0 auto;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
@@ -132,7 +134,8 @@
 .provider-workspace {
   display: grid;
   width: min(1120px, 100%);
-  min-height: 620px;
+  min-height: 0;
+  flex: 1 1 auto;
   grid-template-columns: 216px minmax(0, 1fr);
   overflow: hidden;
   border: 1px solid var(--color-border);
@@ -143,6 +146,7 @@
 .provider-list {
   display: flex;
   min-width: 0;
+  min-height: 0;
   padding: 10px;
   flex-direction: column;
   gap: 9px;
@@ -243,7 +247,33 @@
 
 .provider-detail {
   min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-color: var(--color-border) transparent;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
   background: var(--color-surface-raised);
+}
+
+.provider-detail::-webkit-scrollbar {
+  width: 9px;
+}
+
+.provider-detail::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.provider-detail::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 8px;
+  background: var(--color-border);
+  background-clip: padding-box;
+}
+
+.provider-detail::-webkit-scrollbar-thumb:hover {
+  background: var(--color-muted);
+  background-clip: padding-box;
 }
 
 .provider-section {
@@ -275,11 +305,15 @@
 }
 
 .provider-section-header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
   min-height: 66px;
   padding-top: 14px;
   padding-bottom: 14px;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
+  background: var(--color-surface-raised);
 }
 
 .provider-title-block {
@@ -561,6 +595,7 @@
   display: flex;
   width: min(1120px, 100%);
   min-height: 40px;
+  flex: 0 0 auto;
   padding: 9px 11px;
   align-items: flex-start;
   gap: 9px;
@@ -684,6 +719,7 @@
   }
 
   .provider-workspace {
+    grid-template-rows: auto minmax(0, 1fr);
     grid-template-columns: minmax(0, 1fr);
   }
 

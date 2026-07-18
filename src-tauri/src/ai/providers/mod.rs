@@ -1,6 +1,18 @@
-mod anthropic;
-mod gemini;
+//! 模型供应商 wire protocol 适配器。
+//!
+//! - `openai_chat`：OpenAI Chat Completions。
+//! - `openai_responses`：OpenAI Responses。
+//! - `anthropic`：Anthropic Messages。
+//! - `gemini`：Gemini 原生 GenerateContent。
+//! - `openai`：两个 OpenAI 协议共用的模型列表解析。
+//!
+//! 本文件只保留认证和手动模型列表等少量公共分派，非流式生成由 `ai::dispatcher` 调用各协议文件。
+
+pub(crate) mod anthropic;
+pub(crate) mod gemini;
 mod openai;
+pub(crate) mod openai_chat;
+pub(crate) mod openai_responses;
 
 use std::{collections::HashSet, time::Instant};
 
@@ -8,28 +20,33 @@ use reqwest::{Client, RequestBuilder};
 use serde_json::Value;
 
 use crate::ai::{
-    http::response_error,
-    types::{ApiProtocol, AuthScheme, ConnectionTestResult, ProviderConnectionInput},
+    error::ModelError,
+    http::{read_json_response, response_error},
+    types::{
+        ApiProtocol, AuthScheme, ConnectionTestResult, ProviderConnectionInput,
+        ProviderRequestContext,
+    },
 };
 
 #[derive(Clone, Copy)]
-enum DefaultAuth {
+pub(super) enum DefaultAuth {
     Bearer,
     XApiKey,
     XGoogApiKey,
 }
 
-fn apply_auth(
+fn apply_api_key(
     request: RequestBuilder,
-    input: &ProviderConnectionInput,
+    auth_scheme: AuthScheme,
+    api_key: &str,
     default_auth: DefaultAuth,
 ) -> Result<RequestBuilder, String> {
-    let api_key = input.api_key.as_deref().unwrap_or_default().trim();
+    let api_key = api_key.trim();
     if api_key.is_empty() {
         return Err("API Key is required".to_string());
     }
 
-    let scheme = match input.auth_scheme {
+    let scheme = match auth_scheme {
         AuthScheme::ProtocolDefault => default_auth,
         AuthScheme::Bearer => DefaultAuth::Bearer,
         AuthScheme::XApiKey => DefaultAuth::XApiKey,
@@ -43,6 +60,15 @@ fn apply_auth(
     })
 }
 
+pub(super) fn apply_model_auth(
+    request: RequestBuilder,
+    context: &ProviderRequestContext<'_>,
+    default_auth: DefaultAuth,
+) -> Result<RequestBuilder, ModelError> {
+    apply_api_key(request, context.auth_scheme, context.api_key, default_auth)
+        .map_err(|_| ModelError::missing_api_key())
+}
+
 fn model_list_request(
     client: &Client,
     input: &ProviderConnectionInput,
@@ -50,15 +76,30 @@ fn model_list_request(
     match input.protocol {
         ApiProtocol::OpenAiChatCompletions | ApiProtocol::OpenAiResponses => {
             let request = openai::model_list_request(client, &input.base_url)?;
-            apply_auth(request, input, DefaultAuth::Bearer)
+            apply_api_key(
+                request,
+                input.auth_scheme,
+                input.api_key.as_deref().unwrap_or_default(),
+                DefaultAuth::Bearer,
+            )
         }
         ApiProtocol::AnthropicMessages => {
             let request = anthropic::model_list_request(client, &input.base_url)?;
-            apply_auth(request, input, DefaultAuth::XApiKey)
+            apply_api_key(
+                request,
+                input.auth_scheme,
+                input.api_key.as_deref().unwrap_or_default(),
+                DefaultAuth::XApiKey,
+            )
         }
         ApiProtocol::GeminiGenerateContent => {
             let request = gemini::model_list_request(client, &input.base_url)?;
-            apply_auth(request, input, DefaultAuth::XGoogApiKey)
+            apply_api_key(
+                request,
+                input.auth_scheme,
+                input.api_key.as_deref().unwrap_or_default(),
+                DefaultAuth::XGoogApiKey,
+            )
         }
     }
 }
@@ -88,10 +129,7 @@ pub async fn fetch_models(
         return Err(message);
     }
 
-    let value: Value = response
-        .json()
-        .await
-        .map_err(|error| format!("Invalid model list response: {error}"))?;
+    let value = read_json_response(response, "model list").await?;
     let models = parse_models(input.protocol, &value)?;
 
     let mut seen = HashSet::new();

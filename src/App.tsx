@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import "./styles/app.css";
-import { ChatHeader } from "./components/ChatHeader";
+import { ChatHeader, type ModelSelectorGroup } from "./components/ChatHeader";
 import { ChatInput } from "./components/ChatInput";
 import { MessageList } from "./components/MessageList";
 import { SettingsPage } from "./components/SettingsPage";
@@ -22,8 +22,8 @@ import {
   loadModelSettings,
   persistModelSettings,
 } from "./api/settings";
+import { completeChat, normalizeModelError } from "./api/chat";
 
-const MOCK_REPLY_DELAY_MS = 700;
 const DEFAULT_CONVERSATION_TITLE = "新对话";
 const MAX_TEMPORARY_TITLE_LENGTH = 24;
 
@@ -61,12 +61,14 @@ function createTemporaryTitle(content: string) {
 }
 
 function toConversationListItem(conversation: Conversation): ConversationListItem {
-  const lastMessage = conversation.messages[conversation.messages.length - 1];
+  const lastMessage = [...conversation.messages]
+    .reverse()
+    .find((message) => message.content || message.errorMessage);
 
   return {
     id: conversation.id,
     title: conversation.title,
-    preview: lastMessage?.content ?? "暂无消息",
+    preview: lastMessage?.content || lastMessage?.errorMessage || "暂无消息",
     messageCount: conversation.messages.length,
     assistantId: conversation.assistantId,
     modelId: conversation.modelId,
@@ -89,7 +91,8 @@ function App() {
   const [currentConversationId, setCurrentConversationId] = useState<string | null>(
     initialConversation.id,
   );
-  const replyTimersRef = useRef<Map<number, string>>(new Map());
+  const [requestInFlight, setRequestInFlight] = useState(false);
+  const requestInFlightRef = useRef(false);
 
   const currentConversation = useMemo(
     () => conversations.find((conversation) => conversation.id === currentConversationId) ?? null,
@@ -100,6 +103,38 @@ function App() {
     () => resolveDefaultModel(modelSettings),
     [modelSettings],
   );
+
+  const currentModel = useMemo(() => {
+    if (currentConversation?.modelId) {
+      for (const provider of modelSettings.providers) {
+        if (!provider.enabled) continue;
+        const model = provider.models.find(
+          (item) => item.enabled && item.id === currentConversation.modelId,
+        );
+        if (model) return { provider, model };
+      }
+    }
+    return defaultModel;
+  }, [currentConversation?.modelId, defaultModel, modelSettings.providers]);
+
+  const modelGroups = useMemo<ModelSelectorGroup[]>(() => (
+    modelSettings.providers
+      .filter((provider) => provider.enabled)
+      .map((provider) => ({
+        providerId: provider.id,
+        providerName: provider.name,
+        models: provider.models
+          .filter((model) => model.enabled)
+          .map((model) => ({
+            id: model.id,
+            displayName: model.displayName,
+            apiModel: model.apiModel,
+            isDefault: modelSettings.defaultProviderId === provider.id
+              && modelSettings.defaultModelId === model.id,
+          })),
+      }))
+      .filter((group) => group.models.length > 0)
+  ), [modelSettings]);
 
   const conversationListItems = useMemo(
     () => conversations
@@ -131,24 +166,6 @@ function App() {
     };
   }, []);
 
-  useEffect(() => {
-    const replyTimers = replyTimersRef.current;
-
-    return () => {
-      replyTimers.forEach((_, timer) => window.clearTimeout(timer));
-      replyTimers.clear();
-    };
-  }, []);
-
-  const cancelReplyTimers = useCallback((conversationId?: string) => {
-    replyTimersRef.current.forEach((timerConversationId, timer) => {
-      if (conversationId && timerConversationId !== conversationId) return;
-
-      window.clearTimeout(timer);
-      replyTimersRef.current.delete(timer);
-    });
-  }, []);
-
   const handleCreateConversation = useCallback(() => {
     const conversation = createConversation();
     setConversations((currentConversations) => [conversation, ...currentConversations]);
@@ -162,8 +179,6 @@ function App() {
   }, []);
 
   const handleDeleteConversation = useCallback((conversationId: string) => {
-    cancelReplyTimers(conversationId);
-
     setConversations((currentConversations) => {
       const deletedIndex = currentConversations.findIndex(
         (conversation) => conversation.id === conversationId,
@@ -182,13 +197,12 @@ function App() {
 
       return remainingConversations;
     });
-  }, [cancelReplyTimers, currentConversationId]);
+  }, [currentConversationId]);
 
   const handleClearConversations = useCallback(() => {
-    cancelReplyTimers();
     setConversations([]);
     setCurrentConversationId(null);
-  }, [cancelReplyTimers]);
+  }, []);
 
   const handlePermissionChange = useCallback((permissionMode: AiPermissionMode) => {
     if (!currentConversationId) return;
@@ -199,6 +213,21 @@ function App() {
         : conversation,
     ));
   }, [currentConversationId]);
+
+  const handleModelChange = useCallback((providerId: string, modelId: string) => {
+    if (!currentConversationId || requestInFlightRef.current) return;
+    const provider = modelSettings.providers.find(
+      (item) => item.enabled && item.id === providerId,
+    );
+    const model = provider?.models.find((item) => item.enabled && item.id === modelId);
+    if (!provider || !model) return;
+
+    setConversations((currentConversations) => currentConversations.map((conversation) => (
+      conversation.id === currentConversationId
+        ? { ...conversation, modelId: model.id, updatedAt: Date.now() }
+        : conversation
+    )));
+  }, [currentConversationId, modelSettings.providers]);
 
   const handleSaveModelSettings = useCallback(async (
     nextSettings: ModelSettings,
@@ -227,12 +256,19 @@ function App() {
     return saved;
   }, []);
 
-  const handleSendMessage = useCallback((rawContent: string) => {
+  const handleSendMessage = useCallback(async (rawContent: string) => {
     const content = rawContent.trim();
-    const targetConversationId = currentConversationId;
-    if (!content || !targetConversationId) return;
+    const targetConversation = currentConversation;
+    const selectedModel = currentModel;
+    if (
+      !content
+      || !targetConversation
+      || !selectedModel
+      || requestInFlightRef.current
+    ) return;
 
     const now = Date.now();
+    const targetConversationId = targetConversation.id;
     const userMessage: ChatMessage = {
       id: createId(),
       conversationId: targetConversationId,
@@ -242,6 +278,30 @@ function App() {
       createdAt: now,
       updatedAt: now,
     };
+    const assistantMessageId = createId();
+    const assistantMessage: ChatMessage = {
+      id: assistantMessageId,
+      conversationId: targetConversationId,
+      role: "assistant",
+      content: "",
+      status: "pending",
+      createdAt: now,
+      updatedAt: now,
+      modelId: selectedModel.model.id,
+      modelSnapshot: {
+        id: selectedModel.model.id,
+        apiModel: selectedModel.model.apiModel,
+        displayName: selectedModel.model.displayName,
+        providerId: selectedModel.provider.id,
+        providerName: selectedModel.provider.name,
+      },
+    };
+    const modelMessages = [...targetConversation.messages, userMessage]
+      .filter((message) => message.content.trim() && message.status === "completed")
+      .map((message) => ({ role: message.role, content: message.content }));
+
+    requestInFlightRef.current = true;
+    setRequestInFlight(true);
 
     setConversations((currentConversations) => currentConversations.map((conversation) => {
       if (conversation.id !== targetConversationId) return conversation;
@@ -251,46 +311,65 @@ function App() {
         title: conversation.messages.length === 0
           ? createTemporaryTitle(content)
           : conversation.title,
-        messages: [...conversation.messages, userMessage],
-        modelId: conversation.modelId ?? defaultModel?.model.id ?? null,
+        messages: [...conversation.messages, userMessage, assistantMessage],
+        modelId: selectedModel.model.id,
         updatedAt: now,
       };
     }));
 
-    const replyTimer = window.setTimeout(() => {
-      const replyCreatedAt = Date.now();
-      const assistantMessage: ChatMessage = {
-        id: createId(),
-        conversationId: targetConversationId,
-        role: "assistant",
-        content: "收到。我们可以继续围绕这个问题展开讨论。",
-        status: "completed",
-        createdAt: replyCreatedAt,
-        updatedAt: replyCreatedAt,
-        modelId: defaultModel?.model.id,
-        modelSnapshot: defaultModel ? {
-          id: defaultModel.model.id,
-          apiModel: defaultModel.model.apiModel,
-          displayName: defaultModel.model.displayName,
-          providerId: defaultModel.provider.id,
-          providerName: defaultModel.provider.name,
-        } : undefined,
-      };
-
+    try {
+      const response = await completeChat({
+        providerId: selectedModel.provider.id,
+        modelId: selectedModel.model.id,
+        systemPrompt: targetConversation.systemPrompt,
+        messages: modelMessages,
+      });
+      const completedAt = Date.now();
       setConversations((currentConversations) => currentConversations.map((conversation) =>
         conversation.id === targetConversationId
           ? {
               ...conversation,
-              messages: [...conversation.messages, assistantMessage],
-              updatedAt: replyCreatedAt,
+              messages: conversation.messages.map((message) => (
+                message.id === assistantMessageId
+                  ? {
+                      ...message,
+                      content: response.text,
+                      status: "completed",
+                      usage: response.usage,
+                      updatedAt: completedAt,
+                    }
+                  : message
+              )),
+              updatedAt: completedAt,
             }
           : conversation,
       ));
-      replyTimersRef.current.delete(replyTimer);
-    }, MOCK_REPLY_DELAY_MS);
-
-    replyTimersRef.current.set(replyTimer, targetConversationId);
-  }, [currentConversationId, defaultModel]);
+    } catch (error) {
+      const modelError = normalizeModelError(error);
+      const failedAt = Date.now();
+      setConversations((currentConversations) => currentConversations.map((conversation) =>
+        conversation.id === targetConversationId
+          ? {
+              ...conversation,
+              messages: conversation.messages.map((message) => (
+                message.id === assistantMessageId
+                  ? {
+                      ...message,
+                      status: "error",
+                      errorMessage: modelError.message,
+                      updatedAt: failedAt,
+                    }
+                  : message
+              )),
+              updatedAt: failedAt,
+            }
+          : conversation,
+      ));
+    } finally {
+      requestInFlightRef.current = false;
+      setRequestInFlight(false);
+    }
+  }, [currentConversation, currentModel]);
 
   return (
     <main className="app-shell" data-theme={theme} aria-label="Mnemora application">
@@ -316,29 +395,42 @@ function App() {
         <section className="chat-workspace" aria-label="当前对话">
           <ChatHeader
             title={currentConversation?.title ?? "未选择对话"}
-            modelLabel={defaultModel
-              ? `${defaultModel.provider.name} · ${defaultModel.model.displayName}`
+            modelLabel={currentModel
+              ? `${currentModel.provider.name} · ${currentModel.model.displayName}`
               : "配置模型"}
-            modelTitle={defaultModel
-              ? `${defaultModel.provider.name} / ${defaultModel.model.apiModel}`
+            modelTitle={currentModel
+              ? `${currentModel.provider.name} / ${currentModel.model.apiModel}`
               : "模型设置"}
-            modelConfigured={Boolean(defaultModel)}
+            modelConfigured={Boolean(currentModel)}
+            modelGroups={modelGroups}
+            selectedProviderId={currentModel?.provider.id ?? null}
+            selectedModelId={currentModel?.model.id ?? null}
+            modelSelectionDisabled={!currentConversation || requestInFlight}
             permission={currentConversation?.permissionMode ?? "askSensitive"}
             permissionDisabled={!currentConversation}
             theme={theme}
-            onOpenSettings={() => setActiveView("settings")}
+            onModelChange={handleModelChange}
             onPermissionChange={handlePermissionChange}
             onToggleTheme={() => setTheme(theme === "light" ? "dark" : "light")}
           />
           <MessageList
             messages={currentConversation?.messages ?? []}
             hasConversation={currentConversation !== null}
+            suggestionsDisabled={!currentModel || requestInFlight}
             onCreateConversation={handleCreateConversation}
             onSuggestionSelect={handleSendMessage}
           />
           <ChatInput
-            disabled={!currentConversation}
+            busy={requestInFlight}
+            disabled={!currentConversation || !currentModel || requestInFlight}
             key={currentConversation?.id ?? "no-conversation"}
+            placeholder={!currentConversation
+              ? "请先新建对话"
+              : !currentModel
+                ? "请先配置默认模型"
+                : requestInFlight
+                  ? "正在等待模型回复"
+                  : "向 Mnemora 提问..."}
             onSend={handleSendMessage}
           />
         </section>

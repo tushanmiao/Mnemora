@@ -1,13 +1,26 @@
 import { useState, type FormEvent, type KeyboardEvent } from "react";
-import { ArrowUp, BookOpenText, Paperclip, SlidersHorizontal } from "lucide-react";
+import {
+  ArrowUp,
+  BookOpenText,
+  LoaderCircle,
+  Paperclip,
+  SlidersHorizontal,
+} from "lucide-react";
 import "../styles/chat-input.css";
 
 type ChatInputProps = {
   disabled?: boolean;
+  busy?: boolean;
+  placeholder?: string;
   onSend: (content: string) => void;
 };
 
-export function ChatInput({ disabled = false, onSend }: ChatInputProps) {
+export function ChatInput({
+  disabled = false,
+  busy = false,
+  placeholder = "向 Mnemora 提问...",
+  onSend,
+}: ChatInputProps) {
   const [draft, setDraft] = useState("");
   const canSend = !disabled && draft.trim().length > 0;
 
@@ -37,7 +50,7 @@ export function ChatInput({ disabled = false, onSend }: ChatInputProps) {
           <textarea
             className="composer-textarea"
             rows={2}
-            placeholder={disabled ? "请先新建对话" : "向 Mnemora 提问..."}
+            placeholder={placeholder}
             aria-label="消息输入框"
             disabled={disabled}
             value={draft}
@@ -47,13 +60,13 @@ export function ChatInput({ disabled = false, onSend }: ChatInputProps) {
 
           <div className="composer-toolbar">
             <div className="composer-tools">
-              <button className="icon-button" type="button" title="添加附件">
+              <button className="icon-button" type="button" title="添加附件" disabled={disabled}>
                 <Paperclip size={18} />
               </button>
-              <button className="icon-button" type="button" title="选择文献">
+              <button className="icon-button" type="button" title="选择文献" disabled={disabled}>
                 <BookOpenText size={18} />
               </button>
-              <button className="icon-button" type="button" title="对话选项">
+              <button className="icon-button" type="button" title="对话选项" disabled={disabled}>
                 <SlidersHorizontal size={18} />
               </button>
             </div>
@@ -65,7 +78,9 @@ export function ChatInput({ disabled = false, onSend }: ChatInputProps) {
               aria-label="发送消息"
               disabled={!canSend}
             >
-              <ArrowUp size={19} />
+              {busy
+                ? <LoaderCircle className="composer-spin" size={18} />
+                : <ArrowUp size={19} />}
             </button>
           </div>
         </form>

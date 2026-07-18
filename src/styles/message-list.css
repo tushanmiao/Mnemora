@@ -109,6 +109,16 @@
   background: var(--color-accent-soft);
 }
 
+.suggestion-item:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.suggestion-item:disabled:hover {
+  border-color: var(--color-border);
+  background: var(--color-surface-raised);
+}
+
 .suggestion-item > svg {
   color: var(--color-accent);
 }

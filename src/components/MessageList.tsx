@@ -31,6 +31,7 @@ const suggestions = [
 type MessageListProps = {
   messages: ChatMessage[];
   hasConversation: boolean;
+  suggestionsDisabled?: boolean;
   onCreateConversation: () => void;
   onSuggestionSelect: (prompt: string) => void;
 };
@@ -38,6 +39,7 @@ type MessageListProps = {
 export function MessageList({
   messages,
   hasConversation,
+  suggestionsDisabled = false,
   onCreateConversation,
   onSuggestionSelect,
 }: MessageListProps) {
@@ -86,6 +88,7 @@ export function MessageList({
                 className="suggestion-item"
                 type="button"
                 key={title}
+                disabled={suggestionsDisabled}
                 onClick={() => onSuggestionSelect(title)}
               >
                 <Icon size={18} />

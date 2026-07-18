@@ -17,7 +17,7 @@ impl AppState {
     pub fn new(config_dir: PathBuf) -> Result<Self, String> {
         let http = Client::builder()
             .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(20))
+            .timeout(Duration::from_secs(120))
             .user_agent(concat!("Mnemora/", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|error| format!("Failed to create HTTP client: {error}"))?;

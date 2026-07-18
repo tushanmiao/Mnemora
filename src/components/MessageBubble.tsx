@@ -1,4 +1,4 @@
-import { Bot, UserRound } from "lucide-react";
+import { AlertCircle, Bot, LoaderCircle, UserRound } from "lucide-react";
 import type { ChatMessage } from "../types/chat";
 import "../styles/message-bubble.css";
 
@@ -8,6 +8,21 @@ type MessageBubbleProps = {
 
 export function MessageBubble({ message }: MessageBubbleProps) {
   const isAssistant = message.role === "assistant";
+  const isPending = message.status === "pending";
+  const isError = message.status === "error";
+  const usageParts = message.usage
+    ? [
+        message.usage.inputTokens !== undefined
+          ? `输入 ${message.usage.inputTokens}`
+          : null,
+        message.usage.outputTokens !== undefined
+          ? `输出 ${message.usage.outputTokens}`
+          : null,
+        message.usage.totalDurationMs !== undefined
+          ? `${(message.usage.totalDurationMs / 1000).toFixed(1)} 秒`
+          : null,
+      ].filter(Boolean)
+    : [];
 
   return (
     <article className={`message-row message-row-${message.role}`}>
@@ -15,7 +30,24 @@ export function MessageBubble({ message }: MessageBubbleProps) {
         {isAssistant ? <Bot size={18} /> : <UserRound size={17} />}
       </div>
       <div className={`message-bubble message-bubble-${message.role}`}>
-        <p>{message.content}</p>
+        {isPending ? (
+          <p className="message-status" role="status">
+            <LoaderCircle className="message-spin" size={16} />
+            <span>正在生成</span>
+          </p>
+        ) : isError ? (
+          <p className="message-error" role="alert">
+            <AlertCircle size={16} />
+            <span>{message.errorMessage ?? "模型请求失败，请稍后重试。"}</span>
+          </p>
+        ) : (
+          <p>{message.content}</p>
+        )}
+        {usageParts.length > 0 && (
+          <div className="message-usage" title="本次模型请求用量">
+            {usageParts.map((part) => <span key={part}>{part}</span>)}
+          </div>
+        )}
       </div>
     </article>
   );

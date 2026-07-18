@@ -54,3 +54,54 @@
   border-radius: 8px 2px 8px 8px;
   background: var(--color-user-bubble);
 }
+
+.message-status,
+.message-error {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.message-status {
+  color: var(--color-muted);
+}
+
+.message-error {
+  color: var(--color-danger, #b42318);
+}
+
+.message-status svg,
+.message-error svg {
+  flex: 0 0 auto;
+}
+
+.message-spin {
+  animation: message-spin 0.9s linear infinite;
+}
+
+.message-usage {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 12px;
+  margin-top: 7px;
+  color: var(--color-faint);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.message-usage span + span::before {
+  content: "·";
+  margin-right: 12px;
+}
+
+@keyframes message-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .message-spin {
+    animation: none;
+  }
+}
