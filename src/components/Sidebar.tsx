@@ -31,21 +31,25 @@ const extensionItems = [
 ];
 
 type SidebarProps = {
+  settingsOpen: boolean;
   conversations: ConversationListItem[];
   currentConversationId: string | null;
   onCreateConversation: () => void;
   onSelectConversation: (conversationId: string) => void;
   onDeleteConversation: (conversationId: string) => void;
   onClearConversations: () => void;
+  onOpenSettings: () => void;
 };
 
 export function Sidebar({
+  settingsOpen,
   conversations,
   currentConversationId,
   onCreateConversation,
   onSelectConversation,
   onDeleteConversation,
   onClearConversations,
+  onOpenSettings,
 }: SidebarProps) {
   const [extensionsOpen, setExtensionsOpen] = useState(true);
   const [activeSection, setActiveSection] = useState<"recent" | "collections" | "projects">("recent");
@@ -254,7 +258,13 @@ export function Sidebar({
             <span>本地工作区</span>
           </div>
         </div>
-        <button className="icon-button" type="button" title="设置">
+        <button
+          className={`icon-button${settingsOpen ? " sidebar-settings-active" : ""}`}
+          type="button"
+          title="设置"
+          aria-current={settingsOpen ? "page" : undefined}
+          onClick={onOpenSettings}
+        >
           <Settings size={18} />
         </button>
       </div>

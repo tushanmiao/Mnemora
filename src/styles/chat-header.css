@@ -58,10 +58,21 @@
   background: var(--color-hover);
 }
 
+.model-button > span:nth-child(2) {
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .model-status {
   width: 7px;
   height: 7px;
   border-radius: 50%;
+  background: var(--color-faint);
+}
+
+.model-status-configured {
   background: var(--color-accent);
 }
 

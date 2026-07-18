@@ -7,18 +7,26 @@ const permissionOptions = Object.keys(AI_PERMISSION_LABELS) as AiPermissionMode[
 
 type ChatHeaderProps = {
   title: string;
+  modelLabel: string;
+  modelTitle: string;
+  modelConfigured: boolean;
   permission: AiPermissionMode;
   permissionDisabled: boolean;
   theme: "light" | "dark";
+  onOpenSettings: () => void;
   onPermissionChange: (permission: AiPermissionMode) => void;
   onToggleTheme: () => void;
 };
 
 export function ChatHeader({
   title,
+  modelLabel,
+  modelTitle,
+  modelConfigured,
   permission,
   permissionDisabled,
   theme,
+  onOpenSettings,
   onPermissionChange,
   onToggleTheme,
 }: ChatHeaderProps) {
@@ -44,9 +52,12 @@ export function ChatHeader({
       </div>
 
       <div className="chat-header-actions">
-        <button className="model-button" type="button">
-          <span className="model-status" aria-hidden="true" />
-          <span>GPT-5</span>
+        <button className="model-button" type="button" title={modelTitle} onClick={onOpenSettings}>
+          <span
+            className={`model-status${modelConfigured ? " model-status-configured" : ""}`}
+            aria-hidden="true"
+          />
+          <span>{modelLabel}</span>
           <ChevronDown size={15} />
         </button>
         <div className="permission-control" ref={permissionMenuRef}>

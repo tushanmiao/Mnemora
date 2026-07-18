@@ -3,6 +3,7 @@ import "./styles/app.css";
 import { ChatHeader } from "./components/ChatHeader";
 import { ChatInput } from "./components/ChatInput";
 import { MessageList } from "./components/MessageList";
+import { SettingsPage } from "./components/SettingsPage";
 import { Sidebar } from "./components/Sidebar";
 import type {
   AiPermissionMode,
@@ -10,10 +11,18 @@ import type {
   Conversation,
   ConversationListItem,
 } from "./types/chat";
+import {
+  createInitialModelSettings,
+  resolveDefaultModel,
+  type ModelSettings,
+  type ProviderApiKeyDrafts,
+} from "./types/settings";
 
 const MOCK_REPLY_DELAY_MS = 700;
 const DEFAULT_CONVERSATION_TITLE = "新对话";
 const MAX_TEMPORARY_TITLE_LENGTH = 24;
+
+type AppView = "chat" | "settings";
 
 function createId() {
   return crypto.randomUUID();
@@ -68,6 +77,9 @@ const initialConversation = createConversation();
 
 function App() {
   const [theme, setTheme] = useState<"light" | "dark">("light");
+  const [activeView, setActiveView] = useState<AppView>("chat");
+  const [modelSettings, setModelSettings] = useState<ModelSettings>(createInitialModelSettings);
+  const [providerApiKeyDrafts, setProviderApiKeyDrafts] = useState<ProviderApiKeyDrafts>({});
   const [conversations, setConversations] = useState<Conversation[]>([initialConversation]);
   const [currentConversationId, setCurrentConversationId] = useState<string | null>(
     initialConversation.id,
@@ -77,6 +89,11 @@ function App() {
   const currentConversation = useMemo(
     () => conversations.find((conversation) => conversation.id === currentConversationId) ?? null,
     [conversations, currentConversationId],
+  );
+
+  const defaultModel = useMemo(
+    () => resolveDefaultModel(modelSettings),
+    [modelSettings],
   );
 
   const conversationListItems = useMemo(
@@ -111,10 +128,12 @@ function App() {
     const conversation = createConversation();
     setConversations((currentConversations) => [conversation, ...currentConversations]);
     setCurrentConversationId(conversation.id);
+    setActiveView("chat");
   }, []);
 
   const handleSelectConversation = useCallback((conversationId: string) => {
     setCurrentConversationId(conversationId);
+    setActiveView("chat");
   }, []);
 
   const handleDeleteConversation = useCallback((conversationId: string) => {
@@ -156,6 +175,14 @@ function App() {
     ));
   }, [currentConversationId]);
 
+  const handleSaveModelSettings = useCallback((
+    nextSettings: ModelSettings,
+    nextApiKeyDrafts: ProviderApiKeyDrafts,
+  ) => {
+    setModelSettings(nextSettings);
+    setProviderApiKeyDrafts(nextApiKeyDrafts);
+  }, []);
+
   const handleSendMessage = useCallback((rawContent: string) => {
     const content = rawContent.trim();
     const targetConversationId = currentConversationId;
@@ -181,6 +208,7 @@ function App() {
           ? createTemporaryTitle(content)
           : conversation.title,
         messages: [...conversation.messages, userMessage],
+        modelId: conversation.modelId ?? defaultModel?.model.id ?? null,
         updatedAt: now,
       };
     }));
@@ -195,6 +223,14 @@ function App() {
         status: "completed",
         createdAt: replyCreatedAt,
         updatedAt: replyCreatedAt,
+        modelId: defaultModel?.model.id,
+        modelSnapshot: defaultModel ? {
+          id: defaultModel.model.id,
+          apiModel: defaultModel.model.apiModel,
+          displayName: defaultModel.model.displayName,
+          providerId: defaultModel.provider.id,
+          providerName: defaultModel.provider.name,
+        } : undefined,
       };
 
       setConversations((currentConversations) => currentConversations.map((conversation) =>
@@ -210,40 +246,59 @@ function App() {
     }, MOCK_REPLY_DELAY_MS);
 
     replyTimersRef.current.set(replyTimer, targetConversationId);
-  }, [currentConversationId]);
+  }, [currentConversationId, defaultModel]);
 
   return (
     <main className="app-shell" data-theme={theme} aria-label="Mnemora application">
       <Sidebar
+        settingsOpen={activeView === "settings"}
         conversations={conversationListItems}
         currentConversationId={currentConversationId}
         onCreateConversation={handleCreateConversation}
         onSelectConversation={handleSelectConversation}
         onDeleteConversation={handleDeleteConversation}
         onClearConversations={handleClearConversations}
+        onOpenSettings={() => setActiveView("settings")}
       />
 
-      <section className="chat-workspace" aria-label="当前对话">
-        <ChatHeader
-          title={currentConversation?.title ?? "未选择对话"}
-          permission={currentConversation?.permissionMode ?? "askSensitive"}
-          permissionDisabled={!currentConversation}
-          theme={theme}
-          onPermissionChange={handlePermissionChange}
-          onToggleTheme={() => setTheme(theme === "light" ? "dark" : "light")}
+      {activeView === "settings" ? (
+        <SettingsPage
+          settings={modelSettings}
+          apiKeyDrafts={providerApiKeyDrafts}
+          onBack={() => setActiveView("chat")}
+          onSave={handleSaveModelSettings}
         />
-        <MessageList
-          messages={currentConversation?.messages ?? []}
-          hasConversation={currentConversation !== null}
-          onCreateConversation={handleCreateConversation}
-          onSuggestionSelect={handleSendMessage}
-        />
-        <ChatInput
-          disabled={!currentConversation}
-          key={currentConversation?.id ?? "no-conversation"}
-          onSend={handleSendMessage}
-        />
-      </section>
+      ) : (
+        <section className="chat-workspace" aria-label="当前对话">
+          <ChatHeader
+            title={currentConversation?.title ?? "未选择对话"}
+            modelLabel={defaultModel
+              ? `${defaultModel.provider.name} · ${defaultModel.model.displayName}`
+              : "配置模型"}
+            modelTitle={defaultModel
+              ? `${defaultModel.provider.name} / ${defaultModel.model.apiModel}`
+              : "模型设置"}
+            modelConfigured={Boolean(defaultModel)}
+            permission={currentConversation?.permissionMode ?? "askSensitive"}
+            permissionDisabled={!currentConversation}
+            theme={theme}
+            onOpenSettings={() => setActiveView("settings")}
+            onPermissionChange={handlePermissionChange}
+            onToggleTheme={() => setTheme(theme === "light" ? "dark" : "light")}
+          />
+          <MessageList
+            messages={currentConversation?.messages ?? []}
+            hasConversation={currentConversation !== null}
+            onCreateConversation={handleCreateConversation}
+            onSuggestionSelect={handleSendMessage}
+          />
+          <ChatInput
+            disabled={!currentConversation}
+            key={currentConversation?.id ?? "no-conversation"}
+            onSend={handleSendMessage}
+          />
+        </section>
+      )}
     </main>
   );
 }

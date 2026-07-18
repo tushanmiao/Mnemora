@@ -93,10 +93,14 @@ export type AiPermissionMode =
 export interface ModelSnapshot {
   /** 模型在 Mnemora 中的唯一标识。 */
   id: string;
-  /** 用户可见的模型名称。 */
-  name: string;
+  /** 实际发送给供应商 API 的模型名称。 */
+  apiModel: string;
+  /** 生成消息时用户看到的模型名称。 */
+  displayName: string;
   /** 模型所属供应商的唯一标识。 */
   providerId: string;
+  /** 生成消息时供应商的显示名称。 */
+  providerName: string;
 }
 
 /**
@@ -308,6 +312,8 @@ export interface ModelMessage {
 
 /** 转换成 OpenAI、Anthropic 或 Gemini 请求前的供应商无关请求。 */
 export interface ModelRequest {
+  /** 本次请求使用的供应商 ID。 */
+  providerId: string;
   /** 本次请求使用的模型 ID。 */
   modelId: string;
   /** 将所有提示词片段组合后得到的最终 System Prompt。 */

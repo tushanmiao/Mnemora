@@ -283,6 +283,11 @@
   border-top: 1px solid var(--color-border);
 }
 
+.sidebar-settings-active {
+  color: var(--color-accent);
+  background: var(--color-active);
+}
+
 .user-profile {
   display: flex;
   min-width: 0;
