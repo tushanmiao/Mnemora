@@ -15,8 +15,13 @@ import {
   createInitialModelSettings,
   resolveDefaultModel,
   type ModelSettings,
-  type ProviderApiKeyDrafts,
+  type ProviderApiKeyUpdate,
 } from "./types/settings";
+import {
+  isTauriRuntime,
+  loadModelSettings,
+  persistModelSettings,
+} from "./api/settings";
 
 const MOCK_REPLY_DELAY_MS = 700;
 const DEFAULT_CONVERSATION_TITLE = "新对话";
@@ -79,7 +84,7 @@ function App() {
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const [activeView, setActiveView] = useState<AppView>("chat");
   const [modelSettings, setModelSettings] = useState<ModelSettings>(createInitialModelSettings);
-  const [providerApiKeyDrafts, setProviderApiKeyDrafts] = useState<ProviderApiKeyDrafts>({});
+  const [modelSettingsError, setModelSettingsError] = useState<string | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([initialConversation]);
   const [currentConversationId, setCurrentConversationId] = useState<string | null>(
     initialConversation.id,
@@ -105,6 +110,26 @@ function App() {
       }),
     [conversations],
   );
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    let cancelled = false;
+
+    void loadModelSettings()
+      .then((settings) => {
+        if (cancelled) return;
+        setModelSettings(settings);
+        setModelSettingsError(null);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setModelSettingsError(error instanceof Error ? error.message : String(error));
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     const replyTimers = replyTimersRef.current;
@@ -175,12 +200,31 @@ function App() {
     ));
   }, [currentConversationId]);
 
-  const handleSaveModelSettings = useCallback((
+  const handleSaveModelSettings = useCallback(async (
     nextSettings: ModelSettings,
-    nextApiKeyDrafts: ProviderApiKeyDrafts,
+    apiKeyUpdates: ProviderApiKeyUpdate[],
   ) => {
-    setModelSettings(nextSettings);
-    setProviderApiKeyDrafts(nextApiKeyDrafts);
+    if (!isTauriRuntime()) {
+      const updateByProvider = new Map(
+        apiKeyUpdates.map((update) => [update.providerId, update] as const),
+      );
+      const browserSettings = {
+        ...nextSettings,
+        providers: nextSettings.providers.map((provider) => {
+          const update = updateByProvider.get(provider.id);
+          if (!update) return provider;
+          return { ...provider, hasApiKey: update.action === "set" };
+        }),
+      };
+      setModelSettings(browserSettings);
+      setModelSettingsError(null);
+      return browserSettings;
+    }
+
+    const saved = await persistModelSettings(nextSettings, apiKeyUpdates);
+    setModelSettings(saved);
+    setModelSettingsError(null);
+    return saved;
   }, []);
 
   const handleSendMessage = useCallback((rawContent: string) => {
@@ -264,7 +308,7 @@ function App() {
       {activeView === "settings" ? (
         <SettingsPage
           settings={modelSettings}
-          apiKeyDrafts={providerApiKeyDrafts}
+          initialError={modelSettingsError}
           onBack={() => setActiveView("chat")}
           onSave={handleSaveModelSettings}
         />

@@ -3,8 +3,9 @@ import type { ApiProtocol, AuthScheme, ProviderConfig } from "../types/settings"
 
 /** 只在用户点击测试或获取模型时临时发送给 Rust，不进入普通设置 DTO。 */
 export type ProviderConnectionInput = {
+  providerId: string;
   baseUrl: string;
-  apiKey: string;
+  apiKey?: string;
   protocol: ApiProtocol;
   authScheme: AuthScheme;
 };
@@ -21,8 +22,9 @@ function connectionInput(
   apiKey: string,
 ): ProviderConnectionInput {
   return {
+    providerId: provider.id,
     baseUrl: provider.baseUrl.trim(),
-    apiKey: apiKey.trim(),
+    apiKey: apiKey.trim() || undefined,
     protocol: provider.protocol,
     authScheme: provider.authScheme,
   };

@@ -13,7 +13,7 @@
 /** 用户对供应商来源的分类，不决定实际网络协议。 */
 export type ProviderKind = "openai" | "anthropic" | "gemini" | "custom";
 
-/** 第一版支持的三种模型 API 协议。 */
+/** 第一版支持的四种模型 API 协议。 */
 export type ApiProtocol =
   | "openAiChatCompletions"
   | "openAiResponses"
@@ -63,6 +63,8 @@ export interface ProviderConfig {
 
 /** 模型设置根对象。 */
 export interface ModelSettings {
+  /** 配置结构版本，由 Rust 负责迁移和校验。 */
+  version: number;
   /** 所有官方服务和中转站实例。 */
   providers: ProviderConfig[];
   /** 全局默认供应商 ID；为空表示尚未选择默认模型。 */
@@ -71,17 +73,17 @@ export interface ModelSettings {
   defaultModelId: string | null;
 }
 
-/**
- * 任务 8 的临时密钥草稿。
- *
- * 它与 `ProviderConfig` 分开，后续任务会由 Rust 系统凭据存储替代，普通设置 DTO
- * 始终只保留 `hasApiKey`。
- */
-export type ProviderApiKeyDrafts = Record<string, string>;
+/** 设置页提交给 Rust 的单向密钥变更；普通读取不会返回完整 API Key。 */
+export type ProviderApiKeyUpdate =
+  | { providerId: string; action: "set"; apiKey: string }
+  | { providerId: string; action: "delete" };
+
+export const CURRENT_MODEL_SETTINGS_VERSION = 1;
 
 /** 创建首次启动时的三家官方供应商配置。 */
 export function createInitialModelSettings(): ModelSettings {
   return {
+    version: CURRENT_MODEL_SETTINGS_VERSION,
     providers: [
       {
         id: "official-openai",

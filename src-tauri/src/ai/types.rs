@@ -1,31 +1,16 @@
 use serde::{Deserialize, Serialize};
 
-/** 网络协议与供应商名称分离，同一协议可以配置多个中转站。 */
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum ApiProtocol {
-    OpenAiChatCompletions,
-    OpenAiResponses,
-    AnthropicMessages,
-    GeminiGenerateContent,
-}
-
-/** API Key 的认证方式。 */
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum AuthScheme {
-    ProtocolDefault,
-    Bearer,
-    XApiKey,
-    XGoogApiKey,
-}
+pub use crate::settings::types::{ApiProtocol, AuthScheme};
 
 /** 手动网络操作的临时输入，不属于普通 Provider 配置返回值。 */
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderConnectionInput {
+    #[serde(default)]
+    pub provider_id: Option<String>,
     pub base_url: String,
-    pub api_key: String,
+    #[serde(default)]
+    pub api_key: Option<String>,
     pub protocol: ApiProtocol,
     pub auth_scheme: AuthScheme,
 }

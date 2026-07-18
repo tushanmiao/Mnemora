@@ -1,4 +1,4 @@
-import { useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import {
   AlertCircle,
   ArrowLeft,
@@ -22,7 +22,7 @@ import type {
   ApiProtocol,
   AuthScheme,
   ModelSettings,
-  ProviderApiKeyDrafts,
+  ProviderApiKeyUpdate,
   ProviderConfig,
   ProviderKind,
   ProviderModelConfig,
@@ -49,9 +49,12 @@ type ProviderActionFeedback = {
 
 type SettingsPageProps = {
   settings: ModelSettings;
-  apiKeyDrafts: ProviderApiKeyDrafts;
+  initialError: string | null;
   onBack: () => void;
-  onSave: (settings: ModelSettings, apiKeyDrafts: ProviderApiKeyDrafts) => void;
+  onSave: (
+    settings: ModelSettings,
+    apiKeyUpdates: ProviderApiKeyUpdate[],
+  ) => Promise<ModelSettings>;
 };
 
 const EMPTY_ERRORS: ValidationErrors = { providers: {}, models: {} };
@@ -188,12 +191,13 @@ function hasValidationErrors(errors: ValidationErrors) {
 
 export function SettingsPage({
   settings,
-  apiKeyDrafts,
+  initialError,
   onBack,
   onSave,
 }: SettingsPageProps) {
   const [draft, setDraft] = useState<ModelSettings>(settings);
-  const [secretDrafts, setSecretDrafts] = useState<ProviderApiKeyDrafts>(apiKeyDrafts);
+  const [secretDrafts, setSecretDrafts] = useState<Record<string, string>>({});
+  const [pendingSecretDeletes, setPendingSecretDeletes] = useState<Set<string>>(new Set());
   const [selectedProviderId, setSelectedProviderId] = useState<string | null>(
     settings.defaultProviderId ?? settings.providers[0]?.id ?? null,
   );
@@ -201,7 +205,10 @@ export function SettingsPage({
   const [visibleApiKeys, setVisibleApiKeys] = useState<Set<string>>(new Set());
   const [newApiModel, setNewApiModel] = useState("");
   const [newDisplayName, setNewDisplayName] = useState("");
-  const [feedback, setFeedback] = useState<FormFeedback>(null);
+  const [feedback, setFeedback] = useState<FormFeedback>(
+    initialError ? { kind: "error", message: initialError } : null,
+  );
+  const [saving, setSaving] = useState(false);
   const [testingProviderId, setTestingProviderId] = useState<string | null>(null);
   const [fetchingProviderId, setFetchingProviderId] = useState<string | null>(null);
   const [providerActionFeedback, setProviderActionFeedback] = useState<
@@ -220,6 +227,32 @@ export function SettingsPage({
     return provider && model ? { provider, model } : null;
   }, [draft]);
 
+  useEffect(() => {
+    setDraft(settings);
+    setSelectedProviderId((current) => (
+      current && settings.providers.some((provider) => provider.id === current)
+        ? current
+        : settings.defaultProviderId ?? settings.providers[0]?.id ?? null
+    ));
+  }, [settings]);
+
+  useEffect(() => {
+    if (initialError) setFeedback({ kind: "error", message: initialError });
+  }, [initialError]);
+
+  const hasEffectiveApiKey = (provider: ProviderConfig) => {
+    if (pendingSecretDeletes.has(provider.id)) return false;
+    return Boolean(secretDrafts[provider.id]?.trim()) || provider.hasApiKey;
+  };
+
+  const credentialStatus = (provider: ProviderConfig) => {
+    if (pendingSecretDeletes.has(provider.id)) return "待删除";
+    if (secretDrafts[provider.id]?.trim()) {
+      return provider.hasApiKey ? "待替换" : "待保存";
+    }
+    return provider.hasApiKey ? "已安全保存" : "未配置";
+  };
+
   const clearProviderError = (providerId: string, field: ProviderField) => {
     setErrors((current) => {
       const providerErrors = { ...current.providers[providerId], [field]: undefined };
@@ -237,7 +270,7 @@ export function SettingsPage({
         provider.id === providerId ? { ...provider, ...patch } : provider,
       ),
     }));
-    if ("baseUrl" in patch || "protocol" in patch || "authScheme" in patch || "hasApiKey" in patch) {
+    if ("baseUrl" in patch || "protocol" in patch || "authScheme" in patch) {
       setAvailableModels((current) => {
         const next = { ...current };
         delete next[providerId];
@@ -293,7 +326,6 @@ export function SettingsPage({
     };
 
     setDraft((current) => ({ ...current, providers: [...current.providers, provider] }));
-    setSecretDrafts((current) => ({ ...current, [id]: "" }));
     setSelectedProviderId(id);
     setNewApiModel("");
     setNewDisplayName("");
@@ -312,6 +344,9 @@ export function SettingsPage({
       delete next[provider.id];
       return next;
     });
+    if (provider.hasApiKey) {
+      setPendingSecretDeletes((current) => new Set(current).add(provider.id));
+    }
     setSelectedProviderId((currentId) => {
       if (currentId !== provider.id) return currentId;
       return draft.providers.find((item) => item.id !== provider.id)?.id ?? null;
@@ -321,7 +356,44 @@ export function SettingsPage({
 
   const handleApiKeyChange = (providerId: string, value: string) => {
     setSecretDrafts((current) => ({ ...current, [providerId]: value }));
-    updateProvider(providerId, { hasApiKey: Boolean(value.trim()) });
+    if (value.trim()) {
+      setPendingSecretDeletes((current) => {
+        const next = new Set(current);
+        next.delete(providerId);
+        return next;
+      });
+    }
+    setAvailableModels((current) => {
+      const next = { ...current };
+      delete next[providerId];
+      return next;
+    });
+    setProviderActionFeedback((current) => {
+      const next = { ...current };
+      delete next[providerId];
+      return next;
+    });
+    setFeedback(null);
+  };
+
+  const handleDeleteApiKey = (providerId: string) => {
+    setSecretDrafts((current) => {
+      const next = { ...current };
+      delete next[providerId];
+      return next;
+    });
+    setPendingSecretDeletes((current) => new Set(current).add(providerId));
+    setAvailableModels((current) => {
+      const next = { ...current };
+      delete next[providerId];
+      return next;
+    });
+    setProviderActionFeedback((current) => {
+      const next = { ...current };
+      delete next[providerId];
+      return next;
+    });
+    setFeedback(null);
   };
 
   const validateManualNetworkAction = (provider: ProviderConfig) => {
@@ -335,12 +407,12 @@ export function SettingsPage({
     } catch {
       return "请输入完整有效的 API Base URL。";
     }
-    if (!apiKey) return "请输入 API Key。";
+    if (!apiKey && !hasEffectiveApiKey(provider)) return "请输入 API Key。";
     return null;
   };
 
   const handleTestConnection = async (provider: ProviderConfig) => {
-    if (testingProviderId || fetchingProviderId) return;
+    if (saving || testingProviderId || fetchingProviderId) return;
     const validationError = validateManualNetworkAction(provider);
     if (validationError) {
       setProviderActionFeedback((current) => ({
@@ -382,7 +454,7 @@ export function SettingsPage({
   };
 
   const handleFetchModels = async (provider: ProviderConfig) => {
-    if (testingProviderId || fetchingProviderId) return;
+    if (saving || testingProviderId || fetchingProviderId) return;
     const validationError = validateManualNetworkAction(provider);
     if (validationError) {
       setProviderActionFeedback((current) => ({
@@ -472,7 +544,7 @@ export function SettingsPage({
     setFeedback(null);
   };
 
-  const handleSave = (event: FormEvent<HTMLFormElement>) => {
+  const handleSave = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const normalized = normalizeSettings(draft);
     const nextErrors = validateSettings(normalized);
@@ -490,12 +562,35 @@ export function SettingsPage({
       return;
     }
 
-    const normalizedSecrets = Object.fromEntries(
-      Object.entries(secretDrafts).map(([providerId, apiKey]) => [providerId, apiKey.trim()]),
-    );
-    onSave(normalized, normalizedSecrets);
-    setSecretDrafts(normalizedSecrets);
-    setFeedback({ kind: "success", message: "模型设置已保存。" });
+    const apiKeyUpdates: ProviderApiKeyUpdate[] = [];
+    for (const [providerId, apiKey] of Object.entries(secretDrafts)) {
+      const normalizedApiKey = apiKey.trim();
+      if (normalizedApiKey) {
+        apiKeyUpdates.push({ providerId, action: "set", apiKey: normalizedApiKey });
+      }
+    }
+    for (const providerId of pendingSecretDeletes) {
+      if (!secretDrafts[providerId]?.trim()) {
+        apiKeyUpdates.push({ providerId, action: "delete" });
+      }
+    }
+
+    setSaving(true);
+    setFeedback(null);
+    try {
+      const saved = await onSave(normalized, apiKeyUpdates);
+      setDraft(saved);
+      setSecretDrafts({});
+      setPendingSecretDeletes(new Set());
+      setFeedback({ kind: "success", message: "模型设置已保存。" });
+    } catch (error) {
+      setFeedback({
+        kind: "error",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -531,9 +626,13 @@ export function SettingsPage({
                   {defaultSelection.model.displayName} · {defaultSelection.provider.name}
                 </span>
               ) : null}
-              <button className="settings-button settings-button-primary" type="submit">
+              <button
+                className="settings-button settings-button-primary"
+                type="submit"
+                disabled={saving}
+              >
                 <Save size={16} />
-                <span>保存</span>
+                <span>{saving ? "保存中" : "保存"}</span>
               </button>
             </div>
           </div>
@@ -552,7 +651,7 @@ export function SettingsPage({
               <div className="provider-list-items">
                 {draft.providers.map((provider) => {
                   const selected = provider.id === selectedProviderId;
-                  const configured = provider.hasApiKey;
+                  const configured = hasEffectiveApiKey(provider);
                   return (
                     <button
                       className={`provider-list-item${selected ? " provider-list-item-active" : ""}`}
@@ -721,38 +820,55 @@ export function SettingsPage({
                     <div className="settings-field">
                       <div className="settings-label-row">
                         <label htmlFor={`api-key-${selectedProvider.id}`}>API Key</label>
-                        <span>{selectedProvider.hasApiKey ? "已配置" : "未配置"}</span>
+                        <span>{credentialStatus(selectedProvider)}</span>
                       </div>
-                      <div className="settings-secret-input">
-                        <input
-                          id={`api-key-${selectedProvider.id}`}
-                          className="settings-input"
-                          type={visibleApiKeys.has(selectedProvider.id) ? "text" : "password"}
-                          placeholder="输入 API Key"
-                          value={secretDrafts[selectedProvider.id] ?? ""}
-                          autoComplete="off"
-                          spellCheck={false}
-                          onChange={(event) => handleApiKeyChange(
-                            selectedProvider.id,
-                            event.target.value,
-                          )}
-                        />
-                        <button
-                          className="settings-secret-toggle"
-                          type="button"
-                          title={visibleApiKeys.has(selectedProvider.id) ? "隐藏 API Key" : "显示 API Key"}
-                          aria-label={visibleApiKeys.has(selectedProvider.id) ? "隐藏 API Key" : "显示 API Key"}
-                          onClick={() => setVisibleApiKeys((current) => {
-                            const next = new Set(current);
-                            if (next.has(selectedProvider.id)) next.delete(selectedProvider.id);
-                            else next.add(selectedProvider.id);
-                            return next;
-                          })}
-                        >
-                          {visibleApiKeys.has(selectedProvider.id)
-                            ? <EyeOff size={17} />
-                            : <Eye size={17} />}
-                        </button>
+                      <div className="settings-secret-row">
+                        <div className="settings-secret-input">
+                          <input
+                            id={`api-key-${selectedProvider.id}`}
+                            className="settings-input"
+                            type={visibleApiKeys.has(selectedProvider.id) ? "text" : "password"}
+                            placeholder={pendingSecretDeletes.has(selectedProvider.id)
+                              ? "保存后删除"
+                              : selectedProvider.hasApiKey
+                                ? "已安全保存；输入新值可替换"
+                                : "输入 API Key"}
+                            value={secretDrafts[selectedProvider.id] ?? ""}
+                            autoComplete="off"
+                            spellCheck={false}
+                            onChange={(event) => handleApiKeyChange(
+                              selectedProvider.id,
+                              event.target.value,
+                            )}
+                          />
+                          <button
+                            className="settings-secret-toggle"
+                            type="button"
+                            title={visibleApiKeys.has(selectedProvider.id) ? "隐藏 API Key" : "显示 API Key"}
+                            aria-label={visibleApiKeys.has(selectedProvider.id) ? "隐藏 API Key" : "显示 API Key"}
+                            onClick={() => setVisibleApiKeys((current) => {
+                              const next = new Set(current);
+                              if (next.has(selectedProvider.id)) next.delete(selectedProvider.id);
+                              else next.add(selectedProvider.id);
+                              return next;
+                            })}
+                          >
+                            {visibleApiKeys.has(selectedProvider.id)
+                              ? <EyeOff size={17} />
+                              : <Eye size={17} />}
+                          </button>
+                        </div>
+                        {hasEffectiveApiKey(selectedProvider) ? (
+                          <button
+                            className="settings-icon-danger"
+                            type="button"
+                            title="删除 API Key"
+                            aria-label="删除 API Key"
+                            onClick={() => handleDeleteApiKey(selectedProvider.id)}
+                          >
+                            <Trash2 size={15} />
+                          </button>
+                        ) : null}
                       </div>
                     </div>
 
@@ -767,7 +883,7 @@ export function SettingsPage({
                       <button
                         className="settings-button settings-button-secondary"
                         type="button"
-                        disabled={Boolean(testingProviderId || fetchingProviderId)}
+                        disabled={Boolean(saving || testingProviderId || fetchingProviderId)}
                         title="手动获取模型"
                         onClick={() => void handleFetchModels(selectedProvider)}
                       >
@@ -780,7 +896,7 @@ export function SettingsPage({
                       <button
                         className="settings-button settings-button-secondary"
                         type="button"
-                        disabled={Boolean(testingProviderId || fetchingProviderId)}
+                        disabled={Boolean(saving || testingProviderId || fetchingProviderId)}
                         title="手动测试连接"
                         onClick={() => void handleTestConnection(selectedProvider)}
                       >

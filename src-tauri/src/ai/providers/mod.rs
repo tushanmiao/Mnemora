@@ -24,7 +24,7 @@ fn apply_auth(
     input: &ProviderConnectionInput,
     default_auth: DefaultAuth,
 ) -> Result<RequestBuilder, String> {
-    let api_key = input.api_key.trim();
+    let api_key = input.api_key.as_deref().unwrap_or_default().trim();
     if api_key.is_empty() {
         return Err("API Key is required".to_string());
     }
@@ -159,8 +159,9 @@ mod tests {
 
     fn input(protocol: ApiProtocol, auth_scheme: AuthScheme) -> ProviderConnectionInput {
         ProviderConnectionInput {
+            provider_id: Some("provider-test".to_string()),
             base_url: "https://example.com/v1".to_string(),
-            api_key: "secret-key".to_string(),
+            api_key: Some("secret-key".to_string()),
             protocol,
             auth_scheme,
         }
