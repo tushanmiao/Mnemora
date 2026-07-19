@@ -22,6 +22,7 @@ export interface AppSettings {
   maxOutputTokens: number;
   responseLanguage: ResponseLanguage;
   systemPrompt: string;
+  requestDebugEnabled: boolean;
 }
 
 export interface SettingsBundle {
@@ -30,7 +31,7 @@ export interface SettingsBundle {
   modelSettings: ModelSettings;
 }
 
-export const CURRENT_APP_SETTINGS_VERSION = 1;
+export const CURRENT_APP_SETTINGS_VERSION = 2;
 
 export function createInitialAppSettings(): AppSettings {
   return {
@@ -49,5 +50,6 @@ export function createInitialAppSettings(): AppSettings {
     maxOutputTokens: 32_768,
     responseLanguage: "followInput",
     systemPrompt: "",
+    requestDebugEnabled: false,
   };
 }

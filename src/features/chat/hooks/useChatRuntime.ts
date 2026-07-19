@@ -13,6 +13,11 @@ import type {
   ProviderConfig,
   ProviderModelConfig,
 } from "../../../types/modelSettings";
+import {
+  appendStreamingDelta,
+  consumeStreamingMessage,
+  startStreamingMessage,
+} from "../stores/streamingStore";
 
 const MAX_TEMPORARY_TITLE_LENGTH = 24;
 const RESPONSE_LANGUAGE_PROMPTS: Partial<Record<ResponseLanguage, string>> = {
@@ -30,8 +35,6 @@ type ActiveStreamRun = {
   runId: string;
   conversationId: string;
   messageId: string;
-  pendingText: string;
-  frameId: number | null;
   terminalReceived: boolean;
 };
 
@@ -72,21 +75,15 @@ export function useChatRuntime({
   const [stopRequested, setStopRequested] = useState(false);
   const activeStreamRunRef = useRef<ActiveStreamRun | null>(null);
 
-  const flushStreamRun = useCallback((
+  const finalizeStreamRun = useCallback((
     run: ActiveStreamRun,
-    terminal?: {
+    terminal: {
       status: "completed" | "stopped" | "error";
       usage?: ChatMessage["usage"];
       errorMessage?: string;
     },
   ) => {
-    if (run.frameId !== null) {
-      cancelAnimationFrame(run.frameId);
-      run.frameId = null;
-    }
-    const pendingText = run.pendingText;
-    run.pendingText = "";
-    if (!pendingText && !terminal) return;
+    const streamedContent = consumeStreamingMessage(run.messageId);
     const conversation = conversationsRef.current.find((item) => item.id === run.conversationId);
     if (!conversation) return;
     const updatedAt = Date.now();
@@ -96,10 +93,10 @@ export function useChatRuntime({
         message.id === run.messageId
           ? {
               ...message,
-              content: message.content + pendingText,
-              status: terminal?.status ?? "streaming",
-              usage: terminal?.usage ?? message.usage,
-              errorMessage: terminal?.errorMessage,
+              content: streamedContent ?? message.content,
+              status: terminal.status,
+              usage: terminal.usage ?? message.usage,
+              errorMessage: terminal.errorMessage,
               updatedAt,
             }
           : message
@@ -107,7 +104,7 @@ export function useChatRuntime({
       updatedAt,
     };
     cacheConversation(nextConversation);
-    if (terminal) saveStableConversation(nextConversation);
+    saveStableConversation(nextConversation);
   }, [cacheConversation, conversationsRef, saveStableConversation]);
 
   const handleStreamEvent = useCallback((event: ModelStreamEvent) => {
@@ -118,32 +115,27 @@ export function useChatRuntime({
       || event.conversationId !== run.conversationId
       || event.messageId !== run.messageId
     ) return;
+    if (run.terminalReceived) return;
 
     switch (event.type) {
       case "started":
         return;
       case "textDelta":
-        run.pendingText += event.delta;
-        if (run.frameId === null) {
-          run.frameId = requestAnimationFrame(() => {
-            run.frameId = null;
-            flushStreamRun(run);
-          });
-        }
+        appendStreamingDelta(run.messageId, event.delta);
         return;
       case "completed":
         run.terminalReceived = true;
-        flushStreamRun(run, { status: "completed", usage: event.usage });
+        finalizeStreamRun(run, { status: "completed", usage: event.usage });
         return;
       case "stopped":
         run.terminalReceived = true;
-        flushStreamRun(run, { status: "stopped" });
+        finalizeStreamRun(run, { status: "stopped" });
         return;
       case "error":
         run.terminalReceived = true;
-        flushStreamRun(run, { status: "error", errorMessage: event.error.message });
+        finalizeStreamRun(run, { status: "error", errorMessage: event.error.message });
     }
-  }, [flushStreamRun]);
+  }, [finalizeStreamRun]);
 
   const stopGeneration = useCallback(() => {
     const run = activeStreamRunRef.current;
@@ -216,6 +208,8 @@ export function useChatRuntime({
       const completionRequest = {
         providerId: selectedModel.provider.id,
         modelId: selectedModel.model.id,
+        conversationId: targetConversationId,
+        messageId: assistantMessageId,
         systemPrompt: composeSystemPrompt(appSettings, targetConversation.systemPrompt),
         messages: modelMessages,
         options: { maxOutputTokens: appSettings.maxOutputTokens },
@@ -226,11 +220,10 @@ export function useChatRuntime({
           runId: crypto.randomUUID(),
           conversationId: targetConversationId,
           messageId: assistantMessageId,
-          pendingText: "",
-          frameId: null,
           terminalReceived: false,
         };
         activeStreamRunRef.current = streamRun;
+        startStreamingMessage(streamRun.messageId);
         await startChatStream({
           runId: streamRun.runId,
           conversationId: streamRun.conversationId,
@@ -264,7 +257,7 @@ export function useChatRuntime({
       if (streamRun) {
         if (!streamRun.terminalReceived) {
           streamRun.terminalReceived = true;
-          flushStreamRun(streamRun, { status: "error", errorMessage: modelError.message });
+          finalizeStreamRun(streamRun, { status: "error", errorMessage: modelError.message });
         }
         return;
       }
@@ -284,10 +277,6 @@ export function useChatRuntime({
         saveStableConversation(failedConversation);
       }
     } finally {
-      if (streamRun?.frameId !== null && streamRun) {
-        cancelAnimationFrame(streamRun.frameId);
-        streamRun.frameId = null;
-      }
       if (activeStreamRunRef.current?.runId === streamRun?.runId) activeStreamRunRef.current = null;
       requestInFlightRef.current = false;
       setRequestInFlight(false);
@@ -299,7 +288,7 @@ export function useChatRuntime({
     conversationsRef,
     currentConversation,
     currentModel,
-    flushStreamRun,
+    finalizeStreamRun,
     handleStreamEvent,
     requestInFlightRef,
     saveStableConversation,

@@ -74,7 +74,9 @@ where
             let value: Value = serde_json::from_str(&event.data)
                 .map_err(|_| ModelError::invalid_response("OpenAI Chat SSE 事件不是有效 JSON。"))?;
             if let Some(message) = value.pointer("/error/message").and_then(Value::as_str) {
-                return Err(ModelError::provider(format!("OpenAI Chat 流式错误：{message}")));
+                return Err(ModelError::provider(format!(
+                    "OpenAI Chat 流式错误：{message}"
+                )));
             }
             if let Some(choice) = value
                 .get("choices")
@@ -112,7 +114,7 @@ where
     }))
 }
 
-fn request_body(request: &ModelRequest) -> Value {
+pub(crate) fn request_body(request: &ModelRequest) -> Value {
     let mut messages = Vec::with_capacity(request.messages.len() + 1);
     if let Some(system_prompt) = request.system_prompt.as_deref() {
         messages.push(json!({ "role": "system", "content": system_prompt }));

@@ -19,7 +19,7 @@ use crate::ai::{
 
 use super::{apply_model_auth, DefaultAuth};
 
-const ANTHROPIC_VERSION: &str = "2023-06-01";
+pub(crate) const ANTHROPIC_VERSION: &str = "2023-06-01";
 const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 4_096;
 
 pub fn model_list_request(client: &Client, base_url: &str) -> Result<RequestBuilder, String> {
@@ -70,8 +70,8 @@ pub async fn stream<F>(
 where
     F: FnMut(ModelStreamChunk) -> Result<(), ModelError>,
 {
-    let url = endpoint_url(context.base_url, "messages")
-        .map_err(ModelError::invalid_configuration)?;
+    let url =
+        endpoint_url(context.base_url, "messages").map_err(ModelError::invalid_configuration)?;
     let request_builder = apply_model_auth(
         client
             .post(url)
@@ -91,9 +91,8 @@ where
         context.api_key,
         cancellation,
         |event| {
-            let value: Value = serde_json::from_str(&event.data).map_err(|_| {
-                ModelError::invalid_response("Anthropic SSE 事件不是有效 JSON。")
-            })?;
+            let value: Value = serde_json::from_str(&event.data)
+                .map_err(|_| ModelError::invalid_response("Anthropic SSE 事件不是有效 JSON。"))?;
             let event_type = event
                 .event_type
                 .as_deref()
@@ -117,7 +116,9 @@ where
                     }
                 }
                 "message_delta" => {
-                    if let Some(reason) = value.pointer("/delta/stop_reason").and_then(Value::as_str) {
+                    if let Some(reason) =
+                        value.pointer("/delta/stop_reason").and_then(Value::as_str)
+                    {
                         finish_reason = Some(reason.to_string());
                     }
                     if let Some(raw_usage) = value.get("usage") {
@@ -130,7 +131,9 @@ where
                         .pointer("/error/message")
                         .and_then(Value::as_str)
                         .unwrap_or("供应商返回了未知流式错误");
-                    return Err(ModelError::provider(format!("Anthropic 流式错误：{message}")));
+                    return Err(ModelError::provider(format!(
+                        "Anthropic 流式错误：{message}"
+                    )));
                 }
                 _ => {}
             }
@@ -153,7 +156,7 @@ where
     }))
 }
 
-fn request_body(request: &ModelRequest) -> Value {
+pub(crate) fn request_body(request: &ModelRequest) -> Value {
     let mut body = Map::from_iter([
         ("model".to_string(), Value::String(request.model.clone())),
         (

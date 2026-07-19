@@ -104,7 +104,8 @@ impl ConversationRepository {
         for entry in fs::read_dir(&self.directory)
             .map_err(|error| format!("Failed to read conversations directory: {error}"))?
         {
-            let entry = entry.map_err(|error| format!("Failed to inspect conversation file: {error}"))?;
+            let entry =
+                entry.map_err(|error| format!("Failed to inspect conversation file: {error}"))?;
             let file_name = entry.file_name();
             let file_name = file_name.to_string_lossy();
             if file_name == INDEX_FILE_NAME
@@ -155,8 +156,7 @@ impl ConversationRepository {
             .map(|item| item.id.as_str())
             .collect::<HashSet<_>>();
         let files = self.conversation_file_ids()?;
-        Ok(indexed.len() == files.len()
-            && files.iter().all(|id| indexed.contains(id.as_str())))
+        Ok(indexed.len() == files.len() && files.iter().all(|id| indexed.contains(id.as_str())))
     }
 
     fn conversation_file_ids(&self) -> Result<Vec<String>, String> {
@@ -164,7 +164,8 @@ impl ConversationRepository {
         for entry in fs::read_dir(&self.directory)
             .map_err(|error| format!("Failed to read conversations directory: {error}"))?
         {
-            let entry = entry.map_err(|error| format!("Failed to inspect conversation file: {error}"))?;
+            let entry =
+                entry.map_err(|error| format!("Failed to inspect conversation file: {error}"))?;
             if !entry
                 .file_type()
                 .map_err(|error| format!("Failed to inspect conversation file type: {error}"))?
@@ -334,8 +335,12 @@ mod tests {
     fn saves_lists_loads_and_deletes_conversations() {
         let directory = test_directory("roundtrip");
         let repository = ConversationRepository::new(directory.clone());
-        repository.save(&conversation("conversation-1", 10)).unwrap();
-        repository.save(&conversation("conversation-2", 20)).unwrap();
+        repository
+            .save(&conversation("conversation-1", 10))
+            .unwrap();
+        repository
+            .save(&conversation("conversation-2", 20))
+            .unwrap();
 
         let items = repository.list().unwrap();
         assert_eq!(items.len(), 2);
@@ -353,9 +358,13 @@ mod tests {
     fn rebuild_skips_one_corrupt_conversation_file() {
         let directory = test_directory("corrupt");
         let repository = ConversationRepository::new(directory.clone());
-        repository.save(&conversation("conversation-valid", 10)).unwrap();
+        repository
+            .save(&conversation("conversation-valid", 10))
+            .unwrap();
         fs::write(
-            directory.join("conversations").join("conv_conversation-bad.json"),
+            directory
+                .join("conversations")
+                .join("conv_conversation-bad.json"),
             b"{not-json",
         )
         .unwrap();

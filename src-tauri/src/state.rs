@@ -1,13 +1,19 @@
 use reqwest::Client;
-use std::{collections::HashMap, path::PathBuf, sync::RwLock, time::Duration};
+use std::{
+    collections::{HashMap, VecDeque},
+    path::PathBuf,
+    sync::{Mutex as StdMutex, RwLock},
+    time::Duration,
+};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
+use crate::chat::storage::ConversationRepository;
+use crate::request_debug::RequestDebugRecord;
 use crate::settings::{
     app_repository::AppSettingsRepository, app_types::AppSettings,
     repository::ModelSettingsRepository, secrets::SecretStore, types::ModelSettings,
 };
-use crate::chat::storage::ConversationRepository;
 
 /** Tauri 全局共享状态。HTTP Client、设置快照和仓库在整个应用生命周期内复用。 */
 pub struct AppState {
@@ -20,6 +26,9 @@ pub struct AppState {
     pub active_chat_runs: Mutex<HashMap<String, CancellationToken>>,
     pub conversation_repository: ConversationRepository,
     pub conversation_writes: Mutex<()>,
+    pub usage_dir: PathBuf,
+    pub usage_operations: Mutex<()>,
+    pub request_debug_records: StdMutex<VecDeque<RequestDebugRecord>>,
 }
 
 impl AppState {
@@ -40,6 +49,7 @@ impl AppState {
             }
         };
         let model_settings_repository = ModelSettingsRepository::new(config_dir);
+        let usage_dir = crate::usage::usage_dir(&app_data_dir);
         let conversation_repository = ConversationRepository::new(app_data_dir);
         let secrets = SecretStore;
         let mut model_settings = match model_settings_repository.load() {
@@ -66,6 +76,9 @@ impl AppState {
             active_chat_runs: Mutex::new(HashMap::new()),
             conversation_repository,
             conversation_writes: Mutex::new(()),
+            usage_dir,
+            usage_operations: Mutex::new(()),
+            request_debug_records: StdMutex::new(crate::request_debug::empty_store()),
         })
     }
 }

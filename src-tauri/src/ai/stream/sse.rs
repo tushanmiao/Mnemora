@@ -163,9 +163,7 @@ mod tests {
     fn decodes_split_multiline_events() {
         let mut decoder = SseDecoder::default();
         assert!(decoder.feed(b"event: text\r\nda").unwrap().is_empty());
-        let events = decoder
-            .feed(b"ta: hello\r\ndata: world\r\n\r\n")
-            .unwrap();
+        let events = decoder.feed(b"ta: hello\r\ndata: world\r\n\r\n").unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].event_type.as_deref(), Some("text"));
         assert_eq!(events[0].data, "hello\nworld");

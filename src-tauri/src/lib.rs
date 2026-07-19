@@ -1,8 +1,10 @@
 mod ai;
 mod chat;
 mod commands;
+mod request_debug;
 mod settings;
 mod state;
+mod usage;
 
 use tauri::Manager;
 
@@ -18,8 +20,8 @@ pub fn run() {
         .setup(|app| {
             let config_dir = app.path().app_config_dir().map_err(std::io::Error::other)?;
             let app_data_dir = app.path().app_data_dir().map_err(std::io::Error::other)?;
-            let app_state = state::AppState::new(config_dir, app_data_dir)
-                .map_err(std::io::Error::other)?;
+            let app_state =
+                state::AppState::new(config_dir, app_data_dir).map_err(std::io::Error::other)?;
             app.manage(app_state);
             Ok(())
         })
@@ -42,6 +44,10 @@ pub fn run() {
             commands::settings::save_model_settings,
             commands::settings::set_provider_api_key,
             commands::settings::delete_provider_api_key,
+            usage::usage_get_stats,
+            usage::usage_clear,
+            request_debug::request_debug_get_records,
+            request_debug::request_debug_clear,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

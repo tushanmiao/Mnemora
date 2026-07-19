@@ -108,7 +108,7 @@ mod tests {
     use std::{fs, path::PathBuf};
 
     use super::ModelSettingsRepository;
-    use crate::settings::types::ModelSettings;
+    use crate::settings::types::{ModelSettings, CURRENT_MODEL_SETTINGS_VERSION};
 
     fn test_directory(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
@@ -143,7 +143,9 @@ mod tests {
         let raw = fs::read_to_string(repository.path()).unwrap();
         assert!(!raw.contains("secret-key"));
         assert!(!raw.contains("\"apiKey\""));
-        assert!(raw.contains("\"version\": 1"));
+        assert!(raw.contains(&format!(
+            "\"version\": {CURRENT_MODEL_SETTINGS_VERSION}"
+        )));
         assert!(raw.contains("openAiResponses"));
         let loaded = repository.load().unwrap();
         assert!(!loaded.providers[0].has_api_key);

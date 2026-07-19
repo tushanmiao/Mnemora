@@ -6,7 +6,7 @@
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 
-pub const CURRENT_APP_SETTINGS_VERSION: u32 = 1;
+pub const CURRENT_APP_SETTINGS_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -77,6 +77,8 @@ pub struct AppSettings {
     pub response_language: ResponseLanguage,
     #[serde(default)]
     pub system_prompt: String,
+    #[serde(default)]
+    pub request_debug_enabled: bool,
 }
 
 fn current_version() -> u32 {
@@ -113,6 +115,7 @@ impl Default for AppSettings {
             max_output_tokens: 32_768,
             response_language: ResponseLanguage::FollowInput,
             system_prompt: String::new(),
+            request_debug_enabled: false,
         }
     }
 }
@@ -170,6 +173,7 @@ mod tests {
         assert_eq!(settings.version, CURRENT_APP_SETTINGS_VERSION);
         assert_eq!(settings.theme, ThemeMode::System);
         assert!(settings.stream_enabled);
+        assert!(!settings.request_debug_enabled);
     }
 
     #[test]

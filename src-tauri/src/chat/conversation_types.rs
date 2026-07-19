@@ -117,7 +117,9 @@ impl StoredConversation {
             return Err("Conversation title is empty or too long".to_string());
         }
         if self.messages.len() > MAX_MESSAGES {
-            return Err(format!("Conversation cannot exceed {MAX_MESSAGES} messages"));
+            return Err(format!(
+                "Conversation cannot exceed {MAX_MESSAGES} messages"
+            ));
         }
         if self.system_prompt.len() > MAX_SYSTEM_PROMPT_BYTES {
             return Err("Conversation System Prompt is too long".to_string());
@@ -139,7 +141,11 @@ impl StoredConversation {
             if message.content.len() > MAX_MESSAGE_BYTES {
                 return Err("Chat message is too long".to_string());
             }
-            if message.error_message.as_ref().is_some_and(|value| value.len() > 64 * 1024) {
+            if message
+                .error_message
+                .as_ref()
+                .is_some_and(|value| value.len() > 64 * 1024)
+            {
                 return Err("Chat error message is too long".to_string());
             }
             validate_optional_id("Message model ID", message.model_id.as_deref())?;

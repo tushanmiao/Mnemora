@@ -409,6 +409,22 @@ export function ProviderDetail(props: ProviderDetailProps) {
                     onChange={(event) => onUpdateModel(model.id, { displayName: event.target.value })}
                   />
                 </div>
+                <div className="settings-field">
+                  <label htmlFor={`context-window-${model.id}`}>上下文窗口</label>
+                  <input
+                    id={`context-window-${model.id}`}
+                    className="settings-input"
+                    type="number"
+                    min={1_024}
+                    max={10_000_000}
+                    step={1_024}
+                    value={model.contextWindowTokens ?? ""}
+                    placeholder="128000"
+                    onChange={(event) => onUpdateModel(model.id, {
+                      contextWindowTokens: event.target.value ? Number(event.target.value) : null,
+                    })}
+                  />
+                </div>
                 <button
                   className={`model-row-action model-default-button${isDefault ? " model-default-button-active" : ""}`}
                   type="button"

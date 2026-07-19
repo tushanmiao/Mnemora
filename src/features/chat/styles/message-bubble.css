@@ -33,13 +33,13 @@
   line-height: 1.7;
 }
 
-.message-bubble p {
+.message-plain-text {
   margin: 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
-.message-bubble p + p {
+.message-plain-text + .message-plain-text {
   margin-top: 10px;
 }
 
@@ -60,6 +60,7 @@
 .message-stopped,
 .message-error {
   display: flex;
+  margin: 0;
   align-items: center;
   gap: 7px;
 }

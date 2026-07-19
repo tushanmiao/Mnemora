@@ -10,7 +10,7 @@ use std::collections::HashSet;
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 
-pub const CURRENT_MODEL_SETTINGS_VERSION: u32 = 1;
+pub const CURRENT_MODEL_SETTINGS_VERSION: u32 = 2;
 const MAX_PROVIDERS: usize = 100;
 const MAX_MODELS_PER_PROVIDER: usize = 2_000;
 
@@ -47,6 +47,8 @@ pub struct ProviderModelConfig {
     pub id: String,
     pub api_model: String,
     pub display_name: String,
+    #[serde(default)]
+    pub context_window_tokens: Option<u64>,
     pub enabled: bool,
 }
 
@@ -196,6 +198,15 @@ impl ModelSettings {
                 if model.display_name.chars().count() > 200 {
                     return Err(format!("Model '{}' display name is too long", model.id));
                 }
+                if model
+                    .context_window_tokens
+                    .is_some_and(|tokens| !(1_024..=10_000_000).contains(&tokens))
+                {
+                    return Err(format!(
+                        "Model '{}' context window must be between 1024 and 10000000 tokens",
+                        model.id
+                    ));
+                }
             }
         }
 
@@ -300,6 +311,7 @@ mod tests {
             id: "model-1".to_string(),
             api_model: "  gpt-test  ".to_string(),
             display_name: "  ".to_string(),
+            context_window_tokens: Some(128_000),
             enabled: true,
         });
 
@@ -321,12 +333,14 @@ mod tests {
                 id: "model-1".to_string(),
                 api_model: "gpt-test".to_string(),
                 display_name: "One".to_string(),
+                context_window_tokens: None,
                 enabled: true,
             },
             ProviderModelConfig {
                 id: "model-2".to_string(),
                 api_model: "gpt-test".to_string(),
                 display_name: "Two".to_string(),
+                context_window_tokens: None,
                 enabled: true,
             },
         ];

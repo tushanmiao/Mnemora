@@ -123,7 +123,7 @@ where
     }))
 }
 
-fn generate_content_url(base_url: &str, model: &str) -> Result<Url, String> {
+pub(crate) fn generate_content_url(base_url: &str, model: &str) -> Result<Url, String> {
     let model = model.trim().strip_prefix("models/").unwrap_or(model.trim());
     if model.is_empty() {
         return Err("Gemini API Model cannot be empty".to_string());
@@ -136,7 +136,7 @@ fn generate_content_url(base_url: &str, model: &str) -> Result<Url, String> {
     Ok(url)
 }
 
-fn stream_generate_content_url(base_url: &str, model: &str) -> Result<Url, String> {
+pub(crate) fn stream_generate_content_url(base_url: &str, model: &str) -> Result<Url, String> {
     let model = model.trim().strip_prefix("models/").unwrap_or(model.trim());
     if model.is_empty() {
         return Err("Gemini API Model cannot be empty".to_string());
@@ -150,7 +150,7 @@ fn stream_generate_content_url(base_url: &str, model: &str) -> Result<Url, Strin
     Ok(url)
 }
 
-fn request_body(request: &ModelRequest) -> Value {
+pub(crate) fn request_body(request: &ModelRequest) -> Value {
     let contents = request
         .messages
         .iter()

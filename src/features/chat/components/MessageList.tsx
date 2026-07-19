@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   BookOpenText,
   Lightbulb,
@@ -7,7 +7,9 @@ import {
   MessageSquarePlus,
 } from "lucide-react";
 import type { ChatMessage } from "../../../types/chat";
+import { buildMessageNavigatorNodes, type MessageNavigatorNode } from "../utils/messageNavigator";
 import { MessageBubble } from "./MessageBubble";
+import { MessageNavigator } from "./MessageNavigator";
 import "../styles/message-list.css";
 
 const suggestions = [
@@ -30,6 +32,7 @@ const suggestions = [
 
 type MessageListProps = {
   messages: ChatMessage[];
+  conversationId: string | null;
   hasConversation: boolean;
   suggestionsDisabled?: boolean;
   onCreateConversation: () => void;
@@ -38,30 +41,111 @@ type MessageListProps = {
 
 export function MessageList({
   messages,
+  conversationId,
   hasConversation,
   suggestionsDisabled = false,
   onCreateConversation,
   onSuggestionSelect,
 }: MessageListProps) {
   const listRef = useRef<HTMLElement>(null);
+  const threadRef = useRef<HTMLDivElement>(null);
+  const isPinnedToBottomRef = useRef(true);
+  const scrollFrameRef = useRef<number | null>(null);
+  const messageElementsRef = useRef(new Map<string, HTMLDivElement>());
+  const [activeNavigatorNodeId, setActiveNavigatorNodeId] = useState<string | null>(null);
+  const navigatorNodes = useMemo(() => buildMessageNavigatorNodes(messages), [messages]);
+  const showNavigator = navigatorNodes.length >= 4;
+
+  const updateActiveNavigatorNode = useCallback(() => {
+    const list = listRef.current;
+    if (!list || navigatorNodes.length === 0) {
+      setActiveNavigatorNodeId(null);
+      return;
+    }
+    const readingLine = list.getBoundingClientRect().top + list.clientHeight * 0.3;
+    let active = navigatorNodes[0];
+    for (const node of navigatorNodes) {
+      const element = messageElementsRef.current.get(node.targetMessageId);
+      if (!element || element.getBoundingClientRect().top > readingLine) break;
+      active = node;
+    }
+    setActiveNavigatorNodeId((current) => current === active.id ? current : active.id);
+  }, [navigatorNodes]);
+
+  const requestScrollToBottom = useCallback(() => {
+    if (scrollFrameRef.current !== null) return;
+
+    scrollFrameRef.current = requestAnimationFrame(() => {
+      scrollFrameRef.current = null;
+      const list = listRef.current;
+      if (!list || !isPinnedToBottomRef.current) return;
+      list.scrollTop = list.scrollHeight;
+    });
+  }, []);
+
+  const handleScroll = useCallback(() => {
+    const list = listRef.current;
+    if (!list) return;
+    const distanceToBottom = list.scrollHeight - list.scrollTop - list.clientHeight;
+    isPinnedToBottomRef.current = distanceToBottom <= 48;
+    updateActiveNavigatorNode();
+  }, [updateActiveNavigatorNode]);
 
   useEffect(() => {
-    const list = listRef.current;
-    if (!list || messages.length === 0) return;
+    isPinnedToBottomRef.current = true;
+    setActiveNavigatorNodeId(navigatorNodes[navigatorNodes.length - 1]?.id ?? null);
+    requestScrollToBottom();
+    // 只在切换对话时重置；消息内容更新由滚动与 ResizeObserver 处理。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversationId, requestScrollToBottom]);
 
-    const lastMessage = messages[messages.length - 1];
-    const frameId = requestAnimationFrame(() => {
-      list.scrollTo({
-        top: list.scrollHeight,
-        behavior: lastMessage.status === "streaming" ? "auto" : "smooth",
-      });
+  useEffect(() => {
+    const thread = threadRef.current;
+    if (!thread || typeof ResizeObserver === "undefined") return;
+
+    const observer = new ResizeObserver(() => {
+      requestScrollToBottom();
+      updateActiveNavigatorNode();
     });
-    return () => cancelAnimationFrame(frameId);
-  }, [messages]);
+    observer.observe(thread);
+    requestScrollToBottom();
+    return () => observer.disconnect();
+  }, [hasConversation, messages.length, requestScrollToBottom, updateActiveNavigatorNode]);
+
+  useEffect(() => () => {
+    if (scrollFrameRef.current !== null) cancelAnimationFrame(scrollFrameRef.current);
+  }, []);
+
+  const navigateToNode = useCallback((node: MessageNavigatorNode) => {
+    const list = listRef.current;
+    const element = messageElementsRef.current.get(node.targetMessageId);
+    if (!list || !element) return;
+    isPinnedToBottomRef.current = false;
+    setActiveNavigatorNodeId(node.id);
+    const listRect = list.getBoundingClientRect();
+    const elementRect = element.getBoundingClientRect();
+    list.scrollTo({
+      top: list.scrollTop + elementRect.top - listRect.top - 24,
+      behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+    });
+  }, []);
+
+  const navigateStep = useCallback((direction: -1 | 1) => {
+    if (navigatorNodes.length === 0) return;
+    const currentIndex = Math.max(0, navigatorNodes.findIndex((node) => node.id === activeNavigatorNodeId));
+    const nextIndex = Math.max(0, Math.min(navigatorNodes.length - 1, currentIndex + direction));
+    navigateToNode(navigatorNodes[nextIndex]);
+  }, [activeNavigatorNodeId, navigateToNode, navigatorNodes]);
 
   return (
-    <section className="message-list" aria-label="消息列表" ref={listRef}>
-      {!hasConversation ? (
+    <div className={`message-list-shell${showNavigator ? " message-list-shell-has-navigator" : ""}`}>
+      <section
+        className="message-list"
+        aria-label="消息列表"
+        ref={listRef}
+        onScroll={handleScroll}
+      >
+        {!hasConversation ? (
         <div className="empty-chat-state">
           <div className="empty-chat-mark" aria-hidden="true">
             <MessageCircleQuestion size={28} />
@@ -104,13 +188,31 @@ export function MessageList({
             ))}
           </div>
         </div>
-      ) : (
-        <div className="message-thread">
-          {messages.map((message) => (
-            <MessageBubble message={message} key={message.id} />
-          ))}
-        </div>
-      )}
-    </section>
+        ) : (
+          <div className="message-thread" ref={threadRef}>
+            {messages.map((message) => (
+              <div
+                className="message-list-item"
+                key={message.id}
+                ref={(element) => {
+                  if (element) messageElementsRef.current.set(message.id, element);
+                  else messageElementsRef.current.delete(message.id);
+                }}
+              >
+                <MessageBubble message={message} />
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+      {showNavigator ? (
+        <MessageNavigator
+          nodes={navigatorNodes}
+          activeNodeId={activeNavigatorNodeId}
+          onNavigate={navigateToNode}
+          onNavigateStep={navigateStep}
+        />
+      ) : null}
+    </div>
   );
 }

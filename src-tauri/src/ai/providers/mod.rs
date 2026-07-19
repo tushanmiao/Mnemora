@@ -14,7 +14,10 @@ mod openai;
 pub(crate) mod openai_chat;
 pub(crate) mod openai_responses;
 
-use std::{collections::HashSet, time::Instant};
+use std::{
+    collections::{BTreeMap, HashSet},
+    time::Instant,
+};
 
 use reqwest::{Client, RequestBuilder};
 use serde_json::Value;
@@ -67,6 +70,90 @@ pub(super) fn apply_model_auth(
 ) -> Result<RequestBuilder, ModelError> {
     apply_api_key(request, context.auth_scheme, context.api_key, default_auth)
         .map_err(|_| ModelError::missing_api_key())
+}
+
+pub(crate) struct DebugHttpRequest {
+    pub url: String,
+    pub headers: BTreeMap<String, String>,
+    pub body: Value,
+}
+
+/**
+ * 构造与真实协议适配器一致的请求快照，但只写入脱敏后的认证 Header。
+ * 该函数不会发送网络请求，也不会把 API Key 放入返回值。
+ */
+pub(crate) fn build_debug_request(
+    context: &ProviderRequestContext<'_>,
+    request: &crate::ai::types::ModelRequest,
+    stream: bool,
+) -> Result<DebugHttpRequest, String> {
+    let (url, body, default_auth) = match context.protocol {
+        ApiProtocol::OpenAiChatCompletions => {
+            let url = crate::ai::http::endpoint_url(context.base_url, "chat/completions")?;
+            let mut body = openai_chat::request_body(request);
+            if stream {
+                body["stream"] = Value::Bool(true);
+                body["stream_options"] = serde_json::json!({ "include_usage": true });
+            }
+            (url, body, DefaultAuth::Bearer)
+        }
+        ApiProtocol::OpenAiResponses => {
+            let url = crate::ai::http::endpoint_url(context.base_url, "responses")?;
+            let mut body = openai_responses::request_body(request);
+            if stream {
+                body["stream"] = Value::Bool(true);
+            }
+            (url, body, DefaultAuth::Bearer)
+        }
+        ApiProtocol::AnthropicMessages => {
+            let url = crate::ai::http::endpoint_url(context.base_url, "messages")?;
+            let mut body = anthropic::request_body(request);
+            if stream {
+                body["stream"] = Value::Bool(true);
+            }
+            (url, body, DefaultAuth::XApiKey)
+        }
+        ApiProtocol::GeminiGenerateContent => {
+            let url = if stream {
+                gemini::stream_generate_content_url(context.base_url, &request.model)?
+            } else {
+                gemini::generate_content_url(context.base_url, &request.model)?
+            };
+            (url, gemini::request_body(request), DefaultAuth::XGoogApiKey)
+        }
+    };
+
+    let mut headers =
+        BTreeMap::from([("content-type".to_string(), "application/json".to_string())]);
+    if context.protocol == ApiProtocol::AnthropicMessages {
+        headers.insert(
+            "anthropic-version".to_string(),
+            anthropic::ANTHROPIC_VERSION.to_string(),
+        );
+    }
+    let auth = match context.auth_scheme {
+        AuthScheme::ProtocolDefault => default_auth,
+        AuthScheme::Bearer => DefaultAuth::Bearer,
+        AuthScheme::XApiKey => DefaultAuth::XApiKey,
+        AuthScheme::XGoogApiKey => DefaultAuth::XGoogApiKey,
+    };
+    match auth {
+        DefaultAuth::Bearer => {
+            headers.insert("authorization".to_string(), "Bearer [REDACTED]".to_string());
+        }
+        DefaultAuth::XApiKey => {
+            headers.insert("x-api-key".to_string(), "[REDACTED]".to_string());
+        }
+        DefaultAuth::XGoogApiKey => {
+            headers.insert("x-goog-api-key".to_string(), "[REDACTED]".to_string());
+        }
+    }
+
+    Ok(DebugHttpRequest {
+        url: url.to_string(),
+        headers,
+        body,
+    })
 }
 
 fn model_list_request(

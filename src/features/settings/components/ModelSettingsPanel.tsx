@@ -139,6 +139,15 @@ function validateSettings(settings: ModelSettings): ValidationErrors {
         errors.models[model.id] = "同一供应商中不能重复添加相同的 API Model。";
         return;
       }
+      if (
+        model.contextWindowTokens !== null
+        && (!Number.isInteger(model.contextWindowTokens)
+          || model.contextWindowTokens < 1_024
+          || model.contextWindowTokens > 10_000_000)
+      ) {
+        errors.models[model.id] = "上下文窗口必须是 1,024 到 10,000,000 之间的整数。";
+        return;
+      }
       seenApiModels.add(model.apiModel);
     });
   });
@@ -473,6 +482,7 @@ export function ModelSettingsPanel({
       id: createId("model"),
       apiModel,
       displayName: newDisplayName.trim() || apiModel,
+      contextWindowTokens: 128_000,
       enabled: true,
     };
 
@@ -676,4 +686,3 @@ export function ModelSettingsPanel({
           </form>
   );
 }
-

@@ -1,15 +1,23 @@
+import { memo } from "react";
 import { AlertCircle, Bot, LoaderCircle, UserRound } from "lucide-react";
 import type { ChatMessage } from "../../../types/chat";
+import { MarkdownMessage } from "./MarkdownMessage";
+import { useStreamingMessage } from "../stores/streamingStore";
 import "../styles/message-bubble.css";
 
 type MessageBubbleProps = {
   message: ChatMessage;
 };
 
-export function MessageBubble({ message }: MessageBubbleProps) {
+export const MessageBubble = memo(function MessageBubble({ message }: MessageBubbleProps) {
   const isAssistant = message.role === "assistant";
-  const isPending = message.status === "pending";
-  const isStreaming = message.status === "streaming";
+  const canStream = isAssistant && (
+    message.status === "pending" || message.status === "streaming"
+  );
+  const streamingSnapshot = useStreamingMessage(message.id, canStream);
+  const displayedContent = streamingSnapshot?.content ?? message.content;
+  const isStreaming = message.status === "streaming" || streamingSnapshot !== null;
+  const isPending = message.status === "pending" && !displayedContent;
   const isStopped = message.status === "stopped";
   const isError = message.status === "error";
   const usageParts = message.usage
@@ -39,7 +47,11 @@ export function MessageBubble({ message }: MessageBubbleProps) {
           </p>
         ) : (
           <>
-            {message.content ? <p>{message.content}</p> : null}
+            {displayedContent ? (
+              isAssistant
+                ? <MarkdownMessage content={displayedContent} streaming={isStreaming} />
+                : <p className="message-plain-text">{displayedContent}</p>
+            ) : null}
             {isStreaming ? (
               <p className="message-streaming" role="status">
                 <LoaderCircle className="message-spin" size={14} />
@@ -63,4 +75,4 @@ export function MessageBubble({ message }: MessageBubbleProps) {
       </div>
     </article>
   );
-}
+});

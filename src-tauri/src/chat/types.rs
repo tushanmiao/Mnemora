@@ -25,6 +25,10 @@ pub struct ChatCompletionRequest {
     pub provider_id: String,
     pub model_id: String,
     #[serde(default)]
+    pub conversation_id: Option<String>,
+    #[serde(default)]
+    pub message_id: Option<String>,
+    #[serde(default)]
     pub system_prompt: String,
     pub messages: Vec<ModelMessage>,
     #[serde(default)]
@@ -170,6 +174,8 @@ mod tests {
         ChatCompletionRequest {
             provider_id: "provider-1".to_string(),
             model_id: "model-1".to_string(),
+            conversation_id: None,
+            message_id: None,
             system_prompt: String::new(),
             messages: vec![ModelMessage {
                 role: ModelRole::User,

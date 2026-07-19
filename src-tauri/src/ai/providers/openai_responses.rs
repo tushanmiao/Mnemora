@@ -53,8 +53,8 @@ pub async fn stream<F>(
 where
     F: FnMut(ModelStreamChunk) -> Result<(), ModelError>,
 {
-    let url = endpoint_url(context.base_url, "responses")
-        .map_err(ModelError::invalid_configuration)?;
+    let url =
+        endpoint_url(context.base_url, "responses").map_err(ModelError::invalid_configuration)?;
     let request_builder = apply_model_auth(client.post(url), context, DefaultAuth::Bearer)?;
     let mut body = request_body(request);
     body["stream"] = Value::Bool(true);
@@ -94,7 +94,8 @@ where
                         .and_then(Value::as_str)
                         .or_else(|| response.get("status").and_then(Value::as_str))
                         .map(str::to_string);
-                    if let Some(raw_usage) = response.get("usage").filter(|usage| !usage.is_null()) {
+                    if let Some(raw_usage) = response.get("usage").filter(|usage| !usage.is_null())
+                    {
                         usage = Some(parse_usage(raw_usage));
                     }
                 }
@@ -129,7 +130,7 @@ where
     }))
 }
 
-fn request_body(request: &ModelRequest) -> Value {
+pub(crate) fn request_body(request: &ModelRequest) -> Value {
     let input = request
         .messages
         .iter()

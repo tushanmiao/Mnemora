@@ -4,6 +4,7 @@ import { ChatHeader, type ModelSelectorGroup } from "./features/chat/components/
 import { ChatInput } from "./features/chat/components/ChatInput";
 import { MessageList } from "./features/chat/components/MessageList";
 import { useChatRuntime } from "./features/chat/hooks/useChatRuntime";
+import { estimateConversationContext } from "./features/chat/utils/contextUsage";
 import { Sidebar } from "./features/conversations/components/Sidebar";
 import { useConversations } from "./features/conversations/hooks/useConversations";
 import { SettingsPage } from "./features/settings/components/SettingsPage";
@@ -60,6 +61,18 @@ function App() {
       }))
       .filter((group) => group.models.length > 0)
   ), [settings.modelSettings]);
+
+  const contextUsage = useMemo(() => estimateConversationContext(
+    conversations.currentConversation?.messages ?? [],
+    [
+      settings.appSettings.systemPrompt,
+      conversations.currentConversation?.systemPrompt ?? "",
+    ].filter(Boolean).join("\n\n"),
+  ), [
+    conversations.currentConversation?.messages,
+    conversations.currentConversation?.systemPrompt,
+    settings.appSettings.systemPrompt,
+  ]);
 
   const chatRuntime = useChatRuntime({
     appSettings: settings.appSettings,
@@ -142,6 +155,9 @@ function App() {
             selectedProviderId={currentModel?.provider.id ?? null}
             selectedModelId={currentModel?.model.id ?? null}
             modelSelectionDisabled={!conversations.currentConversation || chatRuntime.requestInFlight}
+            contextUsage={contextUsage}
+            contextWindowTokens={currentModel?.model.contextWindowTokens ?? null}
+            contextMessageCount={conversations.currentConversation?.messages.length ?? 0}
             permission={conversations.currentConversation?.permissionMode ?? "askSensitive"}
             permissionDisabled={!conversations.currentConversation}
             theme={settings.resolvedTheme}
@@ -151,6 +167,7 @@ function App() {
           />
           <MessageList
             messages={conversations.currentConversation?.messages ?? []}
+            conversationId={conversations.currentConversationId}
             hasConversation={conversations.currentConversation !== null}
             suggestionsDisabled={!currentModel || chatRuntime.requestInFlight}
             onCreateConversation={conversations.createNewConversation}

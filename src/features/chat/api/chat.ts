@@ -5,6 +5,8 @@ import type { MessageRole, ModelUsage } from "../../../types/chat";
 export type ChatCompletionRequest = {
   providerId: string;
   modelId: string;
+  conversationId?: string;
+  messageId?: string;
   systemPrompt: string;
   messages: Array<{
     role: MessageRole;

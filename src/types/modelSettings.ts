@@ -35,6 +35,8 @@ export interface ProviderModelConfig {
   apiModel: string;
   /** 用户在界面中看到的名称，可以自由修改。 */
   displayName: string;
+  /** 模型上下文窗口大小，用于计算当前对话的上下文占用。 */
+  contextWindowTokens: number | null;
   /** 关闭后不出现在可选模型中，但配置仍然保留。 */
   enabled: boolean;
 }
@@ -78,7 +80,7 @@ export type ProviderApiKeyUpdate =
   | { providerId: string; action: "set"; apiKey: string }
   | { providerId: string; action: "delete" };
 
-export const CURRENT_MODEL_SETTINGS_VERSION = 1;
+export const CURRENT_MODEL_SETTINGS_VERSION = 2;
 
 /** 创建首次启动时的三家官方供应商配置。 */
 export function createInitialModelSettings(): ModelSettings {
