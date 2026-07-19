@@ -2,6 +2,7 @@
 //!
 //! - `ModelMessage` / `ModelRequest`：Chat 业务层交给协议适配器的统一输入。
 //! - `ModelResponse` / `ModelUsage`：四种协议转换后的统一输出。
+//! - `ModelStreamChunk` / `ModelStreamOutcome`：四种流式协议转换后的统一增量和终态。
 //! - `ProviderRequestContext`：一次请求所需的协议、地址和临时密钥引用，不会返回前端。
 //! - `ProviderConnectionInput` / `ConnectionTestResult`：设置页手动网络操作使用的独立合同。
 
@@ -53,7 +54,7 @@ pub struct ProviderRequestContext<'a> {
 }
 
 /** 四种协议统一后的 Token 用量与本地耗时。 */
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelUsage {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -81,6 +82,26 @@ pub struct ModelResponse {
     pub finish_reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<ModelUsage>,
+}
+
+/** 流式适配器产生的增量；第一版只向界面暴露纯文本。 */
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModelStreamChunk {
+    TextDelta(String),
+}
+
+/** 供应商流正常结束时汇总的停止原因和用量。 */
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ModelStreamSummary {
+    pub finish_reason: Option<String>,
+    pub usage: Option<ModelUsage>,
+}
+
+/** 区分供应商正常结束和用户主动取消，不把取消伪装成模型错误。 */
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModelStreamOutcome {
+    Completed(ModelStreamSummary),
+    Cancelled,
 }
 
 /** 手动网络操作的临时输入，不属于普通 Provider 配置返回值。 */

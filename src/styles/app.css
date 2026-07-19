@@ -88,6 +88,34 @@ button {
   --shadow-composer: 0 8px 24px rgb(0 0 0 / 22%);
 }
 
+.app-shell[data-theme-color="warm"] {
+  --color-accent: #9a5b3f;
+  --color-accent-hover: #7f4933;
+  --color-accent-soft: #f4e9e2;
+  --color-active: #ece3de;
+}
+
+.app-shell[data-theme-color="cool"] {
+  --color-accent: #397789;
+  --color-accent-hover: #2f6473;
+  --color-accent-soft: #e1eef1;
+  --color-active: #dde9eb;
+}
+
+.app-shell[data-theme="dark"][data-theme-color="warm"] {
+  --color-accent: #c58a6d;
+  --color-accent-hover: #d49a7d;
+  --color-accent-soft: #3b2e29;
+  --color-active: #3b312d;
+}
+
+.app-shell[data-theme="dark"][data-theme-color="cool"] {
+  --color-accent: #70a6b4;
+  --color-accent-hover: #82b6c3;
+  --color-accent-soft: #25363a;
+  --color-active: #293a3e;
+}
+
 .chat-workspace {
   display: grid;
   grid-template-rows: 64px minmax(0, 1fr) auto;

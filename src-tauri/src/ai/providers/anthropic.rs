@@ -5,11 +5,16 @@
 
 use reqwest::{Client, RequestBuilder};
 use serde_json::{json, Map, Value};
+use tokio_util::sync::CancellationToken;
 
 use crate::ai::{
     error::ModelError,
     http::{endpoint_url, read_json_response},
-    types::{ModelRequest, ModelResponse, ModelRole, ModelUsage, ProviderRequestContext},
+    stream::{send_sse_request, sse::SseReadOutcome},
+    types::{
+        ModelRequest, ModelResponse, ModelRole, ModelStreamChunk, ModelStreamOutcome,
+        ModelStreamSummary, ModelUsage, ProviderRequestContext,
+    },
 };
 
 use super::{apply_model_auth, DefaultAuth};
@@ -53,6 +58,99 @@ pub async fn complete(
         .await
         .map_err(ModelError::invalid_response)?;
     parse_response(&value)
+}
+
+pub async fn stream<F>(
+    client: &Client,
+    context: &ProviderRequestContext<'_>,
+    request: &ModelRequest,
+    cancellation: &CancellationToken,
+    on_chunk: &mut F,
+) -> Result<ModelStreamOutcome, ModelError>
+where
+    F: FnMut(ModelStreamChunk) -> Result<(), ModelError>,
+{
+    let url = endpoint_url(context.base_url, "messages")
+        .map_err(ModelError::invalid_configuration)?;
+    let request_builder = apply_model_auth(
+        client
+            .post(url)
+            .header("anthropic-version", ANTHROPIC_VERSION),
+        context,
+        DefaultAuth::XApiKey,
+    )?;
+    let mut body = request_body(request);
+    body["stream"] = Value::Bool(true);
+
+    let mut saw_text = false;
+    let mut finish_reason = None;
+    let mut usage = ModelUsage::default();
+    let mut has_usage = false;
+    let outcome = send_sse_request(
+        request_builder.json(&body),
+        context.api_key,
+        cancellation,
+        |event| {
+            let value: Value = serde_json::from_str(&event.data).map_err(|_| {
+                ModelError::invalid_response("Anthropic SSE 事件不是有效 JSON。")
+            })?;
+            let event_type = event
+                .event_type
+                .as_deref()
+                .or_else(|| value.get("type").and_then(Value::as_str))
+                .unwrap_or_default();
+            match event_type {
+                "message_start" => {
+                    if let Some(raw_usage) = value.pointer("/message/usage") {
+                        merge_usage(&mut usage, parse_usage(raw_usage));
+                        has_usage = true;
+                    }
+                }
+                "content_block_delta" => {
+                    if value.pointer("/delta/type").and_then(Value::as_str) == Some("text_delta") {
+                        if let Some(delta) = value.pointer("/delta/text").and_then(Value::as_str) {
+                            if !delta.is_empty() {
+                                saw_text = true;
+                                on_chunk(ModelStreamChunk::TextDelta(delta.to_string()))?;
+                            }
+                        }
+                    }
+                }
+                "message_delta" => {
+                    if let Some(reason) = value.pointer("/delta/stop_reason").and_then(Value::as_str) {
+                        finish_reason = Some(reason.to_string());
+                    }
+                    if let Some(raw_usage) = value.get("usage") {
+                        merge_usage(&mut usage, parse_usage(raw_usage));
+                        has_usage = true;
+                    }
+                }
+                "error" => {
+                    let message = value
+                        .pointer("/error/message")
+                        .and_then(Value::as_str)
+                        .unwrap_or("供应商返回了未知流式错误");
+                    return Err(ModelError::provider(format!("Anthropic 流式错误：{message}")));
+                }
+                _ => {}
+            }
+            Ok(())
+        },
+    )
+    .await?;
+
+    if outcome == SseReadOutcome::Cancelled {
+        return Ok(ModelStreamOutcome::Cancelled);
+    }
+    if !saw_text {
+        return Err(ModelError::invalid_response(
+            "Anthropic 流式响应没有可显示的文本内容。",
+        ));
+    }
+    Ok(ModelStreamOutcome::Completed(ModelStreamSummary {
+        finish_reason,
+        usage: has_usage.then_some(usage),
+    }))
 }
 
 fn request_body(request: &ModelRequest) -> Value {
@@ -154,6 +252,25 @@ fn parse_usage(value: &Value) -> ModelUsage {
             .and_then(Value::as_u64),
         ..ModelUsage::default()
     }
+}
+
+fn merge_usage(target: &mut ModelUsage, incoming: ModelUsage) {
+    if incoming.input_tokens.is_some() {
+        target.input_tokens = incoming.input_tokens;
+    }
+    if incoming.output_tokens.is_some() {
+        target.output_tokens = incoming.output_tokens;
+    }
+    if incoming.cache_read_tokens.is_some() {
+        target.cache_read_tokens = incoming.cache_read_tokens;
+    }
+    if incoming.cache_write_tokens.is_some() {
+        target.cache_write_tokens = incoming.cache_write_tokens;
+    }
+    target.total_tokens = target
+        .input_tokens
+        .zip(target.output_tokens)
+        .map(|(input, output)| input + output);
 }
 
 pub fn parse_models(value: &Value) -> Result<Vec<String>, String> {

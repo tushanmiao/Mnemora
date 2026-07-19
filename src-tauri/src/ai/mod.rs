@@ -6,6 +6,7 @@
 pub mod dispatcher;
 pub mod error;
 pub mod providers;
+pub mod stream;
 pub mod types;
 
 mod http;

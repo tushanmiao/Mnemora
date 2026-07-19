@@ -11,13 +11,16 @@ import {
   RefreshCw,
   Save,
   Server,
+  SlidersHorizontal,
   Star,
   Trash2,
 } from "lucide-react";
+import { GeneralSettingsPanel } from "./GeneralSettingsPanel";
 import {
   fetchProviderModels,
   testProviderConnection,
 } from "../api/providers";
+import type { AppSettings, SettingsBundle } from "../types/appSettings";
 import type {
   ApiProtocol,
   AuthScheme,
@@ -49,13 +52,21 @@ type ProviderActionFeedback = {
 
 type SettingsPageProps = {
   settings: ModelSettings;
+  appSettings: AppSettings;
   initialError: string | null;
+  appSettingsError: string | null;
   onBack: () => void;
   onSave: (
     settings: ModelSettings,
     apiKeyUpdates: ProviderApiKeyUpdate[],
   ) => Promise<ModelSettings>;
+  onPreviewAppSettings: (settings: AppSettings) => void;
+  onSaveAppSettings: (settings: AppSettings) => Promise<AppSettings>;
+  onSettingsImported: (bundle: SettingsBundle) => void;
+  onDefaultModelChange: (providerId: string, modelId: string) => Promise<void>;
 };
+
+type SettingsCategory = "general" | "models";
 
 const EMPTY_ERRORS: ValidationErrors = { providers: {}, models: {} };
 
@@ -191,10 +202,17 @@ function hasValidationErrors(errors: ValidationErrors) {
 
 export function SettingsPage({
   settings,
+  appSettings,
   initialError,
+  appSettingsError,
   onBack,
   onSave,
+  onPreviewAppSettings,
+  onSaveAppSettings,
+  onSettingsImported,
+  onDefaultModelChange,
 }: SettingsPageProps) {
+  const [activeCategory, setActiveCategory] = useState<SettingsCategory>("general");
   const [draft, setDraft] = useState<ModelSettings>(settings);
   const [secretDrafts, setSecretDrafts] = useState<Record<string, string>>({});
   const [pendingSecretDeletes, setPendingSecretDeletes] = useState<Set<string>>(new Set());
@@ -601,19 +619,44 @@ export function SettingsPage({
         </button>
         <div>
           <h1>设置</h1>
-          <span>模型服务</span>
+          <span>{activeCategory === "general" ? "基础" : "模型服务"}</span>
         </div>
       </header>
 
       <div className="settings-layout">
         <nav className="settings-nav" aria-label="设置分类">
-          <button className="settings-nav-item settings-nav-item-active" type="button">
+          <button
+            className={`settings-nav-item${activeCategory === "general" ? " settings-nav-item-active" : ""}`}
+            type="button"
+            aria-current={activeCategory === "general" ? "page" : undefined}
+            onClick={() => setActiveCategory("general")}
+          >
+            <SlidersHorizontal size={17} />
+            <span>基础</span>
+          </button>
+          <button
+            className={`settings-nav-item${activeCategory === "models" ? " settings-nav-item-active" : ""}`}
+            type="button"
+            aria-current={activeCategory === "models" ? "page" : undefined}
+            onClick={() => setActiveCategory("models")}
+          >
             <Bot size={17} />
             <span>模型服务</span>
           </button>
         </nav>
 
-        <form className="settings-content" onSubmit={handleSave} noValidate>
+        {activeCategory === "general" ? (
+          <GeneralSettingsPanel
+            settings={appSettings}
+            modelSettings={settings}
+            initialError={appSettingsError}
+            onPreview={onPreviewAppSettings}
+            onSave={onSaveAppSettings}
+            onImported={onSettingsImported}
+            onDefaultModelChange={onDefaultModelChange}
+          />
+        ) : (
+          <form className="settings-content" onSubmit={handleSave} noValidate>
           <div className="settings-content-heading">
             <div>
               <h2>模型服务</h2>
@@ -1080,7 +1123,8 @@ export function SettingsPage({
               <span>{feedback.message}</span>
             </div>
           ) : null}
-        </form>
+          </form>
+        )}
       </div>
     </section>
   );

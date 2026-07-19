@@ -49,10 +49,14 @@ export function MessageList({
     const list = listRef.current;
     if (!list || messages.length === 0) return;
 
-    list.scrollTo({
-      top: list.scrollHeight,
-      behavior: messages.length > 1 ? "smooth" : "auto",
+    const lastMessage = messages[messages.length - 1];
+    const frameId = requestAnimationFrame(() => {
+      list.scrollTo({
+        top: list.scrollHeight,
+        behavior: lastMessage.status === "streaming" ? "auto" : "smooth",
+      });
     });
+    return () => cancelAnimationFrame(frameId);
   }, [messages]);
 
   return (

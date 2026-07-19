@@ -6,6 +6,8 @@
 //!
 //! 普通 `ModelSettings` 不包含完整 API Key，只通过 `has_api_key` 表示凭据状态。
 
+pub mod app_repository;
+pub mod app_types;
 pub mod repository;
 pub mod secrets;
 pub mod types;

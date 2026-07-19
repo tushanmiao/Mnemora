@@ -5,11 +5,16 @@
 
 use reqwest::{Client, RequestBuilder, Url};
 use serde_json::{json, Map, Value};
+use tokio_util::sync::CancellationToken;
 
 use crate::ai::{
     error::ModelError,
     http::{endpoint_url, read_json_response},
-    types::{ModelRequest, ModelResponse, ModelRole, ModelUsage, ProviderRequestContext},
+    stream::{send_sse_request, sse::SseReadOutcome},
+    types::{
+        ModelRequest, ModelResponse, ModelRole, ModelStreamChunk, ModelStreamOutcome,
+        ModelStreamSummary, ModelUsage, ProviderRequestContext,
+    },
 };
 
 use super::{apply_model_auth, DefaultAuth};
@@ -42,6 +47,82 @@ pub async fn complete(
     parse_response(&value)
 }
 
+pub async fn stream<F>(
+    client: &Client,
+    context: &ProviderRequestContext<'_>,
+    request: &ModelRequest,
+    cancellation: &CancellationToken,
+    on_chunk: &mut F,
+) -> Result<ModelStreamOutcome, ModelError>
+where
+    F: FnMut(ModelStreamChunk) -> Result<(), ModelError>,
+{
+    let url = stream_generate_content_url(context.base_url, &request.model)
+        .map_err(ModelError::invalid_configuration)?;
+    let request_builder = apply_model_auth(client.post(url), context, DefaultAuth::XGoogApiKey)?;
+    let mut saw_text = false;
+    let mut finish_reason = None;
+    let mut usage = None;
+    let outcome = send_sse_request(
+        request_builder.json(&request_body(request)),
+        context.api_key,
+        cancellation,
+        |event| {
+            let value: Value = serde_json::from_str(&event.data)
+                .map_err(|_| ModelError::invalid_response("Gemini SSE 事件不是有效 JSON。"))?;
+            if let Some(message) = value.pointer("/error/message").and_then(Value::as_str) {
+                return Err(ModelError::provider(format!("Gemini 流式错误：{message}")));
+            }
+            if let Some(block_reason) = value
+                .pointer("/promptFeedback/blockReason")
+                .and_then(Value::as_str)
+            {
+                return Err(ModelError::content_filtered(format!(
+                    "Gemini 因安全策略拒绝了请求：{block_reason}。"
+                )));
+            }
+            if let Some(candidate) = value
+                .get("candidates")
+                .and_then(Value::as_array)
+                .and_then(|candidates| candidates.first())
+            {
+                let delta = candidate
+                    .pointer("/content/parts")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|part| part.get("text").and_then(Value::as_str))
+                    .collect::<String>();
+                if !delta.is_empty() {
+                    saw_text = true;
+                    on_chunk(ModelStreamChunk::TextDelta(delta))?;
+                }
+                if let Some(reason) = candidate.get("finishReason").and_then(Value::as_str) {
+                    finish_reason = Some(reason.to_string());
+                }
+            }
+            if let Some(raw_usage) = value.get("usageMetadata") {
+                usage = Some(parse_usage(raw_usage));
+            }
+            Ok(())
+        },
+    )
+    .await?;
+
+    if outcome == SseReadOutcome::Cancelled {
+        return Ok(ModelStreamOutcome::Cancelled);
+    }
+    if !saw_text {
+        return Err(ModelError::invalid_response(
+            "Gemini 流式响应没有可显示的文本内容。",
+        ));
+    }
+    Ok(ModelStreamOutcome::Completed(ModelStreamSummary {
+        finish_reason,
+        usage,
+    }))
+}
+
 fn generate_content_url(base_url: &str, model: &str) -> Result<Url, String> {
     let model = model.trim().strip_prefix("models/").unwrap_or(model.trim());
     if model.is_empty() {
@@ -52,6 +133,20 @@ fn generate_content_url(base_url: &str, model: &str) -> Result<Url, String> {
     url.path_segments_mut()
         .map_err(|_| "Gemini Base URL cannot be used as a path base".to_string())?
         .push(&format!("{model}:generateContent"));
+    Ok(url)
+}
+
+fn stream_generate_content_url(base_url: &str, model: &str) -> Result<Url, String> {
+    let model = model.trim().strip_prefix("models/").unwrap_or(model.trim());
+    if model.is_empty() {
+        return Err("Gemini API Model cannot be empty".to_string());
+    }
+
+    let mut url = endpoint_url(base_url, "models")?;
+    url.path_segments_mut()
+        .map_err(|_| "Gemini Base URL cannot be used as a path base".to_string())?
+        .push(&format!("{model}:streamGenerateContent"));
+    url.query_pairs_mut().append_pair("alt", "sse");
     Ok(url)
 }
 

@@ -32,6 +32,8 @@ const extensionItems = [
 
 type SidebarProps = {
   settingsOpen: boolean;
+  userDisplayName: string;
+  userAvatar: string;
   conversations: ConversationListItem[];
   currentConversationId: string | null;
   onCreateConversation: () => void;
@@ -43,6 +45,8 @@ type SidebarProps = {
 
 export function Sidebar({
   settingsOpen,
+  userDisplayName,
+  userAvatar,
   conversations,
   currentConversationId,
   onCreateConversation,
@@ -51,6 +55,8 @@ export function Sidebar({
   onClearConversations,
   onOpenSettings,
 }: SidebarProps) {
+  const normalizedDisplayName = userDisplayName.trim() || "Mnemora 用户";
+  const avatarInitial = (Array.from(normalizedDisplayName)[0] ?? "M").toUpperCase();
   const [extensionsOpen, setExtensionsOpen] = useState(true);
   const [activeSection, setActiveSection] = useState<"recent" | "collections" | "projects">("recent");
   const [listMenuOpen, setListMenuOpen] = useState(false);
@@ -251,10 +257,10 @@ export function Sidebar({
       <div className="sidebar-footer">
         <div className="user-profile">
           <div className="user-avatar" aria-hidden="true">
-            T
+            {userAvatar ? <img src={userAvatar} alt="" /> : avatarInitial}
           </div>
           <div className="user-meta">
-            <strong>tushanmiao</strong>
+            <strong title={normalizedDisplayName}>{normalizedDisplayName}</strong>
             <span>本地工作区</span>
           </div>
         </div>

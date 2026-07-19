@@ -73,6 +73,15 @@
   background: var(--color-accent-hover);
 }
 
+.stop-button {
+  color: #ffffff;
+  background: var(--color-danger);
+}
+
+.stop-button:hover {
+  background: #a83232;
+}
+
 .send-button:disabled {
   color: var(--color-faint);
   background: var(--color-hover);

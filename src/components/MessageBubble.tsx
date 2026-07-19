@@ -9,6 +9,8 @@ type MessageBubbleProps = {
 export function MessageBubble({ message }: MessageBubbleProps) {
   const isAssistant = message.role === "assistant";
   const isPending = message.status === "pending";
+  const isStreaming = message.status === "streaming";
+  const isStopped = message.status === "stopped";
   const isError = message.status === "error";
   const usageParts = message.usage
     ? [
@@ -35,13 +37,23 @@ export function MessageBubble({ message }: MessageBubbleProps) {
             <LoaderCircle className="message-spin" size={16} />
             <span>正在生成</span>
           </p>
-        ) : isError ? (
-          <p className="message-error" role="alert">
-            <AlertCircle size={16} />
-            <span>{message.errorMessage ?? "模型请求失败，请稍后重试。"}</span>
-          </p>
         ) : (
-          <p>{message.content}</p>
+          <>
+            {message.content ? <p>{message.content}</p> : null}
+            {isStreaming ? (
+              <p className="message-streaming" role="status">
+                <LoaderCircle className="message-spin" size={14} />
+                <span>正在生成</span>
+              </p>
+            ) : null}
+            {isStopped ? <p className="message-stopped">已停止生成</p> : null}
+            {isError ? (
+              <p className="message-error" role="alert">
+                <AlertCircle size={16} />
+                <span>{message.errorMessage ?? "模型请求失败，请稍后重试。"}</span>
+              </p>
+            ) : null}
+          </>
         )}
         {usageParts.length > 0 && (
           <div className="message-usage" title="本次模型请求用量">

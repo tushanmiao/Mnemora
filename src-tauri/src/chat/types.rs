@@ -3,12 +3,12 @@
 //! 前端提交的是 Mnemora 内部 ID 和供应商无关历史消息。API Model、协议、Base URL 与
 //! API Key 均由 Rust 根据已保存设置补齐，避免前端把展示名称或旧配置当成真实请求参数。
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     ai::{
         error::ModelError,
-        types::{ModelMessage, ModelOptions, ModelRequest},
+        types::{ModelMessage, ModelOptions, ModelRequest, ModelUsage},
     },
     settings::types::validate_stable_id,
 };
@@ -19,7 +19,7 @@ const MAX_CONTEXT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_SYSTEM_PROMPT_BYTES: usize = 256 * 1024;
 const MAX_OUTPUT_TOKENS: u32 = 131_072;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatCompletionRequest {
     pub provider_id: String,
@@ -29,6 +29,69 @@ pub struct ChatCompletionRequest {
     pub messages: Vec<ModelMessage>,
     #[serde(default)]
     pub options: ModelOptions,
+}
+
+/** 一次流式运行的稳定身份和普通 Chat 请求。 */
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatStreamRequest {
+    pub run_id: String,
+    pub conversation_id: String,
+    pub message_id: String,
+    pub completion: ChatCompletionRequest,
+}
+
+impl ChatStreamRequest {
+    pub fn validate(&self) -> Result<(), ModelError> {
+        validate_stable_id("Run ID", self.run_id.trim())
+            .map_err(ModelError::invalid_configuration)?;
+        validate_stable_id("Conversation ID", self.conversation_id.trim())
+            .map_err(ModelError::invalid_configuration)?;
+        validate_stable_id("Message ID", self.message_id.trim())
+            .map_err(ModelError::invalid_configuration)?;
+        self.completion.validate()
+    }
+}
+
+/** Rust 通过 Tauri Channel 发送给当前助手消息的统一流事件。 */
+#[derive(Debug, Clone, Serialize)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum ModelStreamEvent {
+    Started {
+        run_id: String,
+        conversation_id: String,
+        message_id: String,
+    },
+    TextDelta {
+        run_id: String,
+        conversation_id: String,
+        message_id: String,
+        delta: String,
+    },
+    Completed {
+        run_id: String,
+        conversation_id: String,
+        message_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        finish_reason: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        usage: Option<ModelUsage>,
+    },
+    Stopped {
+        run_id: String,
+        conversation_id: String,
+        message_id: String,
+    },
+    Error {
+        run_id: String,
+        conversation_id: String,
+        message_id: String,
+        error: ModelError,
+    },
 }
 
 impl ChatCompletionRequest {
@@ -101,7 +164,7 @@ mod tests {
         types::{ModelMessage, ModelOptions, ModelRole},
     };
 
-    use super::ChatCompletionRequest;
+    use super::{ChatCompletionRequest, ModelStreamEvent};
 
     fn request(content: &str) -> ChatCompletionRequest {
         ChatCompletionRequest {
@@ -125,5 +188,19 @@ mod tests {
     fn rejects_empty_message() {
         let error = request("  ").validate().unwrap_err();
         assert_eq!(error.kind, ModelErrorKind::InvalidConfiguration);
+    }
+
+    #[test]
+    fn serializes_stream_event_identity_as_camel_case() {
+        let value = serde_json::to_value(ModelStreamEvent::Started {
+            run_id: "run-1".to_string(),
+            conversation_id: "conversation-1".to_string(),
+            message_id: "message-1".to_string(),
+        })
+        .unwrap();
+        assert_eq!(value["type"], "started");
+        assert_eq!(value["runId"], "run-1");
+        assert_eq!(value["conversationId"], "conversation-1");
+        assert_eq!(value["messageId"], "message-1");
     }
 }

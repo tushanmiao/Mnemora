@@ -5,11 +5,16 @@
 
 use reqwest::Client;
 use serde_json::{json, Map, Value};
+use tokio_util::sync::CancellationToken;
 
 use crate::ai::{
     error::ModelError,
     http::{endpoint_url, read_json_response},
-    types::{ModelRequest, ModelResponse, ModelRole, ModelUsage, ProviderRequestContext},
+    stream::{send_sse_request, sse::SseReadOutcome},
+    types::{
+        ModelRequest, ModelResponse, ModelRole, ModelStreamChunk, ModelStreamOutcome,
+        ModelStreamSummary, ModelUsage, ProviderRequestContext,
+    },
 };
 
 use super::{apply_model_auth, DefaultAuth};
@@ -36,6 +41,92 @@ pub async fn complete(
         .await
         .map_err(ModelError::invalid_response)?;
     parse_response(&value)
+}
+
+pub async fn stream<F>(
+    client: &Client,
+    context: &ProviderRequestContext<'_>,
+    request: &ModelRequest,
+    cancellation: &CancellationToken,
+    on_chunk: &mut F,
+) -> Result<ModelStreamOutcome, ModelError>
+where
+    F: FnMut(ModelStreamChunk) -> Result<(), ModelError>,
+{
+    let url = endpoint_url(context.base_url, "responses")
+        .map_err(ModelError::invalid_configuration)?;
+    let request_builder = apply_model_auth(client.post(url), context, DefaultAuth::Bearer)?;
+    let mut body = request_body(request);
+    body["stream"] = Value::Bool(true);
+
+    let mut saw_text = false;
+    let mut finish_reason = None;
+    let mut usage = None;
+    let outcome = send_sse_request(
+        request_builder.json(&body),
+        context.api_key,
+        cancellation,
+        |event| {
+            if event.data.trim() == "[DONE]" {
+                return Ok(());
+            }
+            let value: Value = serde_json::from_str(&event.data).map_err(|_| {
+                ModelError::invalid_response("OpenAI Responses SSE 事件不是有效 JSON。")
+            })?;
+            let event_type = event
+                .event_type
+                .as_deref()
+                .or_else(|| value.get("type").and_then(Value::as_str))
+                .unwrap_or_default();
+            match event_type {
+                "response.output_text.delta" | "response.refusal.delta" => {
+                    if let Some(delta) = value.get("delta").and_then(Value::as_str) {
+                        if !delta.is_empty() {
+                            saw_text = true;
+                            on_chunk(ModelStreamChunk::TextDelta(delta.to_string()))?;
+                        }
+                    }
+                }
+                "response.completed" | "response.incomplete" => {
+                    let response = value.get("response").unwrap_or(&value);
+                    finish_reason = response
+                        .pointer("/incomplete_details/reason")
+                        .and_then(Value::as_str)
+                        .or_else(|| response.get("status").and_then(Value::as_str))
+                        .map(str::to_string);
+                    if let Some(raw_usage) = response.get("usage").filter(|usage| !usage.is_null()) {
+                        usage = Some(parse_usage(raw_usage));
+                    }
+                }
+                "response.failed" | "error" => {
+                    let message = value
+                        .pointer("/response/error/message")
+                        .or_else(|| value.pointer("/error/message"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("供应商返回了未知流式错误");
+                    return Err(ModelError::provider(format!(
+                        "OpenAI Responses 流式错误：{message}"
+                    )));
+                }
+                _ => {}
+            }
+            Ok(())
+        },
+    )
+    .await?;
+
+    if outcome == SseReadOutcome::Cancelled {
+        return Ok(ModelStreamOutcome::Cancelled);
+    }
+    if !saw_text {
+        return Err(ModelError::invalid_response(
+            "OpenAI Responses 流式响应没有 output_text 内容。",
+        ));
+    }
+    Ok(ModelStreamOutcome::Completed(ModelStreamSummary {
+        finish_reason,
+        usage,
+    }))
 }
 
 fn request_body(request: &ModelRequest) -> Value {

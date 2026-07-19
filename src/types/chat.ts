@@ -166,6 +166,8 @@ export interface Conversation {
   messages: ChatMessage[];
   /** 当前对话绑定的助手 ID；为空表示使用普通 Chat。 */
   assistantId: string | null;
+  /** 当前对话使用的供应商 ID，与 `modelId` 共同构成稳定模型身份。 */
+  providerId: string | null;
   /** 当前对话使用的模型 ID；为空表示使用全局默认模型。 */
   modelId: string | null;
   /**
@@ -199,6 +201,8 @@ export interface ConversationListItem {
   messageCount: number;
   /** 对话绑定的助手 ID。 */
   assistantId: string | null;
+  /** 对话当前使用的供应商 ID。 */
+  providerId: string | null;
   /** 对话当前使用的模型 ID。 */
   modelId: string | null;
   /** 对话所属项目 ID。 */

@@ -56,6 +56,8 @@
 }
 
 .message-status,
+.message-streaming,
+.message-stopped,
 .message-error {
   display: flex;
   align-items: center;
@@ -64,6 +66,19 @@
 
 .message-status {
   color: var(--color-muted);
+}
+
+.message-streaming,
+.message-stopped {
+  margin-top: 6px !important;
+  color: var(--color-muted);
+  font-size: 11px;
+}
+
+.message-streaming {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .message-error {

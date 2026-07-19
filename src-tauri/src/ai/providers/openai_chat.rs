@@ -5,11 +5,16 @@
 
 use reqwest::Client;
 use serde_json::{json, Map, Value};
+use tokio_util::sync::CancellationToken;
 
 use crate::ai::{
     error::ModelError,
     http::{endpoint_url, read_json_response},
-    types::{ModelRequest, ModelResponse, ModelRole, ModelUsage, ProviderRequestContext},
+    stream::{send_sse_request, sse::SseReadOutcome},
+    types::{
+        ModelRequest, ModelResponse, ModelRole, ModelStreamChunk, ModelStreamOutcome,
+        ModelStreamSummary, ModelUsage, ProviderRequestContext,
+    },
 };
 
 use super::{apply_model_auth, DefaultAuth};
@@ -36,6 +41,75 @@ pub async fn complete(
         .await
         .map_err(ModelError::invalid_response)?;
     parse_response(&value)
+}
+
+pub async fn stream<F>(
+    client: &Client,
+    context: &ProviderRequestContext<'_>,
+    request: &ModelRequest,
+    cancellation: &CancellationToken,
+    on_chunk: &mut F,
+) -> Result<ModelStreamOutcome, ModelError>
+where
+    F: FnMut(ModelStreamChunk) -> Result<(), ModelError>,
+{
+    let url = endpoint_url(context.base_url, "chat/completions")
+        .map_err(ModelError::invalid_configuration)?;
+    let request_builder = apply_model_auth(client.post(url), context, DefaultAuth::Bearer)?;
+    let mut body = request_body(request);
+    body["stream"] = Value::Bool(true);
+    body["stream_options"] = json!({ "include_usage": true });
+
+    let mut saw_text = false;
+    let mut finish_reason = None;
+    let mut usage = None;
+    let outcome = send_sse_request(
+        request_builder.json(&body),
+        context.api_key,
+        cancellation,
+        |event| {
+            if event.data.trim() == "[DONE]" {
+                return Ok(());
+            }
+            let value: Value = serde_json::from_str(&event.data)
+                .map_err(|_| ModelError::invalid_response("OpenAI Chat SSE 事件不是有效 JSON。"))?;
+            if let Some(message) = value.pointer("/error/message").and_then(Value::as_str) {
+                return Err(ModelError::provider(format!("OpenAI Chat 流式错误：{message}")));
+            }
+            if let Some(choice) = value
+                .get("choices")
+                .and_then(Value::as_array)
+                .and_then(|choices| choices.first())
+            {
+                let delta = extract_delta_text(choice.get("delta").unwrap_or(&Value::Null));
+                if !delta.is_empty() {
+                    saw_text = true;
+                    on_chunk(ModelStreamChunk::TextDelta(delta))?;
+                }
+                if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
+                    finish_reason = Some(reason.to_string());
+                }
+            }
+            if let Some(raw_usage) = value.get("usage").filter(|usage| !usage.is_null()) {
+                usage = Some(parse_usage(raw_usage));
+            }
+            Ok(())
+        },
+    )
+    .await?;
+
+    if outcome == SseReadOutcome::Cancelled {
+        return Ok(ModelStreamOutcome::Cancelled);
+    }
+    if !saw_text {
+        return Err(ModelError::invalid_response(
+            "OpenAI Chat 流式响应没有可显示的文本内容。",
+        ));
+    }
+    Ok(ModelStreamOutcome::Completed(ModelStreamSummary {
+        finish_reason,
+        usage,
+    }))
 }
 
 fn request_body(request: &ModelRequest) -> Value {
@@ -111,6 +185,21 @@ fn extract_message_text(message: &Value) -> String {
         parts.push(refusal.to_string());
     }
     parts.join("")
+}
+
+fn extract_delta_text(delta: &Value) -> String {
+    let Some(content) = delta.get("content") else {
+        return String::new();
+    };
+    if let Some(text) = content.as_str() {
+        return text.to_string();
+    }
+    content
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|part| part.get("text").and_then(Value::as_str))
+        .collect()
 }
 
 fn parse_usage(value: &Value) -> ModelUsage {
