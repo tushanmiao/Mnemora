@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { ApiProtocol, AuthScheme, ProviderConfig } from "../types/settings";
+import type { ApiProtocol, AuthScheme, ProviderConfig } from "../../../types/modelSettings";
 
 /** 只在用户点击测试或获取模型时临时发送给 Rust，不进入普通设置 DTO。 */
 export type ProviderConnectionInput = {

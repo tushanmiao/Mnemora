@@ -1,5 +1,5 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
-import type { Conversation, ConversationListItem } from "../types/chat";
+import type { Conversation, ConversationListItem } from "../../../types/conversation";
 
 /** 读取轻量索引，不加载每个会话的完整消息。 */
 export function listStoredConversations() {

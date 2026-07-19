@@ -20,7 +20,7 @@ import {
   Sparkles,
   Trash2,
 } from "lucide-react";
-import type { ConversationListItem } from "../types/chat";
+import type { ConversationListItem } from "../../../types/conversation";
 import "../styles/sidebar.css";
 
 const extensionItems = [

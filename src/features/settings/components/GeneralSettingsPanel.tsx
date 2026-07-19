@@ -13,8 +13,8 @@ import {
   exportSettingsBundle,
   importSettingsBundle,
 } from "../api/appSettings";
-import type { AppSettings, SettingsBundle, ThemeColor, ThemeMode } from "../types/appSettings";
-import type { ModelSettings } from "../types/settings";
+import type { AppSettings, SettingsBundle, ThemeColor, ThemeMode } from "../../../types/appSettings";
+import type { ModelSettings } from "../../../types/modelSettings";
 import "../styles/general-settings.css";
 
 type Feedback = { kind: "success" | "error"; message: string } | null;

@@ -9,7 +9,7 @@ import {
   Star,
   Sun,
 } from "lucide-react";
-import { AI_PERMISSION_LABELS, type AiPermissionMode } from "../types/chat";
+import { AI_PERMISSION_LABELS, type AiPermissionMode } from "../../../types/chat";
 import "../styles/chat-header.css";
 
 const permissionOptions = Object.keys(AI_PERMISSION_LABELS) as AiPermissionMode[];

@@ -1,5 +1,5 @@
 import { AlertCircle, Bot, LoaderCircle, UserRound } from "lucide-react";
-import type { ChatMessage } from "../types/chat";
+import type { ChatMessage } from "../../../types/chat";
 import "../styles/message-bubble.css";
 
 type MessageBubbleProps = {

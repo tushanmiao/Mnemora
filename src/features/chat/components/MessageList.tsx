@@ -6,7 +6,7 @@ import {
   MessageCircleQuestion,
   MessageSquarePlus,
 } from "lucide-react";
-import type { ChatMessage } from "../types/chat";
+import type { ChatMessage } from "../../../types/chat";
 import { MessageBubble } from "./MessageBubble";
 import "../styles/message-list.css";
 

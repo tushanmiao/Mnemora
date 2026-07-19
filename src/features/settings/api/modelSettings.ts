@@ -1,5 +1,5 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
-import type { ModelSettings, ProviderApiKeyUpdate } from "../types/settings";
+import type { ModelSettings, ProviderApiKeyUpdate } from "../../../types/modelSettings";
 
 export function isTauriRuntime() {
   return isTauri();

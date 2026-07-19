@@ -1,6 +1,6 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import type { AppSettings, SettingsBundle } from "../types/appSettings";
+import type { AppSettings, SettingsBundle } from "../../../types/appSettings";
 
 export function loadApplicationSettings() {
   return invoke<AppSettings>("load_application_settings");

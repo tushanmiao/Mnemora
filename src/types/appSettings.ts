@@ -1,4 +1,4 @@
-import type { ModelSettings } from "./settings";
+import type { ModelSettings } from "./modelSettings";
 
 export type InterfaceLanguage = "zh" | "en";
 export type ThemeMode = "system" | "light" | "dark";
