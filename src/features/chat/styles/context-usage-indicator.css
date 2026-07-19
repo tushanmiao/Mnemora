@@ -35,7 +35,6 @@
 
 .context-usage-popover {
   position: absolute;
-  top: 40px;
   right: 0;
   z-index: 40;
   width: 286px;
@@ -45,6 +44,9 @@
   background: var(--color-surface-raised);
   box-shadow: var(--shadow-menu);
 }
+
+.context-usage-popover-down { top: 40px; }
+.context-usage-popover-up { bottom: 40px; }
 
 .context-usage-heading,
 .context-usage-values,

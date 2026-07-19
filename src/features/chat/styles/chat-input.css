@@ -27,6 +27,7 @@
   outline: 0;
   color: var(--color-text);
   background: transparent;
+  font-size: var(--app-font-size, 14px);
   line-height: 1.5;
 }
 
@@ -49,6 +50,12 @@
   align-items: center;
   gap: 2px;
   color: var(--color-muted);
+}
+
+.composer-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .composer-tools .icon-button:disabled {

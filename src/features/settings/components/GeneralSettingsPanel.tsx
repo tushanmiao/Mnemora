@@ -1,11 +1,13 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
   AlertCircle,
   CheckCircle2,
   Download,
   FolderOpen,
+  ImageUp,
   RefreshCw,
   Save,
+  Trash2,
   Upload,
 } from "lucide-react";
 import {
@@ -30,6 +32,8 @@ type GeneralSettingsPanelProps = {
 };
 
 const TOKEN_OPTIONS = [4_096, 8_192, 16_384, 32_768, 65_536, 131_072];
+const MAX_AVATAR_BYTES = 2 * 1024 * 1024;
+const ACCEPTED_AVATAR_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 
 export function GeneralSettingsPanel({
   settings,
@@ -43,6 +47,7 @@ export function GeneralSettingsPanel({
   const [draft, setDraft] = useState(settings);
   const [saving, setSaving] = useState(false);
   const [backupBusy, setBackupBusy] = useState(false);
+  const avatarInputRef = useRef<HTMLInputElement>(null);
   const [feedback, setFeedback] = useState<Feedback>(
     initialError ? { kind: "error", message: initialError } : null,
   );
@@ -71,7 +76,7 @@ export function GeneralSettingsPanel({
   const updateDraft = <Key extends keyof AppSettings>(key: Key, value: AppSettings[Key]) => {
     setDraft((current) => {
       const next = { ...current, [key]: value };
-      if (key === "theme" || key === "themeColor") onPreview(next);
+      if (key === "theme" || key === "themeColor" || key === "fontSize") onPreview(next);
       return next;
     });
     setFeedback(null);
@@ -96,11 +101,12 @@ export function GeneralSettingsPanel({
   };
 
   const handleExport = async () => {
+    if (!window.confirm("导出文件将包含 API Key。请确认保存位置安全，并避免上传到公开仓库。")) return;
     setBackupBusy(true);
     setFeedback(null);
     try {
       const exported = await exportSettingsBundle();
-      if (exported) setFeedback({ kind: "success", message: "非敏感设置已导出。" });
+      if (exported) setFeedback({ kind: "success", message: "完整设置已导出，请妥善保管备份文件。" });
     } catch (error) {
       setFeedback({ kind: "error", message: error instanceof Error ? error.message : String(error) });
     } finally {
@@ -116,13 +122,31 @@ export function GeneralSettingsPanel({
       if (bundle) {
         onImported(bundle);
         setDraft(bundle.appSettings);
-        setFeedback({ kind: "success", message: "非敏感设置已导入。" });
+        setFeedback({ kind: "success", message: "基础设置、模型供应商和 API Key 已恢复。" });
       }
     } catch (error) {
       setFeedback({ kind: "error", message: error instanceof Error ? error.message : String(error) });
     } finally {
       setBackupBusy(false);
     }
+  };
+
+  const handleAvatarFile = (file: File | undefined) => {
+    if (!file) return;
+    if (!ACCEPTED_AVATAR_TYPES.has(file.type)) {
+      setFeedback({ kind: "error", message: "头像仅支持 PNG、JPEG、WebP 或 GIF 图片。" });
+      return;
+    }
+    if (file.size > MAX_AVATAR_BYTES) {
+      setFeedback({ kind: "error", message: "头像图片不能超过 2 MB。" });
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === "string") updateDraft("userAvatar", reader.result);
+    };
+    reader.onerror = () => setFeedback({ kind: "error", message: "无法读取头像图片。" });
+    reader.readAsDataURL(file);
   };
 
   return (
@@ -183,6 +207,20 @@ export function GeneralSettingsPanel({
               ))}
             </div>
           </SettingRow>
+          <SettingRow label="显示字体大小" description="调整对话正文、输入框和界面基础文字大小。">
+            <div className="font-size-control">
+              <input
+                type="range"
+                min={12}
+                max={20}
+                step={1}
+                value={draft.fontSize}
+                aria-label="显示字体大小"
+                onChange={(event) => updateDraft("fontSize", Number(event.target.value))}
+              />
+              <output>{draft.fontSize} px</output>
+            </div>
+          </SettingRow>
         </section>
 
         <section className="general-settings-section">
@@ -217,18 +255,31 @@ export function GeneralSettingsPanel({
               onChange={(event) => updateDraft("userDisplayName", event.target.value)}
             />
           </SettingRow>
-          <SettingRow label="头像地址" description="只用于本地界面展示，不会发送给模型。" stack>
+          <SettingRow label="头像" description="图片保存在本地设置中，不会发送给模型。" stack>
             <div className="profile-avatar-row">
               <div className="profile-avatar-preview" aria-hidden="true">
                 {draft.userAvatar ? <img src={draft.userAvatar} alt="" /> : (draft.userDisplayName.trim()[0] ?? "M").toUpperCase()}
               </div>
-              <input
-                className="settings-input"
-                type="url"
-                placeholder="https://..."
-                value={draft.userAvatar}
-                onChange={(event) => updateDraft("userAvatar", event.target.value)}
-              />
+              <div className="profile-avatar-actions">
+                <button className="settings-button settings-button-secondary" type="button" onClick={() => avatarInputRef.current?.click()}>
+                  <ImageUp size={15} /><span>选择图片</span>
+                </button>
+                {draft.userAvatar ? (
+                  <button className="settings-button settings-button-secondary" type="button" onClick={() => updateDraft("userAvatar", "")}>
+                    <Trash2 size={15} /><span>移除</span>
+                  </button>
+                ) : null}
+                <input
+                  ref={avatarInputRef}
+                  className="profile-avatar-input"
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp,image/gif"
+                  onChange={(event) => {
+                    handleAvatarFile(event.target.files?.[0]);
+                    event.target.value = "";
+                  }}
+                />
+              </div>
             </div>
           </SettingRow>
         </section>
@@ -328,8 +379,8 @@ export function GeneralSettingsPanel({
           <h3>备份与恢复</h3>
           <div className="backup-settings-row">
             <div>
-              <strong>非敏感设置备份</strong>
-              <span>包含基础设置和模型结构，不包含 API Key。</span>
+              <strong>完整设置备份</strong>
+              <span>包含基础设置、模型供应商和 API Key；导出文件应妥善保管。</span>
             </div>
             <div>
               <button className="settings-button settings-button-secondary" type="button" disabled={backupBusy} onClick={() => void handleExport()}>

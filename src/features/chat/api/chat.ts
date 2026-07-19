@@ -7,6 +7,7 @@ export type ChatCompletionRequest = {
   modelId: string;
   conversationId?: string;
   messageId?: string;
+  operation?: "chatComplete" | "contextCompression";
   systemPrompt: string;
   messages: Array<{
     role: MessageRole;

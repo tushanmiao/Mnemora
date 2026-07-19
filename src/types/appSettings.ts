@@ -11,6 +11,7 @@ export interface AppSettings {
   interfaceLanguage: InterfaceLanguage;
   theme: ThemeMode;
   themeColor: ThemeColor;
+  fontSize: number;
   launchAtStartup: boolean;
   retryEnabled: boolean;
   retryAttempts: number;
@@ -31,7 +32,7 @@ export interface SettingsBundle {
   modelSettings: ModelSettings;
 }
 
-export const CURRENT_APP_SETTINGS_VERSION = 2;
+export const CURRENT_APP_SETTINGS_VERSION = 4;
 
 export function createInitialAppSettings(): AppSettings {
   return {
@@ -39,9 +40,10 @@ export function createInitialAppSettings(): AppSettings {
     interfaceLanguage: "zh",
     theme: "system",
     themeColor: "neutral",
+    fontSize: 14,
     launchAtStartup: false,
     retryEnabled: true,
-    retryAttempts: 1,
+    retryAttempts: 5,
     userDisplayName: "",
     userAvatar: "",
     workingDirectory: "",

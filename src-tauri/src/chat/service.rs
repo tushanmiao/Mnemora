@@ -56,6 +56,10 @@ pub async fn complete(
     request.validate()?;
     let conversation_id = request.conversation_id.clone();
     let message_id = request.message_id.clone();
+    let operation = request
+        .operation
+        .clone()
+        .unwrap_or_else(|| "chatComplete".to_string());
     let prepared = prepare_call(state, request).await?;
     let context = ProviderRequestContext {
         protocol: prepared.target.protocol,
@@ -90,7 +94,7 @@ pub async fn complete(
                 &prepared.target,
                 created_at_ms,
                 duration_ms,
-                "chatComplete",
+                &operation,
                 "success",
                 Some(200),
                 response.usage.clone(),
@@ -126,7 +130,7 @@ pub async fn complete(
                 &prepared.target,
                 created_at_ms,
                 duration_ms,
-                "chatComplete",
+                &operation,
                 "error",
                 error.status_code,
                 None,

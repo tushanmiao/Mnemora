@@ -10,8 +10,6 @@ import {
   Sun,
 } from "lucide-react";
 import { AI_PERMISSION_LABELS, type AiPermissionMode } from "../../../types/chat";
-import type { ContextUsageEstimate } from "../utils/contextUsage";
-import { ContextUsageIndicator } from "./ContextUsageIndicator";
 import "../styles/chat-header.css";
 
 const permissionOptions = Object.keys(AI_PERMISSION_LABELS) as AiPermissionMode[];
@@ -25,9 +23,6 @@ type ChatHeaderProps = {
   selectedProviderId: string | null;
   selectedModelId: string | null;
   modelSelectionDisabled: boolean;
-  contextUsage: ContextUsageEstimate;
-  contextWindowTokens: number | null;
-  contextMessageCount: number;
   permission: AiPermissionMode;
   permissionDisabled: boolean;
   theme: "light" | "dark";
@@ -58,9 +53,6 @@ export function ChatHeader({
   selectedProviderId,
   selectedModelId,
   modelSelectionDisabled,
-  contextUsage,
-  contextWindowTokens,
-  contextMessageCount,
   permission,
   permissionDisabled,
   theme,
@@ -158,12 +150,6 @@ export function ChatHeader({
             </div>
           ) : null}
         </div>
-        <ContextUsageIndicator
-          usage={contextUsage}
-          contextWindowTokens={contextWindowTokens}
-          messageCount={contextMessageCount}
-          disabled={!modelConfigured}
-        />
         <div className="permission-control" ref={permissionMenuRef}>
           <button
             className="permission-button"

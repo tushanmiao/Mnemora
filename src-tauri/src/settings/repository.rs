@@ -143,9 +143,7 @@ mod tests {
         let raw = fs::read_to_string(repository.path()).unwrap();
         assert!(!raw.contains("secret-key"));
         assert!(!raw.contains("\"apiKey\""));
-        assert!(raw.contains(&format!(
-            "\"version\": {CURRENT_MODEL_SETTINGS_VERSION}"
-        )));
+        assert!(raw.contains(&format!("\"version\": {CURRENT_MODEL_SETTINGS_VERSION}")));
         assert!(raw.contains("openAiResponses"));
         let loaded = repository.load().unwrap();
         assert!(!loaded.providers[0].has_api_key);

@@ -1,10 +1,11 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useState, type CSSProperties } from "react";
 import "./styles/app.css";
 import { ChatHeader, type ModelSelectorGroup } from "./features/chat/components/ChatHeader";
 import { ChatInput } from "./features/chat/components/ChatInput";
 import { MessageList } from "./features/chat/components/MessageList";
 import { useChatRuntime } from "./features/chat/hooks/useChatRuntime";
 import { estimateConversationContext } from "./features/chat/utils/contextUsage";
+import { activeContextMessages, contextSummaryPrompt } from "./features/chat/utils/contextCompression";
 import { Sidebar } from "./features/conversations/components/Sidebar";
 import { useConversations } from "./features/conversations/hooks/useConversations";
 import { SettingsPage } from "./features/settings/components/SettingsPage";
@@ -62,17 +63,17 @@ function App() {
       .filter((group) => group.models.length > 0)
   ), [settings.modelSettings]);
 
-  const contextUsage = useMemo(() => estimateConversationContext(
-    conversations.currentConversation?.messages ?? [],
-    [
-      settings.appSettings.systemPrompt,
-      conversations.currentConversation?.systemPrompt ?? "",
-    ].filter(Boolean).join("\n\n"),
-  ), [
-    conversations.currentConversation?.messages,
-    conversations.currentConversation?.systemPrompt,
-    settings.appSettings.systemPrompt,
-  ]);
+  const contextUsage = useMemo(() => {
+    const conversation = conversations.currentConversation;
+    return estimateConversationContext(
+      conversation ? activeContextMessages(conversation) : [],
+      [
+        settings.appSettings.systemPrompt,
+        conversation?.systemPrompt ?? "",
+        conversation ? contextSummaryPrompt(conversation) : "",
+      ].filter(Boolean).join("\n\n"),
+    );
+  }, [conversations.currentConversation, settings.appSettings.systemPrompt]);
 
   const chatRuntime = useChatRuntime({
     appSettings: settings.appSettings,
@@ -112,6 +113,7 @@ function App() {
       className="app-shell"
       data-theme={settings.resolvedTheme}
       data-theme-color={settings.appSettings.themeColor}
+      style={{ "--app-font-size": `${settings.appSettings.fontSize}px` } as CSSProperties}
       aria-label="Mnemora application"
     >
       <Sidebar
@@ -155,9 +157,6 @@ function App() {
             selectedProviderId={currentModel?.provider.id ?? null}
             selectedModelId={currentModel?.model.id ?? null}
             modelSelectionDisabled={!conversations.currentConversation || chatRuntime.requestInFlight}
-            contextUsage={contextUsage}
-            contextWindowTokens={currentModel?.model.contextWindowTokens ?? null}
-            contextMessageCount={conversations.currentConversation?.messages.length ?? 0}
             permission={conversations.currentConversation?.permissionMode ?? "askSensitive"}
             permissionDisabled={!conversations.currentConversation}
             theme={settings.resolvedTheme}
@@ -185,6 +184,11 @@ function App() {
                 : chatRuntime.requestInFlight
                   ? "正在等待模型回复"
                   : "向 Mnemora 提问..."}
+            contextUsage={contextUsage}
+            contextWindowTokens={currentModel?.model.contextWindowTokens ?? null}
+            contextMessageCount={conversations.currentConversation?.messages.length ?? 0}
+            contextCompressionCount={conversations.currentConversation?.contextCompressionCount ?? 0}
+            contextDisabled={!conversations.currentConversation || !currentModel}
             onSend={chatRuntime.sendMessage}
             onStop={settings.appSettings.streamEnabled ? chatRuntime.stopGeneration : undefined}
           />

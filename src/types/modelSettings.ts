@@ -80,7 +80,7 @@ export type ProviderApiKeyUpdate =
   | { providerId: string; action: "set"; apiKey: string }
   | { providerId: string; action: "delete" };
 
-export const CURRENT_MODEL_SETTINGS_VERSION = 2;
+export const CURRENT_MODEL_SETTINGS_VERSION = 3;
 
 /** 创建首次启动时的三家官方供应商配置。 */
 export function createInitialModelSettings(): ModelSettings {

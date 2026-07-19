@@ -7,6 +7,8 @@ import {
   SlidersHorizontal,
   Square,
 } from "lucide-react";
+import type { ContextUsageEstimate } from "../utils/contextUsage";
+import { ContextUsageIndicator } from "./ContextUsageIndicator";
 import "../styles/chat-input.css";
 
 type ChatInputProps = {
@@ -14,6 +16,11 @@ type ChatInputProps = {
   busy?: boolean;
   stopDisabled?: boolean;
   placeholder?: string;
+  contextUsage: ContextUsageEstimate;
+  contextWindowTokens: number | null;
+  contextMessageCount: number;
+  contextCompressionCount?: number;
+  contextDisabled?: boolean;
   onSend: (content: string) => void;
   onStop?: () => void;
 };
@@ -23,6 +30,11 @@ export function ChatInput({
   busy = false,
   stopDisabled = false,
   placeholder = "向 Mnemora 提问...",
+  contextUsage,
+  contextWindowTokens,
+  contextMessageCount,
+  contextCompressionCount = 0,
+  contextDisabled = false,
   onSend,
   onStop,
 }: ChatInputProps) {
@@ -76,20 +88,30 @@ export function ChatInput({
               </button>
             </div>
 
-            <button
-              className={`send-button${busy && onStop ? " stop-button" : ""}`}
-              type={busy && onStop ? "button" : "submit"}
-              title={busy && onStop ? "停止生成" : "发送消息"}
-              aria-label={busy && onStop ? "停止生成" : "发送消息"}
-              disabled={busy && onStop ? stopDisabled : !canSend}
-              onClick={busy && onStop ? onStop : undefined}
-            >
-              {busy && onStop
-                ? <Square size={15} fill="currentColor" />
-                : busy
-                  ? <LoaderCircle className="composer-spin" size={18} />
-                : <ArrowUp size={19} />}
-            </button>
+            <div className="composer-actions">
+              <ContextUsageIndicator
+                usage={contextUsage}
+                contextWindowTokens={contextWindowTokens}
+                messageCount={contextMessageCount}
+                compressionCount={contextCompressionCount}
+                disabled={contextDisabled}
+                placement="up"
+              />
+              <button
+                className={`send-button${busy && onStop ? " stop-button" : ""}`}
+                type={busy && onStop ? "button" : "submit"}
+                title={busy && onStop ? "停止生成" : "发送消息"}
+                aria-label={busy && onStop ? "停止生成" : "发送消息"}
+                disabled={busy && onStop ? stopDisabled : !canSend}
+                onClick={busy && onStop ? onStop : undefined}
+              >
+                {busy && onStop
+                  ? <Square size={15} fill="currentColor" />
+                  : busy
+                    ? <LoaderCircle className="composer-spin" size={18} />
+                  : <ArrowUp size={19} />}
+              </button>
+            </div>
           </div>
         </form>
 

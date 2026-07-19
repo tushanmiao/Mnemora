@@ -28,21 +28,21 @@
 }
 
 .markdown-content h1 {
-  font-size: 21px;
+  font-size: calc(var(--app-font-size, 14px) + 7px);
 }
 
 .markdown-content h2 {
-  font-size: 18px;
+  font-size: calc(var(--app-font-size, 14px) + 4px);
 }
 
 .markdown-content h3 {
-  font-size: 16px;
+  font-size: calc(var(--app-font-size, 14px) + 2px);
 }
 
 .markdown-content h4,
 .markdown-content h5,
 .markdown-content h6 {
-  font-size: 14px;
+  font-size: var(--app-font-size, 14px);
 }
 
 .markdown-content ul,

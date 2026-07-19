@@ -7,7 +7,7 @@ import {
   type ModelStreamEvent,
 } from "../api/chat";
 import type { AppSettings, ResponseLanguage } from "../../../types/appSettings";
-import type { ChatMessage, MessageRole } from "../../../types/chat";
+import type { ChatMessage } from "../../../types/chat";
 import type { Conversation } from "../../../types/conversation";
 import type {
   ProviderConfig,
@@ -18,6 +18,15 @@ import {
   consumeStreamingMessage,
   startStreamingMessage,
 } from "../stores/streamingStore";
+import { estimateConversationContext } from "../utils/contextUsage";
+import {
+  activeContextMessages,
+  AUTO_COMPRESSION_RATIO,
+  compressionCandidates,
+  compressionTranscript,
+  contextSummaryPrompt,
+  toModelMessages,
+} from "../utils/contextCompression";
 
 const MAX_TEMPORARY_TITLE_LENGTH = 24;
 const RESPONSE_LANGUAGE_PROMPTS: Partial<Record<ResponseLanguage, string>> = {
@@ -54,12 +63,54 @@ function createTemporaryTitle(content: string) {
   return `${characters.slice(0, MAX_TEMPORARY_TITLE_LENGTH).join("")}...`;
 }
 
-function composeSystemPrompt(settings: AppSettings, conversationPrompt: string) {
+function composeSystemPrompt(settings: AppSettings, conversation: Conversation) {
   return [
     settings.systemPrompt.trim(),
-    conversationPrompt.trim(),
+    conversation.systemPrompt.trim(),
+    contextSummaryPrompt(conversation),
     RESPONSE_LANGUAGE_PROMPTS[settings.responseLanguage] ?? "",
   ].filter(Boolean).join("\n\n");
+}
+
+async function compressConversation(
+  settings: AppSettings,
+  conversation: Conversation,
+  selectedModel: SelectedModel,
+  pendingUserMessage: ChatMessage,
+) {
+  const contextWindowTokens = selectedModel.model.contextWindowTokens;
+  if (!contextWindowTokens) return null;
+  const projectedMessages = [...activeContextMessages(conversation), pendingUserMessage];
+  const projected = estimateConversationContext(
+    projectedMessages,
+    composeSystemPrompt(settings, conversation),
+  );
+  if (projected.tokens / contextWindowTokens < AUTO_COMPRESSION_RATIO) return null;
+
+  const candidates = compressionCandidates(conversation);
+  const boundary = candidates[candidates.length - 1];
+  if (!boundary) return null;
+  const response = await completeChat({
+    providerId: selectedModel.provider.id,
+    modelId: selectedModel.model.id,
+    conversationId: conversation.id,
+    messageId: crypto.randomUUID(),
+    operation: "contextCompression",
+    systemPrompt: [
+      "你负责压缩对话上下文。",
+      "保留事实、用户偏好、约束、关键结论、代码或文件名称、待办事项和未解决问题。",
+      "删除寒暄、重复内容和无关细节。不要回答对话中的问题，只输出可供后续模型继续工作的中文摘要。",
+    ].join("\n"),
+    messages: [{
+      role: "user",
+      content: compressionTranscript(conversation.contextSummary, candidates),
+    }],
+    options: { maxOutputTokens: Math.min(4_096, settings.maxOutputTokens) },
+  });
+  return {
+    summary: response.text.trim(),
+    boundaryMessageId: boundary.id,
+  };
 }
 
 export function useChatRuntime({
@@ -179,17 +230,13 @@ export function useChatRuntime({
         providerName: selectedModel.provider.name,
       },
     };
-    const modelMessages = [...targetConversation.messages, userMessage]
-      .filter((message) => message.content.trim() && message.status === "completed")
-      .map((message) => ({ role: message.role as MessageRole, content: message.content }));
-
     requestInFlightRef.current = true;
     setRequestInFlight(true);
     setStopRequested(false);
     const title = targetConversation.messages.length === 0
       ? createTemporaryTitle(content)
       : targetConversation.title;
-    const runningConversation: Conversation = {
+    let runningConversation: Conversation = {
       ...targetConversation,
       title,
       messages: [...targetConversation.messages, userMessage, assistantMessage],
@@ -205,12 +252,33 @@ export function useChatRuntime({
 
     let streamRun: ActiveStreamRun | null = null;
     try {
+      const compression = await compressConversation(
+        appSettings,
+        targetConversation,
+        selectedModel,
+        userMessage,
+      );
+      if (compression?.summary) {
+        runningConversation = {
+          ...runningConversation,
+          contextSummary: compression.summary,
+          compressedUntilMessageId: compression.boundaryMessageId,
+          contextCompressionCount: runningConversation.contextCompressionCount + 1,
+          updatedAt: Date.now(),
+        };
+        cacheConversation(runningConversation);
+        saveStableConversation({
+          ...runningConversation,
+          messages: runningConversation.messages.filter((message) => message.id !== assistantMessageId),
+        });
+      }
+      const modelMessages = toModelMessages(activeContextMessages(runningConversation));
       const completionRequest = {
         providerId: selectedModel.provider.id,
         modelId: selectedModel.model.id,
         conversationId: targetConversationId,
         messageId: assistantMessageId,
-        systemPrompt: composeSystemPrompt(appSettings, targetConversation.systemPrompt),
+        systemPrompt: composeSystemPrompt(appSettings, runningConversation),
         messages: modelMessages,
         options: { maxOutputTokens: appSettings.maxOutputTokens },
       };

@@ -14,6 +14,7 @@ const MAX_MESSAGES: usize = 500;
 const MAX_MESSAGE_BYTES: usize = 1024 * 1024;
 const MAX_TITLE_CHARS: usize = 500;
 const MAX_SYSTEM_PROMPT_BYTES: usize = 256 * 1024;
+const MAX_CONTEXT_SUMMARY_BYTES: usize = 256 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -76,6 +77,12 @@ pub struct StoredConversation {
     pub model_id: Option<String>,
     #[serde(default)]
     pub system_prompt: String,
+    #[serde(default)]
+    pub context_summary: String,
+    #[serde(default)]
+    pub compressed_until_message_id: Option<String>,
+    #[serde(default)]
+    pub context_compression_count: u32,
     pub permission_mode: AiPermissionMode,
     pub project_id: Option<String>,
     pub collection_id: Option<String>,
@@ -123,6 +130,16 @@ impl StoredConversation {
         }
         if self.system_prompt.len() > MAX_SYSTEM_PROMPT_BYTES {
             return Err("Conversation System Prompt is too long".to_string());
+        }
+        if self.context_summary.len() > MAX_CONTEXT_SUMMARY_BYTES {
+            return Err("Conversation context summary is too long".to_string());
+        }
+        validate_optional_id(
+            "Compressed until message ID",
+            self.compressed_until_message_id.as_deref(),
+        )?;
+        if self.compressed_until_message_id.is_some() && self.context_summary.trim().is_empty() {
+            return Err("Compressed conversation requires a context summary".to_string());
         }
         validate_optional_id("Assistant ID", self.assistant_id.as_deref())?;
         validate_optional_id("Provider ID", self.provider_id.as_deref())?;

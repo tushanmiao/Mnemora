@@ -63,6 +63,7 @@ button {
   overflow: hidden;
   color: var(--color-text);
   background: var(--color-app);
+  font-size: var(--app-font-size, 14px);
 }
 
 .app-shell[data-theme="dark"] {

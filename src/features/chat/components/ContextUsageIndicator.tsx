@@ -6,14 +6,18 @@ type Props = {
   usage: ContextUsageEstimate;
   contextWindowTokens: number | null;
   messageCount: number;
+  compressionCount?: number;
   disabled?: boolean;
+  placement?: "up" | "down";
 };
 
 export function ContextUsageIndicator({
   usage,
   contextWindowTokens,
   messageCount,
+  compressionCount = 0,
   disabled = false,
+  placement = "down",
 }: Props) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -64,7 +68,7 @@ export function ContextUsageIndicator({
       </button>
 
       {open ? (
-        <div className="context-usage-popover">
+        <div className={`context-usage-popover context-usage-popover-${placement}`}>
           <div className="context-usage-heading">
             <strong>上下文用量</strong>
             <span>{ratio === null ? "窗口未知" : `${Math.round(ringPercent)}%`}</span>
@@ -79,6 +83,7 @@ export function ContextUsageIndicator({
           <dl className="context-usage-details">
             <div><dt>统计来源</dt><dd>{usage.source === "providerAnchored" ? "供应商实报 + 增量估算" : "本地轻量估算"}</dd></div>
             <div><dt>对话消息</dt><dd>{messageCount} 条</dd></div>
+            <div><dt>自动压缩</dt><dd>{compressionCount} 次</dd></div>
           </dl>
           {contextWindowTokens === null ? (
             <p>在“设置 → 模型服务”中填写该模型的上下文窗口后，圆环才会显示准确比例。</p>

@@ -29,6 +29,8 @@ pub struct ChatCompletionRequest {
     #[serde(default)]
     pub message_id: Option<String>,
     #[serde(default)]
+    pub operation: Option<String>,
+    #[serde(default)]
     pub system_prompt: String,
     pub messages: Vec<ModelMessage>,
     #[serde(default)]
@@ -104,6 +106,15 @@ impl ChatCompletionRequest {
             .map_err(ModelError::invalid_configuration)?;
         validate_stable_id("Model ID", self.model_id.trim())
             .map_err(ModelError::invalid_configuration)?;
+        if self
+            .operation
+            .as_deref()
+            .is_some_and(|operation| !matches!(operation, "chatComplete" | "contextCompression"))
+        {
+            return Err(ModelError::invalid_configuration(
+                "Chat operation is not supported.",
+            ));
+        }
 
         if self.messages.is_empty() {
             return Err(ModelError::invalid_configuration("至少需要一条聊天消息。"));
@@ -176,6 +187,7 @@ mod tests {
             model_id: "model-1".to_string(),
             conversation_id: None,
             message_id: None,
+            operation: None,
             system_prompt: String::new(),
             messages: vec![ModelMessage {
                 role: ModelRole::User,

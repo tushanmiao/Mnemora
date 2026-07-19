@@ -27,6 +27,12 @@ export interface Conversation {
    * 这不是最终发送给模型的完整 System Prompt，后续还会与其他提示词来源组合。
    */
   systemPrompt: string;
+  /** 已压缩历史的模型摘要；原消息仍保留用于界面查看。 */
+  contextSummary: string;
+  /** 该消息及其之前的历史已包含在 `contextSummary` 中。 */
+  compressedUntilMessageId: string | null;
+  /** 当前对话累计自动压缩次数。 */
+  contextCompressionCount: number;
   /** 当前对话执行工具时采用的权限模式。 */
   permissionMode: AiPermissionMode;
   /** 对话所属项目 ID；为空表示未加入项目。 */

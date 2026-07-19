@@ -10,7 +10,7 @@ use std::collections::HashSet;
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 
-pub const CURRENT_MODEL_SETTINGS_VERSION: u32 = 2;
+pub const CURRENT_MODEL_SETTINGS_VERSION: u32 = 3;
 const MAX_PROVIDERS: usize = 100;
 const MAX_MODELS_PER_PROVIDER: usize = 2_000;
 
@@ -132,6 +132,7 @@ impl Default for ModelSettings {
 
 impl ModelSettings {
     pub fn normalize_and_validate(mut self) -> Result<Self, String> {
+        let source_version = self.version;
         if self.version > CURRENT_MODEL_SETTINGS_VERSION {
             return Err(format!(
                 "Model settings version {} is newer than supported version {}",
@@ -171,6 +172,9 @@ impl ModelSettings {
 
             let mut api_models = HashSet::new();
             for model in &mut provider.models {
+                if source_version < 3 && model.context_window_tokens.is_none() {
+                    model.context_window_tokens = Some(128_000);
+                }
                 model.id = model.id.trim().to_string();
                 validate_stable_id("Model ID", &model.id)?;
                 if !all_model_ids.insert(model.id.clone()) {
@@ -347,5 +351,23 @@ mod tests {
 
         let error = settings.normalize_and_validate().unwrap_err();
         assert!(error.contains("duplicate API model"));
+    }
+
+    #[test]
+    fn migrates_missing_context_window_to_lightweight_default() {
+        let mut settings = ModelSettings::default();
+        settings.version = 2;
+        settings.providers[0].models.push(ProviderModelConfig {
+            id: "model-context".to_string(),
+            api_model: "model-context".to_string(),
+            display_name: "Model Context".to_string(),
+            context_window_tokens: None,
+            enabled: true,
+        });
+        let settings = settings.normalize_and_validate().unwrap();
+        assert_eq!(
+            settings.providers[0].models[0].context_window_tokens,
+            Some(128_000)
+        );
     }
 }
