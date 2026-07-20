@@ -80,7 +80,15 @@ pub async fn save_application_settings(
     settings: AppSettings,
 ) -> Result<AppSettings, String> {
     let settings = settings.normalize_and_validate()?;
-    apply_autostart(&app, settings.launch_at_startup)?;
+    let launch_at_startup_changed = state
+        .app_settings
+        .read()
+        .map_err(|_| "App settings lock is unavailable".to_string())?
+        .launch_at_startup
+        != settings.launch_at_startup;
+    if launch_at_startup_changed {
+        apply_autostart(&app, settings.launch_at_startup)?;
+    }
     let repository = state.app_settings_repository.clone();
     let settings_for_save = settings.clone();
     tauri::async_runtime::spawn_blocking(move || repository.save(&settings_for_save))
@@ -147,6 +155,11 @@ pub async fn import_settings_bundle(
     path: String,
 ) -> Result<SettingsBundle, String> {
     let path = validate_user_path(path)?;
+    let previous_launch_at_startup = state
+        .app_settings
+        .read()
+        .map_err(|_| "App settings lock is unavailable".to_string())?
+        .launch_at_startup;
     let app_repository = state.app_settings_repository.clone();
     let model_repository = state.model_settings_repository.clone();
     let secrets = state.secrets;
@@ -208,7 +221,9 @@ pub async fn import_settings_bundle(
     .await
     .map_err(join_error)??;
 
-    apply_autostart(&app, bundle.app_settings.launch_at_startup)?;
+    if previous_launch_at_startup != bundle.app_settings.launch_at_startup {
+        apply_autostart(&app, bundle.app_settings.launch_at_startup)?;
+    }
     *state
         .app_settings
         .write()

@@ -44,7 +44,7 @@ pub async fn complete(
     let value = read_json_response(response, "Gemini GenerateContent")
         .await
         .map_err(ModelError::invalid_response)?;
-    parse_response(&value)
+    parse_response(&value, request.options.thinking_enabled)
 }
 
 pub async fn stream<F>(
@@ -86,16 +86,26 @@ where
                 .and_then(Value::as_array)
                 .and_then(|candidates| candidates.first())
             {
-                let delta = candidate
+                for part in candidate
                     .pointer("/content/parts")
                     .and_then(Value::as_array)
                     .into_iter()
                     .flatten()
-                    .filter_map(|part| part.get("text").and_then(Value::as_str))
-                    .collect::<String>();
-                if !delta.is_empty() {
-                    saw_text = true;
-                    on_chunk(ModelStreamChunk::TextDelta(delta))?;
+                {
+                    let Some(delta) = part.get("text").and_then(Value::as_str) else {
+                        continue;
+                    };
+                    if delta.is_empty() {
+                        continue;
+                    }
+                    if part.get("thought").and_then(Value::as_bool) == Some(true) {
+                        if request.options.thinking_enabled {
+                            on_chunk(ModelStreamChunk::ReasoningDelta(delta.to_string()))?;
+                        }
+                    } else {
+                        saw_text = true;
+                        on_chunk(ModelStreamChunk::TextDelta(delta.to_string()))?;
+                    }
                 }
                 if let Some(reason) = candidate.get("finishReason").and_then(Value::as_str) {
                     finish_reason = Some(reason.to_string());
@@ -177,6 +187,12 @@ pub(crate) fn request_body(request: &ModelRequest) -> Value {
     if let Some(max_output_tokens) = request.options.max_output_tokens {
         generation_config.insert("maxOutputTokens".to_string(), json!(max_output_tokens));
     }
+    if request.options.thinking_enabled {
+        generation_config.insert(
+            "thinkingConfig".to_string(),
+            json!({ "includeThoughts": true }),
+        );
+    }
     if !generation_config.is_empty() {
         body.insert(
             "generationConfig".to_string(),
@@ -186,7 +202,7 @@ pub(crate) fn request_body(request: &ModelRequest) -> Value {
     Value::Object(body)
 }
 
-fn parse_response(value: &Value) -> Result<ModelResponse, ModelError> {
+fn parse_response(value: &Value, include_reasoning: bool) -> Result<ModelResponse, ModelError> {
     if let Some(block_reason) = value
         .pointer("/promptFeedback/blockReason")
         .and_then(Value::as_str)
@@ -210,6 +226,7 @@ fn parse_response(value: &Value) -> Result<ModelResponse, ModelError> {
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
+        .filter(|part| part.get("thought").and_then(Value::as_bool) != Some(true))
         .filter_map(|part| part.get("text").and_then(Value::as_str))
         .collect::<String>();
     if text.is_empty() {
@@ -225,6 +242,19 @@ fn parse_response(value: &Value) -> Result<ModelResponse, ModelError> {
 
     Ok(ModelResponse {
         text,
+        reasoning: include_reasoning
+            .then(|| {
+                let reasoning = candidate
+                    .pointer("/content/parts")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter(|part| part.get("thought").and_then(Value::as_bool) == Some(true))
+                    .filter_map(|part| part.get("text").and_then(Value::as_str))
+                    .collect::<String>();
+                (!reasoning.is_empty()).then_some(reasoning)
+            })
+            .flatten(),
         finish_reason,
         usage: value.get("usageMetadata").map(parse_usage),
     })
@@ -306,24 +336,63 @@ mod tests {
 
     #[test]
     fn parses_text_and_usage_metadata() {
-        let response = super::parse_response(&json!({
-            "candidates": [{
-                "content": { "parts": [{ "text": "Hello" }] },
-                "finishReason": "STOP"
-            }],
-            "usageMetadata": {
-                "promptTokenCount": 6,
-                "candidatesTokenCount": 3,
-                "totalTokenCount": 9,
-                "cachedContentTokenCount": 2,
-                "thoughtsTokenCount": 1
-            }
-        }))
+        let response = super::parse_response(
+            &json!({
+                "candidates": [{
+                    "content": { "parts": [{ "text": "Hello" }] },
+                    "finishReason": "STOP"
+                }],
+                "usageMetadata": {
+                    "promptTokenCount": 6,
+                    "candidatesTokenCount": 3,
+                    "totalTokenCount": 9,
+                    "cachedContentTokenCount": 2,
+                    "thoughtsTokenCount": 1
+                }
+            }),
+            false,
+        )
         .unwrap();
 
         assert_eq!(response.text, "Hello");
         let usage = response.usage.unwrap();
         assert_eq!(usage.total_tokens, Some(9));
         assert_eq!(usage.reasoning_tokens, Some(1));
+    }
+
+    #[test]
+    fn requests_and_parses_thought_parts() {
+        let request = ModelRequest {
+            model: "gemini-test".to_string(),
+            system_prompt: None,
+            messages: vec![ModelMessage {
+                role: ModelRole::User,
+                content: "Solve it".to_string(),
+            }],
+            options: ModelOptions {
+                thinking_enabled: true,
+                ..ModelOptions::default()
+            },
+        };
+        let body = super::request_body(&request);
+        assert_eq!(
+            body["generationConfig"]["thinkingConfig"]["includeThoughts"],
+            true
+        );
+
+        let response = super::parse_response(
+            &json!({
+                "candidates": [{
+                    "content": { "parts": [
+                        { "thought": true, "text": "Plan first." },
+                        { "text": "Answer" }
+                    ] }
+                }]
+            }),
+            true,
+        )
+        .unwrap();
+        assert_eq!(response.text, "Answer");
+        assert_eq!(response.reasoning.as_deref(), Some("Plan first."));
     }
 }

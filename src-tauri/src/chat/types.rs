@@ -78,6 +78,12 @@ pub enum ModelStreamEvent {
         message_id: String,
         delta: String,
     },
+    ReasoningDelta {
+        run_id: String,
+        conversation_id: String,
+        message_id: String,
+        delta: String,
+    },
     Completed {
         run_id: String,
         conversation_id: String,

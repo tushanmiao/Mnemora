@@ -34,18 +34,28 @@ type MessageListProps = {
   messages: ChatMessage[];
   conversationId: string | null;
   hasConversation: boolean;
+  actionsDisabled?: boolean;
+  canRegenerate?: boolean;
   suggestionsDisabled?: boolean;
   onCreateConversation: () => void;
   onSuggestionSelect: (prompt: string) => void;
+  onEditMessage: (messageId: string, content: string) => void;
+  onRegenerateMessage: (messageId: string) => void;
+  onDeleteMessage: (messageId: string) => void;
 };
 
 export function MessageList({
   messages,
   conversationId,
   hasConversation,
+  actionsDisabled = false,
+  canRegenerate = false,
   suggestionsDisabled = false,
   onCreateConversation,
   onSuggestionSelect,
+  onEditMessage,
+  onRegenerateMessage,
+  onDeleteMessage,
 }: MessageListProps) {
   const listRef = useRef<HTMLElement>(null);
   const threadRef = useRef<HTMLDivElement>(null);
@@ -199,7 +209,14 @@ export function MessageList({
                   else messageElementsRef.current.delete(message.id);
                 }}
               >
-                <MessageBubble message={message} />
+                <MessageBubble
+                  message={message}
+                  actionsDisabled={actionsDisabled}
+                  canRegenerate={canRegenerate}
+                  onEdit={onEditMessage}
+                  onRegenerate={onRegenerateMessage}
+                  onDelete={onDeleteMessage}
+                />
               </div>
             ))}
           </div>

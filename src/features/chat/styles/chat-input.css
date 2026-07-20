@@ -4,7 +4,7 @@
 }
 
 .composer-inner {
-  width: min(820px, calc(100% - 64px));
+  width: min(var(--chat-content-max-width), calc(100% - var(--chat-content-gutter)));
   margin: 0 auto;
 }
 

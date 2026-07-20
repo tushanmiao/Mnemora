@@ -57,7 +57,7 @@ pub async fn complete(
     let value = read_json_response(response, "Anthropic Messages")
         .await
         .map_err(ModelError::invalid_response)?;
-    parse_response(&value)
+    parse_response(&value, request.options.thinking_enabled)
 }
 
 pub async fn stream<F>(
@@ -106,13 +106,27 @@ where
                     }
                 }
                 "content_block_delta" => {
-                    if value.pointer("/delta/type").and_then(Value::as_str) == Some("text_delta") {
-                        if let Some(delta) = value.pointer("/delta/text").and_then(Value::as_str) {
-                            if !delta.is_empty() {
-                                saw_text = true;
-                                on_chunk(ModelStreamChunk::TextDelta(delta.to_string()))?;
+                    match value.pointer("/delta/type").and_then(Value::as_str) {
+                        Some("text_delta") => {
+                            if let Some(delta) =
+                                value.pointer("/delta/text").and_then(Value::as_str)
+                            {
+                                if !delta.is_empty() {
+                                    saw_text = true;
+                                    on_chunk(ModelStreamChunk::TextDelta(delta.to_string()))?;
+                                }
                             }
                         }
+                        Some("thinking_delta") if request.options.thinking_enabled => {
+                            if let Some(delta) =
+                                value.pointer("/delta/thinking").and_then(Value::as_str)
+                            {
+                                if !delta.is_empty() {
+                                    on_chunk(ModelStreamChunk::ReasoningDelta(delta.to_string()))?;
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                 }
                 "message_delta" => {
@@ -157,15 +171,13 @@ where
 }
 
 pub(crate) fn request_body(request: &ModelRequest) -> Value {
+    let max_tokens = request
+        .options
+        .max_output_tokens
+        .unwrap_or(DEFAULT_MAX_OUTPUT_TOKENS);
     let mut body = Map::from_iter([
         ("model".to_string(), Value::String(request.model.clone())),
-        (
-            "max_tokens".to_string(),
-            json!(request
-                .options
-                .max_output_tokens
-                .unwrap_or(DEFAULT_MAX_OUTPUT_TOKENS)),
-        ),
+        ("max_tokens".to_string(), json!(max_tokens)),
         (
             "messages".to_string(),
             Value::Array(merged_messages(request)),
@@ -178,7 +190,13 @@ pub(crate) fn request_body(request: &ModelRequest) -> Value {
             Value::String(system_prompt.to_string()),
         );
     }
-    if let Some(temperature) = request.options.temperature {
+    if request.options.thinking_enabled && max_tokens >= 2_048 {
+        let budget_tokens = (max_tokens / 4).clamp(1_024, 8_192).min(max_tokens - 1);
+        body.insert(
+            "thinking".to_string(),
+            json!({ "type": "enabled", "budget_tokens": budget_tokens }),
+        );
+    } else if let Some(temperature) = request.options.temperature {
         body.insert("temperature".to_string(), json!(temperature));
     }
     Value::Object(body)
@@ -209,7 +227,7 @@ fn merged_messages(request: &ModelRequest) -> Vec<Value> {
         .collect()
 }
 
-fn parse_response(value: &Value) -> Result<ModelResponse, ModelError> {
+fn parse_response(value: &Value, include_reasoning: bool) -> Result<ModelResponse, ModelError> {
     let content = value
         .get("content")
         .and_then(Value::as_array)
@@ -227,6 +245,16 @@ fn parse_response(value: &Value) -> Result<ModelResponse, ModelError> {
 
     Ok(ModelResponse {
         text,
+        reasoning: include_reasoning
+            .then(|| {
+                let reasoning = content
+                    .iter()
+                    .filter(|part| part.get("type").and_then(Value::as_str) == Some("thinking"))
+                    .filter_map(|part| part.get("thinking").and_then(Value::as_str))
+                    .collect::<String>();
+                (!reasoning.is_empty()).then_some(reasoning)
+            })
+            .flatten(),
         finish_reason: value
             .get("stop_reason")
             .and_then(Value::as_str)
@@ -329,24 +357,60 @@ mod tests {
 
     #[test]
     fn parses_text_and_cache_usage() {
-        let response = super::parse_response(&json!({
-            "content": [
-                { "type": "text", "text": "Hello " },
-                { "type": "text", "text": "there" }
-            ],
-            "stop_reason": "end_turn",
-            "usage": {
-                "input_tokens": 12,
-                "output_tokens": 5,
-                "cache_read_input_tokens": 4,
-                "cache_creation_input_tokens": 2
-            }
-        }))
+        let response = super::parse_response(
+            &json!({
+                "content": [
+                    { "type": "text", "text": "Hello " },
+                    { "type": "text", "text": "there" }
+                ],
+                "stop_reason": "end_turn",
+                "usage": {
+                    "input_tokens": 12,
+                    "output_tokens": 5,
+                    "cache_read_input_tokens": 4,
+                    "cache_creation_input_tokens": 2
+                }
+            }),
+            false,
+        )
         .unwrap();
 
         assert_eq!(response.text, "Hello there");
         let usage = response.usage.unwrap();
         assert_eq!(usage.total_tokens, Some(17));
         assert_eq!(usage.cache_read_tokens, Some(4));
+    }
+
+    #[test]
+    fn enables_thinking_and_parses_reasoning_blocks() {
+        let body = super::request_body(&ModelRequest {
+            model: "claude-test".to_string(),
+            system_prompt: None,
+            messages: vec![ModelMessage {
+                role: ModelRole::User,
+                content: "Solve it".to_string(),
+            }],
+            options: ModelOptions {
+                max_output_tokens: Some(4_096),
+                thinking_enabled: true,
+                ..ModelOptions::default()
+            },
+        });
+        assert_eq!(body["thinking"]["type"], "enabled");
+        assert_eq!(body["thinking"]["budget_tokens"], 1_024);
+        assert!(body.get("temperature").is_none());
+
+        let response = super::parse_response(
+            &json!({
+                "content": [
+                    { "type": "thinking", "thinking": "Plan first." },
+                    { "type": "text", "text": "Answer" }
+                ]
+            }),
+            true,
+        )
+        .unwrap();
+        assert_eq!(response.text, "Answer");
+        assert_eq!(response.reasoning.as_deref(), Some("Plan first."));
     }
 }

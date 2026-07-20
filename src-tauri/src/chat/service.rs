@@ -316,7 +316,7 @@ async fn stream_inner(
 ) -> Result<ModelStreamOutcome, ModelError> {
     let retry_policy = retry_policy(state);
     let mut retry_index = 0;
-    let mut emitted_text = false;
+    let mut emitted_output = false;
     loop {
         let mut emit = |chunk: ModelStreamChunk| match chunk {
             ModelStreamChunk::TextDelta(delta) => {
@@ -329,14 +329,26 @@ async fn stream_inner(
                         delta,
                     })
                     .map_err(|error| ModelError::provider(format!("无法发送文本增量：{error}")))?;
-                emitted_text = true;
+                emitted_output = true;
+                Ok(())
+            }
+            ModelStreamChunk::ReasoningDelta(delta) => {
+                on_event
+                    .send(ModelStreamEvent::ReasoningDelta {
+                        run_id: run_id.to_string(),
+                        conversation_id: conversation_id.to_string(),
+                        message_id: message_id.to_string(),
+                        delta,
+                    })
+                    .map_err(|error| ModelError::provider(format!("无法发送思考增量：{error}")))?;
+                emitted_output = true;
                 Ok(())
             }
         };
         match stream::stream(&state.http, context, request, cancellation, &mut emit).await {
             Ok(outcome) => return Ok(outcome),
             Err(error)
-                if !emitted_text
+                if !emitted_output
                     && retry_index < retry_policy.max_retries
                     && should_retry(&error) =>
             {

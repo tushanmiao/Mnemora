@@ -17,6 +17,7 @@ type AppView = "chat" | "settings";
 
 function App() {
   const [activeView, setActiveView] = useState<AppView>("chat");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const navigateToChat = useCallback(() => setActiveView("chat"), []);
 
   const settings = useAppSettings();
@@ -117,6 +118,7 @@ function App() {
       aria-label="Mnemora application"
     >
       <Sidebar
+        collapsed={sidebarCollapsed}
         settingsOpen={activeView === "settings"}
         userDisplayName={settings.appSettings.userDisplayName}
         userAvatar={settings.appSettings.userAvatar}
@@ -127,6 +129,7 @@ function App() {
         onDeleteConversation={conversations.deleteConversation}
         onClearConversations={conversations.clearConversations}
         onOpenSettings={() => setActiveView("settings")}
+        onToggleCollapse={() => setSidebarCollapsed((collapsed) => !collapsed)}
       />
 
       {activeView === "settings" ? (
@@ -168,9 +171,14 @@ function App() {
             messages={conversations.currentConversation?.messages ?? []}
             conversationId={conversations.currentConversationId}
             hasConversation={conversations.currentConversation !== null}
+            actionsDisabled={chatRuntime.requestInFlight}
+            canRegenerate={Boolean(currentModel)}
             suggestionsDisabled={!currentModel || chatRuntime.requestInFlight}
             onCreateConversation={conversations.createNewConversation}
             onSuggestionSelect={chatRuntime.sendMessage}
+            onEditMessage={chatRuntime.editMessage}
+            onRegenerateMessage={chatRuntime.regenerateMessage}
+            onDeleteMessage={chatRuntime.deleteMessage}
           />
           <ChatInput
             busy={chatRuntime.requestInFlight}

@@ -9,12 +9,14 @@ const STREAM_PUBLISH_INTERVAL_MS = 1000 / 30;
 
 export interface StreamingMessageSnapshot {
   content: string;
+  reasoning: string;
   revision: number;
 }
 
 interface StreamingMessageEntry {
   messageId: string;
   pendingText: string;
+  pendingReasoning: string;
   snapshot: StreamingMessageSnapshot;
   listeners: Set<() => void>;
   frameId: number | null;
@@ -24,13 +26,15 @@ interface StreamingMessageEntry {
 const entries = new Map<string, StreamingMessageEntry>();
 
 function publishEntry(entry: StreamingMessageEntry, publishedAt: number) {
-  if (!entry.pendingText) return;
+  if (!entry.pendingText && !entry.pendingReasoning) return;
 
   entry.snapshot = {
     content: entry.snapshot.content + entry.pendingText,
+    reasoning: entry.snapshot.reasoning + entry.pendingReasoning,
     revision: entry.snapshot.revision + 1,
   };
   entry.pendingText = "";
+  entry.pendingReasoning = "";
   entry.lastPublishedAt = publishedAt;
   entry.listeners.forEach((listener) => listener());
 }
@@ -49,7 +53,7 @@ function schedulePublish(entry: StreamingMessageEntry) {
 
     entry.frameId = null;
     publishEntry(entry, now);
-    if (entry.pendingText) schedulePublish(entry);
+    if (entry.pendingText || entry.pendingReasoning) schedulePublish(entry);
   };
 
   entry.frameId = requestAnimationFrame(publishOnFrame);
@@ -64,7 +68,8 @@ export function startStreamingMessage(messageId: string) {
   entries.set(messageId, {
     messageId,
     pendingText: "",
-    snapshot: { content: "", revision: 0 },
+    pendingReasoning: "",
+    snapshot: { content: "", reasoning: "", revision: 0 },
     listeners: new Set(),
     frameId: null,
     lastPublishedAt: performance.now(),
@@ -79,6 +84,14 @@ export function appendStreamingDelta(messageId: string, delta: string) {
   schedulePublish(entry);
 }
 
+export function appendStreamingReasoningDelta(messageId: string, delta: string) {
+  const entry = entries.get(messageId);
+  if (!entry || !delta) return;
+
+  entry.pendingReasoning += delta;
+  schedulePublish(entry);
+}
+
 /**
  * 取得最终完整文本并移除临时状态。调用方随后只需把终态写回 Conversation 一次。
  */
@@ -88,8 +101,9 @@ export function consumeStreamingMessage(messageId: string) {
 
   if (entry.frameId !== null) cancelAnimationFrame(entry.frameId);
   const content = entry.snapshot.content + entry.pendingText;
+  const reasoning = entry.snapshot.reasoning + entry.pendingReasoning;
   entries.delete(messageId);
-  return content;
+  return { content, reasoning };
 }
 
 function subscribeToStreamingMessage(messageId: string, listener: () => void) {

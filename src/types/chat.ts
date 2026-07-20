@@ -37,6 +37,8 @@ export interface ChatMessage {
   conversationId: string;
   role: MessageRole;
   content: string;
+  /** 模型返回的独立思考内容，不与最终回答混在一起。 */
+  reasoning?: string;
   status: MessageStatus;
   createdAt: number;
   updatedAt: number;

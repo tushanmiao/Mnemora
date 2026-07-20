@@ -16,11 +16,13 @@ export type ChatCompletionRequest = {
   options?: {
     temperature?: number;
     maxOutputTokens?: number;
+    thinkingEnabled?: boolean;
   };
 };
 
 export type ChatCompletionResponse = {
   text: string;
+  reasoning?: string;
   finishReason?: string;
   usage?: ModelUsage;
 };
@@ -63,6 +65,13 @@ export type ModelStreamEvent =
     }
   | {
       type: "textDelta";
+      runId: string;
+      conversationId: string;
+      messageId: string;
+      delta: string;
+    }
+  | {
+      type: "reasoningDelta";
       runId: string;
       conversationId: string;
       messageId: string;

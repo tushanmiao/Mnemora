@@ -34,6 +34,8 @@ pub struct ModelOptions {
     pub temperature: Option<f32>,
     #[serde(default)]
     pub max_output_tokens: Option<u32>,
+    #[serde(default)]
+    pub thinking_enabled: bool,
 }
 
 /** 已解析为 API Model 后的统一模型请求。 */
@@ -79,15 +81,18 @@ pub struct ModelUsage {
 pub struct ModelResponse {
     pub text: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub finish_reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<ModelUsage>,
 }
 
-/** 流式适配器产生的增量；第一版只向界面暴露纯文本。 */
+/** 流式适配器产生的正文或思考增量，两者在界面和存储中保持独立。 */
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModelStreamChunk {
     TextDelta(String),
+    ReasoningDelta(String),
 }
 
 /** 供应商流正常结束时汇总的停止原因和用量。 */

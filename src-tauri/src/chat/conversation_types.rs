@@ -51,6 +51,8 @@ pub struct StoredChatMessage {
     pub conversation_id: String,
     pub role: ModelRole,
     pub content: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<String>,
     pub status: MessageStatus,
     pub created_at: u64,
     pub updated_at: u64,
@@ -157,6 +159,13 @@ impl StoredConversation {
             }
             if message.content.len() > MAX_MESSAGE_BYTES {
                 return Err("Chat message is too long".to_string());
+            }
+            if message
+                .reasoning
+                .as_ref()
+                .is_some_and(|value| value.len() > MAX_MESSAGE_BYTES)
+            {
+                return Err("Chat message reasoning is too long".to_string());
             }
             if message
                 .error_message

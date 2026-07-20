@@ -40,7 +40,7 @@ pub async fn complete(
     let value = read_json_response(response, "OpenAI Chat Completions")
         .await
         .map_err(ModelError::invalid_response)?;
-    parse_response(&value)
+    parse_response(&value, request.options.thinking_enabled)
 }
 
 pub async fn stream<F>(
@@ -83,6 +83,13 @@ where
                 .and_then(Value::as_array)
                 .and_then(|choices| choices.first())
             {
+                if request.options.thinking_enabled {
+                    let reasoning =
+                        extract_reasoning_text(choice.get("delta").unwrap_or(&Value::Null));
+                    if !reasoning.is_empty() {
+                        on_chunk(ModelStreamChunk::ReasoningDelta(reasoning))?;
+                    }
+                }
                 let delta = extract_delta_text(choice.get("delta").unwrap_or(&Value::Null));
                 if !delta.is_empty() {
                     saw_text = true;
@@ -141,10 +148,16 @@ pub(crate) fn request_body(request: &ModelRequest) -> Value {
             json!(max_output_tokens),
         );
     }
+    if request.options.thinking_enabled && supports_reasoning_effort(&request.model) {
+        body.insert(
+            "reasoning_effort".to_string(),
+            Value::String("medium".to_string()),
+        );
+    }
     Value::Object(body)
 }
 
-fn parse_response(value: &Value) -> Result<ModelResponse, ModelError> {
+fn parse_response(value: &Value, include_reasoning: bool) -> Result<ModelResponse, ModelError> {
     let choice = value
         .get("choices")
         .and_then(Value::as_array)
@@ -162,12 +175,42 @@ fn parse_response(value: &Value) -> Result<ModelResponse, ModelError> {
 
     Ok(ModelResponse {
         text,
+        reasoning: include_reasoning
+            .then(|| request_reasoning(message))
+            .flatten(),
         finish_reason: choice
             .get("finish_reason")
             .and_then(Value::as_str)
             .map(str::to_string),
         usage: value.get("usage").map(parse_usage),
     })
+}
+
+fn request_reasoning(message: &Value) -> Option<String> {
+    message
+        .get("reasoning_content")
+        .or_else(|| message.get("reasoning"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn extract_reasoning_text(delta: &Value) -> String {
+    delta
+        .get("reasoning_content")
+        .or_else(|| delta.get("reasoning"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn supports_reasoning_effort(model: &str) -> bool {
+    let model = model.trim().to_ascii_lowercase();
+    model.starts_with("gpt-5")
+        || model.starts_with("o1")
+        || model.starts_with("o3")
+        || model.starts_with("o4")
 }
 
 fn extract_message_text(message: &Value) -> String {
@@ -245,22 +288,57 @@ mod tests {
 
     #[test]
     fn parses_text_finish_reason_and_usage() {
-        let response = super::parse_response(&json!({
-            "choices": [{
-                "message": { "content": "Hello" },
-                "finish_reason": "stop"
-            }],
-            "usage": {
-                "prompt_tokens": 10,
-                "completion_tokens": 4,
-                "total_tokens": 14,
-                "completion_tokens_details": { "reasoning_tokens": 2 }
-            }
-        }))
+        let response = super::parse_response(
+            &json!({
+                "choices": [{
+                    "message": { "content": "Hello" },
+                    "finish_reason": "stop"
+                }],
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 4,
+                    "total_tokens": 14,
+                    "completion_tokens_details": { "reasoning_tokens": 2 }
+                }
+            }),
+            false,
+        )
         .unwrap();
 
         assert_eq!(response.text, "Hello");
         assert_eq!(response.finish_reason.as_deref(), Some("stop"));
         assert_eq!(response.usage.unwrap().reasoning_tokens, Some(2));
+    }
+
+    #[test]
+    fn requests_and_parses_reasoning_content() {
+        let body = super::request_body(&ModelRequest {
+            model: "gpt-5".to_string(),
+            system_prompt: None,
+            messages: vec![ModelMessage {
+                role: ModelRole::User,
+                content: "Solve it".to_string(),
+            }],
+            options: ModelOptions {
+                thinking_enabled: true,
+                ..ModelOptions::default()
+            },
+        });
+        assert_eq!(body["reasoning_effort"], "medium");
+
+        let response = super::parse_response(
+            &json!({
+                "choices": [{
+                    "message": {
+                        "content": "Answer",
+                        "reasoning_content": "Plan first."
+                    }
+                }]
+            }),
+            true,
+        )
+        .unwrap();
+        assert_eq!(response.text, "Answer");
+        assert_eq!(response.reasoning.as_deref(), Some("Plan first."));
     }
 }

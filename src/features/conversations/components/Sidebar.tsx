@@ -5,6 +5,7 @@ import {
   Boxes,
   ChevronDown,
   ChevronLeft,
+  ChevronRight,
   Download,
   FileText,
   Folder,
@@ -31,6 +32,7 @@ const extensionItems = [
 ];
 
 type SidebarProps = {
+  collapsed: boolean;
   settingsOpen: boolean;
   userDisplayName: string;
   userAvatar: string;
@@ -41,9 +43,11 @@ type SidebarProps = {
   onDeleteConversation: (conversationId: string) => void;
   onClearConversations: () => void;
   onOpenSettings: () => void;
+  onToggleCollapse: () => void;
 };
 
 export function Sidebar({
+  collapsed,
   settingsOpen,
   userDisplayName,
   userAvatar,
@@ -54,6 +58,7 @@ export function Sidebar({
   onDeleteConversation,
   onClearConversations,
   onOpenSettings,
+  onToggleCollapse,
 }: SidebarProps) {
   const normalizedDisplayName = userDisplayName.trim() || "Mnemora 用户";
   const avatarInitial = (Array.from(normalizedDisplayName)[0] ?? "M").toUpperCase();
@@ -75,15 +80,32 @@ export function Sidebar({
     return () => document.removeEventListener("mousedown", closeMenus);
   }, []);
 
+  useEffect(() => {
+    if (!collapsed) return;
+    setListMenuOpen(false);
+    setConversationMenu(null);
+  }, [collapsed]);
+
   return (
-    <aside className="sidebar" aria-label="应用导航" ref={menuAreaRef}>
+    <aside
+      className={`sidebar${collapsed ? " sidebar-collapsed" : ""}`}
+      aria-label="应用导航"
+      ref={menuAreaRef}
+    >
       <div className="sidebar-brand">
         <div className="brand-mark" aria-hidden="true">
           M
         </div>
-        <span>Mnemora</span>
-        <button className="icon-button sidebar-collapse" type="button" title="收起侧边栏">
-          <ChevronLeft size={18} />
+        <span className="sidebar-brand-name">Mnemora</span>
+        <button
+          className="icon-button sidebar-collapse"
+          type="button"
+          title={collapsed ? "展开侧边栏" : "收起侧边栏"}
+          aria-label={collapsed ? "展开侧边栏" : "收起侧边栏"}
+          aria-expanded={!collapsed}
+          onClick={onToggleCollapse}
+        >
+          {collapsed ? <ChevronRight size={18} /> : <ChevronLeft size={18} />}
         </button>
       </div>
 
@@ -91,27 +113,36 @@ export function Sidebar({
         <button
           className="sidebar-action sidebar-action-primary"
           type="button"
+          title={collapsed ? "新建聊天" : undefined}
           onClick={onCreateConversation}
         >
           <MessageSquarePlus size={18} />
           <span>新建聊天</span>
         </button>
-        <button className="sidebar-action" type="button">
+        <button className="sidebar-action" type="button" title={collapsed ? "搜索" : undefined}>
           <Search size={18} />
           <span>搜索</span>
         </button>
         <button
           className="sidebar-action"
           type="button"
+          title={collapsed ? "扩展" : undefined}
           aria-expanded={extensionsOpen}
-          onClick={() => setExtensionsOpen((open) => !open)}
+          onClick={() => {
+            if (collapsed) {
+              setExtensionsOpen(true);
+              onToggleCollapse();
+              return;
+            }
+            setExtensionsOpen((open) => !open);
+          }}
         >
           <Boxes size={18} />
           <span>扩展</span>
           <ChevronDown className={`sidebar-chevron${extensionsOpen ? " sidebar-chevron-open" : ""}`} size={16} />
         </button>
 
-        {extensionsOpen ? (
+        {extensionsOpen && !collapsed ? (
           <div className="extension-list">
             {extensionItems.map(({ label, icon: Icon }) => (
               <button className="extension-item" type="button" key={label}>
