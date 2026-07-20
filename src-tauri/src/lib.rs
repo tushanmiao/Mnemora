@@ -49,6 +49,15 @@ pub fn run() {
             request_debug::request_debug_get_records,
             request_debug::request_debug_clear,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            if let tauri::RunEvent::ExitRequested { .. } = event {
+                let state = app_handle.state::<state::AppState>();
+                let cancelled = tauri::async_runtime::block_on(state.cancel_all_chat_runs());
+                if cancelled > 0 {
+                    eprintln!("Cancelled {cancelled} active chat run(s) on application exit.");
+                }
+            }
+        });
 }

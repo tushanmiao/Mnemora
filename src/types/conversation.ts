@@ -74,3 +74,15 @@ export interface ConversationListItem {
   /** 对话最后更新时间，使用毫秒时间戳。 */
   updatedAt: number;
 }
+
+/** Rust 端对轻量会话索引执行分页后的结果。 */
+export interface ConversationListPage {
+  /** 当前页的轻量会话摘要。 */
+  items: ConversationListItem[];
+  /** 当前页在排序后索引中的起始位置。 */
+  offset: number;
+  /** 本地索引中的会话总数。 */
+  total: number;
+  /** 是否还可以继续加载下一页。 */
+  hasMore: boolean;
+}

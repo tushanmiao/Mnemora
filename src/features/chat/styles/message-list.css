@@ -6,13 +6,21 @@
 }
 
 .message-thread {
-  display: flex;
   width: min(var(--chat-content-max-width), calc(100% - var(--chat-content-gutter)));
   min-height: 100%;
   margin: 0 auto;
-  padding: 32px 0 40px;
-  flex-direction: column;
-  gap: 24px;
+}
+
+.message-list-item {
+  padding-bottom: 24px;
+}
+
+.message-list-item-first {
+  padding-top: 32px;
+}
+
+.message-list-item-last {
+  padding-bottom: 40px;
 }
 
 .empty-chat-state {

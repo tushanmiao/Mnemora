@@ -111,6 +111,15 @@ pub struct ConversationListItem {
     pub updated_at: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationListPage {
+    pub items: Vec<ConversationListItem>,
+    pub offset: usize,
+    pub total: usize,
+    pub has_more: bool,
+}
+
 pub fn validate_conversation_id(label: &str, value: &str) -> Result<(), String> {
     validate_stable_id(label, value)?;
     if value.contains(':') {

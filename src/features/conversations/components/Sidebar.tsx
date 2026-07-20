@@ -11,6 +11,7 @@ import {
   Folder,
   FolderInput,
   Layers3,
+  LoaderCircle,
   MessageSquarePlus,
   MoreHorizontal,
   Pencil,
@@ -37,11 +38,15 @@ type SidebarProps = {
   userDisplayName: string;
   userAvatar: string;
   conversations: ConversationListItem[];
+  conversationListLoading: boolean;
+  conversationListError: string;
+  conversationListHasMore: boolean;
   currentConversationId: string | null;
   onCreateConversation: () => void;
   onSelectConversation: (conversationId: string) => void;
   onDeleteConversation: (conversationId: string) => void;
   onClearConversations: () => void;
+  onLoadMoreConversations: () => void;
   onOpenSettings: () => void;
   onToggleCollapse: () => void;
 };
@@ -52,11 +57,15 @@ export function Sidebar({
   userDisplayName,
   userAvatar,
   conversations,
+  conversationListLoading,
+  conversationListError,
+  conversationListHasMore,
   currentConversationId,
   onCreateConversation,
   onSelectConversation,
   onDeleteConversation,
   onClearConversations,
+  onLoadMoreConversations,
   onOpenSettings,
   onToggleCollapse,
 }: SidebarProps) {
@@ -67,6 +76,7 @@ export function Sidebar({
   const [listMenuOpen, setListMenuOpen] = useState(false);
   const [conversationMenu, setConversationMenu] = useState<string | null>(null);
   const menuAreaRef = useRef<HTMLDivElement>(null);
+  const loadMoreRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     function closeMenus(event: MouseEvent) {
@@ -85,6 +95,32 @@ export function Sidebar({
     setListMenuOpen(false);
     setConversationMenu(null);
   }, [collapsed]);
+
+  useEffect(() => {
+    const target = loadMoreRef.current;
+    if (
+      !target
+      || collapsed
+      || activeSection !== "recent"
+      || conversationListLoading
+      || Boolean(conversationListError)
+      || !conversationListHasMore
+      || typeof IntersectionObserver === "undefined"
+    ) return;
+
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) onLoadMoreConversations();
+    }, { rootMargin: "120px 0px" });
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [
+    activeSection,
+    collapsed,
+    conversationListHasMore,
+    conversationListError,
+    conversationListLoading,
+    onLoadMoreConversations,
+  ]);
 
   return (
     <aside
@@ -224,53 +260,70 @@ export function Sidebar({
 
         <div className="conversation-list">
           {activeSection === "recent" ? (
-            conversations.length > 0 ? conversations.map((conversation) => (
-              <div className="conversation-item-wrap" key={conversation.id}>
-                <button
-                  className={`conversation-item${
-                    currentConversationId === conversation.id ? " conversation-item-active" : ""
-                  }`}
-                  type="button"
-                  aria-current={currentConversationId === conversation.id ? "page" : undefined}
-                  title={conversation.title}
-                  onClick={() => {
-                    onSelectConversation(conversation.id);
-                    setConversationMenu(null);
-                  }}
-                >
-                  <FileText size={16} />
-                  <span>{conversation.title}</span>
-                </button>
-                <button
-                  className="conversation-more"
-                  type="button"
-                  title="对话操作"
-                  aria-expanded={conversationMenu === conversation.id}
-                  onClick={() => {
-                    setConversationMenu((current) =>
-                      current === conversation.id ? null : conversation.id,
-                    );
-                    setListMenuOpen(false);
-                  }}
-                >
-                  <MoreHorizontal size={16} />
-                </button>
-
-                {conversationMenu === conversation.id ? (
-                  <ConversationMenu
-                    onDelete={() => {
+            <>
+              {conversations.map((conversation) => (
+                <div className="conversation-item-wrap" key={conversation.id}>
+                  <button
+                    className={`conversation-item${
+                      currentConversationId === conversation.id ? " conversation-item-active" : ""
+                    }`}
+                    type="button"
+                    aria-current={currentConversationId === conversation.id ? "page" : undefined}
+                    title={conversation.title}
+                    onClick={() => {
+                      onSelectConversation(conversation.id);
                       setConversationMenu(null);
-                      onDeleteConversation(conversation.id);
                     }}
-                  />
-                ) : null}
-              </div>
-            )) : (
-              <button className="empty-section-action" type="button" onClick={onCreateConversation}>
-                <MessageSquarePlus size={17} />
-                <span>新建第一个对话</span>
-              </button>
-            )
+                  >
+                    <FileText size={16} />
+                    <span>{conversation.title}</span>
+                  </button>
+                  <button
+                    className="conversation-more"
+                    type="button"
+                    title="对话操作"
+                    aria-expanded={conversationMenu === conversation.id}
+                    onClick={() => {
+                      setConversationMenu((current) =>
+                        current === conversation.id ? null : conversation.id,
+                      );
+                      setListMenuOpen(false);
+                    }}
+                  >
+                    <MoreHorizontal size={16} />
+                  </button>
+
+                  {conversationMenu === conversation.id ? (
+                    <ConversationMenu
+                      onDelete={() => {
+                        setConversationMenu(null);
+                        onDeleteConversation(conversation.id);
+                      }}
+                    />
+                  ) : null}
+                </div>
+              ))}
+              {conversations.length === 0 && !conversationListLoading ? (
+                <button className="empty-section-action" type="button" onClick={onCreateConversation}>
+                  <MessageSquarePlus size={17} />
+                  <span>新建第一个对话</span>
+                </button>
+              ) : null}
+              {conversationListLoading || conversationListHasMore || conversationListError ? (
+                <div className="conversation-load-more" ref={loadMoreRef}>
+                  {conversationListError ? (
+                    <button type="button" onClick={onLoadMoreConversations}>重试加载</button>
+                  ) : conversationListLoading ? (
+                    <span role="status">
+                      <LoaderCircle size={15} />
+                      正在加载
+                    </span>
+                  ) : (
+                    <button type="button" onClick={onLoadMoreConversations}>加载更多</button>
+                  )}
+                </div>
+              ) : null}
+            </>
           ) : activeSection === "projects" ? (
             <button className="empty-section-action" type="button">
               <Folder size={17} />

@@ -97,6 +97,10 @@
   display: none;
 }
 
+.sidebar-collapsed .conversation-load-more {
+  display: none;
+}
+
 .sidebar-collapsed .sidebar-footer {
   padding: 10px 12px;
   justify-content: center;
@@ -229,6 +233,40 @@
 
 .conversation-item-wrap {
   position: relative;
+}
+
+.conversation-load-more {
+  display: flex;
+  min-height: 36px;
+  align-items: center;
+  justify-content: center;
+}
+
+.conversation-load-more button,
+.conversation-load-more span {
+  display: inline-flex;
+  min-height: 30px;
+  padding: 0 9px;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  border-radius: 5px;
+  color: var(--color-muted);
+  background: transparent;
+  font-size: 12px;
+}
+
+.conversation-load-more button {
+  cursor: pointer;
+}
+
+.conversation-load-more button:hover {
+  color: var(--color-text-secondary);
+  background: var(--color-hover);
+}
+
+.conversation-load-more span svg {
+  animation: message-spin 900ms linear infinite;
 }
 
 .conversation-item {

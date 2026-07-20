@@ -3,6 +3,7 @@ import type { ChatMessage } from "../../../types/chat";
 export type MessageNavigatorNode = {
   id: string;
   targetMessageId: string;
+  targetRenderIndex: number;
   title: string;
   answerPreview: string;
   modelLabel: string;
@@ -22,11 +23,12 @@ export function buildMessageNavigatorNodes(messages: ChatMessage[]) {
   const nodes: MessageNavigatorNode[] = [];
   let current: MessageNavigatorNode | null = null;
 
-  for (const message of messages) {
+  for (const [index, message] of messages.entries()) {
     if (message.role === "user") {
       current = {
         id: `turn-${message.id}`,
         targetMessageId: message.id,
+        targetRenderIndex: index,
         title: preview(message.content) || "空消息",
         answerPreview: "",
         modelLabel: "",
@@ -41,4 +43,18 @@ export function buildMessageNavigatorNodes(messages: ChatMessage[]) {
       : "";
   }
   return nodes;
+}
+
+/** 根据虚拟列表阅读线所在的 item，找到当前轮次。 */
+export function activeMessageNavigatorNodeId(
+  nodes: MessageNavigatorNode[],
+  renderIndex: number,
+) {
+  if (nodes.length === 0) return null;
+  let active = nodes[0];
+  for (const node of nodes) {
+    if (node.targetRenderIndex > renderIndex) break;
+    active = node;
+  }
+  return active.id;
 }

@@ -15,7 +15,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use super::conversation_types::{
-    validate_conversation_id, ConversationListItem, StoredConversation,
+    validate_conversation_id, ConversationListItem, ConversationListPage, StoredConversation,
 };
 
 const INDEX_VERSION: u32 = 1;
@@ -49,6 +49,23 @@ impl ConversationRepository {
         };
         sort_items(&mut index.conversations);
         Ok(index.conversations)
+    }
+
+    pub fn list_page(&self, offset: usize, limit: usize) -> Result<ConversationListPage, String> {
+        let conversations = self.list()?;
+        let total = conversations.len();
+        let items = conversations
+            .into_iter()
+            .skip(offset.min(total))
+            .take(limit)
+            .collect::<Vec<_>>();
+        let has_more = offset.saturating_add(items.len()) < total;
+        Ok(ConversationListPage {
+            items,
+            offset,
+            total,
+            has_more,
+        })
     }
 
     pub fn load(&self, conversation_id: &str) -> Result<StoredConversation, String> {
@@ -292,6 +309,7 @@ fn sort_items(items: &mut [ConversationListItem]) {
             .pinned
             .cmp(&left.pinned)
             .then_with(|| right.updated_at.cmp(&left.updated_at))
+            .then_with(|| left.id.cmp(&right.id))
     });
 }
 
@@ -375,6 +393,45 @@ mod tests {
         let items = repository.list().unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].id, "conversation-valid");
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn lists_conversation_summaries_in_stable_pages() {
+        let directory = test_directory("pages");
+        let repository = ConversationRepository::new(directory.clone());
+        for index in 0..7 {
+            repository
+                .save(&conversation(&format!("conversation-{index}"), index / 2))
+                .unwrap();
+        }
+
+        let first = repository.list_page(0, 3).unwrap();
+        let second = repository.list_page(3, 3).unwrap();
+        let third = repository.list_page(6, 3).unwrap();
+        let ids = first
+            .items
+            .iter()
+            .chain(&second.items)
+            .chain(&third.items)
+            .map(|item| item.id.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(first.total, 7);
+        assert!(first.has_more);
+        assert!(second.has_more);
+        assert!(!third.has_more);
+        assert_eq!(ids.len(), 7);
+        assert_eq!(
+            ids.iter()
+                .copied()
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            7
+        );
+        assert_eq!(ids[0], "conversation-6");
+        assert_eq!(ids[1], "conversation-4");
+        assert_eq!(ids[2], "conversation-5");
         let _ = fs::remove_dir_all(directory);
     }
 }

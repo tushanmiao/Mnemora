@@ -25,6 +25,21 @@ interface StreamingMessageEntry {
 
 const entries = new Map<string, StreamingMessageEntry>();
 
+function cancelScheduledPublish(entry: StreamingMessageEntry) {
+  if (entry.frameId === null) return;
+  cancelAnimationFrame(entry.frameId);
+  entry.frameId = null;
+}
+
+function disposeEntry(entry: StreamingMessageEntry, notifyListeners: boolean) {
+  cancelScheduledPublish(entry);
+  if (entries.get(entry.messageId) === entry) entries.delete(entry.messageId);
+  entry.pendingText = "";
+  entry.pendingReasoning = "";
+  if (notifyListeners) entry.listeners.forEach((listener) => listener());
+  entry.listeners.clear();
+}
+
 function publishEntry(entry: StreamingMessageEntry, publishedAt: number) {
   if (!entry.pendingText && !entry.pendingReasoning) return;
 
@@ -61,19 +76,20 @@ function schedulePublish(entry: StreamingMessageEntry) {
 
 export function startStreamingMessage(messageId: string) {
   const previous = entries.get(messageId);
-  if (previous?.frameId !== null && previous?.frameId !== undefined) {
-    cancelAnimationFrame(previous.frameId);
-  }
+  if (previous) cancelScheduledPublish(previous);
 
-  entries.set(messageId, {
+  const nextEntry: StreamingMessageEntry = {
     messageId,
     pendingText: "",
     pendingReasoning: "",
     snapshot: { content: "", reasoning: "", revision: 0 },
-    listeners: new Set(),
+    // 相同消息重新开始时沿用订阅集合，避免组件仍订阅已经废弃的 entry。
+    listeners: previous?.listeners ?? new Set(),
     frameId: null,
     lastPublishedAt: performance.now(),
-  });
+  };
+  entries.set(messageId, nextEntry);
+  nextEntry.listeners.forEach((listener) => listener());
 }
 
 export function appendStreamingDelta(messageId: string, delta: string) {
@@ -99,11 +115,21 @@ export function consumeStreamingMessage(messageId: string) {
   const entry = entries.get(messageId);
   if (!entry) return null;
 
-  if (entry.frameId !== null) cancelAnimationFrame(entry.frameId);
   const content = entry.snapshot.content + entry.pendingText;
   const reasoning = entry.snapshot.reasoning + entry.pendingReasoning;
-  entries.delete(messageId);
+  disposeEntry(entry, false);
   return { content, reasoning };
+}
+
+/** 丢弃一条流式消息，不把临时文本写入 Conversation。 */
+export function discardStreamingMessage(messageId: string) {
+  const entry = entries.get(messageId);
+  if (entry) disposeEntry(entry, true);
+}
+
+/** Chat Runtime 卸载时释放全部 RAF、订阅和临时字符串。 */
+export function resetAllStreamingMessages() {
+  for (const entry of [...entries.values()]) disposeEntry(entry, true);
 }
 
 function subscribeToStreamingMessage(messageId: string, listener: () => void) {

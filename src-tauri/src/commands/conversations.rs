@@ -5,9 +5,12 @@
 use tauri::State;
 
 use crate::{
-    chat::conversation_types::{ConversationListItem, StoredConversation},
+    chat::conversation_types::{ConversationListItem, ConversationListPage, StoredConversation},
     state::AppState,
 };
+
+const DEFAULT_CONVERSATION_PAGE_SIZE: usize = 50;
+const MAX_CONVERSATION_PAGE_SIZE: usize = 100;
 
 fn join_error(error: impl std::fmt::Display) -> String {
     format!("Conversation background task failed: {error}")
@@ -16,9 +19,18 @@ fn join_error(error: impl std::fmt::Display) -> String {
 #[tauri::command]
 pub async fn list_conversations(
     state: State<'_, AppState>,
-) -> Result<Vec<ConversationListItem>, String> {
+    offset: Option<usize>,
+    limit: Option<usize>,
+) -> Result<ConversationListPage, String> {
+    let offset = offset.unwrap_or(0);
+    let limit = limit.unwrap_or(DEFAULT_CONVERSATION_PAGE_SIZE);
+    if !(1..=MAX_CONVERSATION_PAGE_SIZE).contains(&limit) {
+        return Err(format!(
+            "Conversation page size must be between 1 and {MAX_CONVERSATION_PAGE_SIZE}"
+        ));
+    }
     let repository = state.conversation_repository.clone();
-    tauri::async_runtime::spawn_blocking(move || repository.list())
+    tauri::async_runtime::spawn_blocking(move || repository.list_page(offset, limit))
         .await
         .map_err(join_error)?
 }

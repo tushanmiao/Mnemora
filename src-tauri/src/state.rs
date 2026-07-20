@@ -31,6 +31,13 @@ pub struct AppState {
     pub request_debug_records: StdMutex<VecDeque<RequestDebugRecord>>,
 }
 
+fn cancel_chat_run_tokens(runs: &HashMap<String, CancellationToken>) -> usize {
+    for token in runs.values() {
+        token.cancel();
+    }
+    runs.len()
+}
+
 impl AppState {
     pub fn new(config_dir: PathBuf, app_data_dir: PathBuf) -> Result<Self, String> {
         let http = Client::builder()
@@ -80,5 +87,34 @@ impl AppState {
             usage_operations: Mutex::new(()),
             request_debug_records: StdMutex::new(crate::request_debug::empty_store()),
         })
+    }
+
+    /** 向所有活动 Chat 流发送取消信号；真实任务结束后仍由 service 移除注册项。 */
+    pub async fn cancel_all_chat_runs(&self) -> usize {
+        let runs = self.active_chat_runs.lock().await;
+        cancel_chat_run_tokens(&runs)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cancel_chat_run_tokens;
+    use std::collections::HashMap;
+    use tokio_util::sync::CancellationToken;
+
+    #[test]
+    fn cancels_all_registered_chat_runs_without_removing_them() {
+        let first = CancellationToken::new();
+        let second = CancellationToken::new();
+        let runs = HashMap::from([
+            ("run-1".to_string(), first.clone()),
+            ("run-2".to_string(), second.clone()),
+        ]);
+
+        assert_eq!(cancel_chat_run_tokens(&runs), 2);
+        assert!(first.is_cancelled());
+        assert!(second.is_cancelled());
+        assert_eq!(runs.len(), 2);
+        assert_eq!(cancel_chat_run_tokens(&runs), 2);
     }
 }

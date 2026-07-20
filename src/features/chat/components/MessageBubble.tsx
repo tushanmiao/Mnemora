@@ -31,11 +31,20 @@ const MESSAGE_TIME_FORMATTER = new Intl.DateTimeFormat("zh-CN", {
 
 type MessageBubbleProps = {
   message: ChatMessage;
+  uiState: MessageBubbleUiState;
   actionsDisabled?: boolean;
   canRegenerate?: boolean;
+  onUiStateChange: (messageId: string, patch: Partial<MessageBubbleUiState>) => void;
   onEdit: (messageId: string, content: string) => void;
   onRegenerate: (messageId: string) => void;
   onDelete: (messageId: string) => void;
+};
+
+export type MessageBubbleUiState = {
+  reasoningOpen: boolean;
+  userExpanded: boolean;
+  editing: boolean;
+  editDraft: string;
 };
 
 function formatMessageTime(timestamp: number) {
@@ -44,8 +53,10 @@ function formatMessageTime(timestamp: number) {
 
 export const MessageBubble = memo(function MessageBubble({
   message,
+  uiState,
   actionsDisabled = false,
   canRegenerate = false,
+  onUiStateChange,
   onEdit,
   onRegenerate,
   onDelete,
@@ -68,28 +79,19 @@ export const MessageBubble = memo(function MessageBubble({
     Array.from(displayedContent).length > LONG_USER_MESSAGE_CHARACTERS
     || displayedContent.split(/\r?\n/).length > LONG_USER_MESSAGE_LINES
   );
-  const [reasoningOpen, setReasoningOpen] = useState(false);
-  const [userExpanded, setUserExpanded] = useState(false);
-  const [editing, setEditing] = useState(false);
-  const [editDraft, setEditDraft] = useState(message.content);
+  const { reasoningOpen, userExpanded, editing } = uiState;
+  const editDraft = uiState.editDraft;
   const [copied, setCopied] = useState(false);
   const copyResetTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
+    if (!isStreaming) return;
     if (isStreaming && hasReasoning && !hasContent) {
-      setReasoningOpen(true);
+      onUiStateChange(message.id, { reasoningOpen: true });
     } else if (hasContent) {
-      setReasoningOpen(false);
+      onUiStateChange(message.id, { reasoningOpen: false });
     }
-  }, [hasContent, hasReasoning, isStreaming]);
-
-  useEffect(() => {
-    setUserExpanded(false);
-  }, [message.content, message.id]);
-
-  useEffect(() => {
-    if (!editing) setEditDraft(message.content);
-  }, [editing, message.content]);
+  }, [hasContent, hasReasoning, isStreaming, message.id, onUiStateChange]);
 
   useEffect(() => () => {
     if (copyResetTimerRef.current !== null) window.clearTimeout(copyResetTimerRef.current);
@@ -125,15 +127,18 @@ export const MessageBubble = memo(function MessageBubble({
   };
 
   const beginEditing = () => {
-    setEditDraft(message.content);
-    setEditing(true);
+    onUiStateChange(message.id, { editing: true, editDraft: message.content });
   };
 
   const submitEdit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const content = editDraft.trim();
     if (!content || actionsDisabled) return;
-    setEditing(false);
+    onUiStateChange(message.id, {
+      editing: false,
+      editDraft: content,
+      userExpanded: false,
+    });
     if (content !== message.content.trim()) onEdit(message.id, content);
   };
 
@@ -152,7 +157,7 @@ export const MessageBubble = memo(function MessageBubble({
                 autoFocus
                 rows={Math.min(10, Math.max(4, editDraft.split(/\r?\n/).length))}
                 value={editDraft}
-                onChange={(event) => setEditDraft(event.target.value)}
+                onChange={(event) => onUiStateChange(message.id, { editDraft: event.target.value })}
               />
               <div className="message-edit-actions">
                 <button
@@ -160,7 +165,10 @@ export const MessageBubble = memo(function MessageBubble({
                   type="button"
                   title="取消修改"
                   aria-label="取消修改"
-                  onClick={() => setEditing(false)}
+                  onClick={() => onUiStateChange(message.id, {
+                    editing: false,
+                    editDraft: message.content,
+                  })}
                 >
                   <X size={16} />
                 </button>
@@ -188,7 +196,7 @@ export const MessageBubble = memo(function MessageBubble({
                     className="message-reasoning-toggle"
                     type="button"
                     aria-expanded={reasoningOpen}
-                    onClick={() => setReasoningOpen((open) => !open)}
+                    onClick={() => onUiStateChange(message.id, { reasoningOpen: !reasoningOpen })}
                   >
                     <BrainCircuit size={15} />
                     <span>{isStreaming && !hasContent ? "思考中" : "思考过程"}</span>
@@ -214,7 +222,7 @@ export const MessageBubble = memo(function MessageBubble({
                         className="message-user-expand"
                         type="button"
                         aria-expanded={userExpanded}
-                        onClick={() => setUserExpanded((expanded) => !expanded)}
+                        onClick={() => onUiStateChange(message.id, { userExpanded: !userExpanded })}
                       >
                         <span>{userExpanded ? "收起内容" : "展开全部"}</span>
                         {userExpanded ? <ChevronUp size={15} /> : <ChevronDown size={15} />}

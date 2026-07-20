@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState, type MutableRefObject } from "react";
+import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
 import {
   cancelChatStream,
   completeChat,
@@ -17,6 +17,7 @@ import {
   appendStreamingDelta,
   appendStreamingReasoningDelta,
   consumeStreamingMessage,
+  resetAllStreamingMessages,
   startStreamingMessage,
 } from "../stores/streamingStore";
 import { estimateConversationContext } from "../utils/contextUsage";
@@ -64,6 +65,8 @@ type UseChatRuntimeOptions = {
   requestInFlightRef: MutableRefObject<boolean>;
   cacheConversation: (conversation: Conversation, updateSummary?: boolean) => void;
   saveStableConversation: (conversation: Conversation) => void;
+  protectConversation: (conversationId: string) => void;
+  releaseConversation: (conversationId: string) => void;
 };
 
 function createTemporaryTitle(content: string) {
@@ -169,10 +172,23 @@ export function useChatRuntime({
   requestInFlightRef,
   cacheConversation,
   saveStableConversation,
+  protectConversation,
+  releaseConversation,
 }: UseChatRuntimeOptions) {
   const [requestInFlight, setRequestInFlight] = useState(false);
   const [stopRequested, setStopRequested] = useState(false);
   const activeStreamRunRef = useRef<ActiveStreamRun | null>(null);
+
+  useEffect(() => () => {
+    const activeRun = activeStreamRunRef.current;
+    activeStreamRunRef.current = null;
+    requestInFlightRef.current = false;
+    resetAllStreamingMessages();
+    if (activeRun && !activeRun.terminalReceived) {
+      void cancelChatStream(activeRun.runId).catch(() => undefined);
+    }
+    if (activeRun) releaseConversation(activeRun.conversationId);
+  }, [releaseConversation, requestInFlightRef]);
 
   const finalizeStreamRun = useCallback((
     run: ActiveStreamRun,
@@ -255,6 +271,7 @@ export function useChatRuntime({
     selectedModel,
   }: PreparedGeneration) => {
     const targetConversationId = initialRunningConversation.id;
+    protectConversation(targetConversationId);
     if (appSettings.streamEnabled) {
       startStreamingMessage(assistantMessageId);
     }
@@ -379,6 +396,7 @@ export function useChatRuntime({
       requestInFlightRef.current = false;
       setRequestInFlight(false);
       setStopRequested(false);
+      releaseConversation(targetConversationId);
     }
   }, [
     appSettings,
@@ -386,6 +404,8 @@ export function useChatRuntime({
     conversationsRef,
     finalizeStreamRun,
     handleStreamEvent,
+    protectConversation,
+    releaseConversation,
     requestInFlightRef,
     saveStableConversation,
   ]);

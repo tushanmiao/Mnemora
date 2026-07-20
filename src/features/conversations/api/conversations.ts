@@ -1,10 +1,18 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
-import type { Conversation, ConversationListItem } from "../../../types/conversation";
+import type {
+  Conversation,
+  ConversationListItem,
+  ConversationListPage,
+} from "../../../types/conversation";
+
+export const CONVERSATION_PAGE_SIZE = 50;
 
 /** 读取轻量索引，不加载每个会话的完整消息。 */
-export function listStoredConversations() {
-  if (!isTauri()) return Promise.resolve<ConversationListItem[]>([]);
-  return invoke<ConversationListItem[]>("list_conversations");
+export function listStoredConversations(offset = 0, limit = CONVERSATION_PAGE_SIZE) {
+  if (!isTauri()) {
+    return Promise.resolve<ConversationListPage>({ items: [], offset, total: 0, hasMore: false });
+  }
+  return invoke<ConversationListPage>("list_conversations", { offset, limit });
 }
 
 /** 用户选择会话时再按 ID 加载完整 JSON。 */

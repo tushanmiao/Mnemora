@@ -84,6 +84,8 @@ function App() {
     requestInFlightRef: conversations.requestInFlightRef,
     cacheConversation: conversations.cacheConversation,
     saveStableConversation: conversations.saveStableConversation,
+    protectConversation: conversations.protectConversation,
+    releaseConversation: conversations.releaseConversation,
   });
 
   const handlePermissionChange = useCallback((permissionMode: AiPermissionMode) => {
@@ -123,11 +125,15 @@ function App() {
         userDisplayName={settings.appSettings.userDisplayName}
         userAvatar={settings.appSettings.userAvatar}
         conversations={conversations.conversationListItems}
+        conversationListLoading={conversations.conversationListLoading}
+        conversationListError={conversations.conversationListError}
+        conversationListHasMore={conversations.conversationListHasMore}
         currentConversationId={conversations.currentConversationId}
         onCreateConversation={conversations.createNewConversation}
         onSelectConversation={conversations.selectConversation}
         onDeleteConversation={conversations.deleteConversation}
         onClearConversations={conversations.clearConversations}
+        onLoadMoreConversations={conversations.loadMoreConversations}
         onOpenSettings={() => setActiveView("settings")}
         onToggleCollapse={() => setSidebarCollapsed((collapsed) => !collapsed)}
       />
