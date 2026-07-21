@@ -392,9 +392,15 @@ async fn prepare_call(
     }
 
     let api_model = target.api_model.clone();
+    let repository = state.conversation_repository.clone();
+    let model_request = tauri::async_runtime::spawn_blocking(move || {
+        request.into_model_request(api_model, &repository)
+    })
+    .await
+    .map_err(|error| ModelError::provider(format!("读取聊天附件任务失败：{error}")))??;
     Ok(PreparedCall {
         target,
-        request: request.into_model_request(api_model),
+        request: model_request,
         api_key,
     })
 }

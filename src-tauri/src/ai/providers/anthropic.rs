@@ -105,30 +105,27 @@ where
                         has_usage = true;
                     }
                 }
-                "content_block_delta" => {
-                    match value.pointer("/delta/type").and_then(Value::as_str) {
-                        Some("text_delta") => {
-                            if let Some(delta) =
-                                value.pointer("/delta/text").and_then(Value::as_str)
-                            {
-                                if !delta.is_empty() {
-                                    saw_text = true;
-                                    on_chunk(ModelStreamChunk::TextDelta(delta.to_string()))?;
-                                }
+                "content_block_delta" => match value.pointer("/delta/type").and_then(Value::as_str)
+                {
+                    Some("text_delta") => {
+                        if let Some(delta) = value.pointer("/delta/text").and_then(Value::as_str) {
+                            if !delta.is_empty() {
+                                saw_text = true;
+                                on_chunk(ModelStreamChunk::TextDelta(delta.to_string()))?;
                             }
                         }
-                        Some("thinking_delta") if request.options.thinking_enabled => {
-                            if let Some(delta) =
-                                value.pointer("/delta/thinking").and_then(Value::as_str)
-                            {
-                                if !delta.is_empty() {
-                                    on_chunk(ModelStreamChunk::ReasoningDelta(delta.to_string()))?;
-                                }
-                            }
-                        }
-                        _ => {}
                     }
-                }
+                    Some("thinking_delta") if request.options.thinking_enabled => {
+                        if let Some(delta) =
+                            value.pointer("/delta/thinking").and_then(Value::as_str)
+                        {
+                            if !delta.is_empty() {
+                                on_chunk(ModelStreamChunk::ReasoningDelta(delta.to_string()))?;
+                            }
+                        }
+                    }
+                    _ => {}
+                },
                 "message_delta" => {
                     if let Some(reason) =
                         value.pointer("/delta/stop_reason").and_then(Value::as_str)
@@ -203,26 +200,49 @@ pub(crate) fn request_body(request: &ModelRequest) -> Value {
 }
 
 fn merged_messages(request: &ModelRequest) -> Vec<Value> {
-    let mut merged = Vec::<(ModelRole, String)>::new();
+    let mut merged = Vec::<(ModelRole, String, Vec<crate::ai::types::ModelImage>)>::new();
     for message in &request.messages {
-        if let Some((last_role, last_content)) = merged.last_mut() {
+        if let Some((last_role, last_content, last_images)) = merged.last_mut() {
             if *last_role == message.role {
-                last_content.push_str("\n\n");
-                last_content.push_str(&message.content);
+                if !message.content.trim().is_empty() {
+                    if !last_content.trim().is_empty() {
+                        last_content.push_str("\n\n");
+                    }
+                    last_content.push_str(&message.content);
+                }
+                last_images.extend(message.images.clone());
                 continue;
             }
         }
-        merged.push((message.role, message.content.clone()));
+        merged.push((
+            message.role,
+            message.content.clone(),
+            message.images.clone(),
+        ));
     }
 
     merged
         .into_iter()
-        .map(|(role, content)| {
+        .map(|(role, text, images)| {
             let role = match role {
                 ModelRole::User => "user",
                 ModelRole::Assistant => "assistant",
             };
-            json!({ "role": role, "content": [{ "type": "text", "text": content }] })
+            let mut content = Vec::new();
+            if !text.trim().is_empty() {
+                content.push(json!({ "type": "text", "text": text }));
+            }
+            content.extend(images.into_iter().map(|image| {
+                json!({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": image.media_type,
+                        "data": image.data_base64
+                    }
+                })
+            }));
+            json!({ "role": role, "content": content })
         })
         .collect()
 }
@@ -320,7 +340,7 @@ pub fn parse_models(value: &Value) -> Result<Vec<String>, String> {
 mod tests {
     use serde_json::json;
 
-    use crate::ai::types::{ModelMessage, ModelOptions, ModelRequest, ModelRole};
+    use crate::ai::types::{ModelImage, ModelMessage, ModelOptions, ModelRequest, ModelRole};
 
     #[test]
     fn parses_anthropic_models() {
@@ -340,10 +360,12 @@ mod tests {
                 ModelMessage {
                     role: ModelRole::User,
                     content: "One".to_string(),
+                    images: Vec::new(),
                 },
                 ModelMessage {
                     role: ModelRole::User,
                     content: "Two".to_string(),
+                    images: Vec::new(),
                 },
             ],
             options: ModelOptions::default(),
@@ -353,6 +375,34 @@ mod tests {
         assert_eq!(body["messages"].as_array().unwrap().len(), 1);
         assert_eq!(body["messages"][0]["content"][0]["text"], "One\n\nTwo");
         assert_eq!(body["max_tokens"], 4_096);
+    }
+
+    #[test]
+    fn maps_image_as_anthropic_source_block() {
+        let body = super::request_body(&ModelRequest {
+            model: "claude-vision".to_string(),
+            system_prompt: None,
+            messages: vec![ModelMessage {
+                role: ModelRole::User,
+                content: "Describe it".to_string(),
+                images: vec![ModelImage {
+                    name: "capture.png".to_string(),
+                    media_type: "image/png".to_string(),
+                    data_base64: "aGVsbG8=".to_string(),
+                }],
+            }],
+            options: ModelOptions::default(),
+        });
+
+        assert_eq!(body["messages"][0]["content"][1]["type"], "image");
+        assert_eq!(
+            body["messages"][0]["content"][1]["source"]["media_type"],
+            "image/png"
+        );
+        assert_eq!(
+            body["messages"][0]["content"][1]["source"]["data"],
+            "aGVsbG8="
+        );
     }
 
     #[test]
@@ -389,6 +439,7 @@ mod tests {
             messages: vec![ModelMessage {
                 role: ModelRole::User,
                 content: "Solve it".to_string(),
+                images: Vec::new(),
             }],
             options: ModelOptions {
                 max_output_tokens: Some(4_096),

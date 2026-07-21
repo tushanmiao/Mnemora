@@ -18,12 +18,23 @@ pub enum ModelRole {
     Assistant,
 }
 
+/** 请求生命周期内使用的图片正文；Base64 不进入会话持久化。 */
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelImage {
+    pub name: String,
+    pub media_type: String,
+    pub data_base64: String,
+}
+
 /** 发送给模型的一条纯文本历史消息。 */
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelMessage {
     pub role: ModelRole,
     pub content: String,
+    #[serde(default)]
+    pub images: Vec<ModelImage>,
 }
 
 /** 四种协议都能合理映射的最小公共生成参数。 */

@@ -1,0 +1,111 @@
+.chat-attachments {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.chat-attachments-composer {
+  margin: 0 2px 8px;
+}
+
+.chat-attachments-message {
+  margin-bottom: 10px;
+}
+
+.chat-attachment {
+  position: relative;
+  display: flex;
+  width: min(220px, 100%);
+  min-width: 0;
+  height: 58px;
+  padding: 6px;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 7px;
+  background: var(--color-surface-raised);
+}
+
+.chat-attachments-message .chat-attachment {
+  width: min(300px, 100%);
+}
+
+.chat-attachments-message .chat-attachment-image {
+  object-fit: cover;
+}
+
+.chat-attachment-image,
+.chat-attachment-image-fallback,
+.chat-attachment-file-icon {
+  width: 44px;
+  height: 44px;
+  flex: 0 0 44px;
+  border-radius: 5px;
+}
+
+.chat-attachment-image {
+  display: block;
+  object-fit: cover;
+  background: var(--color-hover);
+}
+
+.chat-attachment-image-fallback,
+.chat-attachment-file-icon {
+  display: grid;
+  place-items: center;
+  color: var(--color-accent);
+  background: var(--color-accent-soft);
+}
+
+.chat-attachment-copy {
+  display: grid;
+  min-width: 0;
+  padding-right: 20px;
+  gap: 2px;
+}
+
+.chat-attachment-copy strong,
+.chat-attachment-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-attachment-copy strong {
+  color: var(--color-text);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.chat-attachment-copy small {
+  color: var(--color-muted);
+  font-size: 10px;
+}
+
+.chat-attachment-remove,
+.chat-attachment-open {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  display: grid;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: 5px;
+  color: var(--color-muted);
+  background: var(--color-surface-raised);
+  cursor: pointer;
+}
+
+.chat-attachment-remove:hover {
+  color: var(--color-danger);
+  background: var(--color-danger-soft);
+}
+
+.chat-attachment-open:hover {
+  color: var(--color-accent);
+  background: var(--color-accent-soft);
+}

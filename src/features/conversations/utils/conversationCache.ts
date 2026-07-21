@@ -16,6 +16,12 @@ export function estimateConversationTextBytes(conversation: Conversation) {
     characters += message.content.length;
     characters += message.reasoning?.length ?? 0;
     characters += message.errorMessage?.length ?? 0;
+    for (const attachment of message.attachments ?? []) {
+      characters += attachment.name.length;
+      characters += attachment.mimeType.length;
+      characters += attachment.path.length;
+      characters += attachment.previewPath?.length ?? 0;
+    }
     if (message.modelSnapshot) {
       characters += message.modelSnapshot.apiModel.length;
       characters += message.modelSnapshot.displayName.length;

@@ -1,11 +1,12 @@
 use reqwest::Client;
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
+    fs,
     path::PathBuf,
     sync::{Mutex as StdMutex, RwLock},
     time::Duration,
 };
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Semaphore};
 use tokio_util::sync::CancellationToken;
 
 use crate::chat::storage::ConversationRepository;
@@ -24,6 +25,9 @@ pub struct AppState {
     pub model_settings_repository: ModelSettingsRepository,
     pub secrets: SecretStore,
     pub active_chat_runs: Mutex<HashMap<String, CancellationToken>>,
+    pub active_attachment_tasks: StdMutex<HashMap<String, CancellationToken>>,
+    pub attachment_preview_gate: Semaphore,
+    pub staged_attachment_paths: StdMutex<HashSet<PathBuf>>,
     pub conversation_repository: ConversationRepository,
     pub conversation_writes: Mutex<()>,
     pub usage_dir: PathBuf,
@@ -58,6 +62,11 @@ impl AppState {
         let model_settings_repository = ModelSettingsRepository::new(config_dir);
         let usage_dir = crate::usage::usage_dir(&app_data_dir);
         let conversation_repository = ConversationRepository::new(app_data_dir);
+        if let Err(error) = crate::chat::attachments::cleanup_staged_attachments_older_than(
+            crate::chat::attachments::STAGED_ATTACHMENT_MAX_AGE,
+        ) {
+            eprintln!("Failed to clean stale staged attachments: {error}");
+        }
         let secrets = SecretStore;
         let mut model_settings = match model_settings_repository.load() {
             Ok(settings) => settings,
@@ -81,6 +90,9 @@ impl AppState {
             model_settings_repository,
             secrets,
             active_chat_runs: Mutex::new(HashMap::new()),
+            active_attachment_tasks: StdMutex::new(HashMap::new()),
+            attachment_preview_gate: Semaphore::new(2),
+            staged_attachment_paths: StdMutex::new(HashSet::new()),
             conversation_repository,
             conversation_writes: Mutex::new(()),
             usage_dir,
@@ -93,6 +105,74 @@ impl AppState {
     pub async fn cancel_all_chat_runs(&self) -> usize {
         let runs = self.active_chat_runs.lock().await;
         cancel_chat_run_tokens(&runs)
+    }
+
+    pub fn register_attachment_task(
+        &self,
+        request_id: String,
+    ) -> Result<CancellationToken, String> {
+        let mut tasks = self
+            .active_attachment_tasks
+            .lock()
+            .map_err(|_| "附件任务状态暂时不可用。".to_string())?;
+        if tasks.contains_key(&request_id) {
+            return Err("相同附件任务已经存在。".to_string());
+        }
+        let token = CancellationToken::new();
+        tasks.insert(request_id, token.clone());
+        Ok(token)
+    }
+
+    pub fn finish_attachment_task(&self, request_id: &str) {
+        if let Ok(mut tasks) = self.active_attachment_tasks.lock() {
+            tasks.remove(request_id);
+        }
+    }
+
+    pub fn cancel_attachment_task(&self, request_id: &str) -> bool {
+        let Ok(tasks) = self.active_attachment_tasks.lock() else {
+            return false;
+        };
+        let Some(token) = tasks.get(request_id) else {
+            return false;
+        };
+        token.cancel();
+        true
+    }
+
+    pub fn cancel_all_attachment_tasks(&self) -> usize {
+        let Ok(tasks) = self.active_attachment_tasks.lock() else {
+            return 0;
+        };
+        for token in tasks.values() {
+            token.cancel();
+        }
+        tasks.len()
+    }
+
+    pub fn register_staged_attachment(&self, path: PathBuf) {
+        if let Ok(mut paths) = self.staged_attachment_paths.lock() {
+            paths.insert(path);
+        }
+    }
+
+    pub fn unregister_staged_attachment(&self, path: &PathBuf) {
+        if let Ok(mut paths) = self.staged_attachment_paths.lock() {
+            paths.remove(path);
+        }
+    }
+
+    pub fn cleanup_current_staged_attachments(&self) -> usize {
+        let Ok(mut paths) = self.staged_attachment_paths.lock() else {
+            return 0;
+        };
+        let mut removed = 0usize;
+        for path in paths.drain() {
+            if fs::remove_file(path).is_ok() {
+                removed += 1;
+            }
+        }
+        removed
     }
 }
 

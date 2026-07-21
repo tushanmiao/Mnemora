@@ -71,7 +71,12 @@ impl ConversationRepository {
     pub fn load(&self, conversation_id: &str) -> Result<StoredConversation, String> {
         validate_conversation_id("Conversation ID", conversation_id)?;
         let path = self.conversation_path(conversation_id);
-        read_conversation(&path)
+        let conversation = read_conversation(&path)?;
+        if let Err(error) = super::attachments::sweep_unreferenced_attachments(self, &conversation)
+        {
+            eprintln!("Failed to sweep conversation attachments after load: {error}");
+        }
+        Ok(conversation)
     }
 
     pub fn save(&self, conversation: &StoredConversation) -> Result<ConversationListItem, String> {
@@ -92,6 +97,9 @@ impl ConversationRepository {
             let _ = fs::remove_file(self.index_path());
             return Err(error);
         }
+        if let Err(error) = super::attachments::sweep_unreferenced_attachments(self, conversation) {
+            eprintln!("Failed to sweep conversation attachments after save: {error}");
+        }
         Ok(item)
     }
 
@@ -103,6 +111,11 @@ impl ConversationRepository {
         if existed {
             fs::remove_file(&path)
                 .map_err(|error| format!("Failed to delete conversation file: {error}"))?;
+        }
+        let attachments = self.attachments_directory(conversation_id)?;
+        if attachments.exists() {
+            fs::remove_dir_all(&attachments)
+                .map_err(|error| format!("Failed to delete conversation attachments: {error}"))?;
         }
         let items = self
             .list()?
@@ -125,14 +138,48 @@ impl ConversationRepository {
                 entry.map_err(|error| format!("Failed to inspect conversation file: {error}"))?;
             let file_name = entry.file_name();
             let file_name = file_name.to_string_lossy();
-            if file_name == INDEX_FILE_NAME
-                || (file_name.starts_with("conv_") && file_name.ends_with(".json"))
+            let file_type = entry
+                .file_type()
+                .map_err(|error| format!("Failed to inspect conversation entry type: {error}"))?;
+            if file_type.is_file()
+                && (file_name == INDEX_FILE_NAME
+                    || (file_name.starts_with("conv_") && file_name.ends_with(".json")))
             {
                 fs::remove_file(entry.path())
                     .map_err(|error| format!("Failed to clear conversation file: {error}"))?;
+            } else if file_type.is_dir()
+                && file_name.starts_with("conv_")
+                && file_name.ends_with("_attachments")
+            {
+                fs::remove_dir_all(entry.path()).map_err(|error| {
+                    format!("Failed to clear conversation attachments: {error}")
+                })?;
             }
         }
         self.write_index(Vec::new())
+    }
+
+    pub(crate) fn attachments_directory(&self, conversation_id: &str) -> Result<PathBuf, String> {
+        validate_conversation_id("Conversation ID", conversation_id)?;
+        Ok(self
+            .directory
+            .join(format!("conv_{conversation_id}_attachments")))
+    }
+
+    pub(crate) fn resolve_attachment_path(
+        &self,
+        conversation_id: &str,
+        stored_name: &str,
+    ) -> Result<PathBuf, String> {
+        let mut components = Path::new(stored_name).components();
+        if !matches!(components.next(), Some(std::path::Component::Normal(_)))
+            || components.next().is_some()
+        {
+            return Err("Attachment path must be a stored file name".to_string());
+        }
+        Ok(self
+            .attachments_directory(conversation_id)?
+            .join(stored_name))
     }
 
     fn ensure_directory(&self) -> Result<(), String> {
@@ -318,7 +365,13 @@ mod tests {
     use std::{fs, path::PathBuf};
 
     use super::ConversationRepository;
-    use crate::chat::conversation_types::{AiPermissionMode, StoredConversation};
+    use crate::chat::attachments::import_attachments;
+    use crate::{
+        ai::types::ModelRole,
+        chat::conversation_types::{
+            AiPermissionMode, MessageStatus, StoredChatMessage, StoredConversation,
+        },
+    };
 
     fn test_directory(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
@@ -367,11 +420,85 @@ mod tests {
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].id, "conversation-2");
         assert_eq!(repository.load("conversation-1").unwrap().updated_at, 10);
+        let source = directory.join("attachment.txt");
+        fs::write(&source, b"attachment").unwrap();
+        import_attachments(
+            &repository,
+            "conversation-1",
+            vec![source.to_string_lossy().into_owned()],
+            None,
+        )
+        .unwrap();
+        let attachments = repository.attachments_directory("conversation-1").unwrap();
+        assert!(attachments.is_dir());
         assert!(repository.delete("conversation-1").unwrap());
+        assert!(!attachments.exists());
         assert_eq!(repository.list().unwrap().len(), 1);
 
+        import_attachments(
+            &repository,
+            "conversation-2",
+            vec![source.to_string_lossy().into_owned()],
+            None,
+        )
+        .unwrap();
+        let remaining_attachments = repository.attachments_directory("conversation-2").unwrap();
+        assert!(remaining_attachments.is_dir());
         repository.clear().unwrap();
         assert!(repository.list().unwrap().is_empty());
+        assert!(!remaining_attachments.exists());
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn save_sweeps_only_unreferenced_attachment_files() {
+        let directory = test_directory("attachment-sweep");
+        let repository = ConversationRepository::new(directory.clone());
+        let source = directory.join("attachment.txt");
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(&source, b"attachment").unwrap();
+        let attachment = import_attachments(
+            &repository,
+            "conversation-1",
+            vec![source.to_string_lossy().into_owned()],
+            None,
+        )
+        .unwrap()
+        .remove(0);
+        let stored_path = repository
+            .resolve_attachment_path("conversation-1", &attachment.path)
+            .unwrap();
+
+        let mut conversation = conversation("conversation-1", 10);
+        let message = |id: &str| StoredChatMessage {
+            id: id.to_string(),
+            conversation_id: "conversation-1".to_string(),
+            role: ModelRole::User,
+            content: "附件".to_string(),
+            attachments: vec![attachment.clone()],
+            reasoning: None,
+            status: MessageStatus::Completed,
+            created_at: 10,
+            updated_at: 10,
+            model_id: None,
+            model_snapshot: None,
+            usage: None,
+            error_message: None,
+        };
+        conversation.messages = vec![message("message-1"), message("message-2")];
+        repository.save(&conversation).unwrap();
+        assert!(stored_path.is_file());
+
+        conversation.messages.remove(0);
+        repository.save(&conversation).unwrap();
+        assert!(stored_path.is_file(), "shared reference must keep the file");
+
+        conversation.messages.clear();
+        repository.save(&conversation).unwrap();
+        assert!(
+            !stored_path.exists(),
+            "last reference removal must sweep the file"
+        );
         let _ = fs::remove_dir_all(directory);
     }
 

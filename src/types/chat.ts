@@ -1,4 +1,5 @@
 import type { SystemPromptSection } from "./prompt";
+import type { ChatAttachment } from "./attachment";
 
 /** 显示在时间线中的普通消息角色。 */
 export type MessageRole = "user" | "assistant";
@@ -37,6 +38,8 @@ export interface ChatMessage {
   conversationId: string;
   role: MessageRole;
   content: string;
+  /** 用户随本轮消息添加的图片或本地文件安全副本。 */
+  attachments?: ChatAttachment[];
   /** 模型返回的独立思考内容，不与最终回答混在一起。 */
   reasoning?: string;
   status: MessageStatus;
@@ -55,6 +58,7 @@ export type ModelMessageRole = "user" | "assistant" | "system" | "tool";
 export interface ModelMessage {
   role: ModelMessageRole;
   content: string;
+  attachments?: ChatAttachment[];
 }
 
 /** 供应商无关的模型请求描述，供未来提示词调试和工具调用扩展使用。 */

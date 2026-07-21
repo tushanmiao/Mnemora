@@ -151,7 +151,21 @@ pub(crate) fn request_body(request: &ModelRequest) -> Value {
                 ModelRole::User => "user",
                 ModelRole::Assistant => "assistant",
             };
-            json!({ "role": role, "content": message.content })
+            if message.images.is_empty() {
+                json!({ "role": role, "content": message.content })
+            } else {
+                let mut content = Vec::new();
+                if !message.content.trim().is_empty() {
+                    content.push(json!({ "type": "input_text", "text": message.content }));
+                }
+                content.extend(message.images.iter().map(|image| {
+                    json!({
+                        "type": "input_image",
+                        "image_url": format!("data:{};base64,{}", image.media_type, image.data_base64)
+                    })
+                }));
+                json!({ "role": role, "content": content })
+            }
         })
         .collect::<Vec<_>>();
     let mut body = Map::from_iter([
@@ -289,7 +303,7 @@ fn parse_usage(value: &Value) -> ModelUsage {
 mod tests {
     use serde_json::json;
 
-    use crate::ai::types::{ModelMessage, ModelOptions, ModelRequest, ModelRole};
+    use crate::ai::types::{ModelImage, ModelMessage, ModelOptions, ModelRequest, ModelRole};
 
     #[test]
     fn maps_instructions_and_disables_server_storage() {
@@ -299,6 +313,7 @@ mod tests {
             messages: vec![ModelMessage {
                 role: ModelRole::User,
                 content: "Hello".to_string(),
+                images: Vec::new(),
             }],
             options: ModelOptions::default(),
         });
@@ -306,6 +321,30 @@ mod tests {
         assert_eq!(body["instructions"], "Be concise");
         assert_eq!(body["input"][0]["role"], "user");
         assert_eq!(body["store"], false);
+    }
+
+    #[test]
+    fn maps_image_as_responses_input_part() {
+        let body = super::request_body(&ModelRequest {
+            model: "gpt-vision".to_string(),
+            system_prompt: None,
+            messages: vec![ModelMessage {
+                role: ModelRole::User,
+                content: String::new(),
+                images: vec![ModelImage {
+                    name: "capture.png".to_string(),
+                    media_type: "image/png".to_string(),
+                    data_base64: "aGVsbG8=".to_string(),
+                }],
+            }],
+            options: ModelOptions::default(),
+        });
+
+        assert_eq!(body["input"][0]["content"][0]["type"], "input_image");
+        assert_eq!(
+            body["input"][0]["content"][0]["image_url"],
+            "data:image/png;base64,aGVsbG8="
+        );
     }
 
     #[test]
@@ -342,6 +381,7 @@ mod tests {
             messages: vec![ModelMessage {
                 role: ModelRole::User,
                 content: "Solve it".to_string(),
+                images: Vec::new(),
             }],
             options: ModelOptions {
                 thinking_enabled: true,

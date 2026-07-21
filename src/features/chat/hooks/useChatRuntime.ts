@@ -8,6 +8,7 @@ import {
 } from "../api/chat";
 import type { AppSettings, ResponseLanguage } from "../../../types/appSettings";
 import type { ChatMessage } from "../../../types/chat";
+import type { ChatAttachment } from "../../../types/attachment";
 import type { Conversation } from "../../../types/conversation";
 import type {
   ProviderConfig,
@@ -410,11 +411,19 @@ export function useChatRuntime({
     saveStableConversation,
   ]);
 
-  const sendMessage = useCallback(async (rawContent: string) => {
+  const sendMessage = useCallback(async (
+    rawContent: string,
+    attachments: ChatAttachment[] = [],
+  ) => {
     const content = rawContent.trim();
     const targetConversation = currentConversation;
     const selectedModel = currentModel;
-    if (!content || !targetConversation || !selectedModel || requestInFlightRef.current) return;
+    if (
+      (!content && attachments.length === 0)
+      || !targetConversation
+      || !selectedModel
+      || requestInFlightRef.current
+    ) return;
 
     const now = Date.now();
     const userMessage: ChatMessage = {
@@ -422,6 +431,7 @@ export function useChatRuntime({
       conversationId: targetConversation.id,
       role: "user",
       content,
+      attachments,
       status: "completed",
       createdAt: now,
       updatedAt: now,
@@ -430,7 +440,7 @@ export function useChatRuntime({
     const runningConversation: Conversation = {
       ...targetConversation,
       title: targetConversation.messages.length === 0
-        ? createTemporaryTitle(content)
+        ? createTemporaryTitle(content || attachments.map((attachment) => attachment.name).join("、"))
         : targetConversation.title,
       messages: [...targetConversation.messages, userMessage, assistantMessage],
       providerId: selectedModel.provider.id,
@@ -453,7 +463,9 @@ export function useChatRuntime({
     const messageIndex = targetConversation.messages.findIndex((message) => message.id === messageId);
     if (messageIndex < 0 || targetConversation.messages[messageIndex].role !== "assistant") return;
     const history = targetConversation.messages.slice(0, messageIndex);
-    if (!history.some((message) => message.role === "user" && message.content.trim())) return;
+    if (!history.some((message) => message.role === "user" && (
+      message.content.trim() || (message.attachments?.length ?? 0) > 0
+    ))) return;
 
     const now = Date.now();
     const compressionConversation = resetCompression({
@@ -480,10 +492,11 @@ export function useChatRuntime({
   const editMessage = useCallback(async (messageId: string, rawContent: string) => {
     const content = rawContent.trim();
     const targetConversation = currentConversation;
-    if (!content || !targetConversation || requestInFlightRef.current) return;
+    if (!targetConversation || requestInFlightRef.current) return;
     const messageIndex = targetConversation.messages.findIndex((message) => message.id === messageId);
     if (messageIndex < 0) return;
     const originalMessage = targetConversation.messages[messageIndex];
+    if (!content && (originalMessage.attachments?.length ?? 0) === 0) return;
     const now = Date.now();
 
     if (originalMessage.role === "assistant") {

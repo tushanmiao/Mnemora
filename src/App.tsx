@@ -187,6 +187,7 @@ function App() {
             onDeleteMessage={chatRuntime.deleteMessage}
           />
           <ChatInput
+            conversationId={conversations.currentConversationId}
             busy={chatRuntime.requestInFlight}
             stopDisabled={chatRuntime.stopRequested}
             disabled={!conversations.currentConversation || !currentModel}

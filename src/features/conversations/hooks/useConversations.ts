@@ -39,11 +39,16 @@ function createConversation(): Conversation {
 function toConversationListItem(conversation: Conversation): ConversationListItem {
   const lastMessage = [...conversation.messages]
     .reverse()
-    .find((message) => message.content || message.errorMessage);
+    .find((message) => (
+      message.content || message.errorMessage || (message.attachments?.length ?? 0) > 0
+    ));
+  const attachmentPreview = lastMessage?.attachments?.length
+    ? `附件：${lastMessage.attachments.map((attachment) => attachment.name).join("、")}`
+    : "";
   return {
     id: conversation.id,
     title: conversation.title,
-    preview: lastMessage?.content || lastMessage?.errorMessage || "暂无消息",
+    preview: lastMessage?.content || lastMessage?.errorMessage || attachmentPreview || "暂无消息",
     messageCount: conversation.messages.length,
     assistantId: conversation.assistantId,
     providerId: conversation.providerId,

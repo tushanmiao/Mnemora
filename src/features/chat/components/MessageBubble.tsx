@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import type { ChatMessage } from "../../../types/chat";
 import { MarkdownMessage } from "./MarkdownMessage";
+import { ChatAttachments } from "./ChatAttachments";
 import { useStreamingMessage } from "../stores/streamingStore";
 import "../styles/message-bubble.css";
 
@@ -70,8 +71,10 @@ export const MessageBubble = memo(function MessageBubble({
   const displayedReasoning = streamingSnapshot?.reasoning ?? message.reasoning ?? "";
   const isStreaming = message.status === "streaming" || streamingSnapshot !== null;
   const hasContent = displayedContent.trim().length > 0;
+  const attachments = message.attachments ?? [];
+  const hasAttachments = attachments.length > 0;
   const hasReasoning = displayedReasoning.trim().length > 0;
-  const isWaiting = message.status === "pending" && !hasContent && !hasReasoning;
+  const isWaiting = isAssistant && message.status === "pending" && !hasContent && !hasReasoning;
   const isStopped = message.status === "stopped";
   const isError = message.status === "error";
   const showFooter = !isStreaming && message.status !== "pending";
@@ -133,7 +136,7 @@ export const MessageBubble = memo(function MessageBubble({
   const submitEdit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const content = editDraft.trim();
-    if (!content || actionsDisabled) return;
+    if ((!content && !hasAttachments) || actionsDisabled) return;
     onUiStateChange(message.id, {
       editing: false,
       editDraft: content,
@@ -177,7 +180,7 @@ export const MessageBubble = memo(function MessageBubble({
                   type="submit"
                   title="保存修改"
                   aria-label="保存修改"
-                  disabled={!editDraft.trim() || actionsDisabled}
+                  disabled={(!editDraft.trim() && !hasAttachments) || actionsDisabled}
                 >
                   <Check size={16} />
                 </button>
@@ -206,6 +209,13 @@ export const MessageBubble = memo(function MessageBubble({
                     <div className="message-reasoning-content">{displayedReasoning}</div>
                   ) : null}
                 </section>
+              ) : null}
+              {hasAttachments ? (
+                <ChatAttachments
+                  attachments={attachments}
+                  conversationId={message.conversationId}
+                  variant="message"
+                />
               ) : null}
               {hasContent ? (
                 isAssistant ? (
@@ -269,7 +279,7 @@ export const MessageBubble = memo(function MessageBubble({
                 type="button"
                 title={isAssistant ? "修改回答" : "修改并重新发送"}
                 aria-label={isAssistant ? "修改回答" : "修改并重新发送"}
-                disabled={actionsDisabled || !message.content.trim()}
+                disabled={actionsDisabled || (!message.content.trim() && !hasAttachments)}
                 onClick={beginEditing}
               >
                 <Pencil size={15} />

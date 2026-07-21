@@ -22,7 +22,9 @@ export function contextSummaryPrompt(conversation: Conversation) {
 
 export function compressionCandidates(conversation: Conversation) {
   const active = activeContextMessages(conversation)
-    .filter((message) => message.status === "completed" && message.content.trim());
+    .filter((message) => message.status === "completed" && (
+      message.content.trim() || (message.attachments?.length ?? 0) > 0
+    ));
   if (active.length <= RECENT_MESSAGES_TO_KEEP + 1) return [];
   return active.slice(0, -RECENT_MESSAGES_TO_KEEP);
 }
@@ -33,7 +35,18 @@ export function compressionTranscript(
 ) {
   const sections = messages.map((message) => {
     const role = message.role === "user" ? "用户" : "助手";
-    return `### ${role}\n${message.content.trim()}`;
+    const imageNames = message.attachments
+      ?.filter((attachment) => attachment.kind === "image")
+      .map((attachment) => attachment.name) ?? [];
+    const fileNames = message.attachments
+      ?.filter((attachment) => attachment.kind === "file")
+      .map((attachment) => attachment.name) ?? [];
+    return [
+      `### ${role}`,
+      message.content.trim(),
+      imageNames.length > 0 ? `图片附件（正文已省略）：${imageNames.join("、")}` : "",
+      fileNames.length > 0 ? `文件附件（正文未解析）：${fileNames.join("、")}` : "",
+    ].filter(Boolean).join("\n");
   });
   return [
     existingSummary.trim()
@@ -45,9 +58,12 @@ export function compressionTranscript(
 
 export function toModelMessages(messages: ChatMessage[]) {
   return messages
-    .filter((message) => message.content.trim() && message.status === "completed")
+    .filter((message) => message.status === "completed" && (
+      message.content.trim() || (message.attachments?.length ?? 0) > 0
+    ))
     .map((message) => ({
       role: message.role as MessageRole,
       content: message.content,
+      attachments: message.attachments ?? [],
     }));
 }

@@ -169,7 +169,19 @@ pub(crate) fn request_body(request: &ModelRequest) -> Value {
                 ModelRole::User => "user",
                 ModelRole::Assistant => "model",
             };
-            json!({ "role": role, "parts": [{ "text": message.content }] })
+            let mut parts = Vec::new();
+            if !message.content.trim().is_empty() {
+                parts.push(json!({ "text": message.content }));
+            }
+            parts.extend(message.images.iter().map(|image| {
+                json!({
+                    "inlineData": {
+                        "mimeType": image.media_type,
+                        "data": image.data_base64
+                    }
+                })
+            }));
+            json!({ "role": role, "parts": parts })
         })
         .collect::<Vec<_>>();
     let mut body = Map::from_iter([("contents".to_string(), Value::Array(contents))]);
@@ -297,7 +309,7 @@ pub fn parse_models(value: &Value) -> Result<Vec<String>, String> {
 mod tests {
     use serde_json::json;
 
-    use crate::ai::types::{ModelMessage, ModelOptions, ModelRequest, ModelRole};
+    use crate::ai::types::{ModelImage, ModelMessage, ModelOptions, ModelRequest, ModelRole};
 
     #[test]
     fn parses_gemini_models_without_models_prefix() {
@@ -319,6 +331,7 @@ mod tests {
             messages: vec![ModelMessage {
                 role: ModelRole::Assistant,
                 content: "Previous".to_string(),
+                images: Vec::new(),
             }],
             options: ModelOptions::default(),
         };
@@ -332,6 +345,33 @@ mod tests {
         );
         assert_eq!(body["systemInstruction"]["parts"][0]["text"], "Be concise");
         assert_eq!(body["contents"][0]["role"], "model");
+    }
+
+    #[test]
+    fn maps_image_as_gemini_inline_data() {
+        let body = super::request_body(&ModelRequest {
+            model: "gemini-vision".to_string(),
+            system_prompt: None,
+            messages: vec![ModelMessage {
+                role: ModelRole::User,
+                content: "Describe it".to_string(),
+                images: vec![ModelImage {
+                    name: "capture.png".to_string(),
+                    media_type: "image/png".to_string(),
+                    data_base64: "aGVsbG8=".to_string(),
+                }],
+            }],
+            options: ModelOptions::default(),
+        });
+
+        assert_eq!(
+            body["contents"][0]["parts"][1]["inlineData"]["mimeType"],
+            "image/png"
+        );
+        assert_eq!(
+            body["contents"][0]["parts"][1]["inlineData"]["data"],
+            "aGVsbG8="
+        );
     }
 
     #[test]
@@ -368,6 +408,7 @@ mod tests {
             messages: vec![ModelMessage {
                 role: ModelRole::User,
                 content: "Solve it".to_string(),
+                images: Vec::new(),
             }],
             options: ModelOptions {
                 thinking_enabled: true,

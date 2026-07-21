@@ -87,10 +87,35 @@ pub(crate) fn build_debug_request(
     request: &crate::ai::types::ModelRequest,
     stream: bool,
 ) -> Result<DebugHttpRequest, String> {
+    let debug_request = crate::ai::types::ModelRequest {
+        model: request.model.clone(),
+        system_prompt: request.system_prompt.clone(),
+        messages: request
+            .messages
+            .iter()
+            .map(|message| crate::ai::types::ModelMessage {
+                role: message.role,
+                content: message.content.clone(),
+                images: message
+                    .images
+                    .iter()
+                    .map(|image| crate::ai::types::ModelImage {
+                        name: image.name.clone(),
+                        media_type: image.media_type.clone(),
+                        data_base64: format!(
+                            "[REDACTED IMAGE: {} encoded characters]",
+                            image.data_base64.len()
+                        ),
+                    })
+                    .collect(),
+            })
+            .collect(),
+        options: request.options,
+    };
     let (url, body, default_auth) = match context.protocol {
         ApiProtocol::OpenAiChatCompletions => {
             let url = crate::ai::http::endpoint_url(context.base_url, "chat/completions")?;
-            let mut body = openai_chat::request_body(request);
+            let mut body = openai_chat::request_body(&debug_request);
             if stream {
                 body["stream"] = Value::Bool(true);
                 body["stream_options"] = serde_json::json!({ "include_usage": true });
@@ -99,7 +124,7 @@ pub(crate) fn build_debug_request(
         }
         ApiProtocol::OpenAiResponses => {
             let url = crate::ai::http::endpoint_url(context.base_url, "responses")?;
-            let mut body = openai_responses::request_body(request);
+            let mut body = openai_responses::request_body(&debug_request);
             if stream {
                 body["stream"] = Value::Bool(true);
             }
@@ -107,7 +132,7 @@ pub(crate) fn build_debug_request(
         }
         ApiProtocol::AnthropicMessages => {
             let url = crate::ai::http::endpoint_url(context.base_url, "messages")?;
-            let mut body = anthropic::request_body(request);
+            let mut body = anthropic::request_body(&debug_request);
             if stream {
                 body["stream"] = Value::Bool(true);
             }
@@ -115,11 +140,15 @@ pub(crate) fn build_debug_request(
         }
         ApiProtocol::GeminiGenerateContent => {
             let url = if stream {
-                gemini::stream_generate_content_url(context.base_url, &request.model)?
+                gemini::stream_generate_content_url(context.base_url, &debug_request.model)?
             } else {
-                gemini::generate_content_url(context.base_url, &request.model)?
+                gemini::generate_content_url(context.base_url, &debug_request.model)?
             };
-            (url, gemini::request_body(request), DefaultAuth::XGoogApiKey)
+            (
+                url,
+                gemini::request_body(&debug_request),
+                DefaultAuth::XGoogApiKey,
+            )
         }
     };
 
@@ -279,8 +308,11 @@ pub async fn test_connection(
 mod tests {
     use reqwest::Client;
 
-    use super::model_list_request;
-    use crate::ai::types::{ApiProtocol, AuthScheme, ProviderConnectionInput};
+    use super::{build_debug_request, model_list_request};
+    use crate::ai::types::{
+        ApiProtocol, AuthScheme, ModelImage, ModelMessage, ModelOptions, ModelRequest, ModelRole,
+        ProviderConnectionInput, ProviderRequestContext,
+    };
 
     fn input(protocol: ApiProtocol, auth_scheme: AuthScheme) -> ProviderConnectionInput {
         ProviderConnectionInput {
@@ -365,5 +397,34 @@ mod tests {
             "Bearer secret-key"
         );
         assert!(request.headers().get("x-api-key").is_none());
+    }
+
+    #[test]
+    fn debug_request_redacts_image_payloads() {
+        let request = ModelRequest {
+            model: "vision-model".to_string(),
+            system_prompt: None,
+            messages: vec![ModelMessage {
+                role: ModelRole::User,
+                content: "Describe it".to_string(),
+                images: vec![ModelImage {
+                    name: "capture.png".to_string(),
+                    media_type: "image/png".to_string(),
+                    data_base64: "secret-image-payload".to_string(),
+                }],
+            }],
+            options: ModelOptions::default(),
+        };
+        let context = ProviderRequestContext {
+            protocol: ApiProtocol::OpenAiChatCompletions,
+            auth_scheme: AuthScheme::ProtocolDefault,
+            base_url: "https://example.com/v1",
+            api_key: "secret-key",
+        };
+
+        let debug = build_debug_request(&context, &request, false).unwrap();
+        let serialized = serde_json::to_string(&debug.body).unwrap();
+        assert!(!serialized.contains("secret-image-payload"));
+        assert!(serialized.contains("REDACTED IMAGE"));
     }
 }

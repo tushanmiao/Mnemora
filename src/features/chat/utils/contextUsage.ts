@@ -16,6 +16,37 @@ export function estimateTextTokens(text: string) {
   return Math.ceil(ascii / 4 + nonAscii);
 }
 
+function estimateImageTokens(width?: number, height?: number) {
+  if (!width || !height) return 1_200;
+  let scaledWidth = width;
+  let scaledHeight = height;
+  const longest = Math.max(scaledWidth, scaledHeight);
+  if (longest > 2_048) {
+    const scale = 2_048 / longest;
+    scaledWidth *= scale;
+    scaledHeight *= scale;
+  }
+  const shortest = Math.min(scaledWidth, scaledHeight);
+  if (shortest > 768) {
+    const scale = 768 / shortest;
+    scaledWidth *= scale;
+    scaledHeight *= scale;
+  }
+  const tiles = Math.max(1, Math.ceil(scaledWidth / 512) * Math.ceil(scaledHeight / 512));
+  return 85 + tiles * 170;
+}
+
+function estimateAttachmentTokens(message: ChatMessage, includeImageBodies: boolean) {
+  return (message.attachments ?? []).reduce(
+    (total, attachment) => total + (attachment.kind === "image"
+      ? includeImageBodies
+        ? estimateImageTokens(attachment.width, attachment.height)
+        : 40
+      : 80),
+    0,
+  );
+}
+
 function effectiveInputTokens(message: ChatMessage) {
   const usage = message.usage;
   if (!usage?.inputTokens) return null;
@@ -32,6 +63,13 @@ export function estimateConversationContext(
   messages: ChatMessage[],
   systemPrompt: string,
 ): ContextUsageEstimate {
+  let lastUserIndex = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index].role === "user") {
+      lastUserIndex = index;
+      break;
+    }
+  }
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
     if (message.role !== "assistant") continue;
@@ -42,7 +80,15 @@ export function estimateConversationContext(
       ?? estimateTextTokens(message.content);
     const laterTokens = messages
       .slice(index + 1)
-      .reduce((total, item) => total + estimateTextTokens(item.content), 0);
+      .reduce(
+        (total, item, relativeIndex) => {
+          const absoluteIndex = index + 1 + relativeIndex;
+          return total
+            + estimateTextTokens(item.content)
+            + estimateAttachmentTokens(item, absoluteIndex === lastUserIndex);
+        },
+        0,
+      );
     return {
       tokens: reportedInput + assistantTokens + laterTokens,
       source: "providerAnchored",
@@ -51,7 +97,12 @@ export function estimateConversationContext(
 
   return {
     tokens: estimateTextTokens(systemPrompt)
-      + messages.reduce((total, message) => total + estimateTextTokens(message.content), 0),
+      + messages.reduce(
+        (total, message, index) => total
+          + estimateTextTokens(message.content)
+          + estimateAttachmentTokens(message, index === lastUserIndex),
+        0,
+      ),
     source: "estimated",
   };
 }

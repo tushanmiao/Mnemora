@@ -4,6 +4,7 @@
 //! 类型只包含 Chat 展示与恢复所需数据，不包含 Provider Base URL 或 API Key。
 
 use serde::{Deserialize, Serialize};
+use std::path::{Component, Path};
 
 use crate::{
     ai::types::{ModelRole, ModelUsage},
@@ -15,6 +16,10 @@ const MAX_MESSAGE_BYTES: usize = 1024 * 1024;
 const MAX_TITLE_CHARS: usize = 500;
 const MAX_SYSTEM_PROMPT_BYTES: usize = 256 * 1024;
 const MAX_CONTEXT_SUMMARY_BYTES: usize = 256 * 1024;
+const MAX_ATTACHMENTS_PER_MESSAGE: usize = 8;
+const MAX_ATTACHMENT_NAME_CHARS: usize = 255;
+const MAX_ATTACHMENT_MIME_BYTES: usize = 128;
+const MAX_ATTACHMENT_FILE_BYTES: u64 = 25 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -44,6 +49,68 @@ pub struct ModelSnapshot {
     pub provider_name: String,
 }
 
+/** 会话消息中附件的轻量元数据；文件正文保存在会话独立目录，不写入 JSON。 */
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoredChatAttachment {
+    pub id: String,
+    pub kind: String,
+    pub name: String,
+    pub mime_type: String,
+    pub size_bytes: u64,
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+}
+
+impl StoredChatAttachment {
+    pub fn validate(&self) -> Result<(), String> {
+        validate_stable_id("Attachment ID", &self.id)?;
+        if !matches!(self.kind.as_str(), "image" | "file") {
+            return Err("Attachment kind is invalid".to_string());
+        }
+        if self.name.trim().is_empty() || self.name.chars().count() > MAX_ATTACHMENT_NAME_CHARS {
+            return Err("Attachment name is empty or too long".to_string());
+        }
+        if self.mime_type.trim().is_empty() || self.mime_type.len() > MAX_ATTACHMENT_MIME_BYTES {
+            return Err("Attachment MIME type is invalid".to_string());
+        }
+        if self.size_bytes == 0 || self.size_bytes > MAX_ATTACHMENT_FILE_BYTES {
+            return Err("Attachment size is invalid".to_string());
+        }
+        let mut components = Path::new(&self.path).components();
+        if !matches!(components.next(), Some(Component::Normal(_))) || components.next().is_some() {
+            return Err("Attachment path must be a stored file name".to_string());
+        }
+        if let Some(preview_path) = self.preview_path.as_deref() {
+            let mut components = Path::new(preview_path).components();
+            if !matches!(components.next(), Some(Component::Normal(_)))
+                || components.next().is_some()
+            {
+                return Err("Attachment preview path must be a stored file name".to_string());
+            }
+            if self.kind != "image" {
+                return Err("Only image attachments can have previews".to_string());
+            }
+        }
+        if self.width.is_some() != self.height.is_some() {
+            return Err("Attachment dimensions must include width and height".to_string());
+        }
+        if self
+            .width
+            .zip(self.height)
+            .is_some_and(|(width, height)| width == 0 || height == 0)
+        {
+            return Err("Attachment dimensions are invalid".to_string());
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StoredChatMessage {
@@ -51,6 +118,8 @@ pub struct StoredChatMessage {
     pub conversation_id: String,
     pub role: ModelRole,
     pub content: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<StoredChatAttachment>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<String>,
     pub status: MessageStatus,
@@ -169,6 +238,14 @@ impl StoredConversation {
             if message.content.len() > MAX_MESSAGE_BYTES {
                 return Err("Chat message is too long".to_string());
             }
+            if message.attachments.len() > MAX_ATTACHMENTS_PER_MESSAGE {
+                return Err(format!(
+                    "Chat message cannot exceed {MAX_ATTACHMENTS_PER_MESSAGE} attachments"
+                ));
+            }
+            for attachment in &message.attachments {
+                attachment.validate()?;
+            }
             if message
                 .reasoning
                 .as_ref()
@@ -203,7 +280,21 @@ impl StoredConversation {
                 } else {
                     &message.content
                 };
-                (!text.trim().is_empty()).then(|| text.chars().take(160).collect::<String>())
+                if !text.trim().is_empty() {
+                    Some(text.chars().take(160).collect::<String>())
+                } else if !message.attachments.is_empty() {
+                    Some(format!(
+                        "附件：{}",
+                        message
+                            .attachments
+                            .iter()
+                            .map(|attachment| attachment.name.as_str())
+                            .collect::<Vec<_>>()
+                            .join("、")
+                    ))
+                } else {
+                    None
+                }
             })
             .unwrap_or_else(|| "暂无消息".to_string());
         ConversationListItem {
