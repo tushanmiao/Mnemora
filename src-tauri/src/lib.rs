@@ -1,6 +1,7 @@
 mod ai;
 mod chat;
 mod commands;
+mod html_preview;
 mod request_debug;
 mod settings;
 mod state;
@@ -20,13 +21,19 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec![AUTOSTART_ARG]),
         ))
-        .on_window_event(|window, event| {
-            if window.label() == "main" {
-                if let tauri::WindowEvent::CloseRequested { .. } = event {
-                    // 先清理后台任务，再让 Tauri 默认关闭流程销毁 WebView。
-                    window_lifecycle::cleanup_before_main_window_close(window.app_handle());
+        .on_window_event(|window, event| match event {
+            tauri::WindowEvent::CloseRequested { .. } if window.label() == "main" => {
+                // 先清理后台任务，再让 Tauri 默认关闭流程销毁 WebView。
+                window_lifecycle::cleanup_before_main_window_close(window.app_handle());
+            }
+            tauri::WindowEvent::Destroyed => {
+                if window.label() == "main" {
+                    html_preview::destroy_all(window.app_handle());
+                } else {
+                    html_preview::cleanup_destroyed_window(window.app_handle(), window.label());
                 }
             }
+            _ => {}
         })
         .setup(|app| {
             let launched_from_autostart =
@@ -36,6 +43,7 @@ pub fn run() {
             let app_state =
                 state::AppState::new(config_dir, app_data_dir).map_err(std::io::Error::other)?;
             app.manage(app_state);
+            app.manage(html_preview::HtmlPreviewState::default());
             window_lifecycle::setup_tray(&app.handle()).map_err(std::io::Error::other)?;
 
             // 仅普通交互式启动创建主窗口；开机自启只保留 Rust 后端和托盘，避免启动 WebView2 进程组。
@@ -71,6 +79,8 @@ pub fn run() {
             commands::conversations::save_conversation,
             commands::conversations::delete_conversation,
             commands::conversations::clear_conversations,
+            commands::html_preview::html_preview_open,
+            commands::html_preview::html_preview_get,
             commands::providers::fetch_provider_models,
             commands::providers::test_provider_connection,
             commands::settings::load_model_settings,

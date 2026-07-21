@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "html-preview",
+  "description": "Minimal IPC boundary for the trusted HTML preview shell",
+  "windows": ["html-preview-*"],
+  "permissions": []
+}

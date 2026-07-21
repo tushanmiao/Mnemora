@@ -124,6 +124,12 @@
   font-size: 11px;
 }
 
+.markdown-code-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
 .markdown-copy-button {
   display: grid;
   width: 28px;
@@ -147,6 +153,10 @@
 }
 
 .markdown-copy-button-error {
+  color: var(--color-danger);
+}
+
+.markdown-preview-button-error {
   color: var(--color-danger);
 }
 

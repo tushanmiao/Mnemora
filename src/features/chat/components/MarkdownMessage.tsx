@@ -12,10 +12,18 @@ import {
 } from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { Check, Copy, X } from "lucide-react";
+import { Check, Copy, Eye, LoaderCircle, X } from "lucide-react";
 import ReactMarkdown, { type Components } from "react-markdown";
+import rehypeRaw from "rehype-raw";
+import rehypeSanitize from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
-import { splitStreamingMarkdownBlocks } from "../utils/streamingMarkdown";
+import type { PluggableList } from "unified";
+import { SAFE_CHAT_HTML_SCHEMA, safeMarkdownUrlTransform } from "../utils/htmlSecurity";
+import {
+  renderableStreamingBlock,
+  splitStreamingMarkdownBlocks,
+  type StreamingMarkdownBlock,
+} from "../utils/streamingMarkdown";
 import "../styles/markdown-message.css";
 
 type MarkdownMessageProps = {
@@ -24,13 +32,16 @@ type MarkdownMessageProps = {
 };
 
 type CopyState = "idle" | "copied" | "error";
+type PreviewState = "idle" | "loading" | "error";
 
 async function openMarkdownLink(event: ReactMouseEvent<HTMLAnchorElement>) {
   if (!isTauri()) return;
   event.preventDefault();
+  const href = event.currentTarget.getAttribute("href");
+  if (!href) return;
 
   try {
-    await openUrl(event.currentTarget.href);
+    await openUrl(href);
   } catch (error) {
     console.error("打开 Markdown 链接失败", error);
   }
@@ -53,9 +64,12 @@ function extractLanguage(children: ReactNode) {
 
 function MarkdownCodeBlock({ children, ...props }: ComponentPropsWithoutRef<"pre">) {
   const [copyState, setCopyState] = useState<CopyState>("idle");
+  const [previewState, setPreviewState] = useState<PreviewState>("idle");
   const resetTimerRef = useRef<number | null>(null);
   const code = extractText(children).replace(/\n$/, "");
   const language = extractLanguage(children);
+  const normalizedLanguage = language?.toLowerCase();
+  const canPreview = normalizedLanguage === "html" || normalizedLanguage === "htm";
 
   useEffect(() => () => {
     if (resetTimerRef.current !== null) window.clearTimeout(resetTimerRef.current);
@@ -80,21 +94,52 @@ function MarkdownCodeBlock({ children, ...props }: ComponentPropsWithoutRef<"pre
       ? "复制失败"
       : "复制代码";
 
+  const handlePreview = async () => {
+    if (!canPreview || !code || previewState === "loading") return;
+    setPreviewState("loading");
+    try {
+      const { openHtmlPreview } = await import("../../html-preview/api");
+      await openHtmlPreview(code);
+      setPreviewState("idle");
+    } catch (error) {
+      console.error("打开 HTML 预览失败", error);
+      setPreviewState("error");
+    }
+  };
+
   return (
     <div className="markdown-code-block">
       <div className="markdown-code-toolbar">
         <span>{language ?? "代码"}</span>
-        <button
-          className={`markdown-copy-button markdown-copy-button-${copyState}`}
-          type="button"
-          title={copyLabel}
-          aria-label={copyLabel}
-          onClick={handleCopy}
-        >
-          {copyState === "copied" ? <Check size={15} /> : null}
-          {copyState === "error" ? <X size={15} /> : null}
-          {copyState === "idle" ? <Copy size={15} /> : null}
-        </button>
+        <div className="markdown-code-actions">
+          {canPreview ? (
+            <button
+              className={`markdown-copy-button markdown-preview-button-${previewState}`}
+              type="button"
+              title={previewState === "error" ? "HTML 预览打开失败，点击重试" : "预览 HTML"}
+              aria-label={previewState === "error" ? "重试 HTML 预览" : "预览 HTML"}
+              disabled={previewState === "loading"}
+              onClick={() => void handlePreview()}
+            >
+              {previewState === "loading" ? (
+                <LoaderCircle className="message-spin" size={15} />
+              ) : null}
+              {previewState === "error" ? <X size={15} /> : null}
+              {previewState === "idle" ? <Eye size={15} /> : null}
+            </button>
+          ) : null}
+          <button
+            className={`markdown-copy-button markdown-copy-button-${copyState}`}
+            type="button"
+            title={copyLabel}
+            aria-label={copyLabel}
+            onClick={handleCopy}
+          >
+            {copyState === "copied" ? <Check size={15} /> : null}
+            {copyState === "error" ? <X size={15} /> : null}
+            {copyState === "idle" ? <Copy size={15} /> : null}
+          </button>
+        </div>
       </div>
       <pre {...props}>{children}</pre>
     </div>
@@ -136,22 +181,28 @@ const streamingTailComponents: Components = {
 };
 
 const remarkPlugins = [remarkGfm];
+const rehypePlugins: PluggableList = [
+  rehypeRaw,
+  [rehypeSanitize, SAFE_CHAT_HTML_SCHEMA],
+];
 
 type MarkdownBlockProps = {
-  content: string;
+  block: StreamingMarkdownBlock;
   isStreamingTail: boolean;
 };
 
 const MarkdownBlock = memo(function MarkdownBlock({
-  content,
+  block,
   isStreamingTail,
 }: MarkdownBlockProps) {
+  const content = renderableStreamingBlock(block);
   return (
     <ReactMarkdown
       remarkPlugins={remarkPlugins}
+      rehypePlugins={rehypePlugins}
       components={isStreamingTail ? streamingTailComponents : markdownComponents}
-      skipHtml
       disallowedElements={["img"]}
+      urlTransform={safeMarkdownUrlTransform}
     >
       {content}
     </ReactMarkdown>
@@ -163,7 +214,9 @@ export const MarkdownMessage = memo(function MarkdownMessage({
   streaming = false,
 }: MarkdownMessageProps) {
   const blocks = useMemo(
-    () => (streaming ? splitStreamingMarkdownBlocks(content) : [content]),
+    () => (streaming
+      ? splitStreamingMarkdownBlocks(content)
+      : [{ content, htmlComplete: true }]),
     [content, streaming],
   );
 
@@ -171,12 +224,12 @@ export const MarkdownMessage = memo(function MarkdownMessage({
     <div className="markdown-content" data-streaming={streaming || undefined}>
       {streaming ? blocks.map((block, index) => (
         <MarkdownBlock
-          content={block}
+          block={block}
           isStreamingTail={index === blocks.length - 1}
           key={index}
         />
       )) : (
-        <MarkdownBlock content={content} isStreamingTail={false} />
+        <MarkdownBlock block={blocks[0]} isStreamingTail={false} />
       )}
     </div>
   );
