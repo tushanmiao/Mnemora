@@ -55,17 +55,6 @@
   font-size: 12px;
 }
 
-.settings-about {
-  display: grid;
-  width: min(560px, 100%);
-  padding: 22px 0;
-  gap: 8px;
-  border-top: 1px solid var(--color-border-soft);
-}
-
-.settings-about strong { font-size: 18px; }
-.settings-about span, .settings-about p { margin: 0; color: var(--color-muted); font-size: 12px; }
-
 .settings-nav-item {
   display: flex;
   width: 100%;
