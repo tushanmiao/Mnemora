@@ -198,14 +198,9 @@ OfficeCLI 未来如果接入，也会通过固定工具、用户审批、安全�
 
 [src-tauri/resources/skills/THIRD_PARTY_NOTICES.md](src-tauri/resources/skills/THIRD_PARTY_NOTICES.md)
 
-## 项目文档
+## 本地设计文档
 
-- [项目计划](md/plan/)
-- [参考研究](md/reference/)
-- [项目总结](md/Summary/)
-- [Git 命令记录](md/git_order/)
-
-md 目录用于学习和设计记录，按项目约定不提交到 Git。
+开发工作区中的 md 目录保存项目计划、参考研究、项目总结和 Git 学习记录。该目录按项目约定仅用于本地学习与设计，不提交到 GitHub，因此 README 不提供会失效的远程链接。
 
 ## 许可证说明
 
