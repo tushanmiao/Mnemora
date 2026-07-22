@@ -1,0 +1,27 @@
+.startup-failure {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  padding: 28px;
+  place-items: center;
+  color: #252a27;
+  background: #f7f8f6;
+}
+
+.startup-failure-panel {
+  display: grid;
+  width: min(560px, 100%);
+  padding: 28px;
+  gap: 14px;
+  border: 1px solid #dce1dc;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.startup-failure-brand { color: #3f6f5a; font-size: 12px; font-weight: 700; }
+.startup-failure h1 { margin: 0; font-size: 20px; letter-spacing: 0; }
+.startup-failure p { margin: 0; color: #4b524e; line-height: 1.6; }
+.startup-failure code { max-height: 120px; padding: 10px; overflow: auto; color: #7b3030; background: #fff0f0; white-space: pre-wrap; word-break: break-word; }
+.startup-failure-actions { display: flex; gap: 8px; }
+.startup-failure button { display: inline-flex; height: 36px; padding: 0 12px; align-items: center; gap: 7px; border: 1px solid #dce1dc; border-radius: 6px; background: #fff; cursor: pointer; }
+.startup-failure button:first-child { color: #fff; border-color: #3f6f5a; background: #3f6f5a; }

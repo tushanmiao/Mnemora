@@ -13,7 +13,7 @@ use crate::ai::{
     stream::{send_sse_request, sse::SseReadOutcome},
     types::{
         ModelRequest, ModelResponse, ModelRole, ModelStreamChunk, ModelStreamOutcome,
-        ModelStreamSummary, ModelUsage, ProviderRequestContext,
+        ModelStreamSummary, ModelToolCall, ModelUsage, ProviderRequestContext,
     },
 };
 
@@ -63,6 +63,7 @@ where
     let mut saw_text = false;
     let mut finish_reason = None;
     let mut usage = None;
+    let mut tool_calls = Vec::<ModelToolCall>::new();
     let outcome = send_sse_request(
         request_builder.json(&request_body(request)),
         context.api_key,
@@ -92,6 +93,19 @@ where
                     .into_iter()
                     .flatten()
                 {
+                    if let Some(function_call) = part.get("functionCall") {
+                        let index = tool_calls.len();
+                        let call = parse_function_call(function_call, part, index)?;
+                        on_chunk(ModelStreamChunk::ToolCallDelta {
+                            index,
+                            id: Some(call.id.clone()),
+                            name: Some(call.name.clone()),
+                            arguments_delta: call.arguments.to_string(),
+                            provider_signature: call.provider_signature.clone(),
+                        })?;
+                        tool_calls.push(call);
+                        continue;
+                    }
                     let Some(delta) = part.get("text").and_then(Value::as_str) else {
                         continue;
                     };
@@ -122,7 +136,7 @@ where
     if outcome == SseReadOutcome::Cancelled {
         return Ok(ModelStreamOutcome::Cancelled);
     }
-    if !saw_text {
+    if !saw_text && tool_calls.is_empty() {
         return Err(ModelError::invalid_response(
             "Gemini 流式响应没有可显示的文本内容。",
         ));
@@ -130,6 +144,7 @@ where
     Ok(ModelStreamOutcome::Completed(ModelStreamSummary {
         finish_reason,
         usage,
+        tool_calls,
     }))
 }
 
@@ -165,12 +180,23 @@ pub(crate) fn request_body(request: &ModelRequest) -> Value {
         .messages
         .iter()
         .map(|message| {
-            let role = match message.role {
-                ModelRole::User => "user",
-                ModelRole::Assistant => "model",
+            let role = if message.role == ModelRole::Assistant {
+                "model"
+            } else {
+                "user"
             };
             let mut parts = Vec::new();
-            if !message.content.trim().is_empty() {
+            if message.role == ModelRole::Tool {
+                if let Some(result) = message.tool_result.as_ref() {
+                    parts.push(json!({
+                        "functionResponse": {
+                            "id": result.call_id,
+                            "name": result.name,
+                            "response": { "result": result.content, "isError": result.is_error }
+                        }
+                    }));
+                }
+            } else if !message.content.trim().is_empty() {
                 parts.push(json!({ "text": message.content }));
             }
             parts.extend(message.images.iter().map(|image| {
@@ -180,6 +206,19 @@ pub(crate) fn request_body(request: &ModelRequest) -> Value {
                         "data": image.data_base64
                     }
                 })
+            }));
+            parts.extend(message.tool_calls.iter().map(|call| {
+                let mut part = json!({
+                    "functionCall": {
+                        "id": call.id,
+                        "name": call.name,
+                        "args": call.arguments
+                    }
+                });
+                if let Some(signature) = call.provider_signature.as_ref() {
+                    part["thoughtSignature"] = Value::String(signature.clone());
+                }
+                part
             }));
             json!({ "role": role, "parts": parts })
         })
@@ -209,6 +248,18 @@ pub(crate) fn request_body(request: &ModelRequest) -> Value {
         body.insert(
             "generationConfig".to_string(),
             Value::Object(generation_config),
+        );
+    }
+    if !request.tools.is_empty() {
+        body.insert(
+            "tools".to_string(),
+            json!([{
+                "functionDeclarations": request.tools.iter().map(|tool| json!({
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.input_schema
+                })).collect::<Vec<_>>()
+            }]),
         );
     }
     Value::Object(body)
@@ -241,7 +292,16 @@ fn parse_response(value: &Value, include_reasoning: bool) -> Result<ModelRespons
         .filter(|part| part.get("thought").and_then(Value::as_bool) != Some(true))
         .filter_map(|part| part.get("text").and_then(Value::as_str))
         .collect::<String>();
-    if text.is_empty() {
+    let tool_calls = candidate
+        .pointer("/content/parts")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .enumerate()
+        .filter_map(|(index, part)| part.get("functionCall").map(|call| (index, call, part)))
+        .map(|(index, call, part)| parse_function_call(call, part, index))
+        .collect::<Result<Vec<_>, _>>()?;
+    if text.is_empty() && tool_calls.is_empty() {
         if finish_reason.as_deref() == Some("SAFETY") {
             return Err(ModelError::content_filtered(
                 "Gemini 因安全策略没有返回文本内容。",
@@ -269,6 +329,41 @@ fn parse_response(value: &Value, include_reasoning: bool) -> Result<ModelRespons
             .flatten(),
         finish_reason,
         usage: value.get("usageMetadata").map(parse_usage),
+        tool_calls,
+    })
+}
+
+fn parse_function_call(
+    function_call: &Value,
+    part: &Value,
+    index: usize,
+) -> Result<ModelToolCall, ModelError> {
+    let name = function_call
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let id = function_call
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("gemini_call_{index}_{name}"));
+    let arguments = function_call
+        .get("args")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    if name.trim().is_empty() || !arguments.is_object() {
+        return Err(ModelError::invalid_response(
+            "Gemini 工具调用缺少名称或对象参数。",
+        ));
+    }
+    Ok(ModelToolCall {
+        id,
+        name: name.to_string(),
+        arguments,
+        provider_signature: part
+            .get("thoughtSignature")
+            .and_then(Value::as_str)
+            .map(str::to_string),
     })
 }
 
@@ -309,7 +404,10 @@ pub fn parse_models(value: &Value) -> Result<Vec<String>, String> {
 mod tests {
     use serde_json::json;
 
-    use crate::ai::types::{ModelImage, ModelMessage, ModelOptions, ModelRequest, ModelRole};
+    use crate::ai::types::{
+        ModelImage, ModelMessage, ModelOptions, ModelRequest, ModelRole, ModelTool, ModelToolCall,
+        ModelToolResult,
+    };
 
     #[test]
     fn parses_gemini_models_without_models_prefix() {
@@ -332,8 +430,11 @@ mod tests {
                 role: ModelRole::Assistant,
                 content: "Previous".to_string(),
                 images: Vec::new(),
+                tool_calls: Vec::new(),
+                tool_result: None,
             }],
             options: ModelOptions::default(),
+            tools: Vec::new(),
         };
         let url =
             super::generate_content_url("https://example.com/v1beta", &request.model).unwrap();
@@ -360,8 +461,11 @@ mod tests {
                     media_type: "image/png".to_string(),
                     data_base64: "aGVsbG8=".to_string(),
                 }],
+                tool_calls: Vec::new(),
+                tool_result: None,
             }],
             options: ModelOptions::default(),
+            tools: Vec::new(),
         });
 
         assert_eq!(
@@ -409,11 +513,14 @@ mod tests {
                 role: ModelRole::User,
                 content: "Solve it".to_string(),
                 images: Vec::new(),
+                tool_calls: Vec::new(),
+                tool_result: None,
             }],
             options: ModelOptions {
                 thinking_enabled: true,
                 ..ModelOptions::default()
             },
+            tools: Vec::new(),
         };
         let body = super::request_body(&request);
         assert_eq!(
@@ -435,5 +542,79 @@ mod tests {
         .unwrap();
         assert_eq!(response.text, "Answer");
         assert_eq!(response.reasoning.as_deref(), Some("Plan first."));
+    }
+
+    #[test]
+    fn maps_tools_results_and_replays_thought_signature() {
+        let body = super::request_body(&ModelRequest {
+            model: "gemini-test".to_string(),
+            system_prompt: None,
+            messages: vec![
+                ModelMessage {
+                    role: ModelRole::Assistant,
+                    content: String::new(),
+                    images: Vec::new(),
+                    tool_calls: vec![ModelToolCall {
+                        id: "call_1".to_string(),
+                        name: "skill".to_string(),
+                        arguments: json!({ "id": "summarize" }),
+                        provider_signature: Some("signed-thought".to_string()),
+                    }],
+                    tool_result: None,
+                },
+                ModelMessage {
+                    role: ModelRole::Tool,
+                    content: String::new(),
+                    images: Vec::new(),
+                    tool_calls: Vec::new(),
+                    tool_result: Some(ModelToolResult {
+                        call_id: "call_1".to_string(),
+                        name: "skill".to_string(),
+                        content: "loaded".to_string(),
+                        is_error: false,
+                    }),
+                },
+            ],
+            options: ModelOptions::default(),
+            tools: vec![ModelTool {
+                name: "skill".to_string(),
+                description: "load skill".to_string(),
+                input_schema: json!({ "type": "object" }),
+            }],
+        });
+
+        assert_eq!(body["tools"][0]["functionDeclarations"][0]["name"], "skill");
+        assert_eq!(
+            body["contents"][0]["parts"][0]["thoughtSignature"],
+            "signed-thought"
+        );
+        assert_eq!(
+            body["contents"][1]["parts"][0]["functionResponse"]["id"],
+            "call_1"
+        );
+    }
+
+    #[test]
+    fn accepts_multiple_tool_only_parts_and_preserves_signature() {
+        let response = super::parse_response(
+            &json!({
+                "candidates": [{
+                    "content": { "parts": [
+                        { "functionCall": { "id": "call_1", "name": "first", "args": { "value": 1 } }, "thoughtSignature": "sig-1" },
+                        { "functionCall": { "id": "call_2", "name": "second", "args": { "value": 2 } }, "thoughtSignature": "sig-2" }
+                    ] },
+                    "finishReason": "STOP"
+                }]
+            }),
+            false,
+        )
+        .unwrap();
+        assert!(response.text.is_empty());
+        assert_eq!(response.tool_calls.len(), 2);
+        assert_eq!(
+            response.tool_calls[0].provider_signature.as_deref(),
+            Some("sig-1")
+        );
+        assert_eq!(response.tool_calls[1].arguments["value"], 2);
     }
 }

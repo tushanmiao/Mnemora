@@ -6,8 +6,13 @@
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 
-pub const CURRENT_APP_SETTINGS_VERSION: u32 = 4;
+use crate::memory::MemorySettings;
+
+pub const CURRENT_APP_SETTINGS_VERSION: u32 = 6;
 const MAX_AVATAR_DATA_URL_BYTES: usize = 3 * 1024 * 1024;
+const MAX_THEME_BACKGROUND_CSS_BYTES: usize = 2_048;
+const MIN_SURFACE_OPACITY: u8 = 72;
+const MAX_SURFACE_OPACITY: u8 = 100;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -28,11 +33,48 @@ pub enum ThemeMode {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub enum ThemePreset {
+    #[default]
+    Mnemora,
+    Forest,
+    Ocean,
+    Rose,
+    Paper,
+    Graphite,
+    HighContrast,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum ThemeColor {
     #[default]
     Neutral,
     Warm,
     Cool,
+    Rose,
+    Amber,
+    Violet,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThemeBackgroundSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub css: String,
+    #[serde(default = "default_surface_opacity")]
+    pub surface_opacity: u8,
+}
+
+impl Default for ThemeBackgroundSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            css: String::new(),
+            surface_opacity: default_surface_opacity(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -55,7 +97,11 @@ pub struct AppSettings {
     #[serde(default)]
     pub theme: ThemeMode,
     #[serde(default)]
+    pub theme_preset: ThemePreset,
+    #[serde(default)]
     pub theme_color: ThemeColor,
+    #[serde(default)]
+    pub theme_background: ThemeBackgroundSettings,
     #[serde(default = "default_font_size")]
     pub font_size: u8,
     #[serde(default)]
@@ -82,6 +128,8 @@ pub struct AppSettings {
     pub system_prompt: String,
     #[serde(default)]
     pub request_debug_enabled: bool,
+    #[serde(default)]
+    pub memory: MemorySettings,
 }
 
 fn current_version() -> u32 {
@@ -100,6 +148,10 @@ fn default_font_size() -> u8 {
     14
 }
 
+fn default_surface_opacity() -> u8 {
+    92
+}
+
 fn default_max_output_tokens() -> u32 {
     32_768
 }
@@ -110,7 +162,9 @@ impl Default for AppSettings {
             version: CURRENT_APP_SETTINGS_VERSION,
             interface_language: InterfaceLanguage::Zh,
             theme: ThemeMode::System,
+            theme_preset: ThemePreset::Mnemora,
             theme_color: ThemeColor::Neutral,
+            theme_background: ThemeBackgroundSettings::default(),
             font_size: 14,
             launch_at_startup: false,
             retry_enabled: true,
@@ -124,6 +178,7 @@ impl Default for AppSettings {
             response_language: ResponseLanguage::FollowInput,
             system_prompt: String::new(),
             request_debug_enabled: false,
+            memory: MemorySettings::default(),
         }
     }
 }
@@ -145,6 +200,7 @@ impl AppSettings {
         self.user_avatar = self.user_avatar.trim().to_string();
         self.working_directory = self.working_directory.trim().to_string();
         self.system_prompt = self.system_prompt.trim().to_string();
+        self.theme_background.css = self.theme_background.css.trim().to_string();
 
         if self.user_display_name.chars().count() > 100 {
             return Err("User display name is too long".to_string());
@@ -176,6 +232,19 @@ impl AppSettings {
         if !(12..=20).contains(&self.font_size) {
             return Err("Font size must be between 12 and 20".to_string());
         }
+        if !(MIN_SURFACE_OPACITY..=MAX_SURFACE_OPACITY)
+            .contains(&self.theme_background.surface_opacity)
+        {
+            return Err(format!(
+                "Theme surface opacity must be between {MIN_SURFACE_OPACITY} and {MAX_SURFACE_OPACITY}"
+            ));
+        }
+        if self.theme_background.enabled && self.theme_background.css.is_empty() {
+            return Err("Enabled theme background requires a CSS value".to_string());
+        }
+        if !self.theme_background.css.is_empty() {
+            validate_theme_background_css(&self.theme_background.css)?;
+        }
         if !(1..=5).contains(&self.retry_attempts) {
             return Err("Retry attempts must be between 1 and 5".to_string());
         }
@@ -189,19 +258,115 @@ impl AppSettings {
     }
 }
 
+fn validate_theme_background_css(value: &str) -> Result<(), String> {
+    if value.len() > MAX_THEME_BACKGROUND_CSS_BYTES {
+        return Err(format!(
+            "Theme background CSS cannot exceed {MAX_THEME_BACKGROUND_CSS_BYTES} bytes"
+        ));
+    }
+    if value.chars().any(|character| {
+        !(character.is_ascii_alphanumeric()
+            || character.is_ascii_whitespace()
+            || matches!(
+                character,
+                '#' | '(' | ')' | ',' | '.' | '%' | '+' | '-' | '/'
+            ))
+    }) {
+        return Err("Theme background CSS contains unsupported characters".to_string());
+    }
+
+    let lower = value.to_ascii_lowercase();
+    for blocked in [
+        "url(",
+        "image-set(",
+        "cross-fade(",
+        "paint(",
+        "element(",
+        "expression(",
+        "@import",
+        "javascript",
+        "data:",
+        "http:",
+        "https:",
+        "file:",
+        "/*",
+        "*/",
+    ] {
+        if lower.contains(blocked) {
+            return Err("Theme background CSS cannot load resources or execute code".to_string());
+        }
+    }
+
+    let mut depth = 0i32;
+    for character in value.chars() {
+        match character {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth < 0 {
+                    return Err("Theme background CSS has unbalanced parentheses".to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    if depth != 0 {
+        return Err("Theme background CSS has unbalanced parentheses".to_string());
+    }
+
+    let allowed_functions = [
+        "linear-gradient",
+        "repeating-linear-gradient",
+        "radial-gradient",
+        "repeating-radial-gradient",
+        "conic-gradient",
+        "repeating-conic-gradient",
+        "rgb",
+        "rgba",
+        "hsl",
+        "hsla",
+        "hwb",
+        "lab",
+        "lch",
+        "oklab",
+        "oklch",
+        "color",
+        "color-mix",
+    ];
+    for (index, character) in value.char_indices() {
+        if character != '(' {
+            continue;
+        }
+        let prefix = &value[..index];
+        let name = prefix
+            .rsplit(|character: char| !(character.is_ascii_alphanumeric() || character == '-'))
+            .next()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if !allowed_functions.contains(&name.as_str()) {
+            return Err(format!("Unsupported theme background function: {name}"));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{AppSettings, ThemeMode, CURRENT_APP_SETTINGS_VERSION};
+    use super::{AppSettings, ThemeMode, ThemePreset, CURRENT_APP_SETTINGS_VERSION};
 
     #[test]
     fn defaults_are_versioned_and_streaming_is_enabled() {
         let settings = AppSettings::default();
         assert_eq!(settings.version, CURRENT_APP_SETTINGS_VERSION);
         assert_eq!(settings.theme, ThemeMode::System);
+        assert_eq!(settings.theme_preset, ThemePreset::Mnemora);
         assert!(settings.stream_enabled);
         assert!(!settings.request_debug_enabled);
         assert_eq!(settings.retry_attempts, 5);
         assert_eq!(settings.font_size, 14);
+        assert_eq!(settings.theme_background.surface_opacity, 92);
+        assert!(!settings.memory.enabled);
+        assert!(!settings.memory.allow_model_write);
     }
 
     #[test]
@@ -229,5 +394,40 @@ mod tests {
         .unwrap();
         assert_eq!(settings.retry_attempts, 5);
         assert_eq!(settings.version, CURRENT_APP_SETTINGS_VERSION);
+    }
+
+    #[test]
+    fn accepts_safe_theme_background_and_rejects_external_resources() {
+        let mut settings = AppSettings {
+            theme_background: super::ThemeBackgroundSettings {
+                enabled: true,
+                css: "linear-gradient(135deg, #f7f8f6, #dfeae3)".to_string(),
+                surface_opacity: 88,
+            },
+            ..AppSettings::default()
+        };
+        settings = settings.normalize_and_validate().unwrap();
+        assert_eq!(settings.theme_background.surface_opacity, 88);
+
+        settings.theme_background.css = "url(https://example.com/bg.png)".to_string();
+        assert!(settings.normalize_and_validate().is_err());
+    }
+
+    #[test]
+    fn old_settings_without_theme_fields_use_new_defaults() {
+        let value = serde_json::json!({
+            "version": 5,
+            "interfaceLanguage": "zh",
+            "theme": "system",
+            "themeColor": "neutral",
+            "fontSize": 14,
+            "retryEnabled": true,
+            "retryAttempts": 5,
+            "maxOutputTokens": 32768
+        });
+        let settings: AppSettings = serde_json::from_value(value).unwrap();
+        assert_eq!(settings.theme_preset, ThemePreset::Mnemora);
+        assert!(!settings.theme_background.enabled);
+        assert_eq!(settings.theme_background.surface_opacity, 92);
     }
 }

@@ -31,10 +31,11 @@ pub enum MessageStatus {
     Error,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum AiPermissionMode {
     AskEveryTime,
+    #[default]
     AskSensitive,
     FullAccess,
 }
@@ -47,6 +48,17 @@ pub struct ModelSnapshot {
     pub display_name: String,
     pub provider_id: String,
     pub provider_name: String,
+}
+
+/** 助手消息生成时实际激活的 Skill 版本快照，不复制完整技能正文。 */
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivatedSkillSnapshot {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    pub content_hash: String,
+    pub activation: String,
 }
 
 /** 会话消息中附件的轻量元数据；文件正文保存在会话独立目录，不写入 JSON。 */
@@ -111,7 +123,7 @@ impl StoredChatAttachment {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StoredChatMessage {
     pub id: String,
@@ -131,11 +143,15 @@ pub struct StoredChatMessage {
     pub model_snapshot: Option<ModelSnapshot>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<ModelUsage>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub activated_skills: Vec<ActivatedSkillSnapshot>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_traces: Vec<crate::chat::agent::ToolTraceSnapshot>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_message: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StoredConversation {
     pub id: String,
@@ -154,6 +170,8 @@ pub struct StoredConversation {
     pub compressed_until_message_id: Option<String>,
     #[serde(default)]
     pub context_compression_count: u32,
+    #[serde(default)]
+    pub enabled_skill_ids: Vec<String>,
     pub permission_mode: AiPermissionMode,
     pub project_id: Option<String>,
     pub collection_id: Option<String>,
@@ -229,6 +247,16 @@ impl StoredConversation {
         }
         validate_optional_id("Project ID", self.project_id.as_deref())?;
         validate_optional_id("Collection ID", self.collection_id.as_deref())?;
+        if self.enabled_skill_ids.len() > 64 {
+            return Err("Conversation cannot enable more than 64 skills".to_string());
+        }
+        let mut enabled_skill_ids = std::collections::HashSet::new();
+        for skill_id in &self.enabled_skill_ids {
+            crate::skills::validate_skill_id(skill_id)?;
+            if !enabled_skill_ids.insert(skill_id) {
+                return Err("Conversation contains duplicate skill IDs".to_string());
+            }
+        }
 
         for message in &self.messages {
             validate_stable_id("Message ID", &message.id)?;
@@ -264,6 +292,31 @@ impl StoredConversation {
             if let Some(snapshot) = &message.model_snapshot {
                 validate_stable_id("Snapshot model ID", &snapshot.id)?;
                 validate_stable_id("Snapshot provider ID", &snapshot.provider_id)?;
+            }
+            if message.activated_skills.len() > 3 {
+                return Err("Chat message cannot activate more than 3 skills".to_string());
+            }
+            for skill in &message.activated_skills {
+                crate::skills::validate_skill_id(&skill.id)?;
+                if skill.name.trim().is_empty()
+                    || skill.version.trim().is_empty()
+                    || !skill.content_hash.starts_with("sha256:")
+                    || !matches!(skill.activation.as_str(), "manual" | "slash" | "model")
+                {
+                    return Err("Chat message contains an invalid skill snapshot".to_string());
+                }
+            }
+            if message.tool_traces.len() > 64 {
+                return Err("Chat message cannot contain more than 64 tool traces".to_string());
+            }
+            if message.tool_traces.iter().any(|trace| {
+                trace.argument_summary.chars().count() > 500
+                    || trace
+                        .preview
+                        .as_deref()
+                        .is_some_and(|value| value.chars().count() > 2_000)
+            }) {
+                return Err("Chat message tool trace is too long".to_string());
             }
         }
         Ok(())

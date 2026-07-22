@@ -10,7 +10,7 @@ use std::collections::HashSet;
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 
-pub const CURRENT_MODEL_SETTINGS_VERSION: u32 = 3;
+pub const CURRENT_MODEL_SETTINGS_VERSION: u32 = 4;
 const MAX_PROVIDERS: usize = 100;
 const MAX_MODELS_PER_PROVIDER: usize = 2_000;
 
@@ -41,7 +41,26 @@ pub enum AuthScheme {
     XGoogApiKey,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelPricing {
+    #[serde(default)]
+    pub input_per_million: Option<f64>,
+    #[serde(default)]
+    pub output_per_million: Option<f64>,
+    #[serde(default)]
+    pub cache_read_per_million: Option<f64>,
+    #[serde(default)]
+    pub cache_write_per_million: Option<f64>,
+    #[serde(default = "default_currency")]
+    pub currency: String,
+}
+
+fn default_currency() -> String {
+    "USD".to_string()
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderModelConfig {
     pub id: String,
@@ -49,10 +68,12 @@ pub struct ProviderModelConfig {
     pub display_name: String,
     #[serde(default)]
     pub context_window_tokens: Option<u64>,
+    #[serde(default)]
+    pub pricing: Option<ModelPricing>,
     pub enabled: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderConfig {
     pub id: String,
@@ -68,7 +89,7 @@ pub struct ProviderConfig {
     pub models: Vec<ProviderModelConfig>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelSettings {
     #[serde(default = "current_version")]
@@ -211,6 +232,30 @@ impl ModelSettings {
                         model.id
                     ));
                 }
+                if let Some(pricing) = &mut model.pricing {
+                    pricing.currency = pricing.currency.trim().to_ascii_uppercase();
+                    if pricing.currency.is_empty() {
+                        pricing.currency = default_currency();
+                    }
+                    if pricing.currency != "USD" {
+                        return Err(format!(
+                            "Model '{}' pricing currently only supports USD",
+                            model.id
+                        ));
+                    }
+                    for (label, rate) in [
+                        ("input", pricing.input_per_million),
+                        ("output", pricing.output_per_million),
+                        ("cache read", pricing.cache_read_per_million),
+                        ("cache write", pricing.cache_write_per_million),
+                    ] {
+                        if rate.is_some_and(|value| {
+                            !value.is_finite() || !(0.0..=1_000_000.0).contains(&value)
+                        }) {
+                            return Err(format!("Model '{}' {label} price is invalid", model.id));
+                        }
+                    }
+                }
             }
         }
 
@@ -316,6 +361,7 @@ mod tests {
             api_model: "  gpt-test  ".to_string(),
             display_name: "  ".to_string(),
             context_window_tokens: Some(128_000),
+            pricing: None,
             enabled: true,
         });
 
@@ -338,6 +384,7 @@ mod tests {
                 api_model: "gpt-test".to_string(),
                 display_name: "One".to_string(),
                 context_window_tokens: None,
+                pricing: None,
                 enabled: true,
             },
             ProviderModelConfig {
@@ -345,6 +392,7 @@ mod tests {
                 api_model: "gpt-test".to_string(),
                 display_name: "Two".to_string(),
                 context_window_tokens: None,
+                pricing: None,
                 enabled: true,
             },
         ];
@@ -355,13 +403,16 @@ mod tests {
 
     #[test]
     fn migrates_missing_context_window_to_lightweight_default() {
-        let mut settings = ModelSettings::default();
-        settings.version = 2;
+        let mut settings = ModelSettings {
+            version: 2,
+            ..ModelSettings::default()
+        };
         settings.providers[0].models.push(ProviderModelConfig {
             id: "model-context".to_string(),
             api_model: "model-context".to_string(),
             display_name: "Model Context".to_string(),
             context_window_tokens: None,
+            pricing: None,
             enabled: true,
         });
         let settings = settings.normalize_and_validate().unwrap();

@@ -10,6 +10,8 @@ import {
   LoaderCircle,
   Pencil,
   RefreshCcw,
+  Sparkles,
+  Wrench,
   Trash2,
   UserRound,
   X,
@@ -18,6 +20,7 @@ import type { ChatMessage } from "../../../types/chat";
 import { MarkdownMessage } from "./MarkdownMessage";
 import { ChatAttachments } from "./ChatAttachments";
 import { useStreamingMessage } from "../stores/streamingStore";
+import { resolveToolApproval } from "../api/chat";
 import "../styles/message-bubble.css";
 
 const LONG_USER_MESSAGE_CHARACTERS = 420;
@@ -72,9 +75,15 @@ export const MessageBubble = memo(function MessageBubble({
   const isStreaming = message.status === "streaming" || streamingSnapshot !== null;
   const hasContent = displayedContent.trim().length > 0;
   const attachments = message.attachments ?? [];
+  const activatedSkills = message.activatedSkills ?? [];
+  const toolTraces = message.toolTraces ?? [];
   const hasAttachments = attachments.length > 0;
   const hasReasoning = displayedReasoning.trim().length > 0;
-  const isWaiting = isAssistant && message.status === "pending" && !hasContent && !hasReasoning;
+  const isWaiting = isAssistant
+    && message.status === "pending"
+    && !hasContent
+    && !hasReasoning
+    && toolTraces.length === 0;
   const isStopped = message.status === "stopped";
   const isError = message.status === "error";
   const showFooter = !isStreaming && message.status !== "pending";
@@ -85,6 +94,7 @@ export const MessageBubble = memo(function MessageBubble({
   const { reasoningOpen, userExpanded, editing } = uiState;
   const editDraft = uiState.editDraft;
   const [copied, setCopied] = useState(false);
+  const [resolvingApprovalId, setResolvingApprovalId] = useState<string | null>(null);
   const copyResetTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -100,22 +110,8 @@ export const MessageBubble = memo(function MessageBubble({
     if (copyResetTimerRef.current !== null) window.clearTimeout(copyResetTimerRef.current);
   }, []);
 
-  const usageParts = message.usage
-    ? [
-        message.usage.inputTokens !== undefined
-          ? `输入 ${message.usage.inputTokens}`
-          : null,
-        message.usage.outputTokens !== undefined
-          ? `输出 ${message.usage.outputTokens}`
-          : null,
-        message.usage.reasoningTokens !== undefined
-          ? `思考 ${message.usage.reasoningTokens}`
-          : null,
-        message.usage.totalDurationMs !== undefined
-          ? `${(message.usage.totalDurationMs / 1000).toFixed(1)} 秒`
-          : null,
-      ].filter((part): part is string => Boolean(part))
-    : [];
+  const usageParts = compactUsageParts(message.usage);
+  const usageTitle = detailedUsageTitle(message.usage);
 
   const copyContent = async () => {
     if (!hasContent || !navigator.clipboard) return;
@@ -131,6 +127,16 @@ export const MessageBubble = memo(function MessageBubble({
 
   const beginEditing = () => {
     onUiStateChange(message.id, { editing: true, editDraft: message.content });
+  };
+
+  const resolveApproval = async (approvalId: string, approved: boolean) => {
+    if (resolvingApprovalId) return;
+    setResolvingApprovalId(approvalId);
+    try {
+      await resolveToolApproval(approvalId, approved);
+    } finally {
+      setResolvingApprovalId(null);
+    }
   };
 
   const submitEdit = (event: FormEvent<HTMLFormElement>) => {
@@ -193,6 +199,56 @@ export const MessageBubble = memo(function MessageBubble({
             </p>
           ) : (
             <>
+              {isAssistant && activatedSkills.length > 0 ? (
+                <div className="message-skills" aria-label="本轮启用的技能">
+                  {activatedSkills.map((skill) => (
+                    <span
+                      key={skill.id}
+                      title={`${skill.name} · v${skill.version} · ${skill.activation === "slash" ? "Slash 激活" : skill.activation === "model" ? "模型激活" : "手动激活"}`}
+                    >
+                      <Sparkles size={12} />
+                      {skill.name}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+              {isAssistant && toolTraces.length > 0 ? (
+                <div className="message-tools" aria-label="工具调用轨迹">
+                  {toolTraces.map((trace) => (
+                    <details className={`message-tool message-tool-${trace.status}`} key={trace.callId} open={trace.status === "awaitingApproval"}>
+                      <summary>
+                        <Wrench size={13} />
+                        <strong>{toolNameLabel(trace.name)}</strong>
+                        <span>{toolStatusLabel(trace.status)}</span>
+                        {trace.durationMs !== undefined ? <small>{formatCompactDuration(trace.durationMs)}</small> : null}
+                      </summary>
+                      <div className="message-tool-detail">
+                        <code>{trace.argumentSummary}</code>
+                        {trace.preview ? <p>{trace.preview}</p> : null}
+                        {trace.status === "awaitingApproval" && trace.approvalId ? (
+                          <div className="message-tool-approval">
+                            <button
+                              type="button"
+                              disabled={resolvingApprovalId !== null}
+                              onClick={() => void resolveApproval(trace.approvalId!, false)}
+                            >
+                              拒绝
+                            </button>
+                            <button
+                              className="message-tool-approve"
+                              type="button"
+                              disabled={resolvingApprovalId !== null}
+                              onClick={() => void resolveApproval(trace.approvalId!, true)}
+                            >
+                              允许本次
+                            </button>
+                          </div>
+                        ) : null}
+                      </div>
+                    </details>
+                  ))}
+                </div>
+              ) : null}
               {hasReasoning ? (
                 <section className={`message-reasoning${reasoningOpen ? " is-open" : ""}`}>
                   <button
@@ -308,7 +364,7 @@ export const MessageBubble = memo(function MessageBubble({
               </button>
             </div>
             {usageParts.length > 0 ? (
-              <div className="message-usage" title="本次模型请求用量">
+              <div className="message-usage" title={usageTitle}>
                 {usageParts.map((part) => <span key={part}>{part}</span>)}
               </div>
             ) : null}
@@ -318,3 +374,61 @@ export const MessageBubble = memo(function MessageBubble({
     </article>
   );
 });
+
+function toolNameLabel(name: string) {
+  if (name === "skill") return "加载技能";
+  if (name === "read_attachment_text") return "读取文本附件";
+  if (name === "read_pdf_pages") return "读取 PDF 页面";
+  return name;
+}
+
+function toolStatusLabel(status: string) {
+  if (status === "awaitingApproval") return "等待确认";
+  if (status === "running") return "执行中";
+  if (status === "completed") return "已完成";
+  if (status === "rejected") return "已拒绝";
+  return "失败";
+}
+
+function formatCompactDuration(value: number) {
+  return value < 1_000 ? `${Math.round(value)} ms` : `${(value / 1_000).toFixed(1)} s`;
+}
+
+function compactUsageParts(usage?: ChatMessage["usage"]) {
+  if (!usage) return [];
+  const cacheRate = usage.inputTokens
+    ? (usage.cacheReadTokens ?? 0) / usage.inputTokens
+    : null;
+  return [
+    usage.totalTokens !== undefined ? formatCompactNumber(usage.totalTokens) : null,
+    usage.inputTokens !== undefined ? `↑ ${formatCompactNumber(usage.inputTokens)}` : null,
+    usage.outputTokens !== undefined ? `↓ ${formatCompactNumber(usage.outputTokens)}` : null,
+    cacheRate !== null && usage.cacheReadTokens ? `缓存 ${(cacheRate * 100).toFixed(0)}%` : null,
+    usage.costUsd !== undefined ? `$${usage.costUsd.toFixed(usage.costUsd < 0.01 ? 4 : 3)}` : null,
+    usage.timeToFirstTokenMs !== undefined ? `首字 ${formatCompactDuration(usage.timeToFirstTokenMs)}` : null,
+    usage.outputTokensPerSecond !== undefined ? `${usage.outputTokensPerSecond.toFixed(1)} tok/s` : null,
+    (usage.callCount ?? 1) > 1 ? `${usage.callCount} 轮` : null,
+  ].filter((part): part is string => Boolean(part));
+}
+
+function detailedUsageTitle(usage?: ChatMessage["usage"]) {
+  if (!usage) return "";
+  return [
+    `普通输入：${usage.nonCachedInputTokens ?? "-"}`,
+    `缓存读取：${usage.cacheReadTokens ?? "-"}`,
+    `缓存创建：${usage.cacheWriteTokens ?? "-"}`,
+    `输出：${usage.outputTokens ?? "-"}`,
+    `思考：${usage.reasoningTokens ?? "-"}`,
+    `模型调用：${usage.callCount ?? 1} 次`,
+    `总耗时：${usage.totalDurationMs !== undefined ? formatCompactDuration(usage.totalDurationMs) : "-"}`,
+    `Usage 来源：${usage.usageSource ?? "missing"}`,
+    `成本来源：${usage.costSource ?? "missing"}`,
+  ].join("\n");
+}
+
+function formatCompactNumber(value: number) {
+  return new Intl.NumberFormat("zh-CN", {
+    notation: value >= 10_000 ? "compact" : "standard",
+    maximumFractionDigits: 1,
+  }).format(value);
+}

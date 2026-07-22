@@ -8,6 +8,7 @@
 //! 用量历史不进入数据库，也不常驻内存。聊天服务只在一次请求最终结束时记录一行，
 //! 查询与磁盘写入都放到阻塞线程执行，避免占用异步网络运行时。
 
+pub mod normalize;
 mod recorder;
 mod stats;
 mod storage;
@@ -21,7 +22,33 @@ pub use recorder::{now_ms, record_model_call};
 pub use types::UsageRecordInput;
 
 use crate::state::AppState;
-use types::{UsageStatsQuery, UsageStatsResponse};
+use types::{UsageRecordsPage, UsageStatsQuery, UsageStatsResponse, UsageSummaryResponse};
+
+#[tauri::command]
+pub async fn usage_get_summary(
+    state: State<'_, AppState>,
+    query: Option<UsageStatsQuery>,
+) -> Result<UsageSummaryResponse, String> {
+    let query = query.unwrap_or_default();
+    let _guard = state.usage_operations.lock().await;
+    let usage_dir = state.usage_dir.clone();
+    tauri::async_runtime::spawn_blocking(move || stats::build_summary(&usage_dir, query))
+        .await
+        .map_err(|error| format!("用量摘要后台任务失败：{error}"))
+}
+
+#[tauri::command]
+pub async fn usage_get_records(
+    state: State<'_, AppState>,
+    query: Option<UsageStatsQuery>,
+) -> Result<UsageRecordsPage, String> {
+    let query = query.unwrap_or_default();
+    let _guard = state.usage_operations.lock().await;
+    let usage_dir = state.usage_dir.clone();
+    tauri::async_runtime::spawn_blocking(move || stats::build_records_page(&usage_dir, query))
+        .await
+        .map_err(|error| format!("用量明细后台任务失败：{error}"))
+}
 
 #[tauri::command]
 pub async fn usage_get_stats(
@@ -32,11 +59,24 @@ pub async fn usage_get_stats(
     let _guard = state.usage_operations.lock().await;
     let usage_dir = state.usage_dir.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let (records, skipped_records) = storage::read_records(&usage_dir);
-        Ok(stats::build_response(records, skipped_records, query))
+        let summary = stats::build_summary(&usage_dir, query.clone());
+        let page = stats::build_records_page(&usage_dir, query);
+        UsageStatsResponse {
+            summary: summary.summary,
+            trend: summary.trend,
+            logs: page.records,
+            provider_stats: summary.provider_stats,
+            model_stats: summary.model_stats,
+            operation_stats: summary.operation_stats,
+            filter_options: summary.filter_options,
+            total_logs: summary.total_logs,
+            // 摘要和明细会扫描相同文件；损坏行不能在兼容响应里重复计数。
+            skipped_records: summary.skipped_records.max(page.skipped_records),
+            next_cursor: page.next_cursor,
+        }
     })
     .await
-    .map_err(|error| format!("用量统计后台任务失败：{error}"))?
+    .map_err(|error| format!("用量统计后台任务失败：{error}"))
 }
 
 #[tauri::command]

@@ -1,9 +1,20 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
-import { createEmptyUsageStats, type UsageStatsQuery, type UsageStatsResponse } from "../../../types/usage";
+import {
+  createEmptyUsageRecords,
+  createEmptyUsageSummary,
+  type UsageRecordsPage,
+  type UsageStatsQuery,
+  type UsageSummaryResponse,
+} from "../../../types/usage";
 
-export function loadUsageStats(query: UsageStatsQuery): Promise<UsageStatsResponse> {
-  if (!isTauri()) return Promise.resolve(createEmptyUsageStats());
-  return invoke<UsageStatsResponse>("usage_get_stats", { query });
+export function loadUsageSummary(query: UsageStatsQuery): Promise<UsageSummaryResponse> {
+  if (!isTauri()) return Promise.resolve(createEmptyUsageSummary());
+  return invoke<UsageSummaryResponse>("usage_get_summary", { query });
+}
+
+export function loadUsageRecords(query: UsageStatsQuery): Promise<UsageRecordsPage> {
+  if (!isTauri()) return Promise.resolve(createEmptyUsageRecords());
+  return invoke<UsageRecordsPage>("usage_get_records", { query });
 }
 
 export function clearUsageStats(): Promise<void> {

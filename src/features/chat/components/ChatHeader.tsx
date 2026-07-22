@@ -23,6 +23,7 @@ type ChatHeaderProps = {
   selectedProviderId: string | null;
   selectedModelId: string | null;
   modelSelectionDisabled: boolean;
+  modelMenuRequest?: number;
   permission: AiPermissionMode;
   permissionDisabled: boolean;
   theme: "light" | "dark";
@@ -53,6 +54,7 @@ export function ChatHeader({
   selectedProviderId,
   selectedModelId,
   modelSelectionDisabled,
+  modelMenuRequest,
   permission,
   permissionDisabled,
   theme,
@@ -64,6 +66,7 @@ export function ChatHeader({
   const [permissionMenuOpen, setPermissionMenuOpen] = useState(false);
   const modelMenuRef = useRef<HTMLDivElement>(null);
   const permissionMenuRef = useRef<HTMLDivElement>(null);
+  const previousModelMenuRequest = useRef(modelMenuRequest);
 
   useEffect(() => {
     function closeMenu(event: MouseEvent) {
@@ -78,6 +81,16 @@ export function ChatHeader({
     document.addEventListener("mousedown", closeMenu);
     return () => document.removeEventListener("mousedown", closeMenu);
   }, []);
+
+  useEffect(() => {
+    if (modelMenuRequest === previousModelMenuRequest.current) return;
+    previousModelMenuRequest.current = modelMenuRequest;
+    if (modelMenuRequest === undefined) return;
+    if (!modelSelectionDisabled) {
+      setModelMenuOpen(true);
+      setPermissionMenuOpen(false);
+    }
+  }, [modelMenuRequest, modelSelectionDisabled]);
 
   return (
     <header className="chat-header">

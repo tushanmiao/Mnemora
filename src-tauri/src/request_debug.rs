@@ -101,7 +101,12 @@ pub fn build_request(
     request: &ModelRequest,
     stream: bool,
 ) -> Result<RequestDebugRequest, String> {
-    let raw = providers::build_debug_request(context, request, stream)?;
+    // 记忆正文只用于本次模型请求，调试记录中只保留脱敏占位符。
+    let mut debug_request = request.clone();
+    if let Some(system_prompt) = debug_request.system_prompt.as_mut() {
+        *system_prompt = redact_memory_sections(system_prompt);
+    }
+    let raw = providers::build_debug_request(context, &debug_request, stream)?;
     let serialized_size = serde_json::to_vec(&raw.body)
         .map(|body| body.len())
         .unwrap_or(MAX_REQUEST_BODY_BYTES.saturating_add(1));
@@ -126,6 +131,25 @@ pub fn build_request(
         body_truncated,
         stream,
     })
+}
+
+fn redact_memory_sections(value: &str) -> String {
+    const START: &str = "<mnemora_memory_l1>";
+    const END: &str = "</mnemora_memory_l1>";
+    let mut output = String::with_capacity(value.len());
+    let mut remaining = value;
+    while let Some(start) = remaining.find(START) {
+        output.push_str(&remaining[..start]);
+        let after_start = &remaining[start + START.len()..];
+        let Some(end) = after_start.find(END) else {
+            output.push_str("<mnemora_memory_l1>[已隐藏]</mnemora_memory_l1>");
+            return output;
+        };
+        output.push_str("<mnemora_memory_l1>[已隐藏]</mnemora_memory_l1>");
+        remaining = &after_start[end + END.len()..];
+    }
+    output.push_str(remaining);
+    output
 }
 
 pub fn success_response(
@@ -237,7 +261,9 @@ fn truncate_chars(value: &str, max_chars: usize) -> (String, bool) {
 
 #[cfg(test)]
 mod tests {
-    use super::{append_preview, truncate_chars, MAX_RESPONSE_PREVIEW_CHARS};
+    use super::{
+        append_preview, redact_memory_sections, truncate_chars, MAX_RESPONSE_PREVIEW_CHARS,
+    };
 
     #[test]
     fn response_preview_has_a_hard_character_limit() {
@@ -252,5 +278,14 @@ mod tests {
         append_preview(&mut preview, "xyz");
         assert_eq!(preview.chars().count(), MAX_RESPONSE_PREVIEW_CHARS);
         assert!(preview.ends_with('x'));
+    }
+
+    #[test]
+    fn debug_request_redacts_l1_memory_sections() {
+        let value = redact_memory_sections(
+            "before\n<mnemora_memory_l1>private preference</mnemora_memory_l1>\nafter",
+        );
+        assert!(!value.contains("private preference"));
+        assert!(value.contains("[已隐藏]"));
     }
 }

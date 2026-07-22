@@ -12,6 +12,7 @@ use super::{
     providers::{anthropic, gemini, openai_chat, openai_responses},
     types::{ApiProtocol, ModelRequest, ModelResponse, ModelUsage, ProviderRequestContext},
 };
+use crate::usage::normalize::normalize_usage;
 
 pub async fn complete(
     client: &Client,
@@ -31,5 +32,8 @@ pub async fn complete(
         .usage
         .get_or_insert_with(ModelUsage::default)
         .total_duration_ms = Some(duration_ms);
+    if let Some(usage) = response.usage.take() {
+        response.usage = Some(normalize_usage(context.protocol, usage));
+    }
     Ok(response)
 }

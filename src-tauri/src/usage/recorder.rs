@@ -1,11 +1,11 @@
-//! 单次模型调用记录器。
+//! 单次真实模型调用的持久化记录器。
 
 use std::{
     sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use crate::{ai::types::ModelUsage, state::AppState};
+use crate::{ai::types::UsageSource, state::AppState};
 
 use super::{
     storage,
@@ -23,30 +23,7 @@ pub fn now_ms() -> u64 {
 }
 
 pub async fn record_model_call(state: &AppState, input: UsageRecordInput) {
-    let usage = input.usage;
-    let has_provider_usage = usage.as_ref().is_some_and(has_provider_token_usage);
-    let input_tokens = usage.as_ref().and_then(|value| value.input_tokens);
-    let output_tokens = usage.as_ref().and_then(|value| value.output_tokens);
-    let cache_read_tokens = usage.as_ref().and_then(|value| value.cache_read_tokens);
-    let cache_write_tokens = usage.as_ref().and_then(|value| value.cache_write_tokens);
-    let effective_input = if input.protocol == "anthropicMessages" {
-        input_tokens
-            .unwrap_or(0)
-            .saturating_add(cache_read_tokens.unwrap_or(0))
-            .saturating_add(cache_write_tokens.unwrap_or(0))
-    } else {
-        input_tokens.unwrap_or(0)
-    };
-    let total_tokens = has_provider_usage.then(|| {
-        if input.protocol == "anthropicMessages" {
-            effective_input.saturating_add(output_tokens.unwrap_or(0))
-        } else {
-            usage
-                .as_ref()
-                .and_then(|value| value.total_tokens)
-                .unwrap_or_else(|| effective_input.saturating_add(output_tokens.unwrap_or(0)))
-        }
-    });
+    let usage = input.usage.unwrap_or_default();
     let record = UsageRecord {
         id: format!(
             "usage_{}_{}",
@@ -55,6 +32,9 @@ pub async fn record_model_call(state: &AppState, input: UsageRecordInput) {
         ),
         created_at_ms: input.created_at_ms,
         duration_ms: input.duration_ms,
+        time_to_first_token_ms: usage.time_to_first_token_ms,
+        generation_duration_ms: usage.generation_duration_ms,
+        output_tokens_per_second: usage.output_tokens_per_second,
         source: input.source,
         operation: input.operation,
         provider_id: input.provider_id,
@@ -65,21 +45,27 @@ pub async fn record_model_call(state: &AppState, input: UsageRecordInput) {
         protocol: input.protocol,
         status: input.status,
         status_code: input.status_code,
-        usage_source: if has_provider_usage {
-            "providerReported"
-        } else {
-            "missing"
-        }
-        .to_string(),
-        input_tokens,
-        output_tokens,
-        total_tokens,
-        reasoning_tokens: usage.as_ref().and_then(|value| value.reasoning_tokens),
-        cache_read_tokens,
-        cache_write_tokens,
-        cost_usd: None,
+        usage_source: usage_source_name(usage.usage_source).to_string(),
+        input_tokens: usage.input_tokens,
+        non_cached_input_tokens: usage.non_cached_input_tokens,
+        context_input_tokens: usage.context_input_tokens,
+        output_tokens: usage.output_tokens,
+        total_tokens: usage.total_tokens,
+        reasoning_tokens: usage.reasoning_tokens,
+        cache_read_tokens: usage.cache_read_tokens,
+        cache_write_tokens: usage.cache_write_tokens,
+        cost_usd: usage.cost_usd,
+        cost_source: usage.cost_source,
+        pricing_snapshot: usage.pricing_snapshot,
         conversation_id: input.conversation_id,
         message_id: input.message_id,
+        run_id: input.run_id,
+        round_index: input.round_index,
+        call_index: input.call_index,
+        parent_operation: input.parent_operation,
+        activated_skill_ids: input.activated_skill_ids,
+        tool_definition_count: input.tool_definition_count,
+        tool_call_count: input.tool_call_count,
         error_kind: input.error_kind,
     };
 
@@ -95,25 +81,25 @@ pub async fn record_model_call(state: &AppState, input: UsageRecordInput) {
     }
 }
 
-fn has_provider_token_usage(usage: &ModelUsage) -> bool {
-    usage.input_tokens.is_some()
-        || usage.output_tokens.is_some()
-        || usage.total_tokens.is_some()
-        || usage.reasoning_tokens.is_some()
-        || usage.cache_read_tokens.is_some()
-        || usage.cache_write_tokens.is_some()
+fn usage_source_name(source: UsageSource) -> &'static str {
+    match source {
+        UsageSource::ProviderReported => "providerReported",
+        UsageSource::GatewayNormalized => "gatewayNormalized",
+        UsageSource::Estimated => "estimated",
+        UsageSource::Missing => "missing",
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::ai::types::ModelUsage;
+    use crate::ai::types::UsageSource;
 
     #[test]
-    fn duration_only_is_not_provider_usage() {
-        let usage = ModelUsage {
-            total_duration_ms: Some(10),
-            ..ModelUsage::default()
-        };
-        assert!(!super::has_provider_token_usage(&usage));
+    fn exposes_stable_usage_source_names() {
+        assert_eq!(
+            super::usage_source_name(UsageSource::ProviderReported),
+            "providerReported"
+        );
+        assert_eq!(super::usage_source_name(UsageSource::Missing), "missing");
     }
 }

@@ -56,6 +56,8 @@ button {
   --color-user-bubble: #f0f3ef;
   --shadow-menu: 0 10px 28px rgb(35 48 40 / 14%);
   --shadow-composer: 0 6px 20px rgb(42 56 47 / 8%);
+  --color-surface-layer: var(--color-surface);
+  --color-sidebar-layer: var(--color-sidebar);
   --chat-content-max-width: 1480px;
   --chat-reading-max-width: 1380px;
   --chat-content-gutter: 40px;
@@ -65,8 +67,13 @@ button {
   height: 100%;
   overflow: hidden;
   color: var(--color-text);
-  background: var(--color-app);
+  background: var(--app-custom-background, var(--color-app));
   font-size: var(--app-font-size, 14px);
+}
+
+.app-shell[data-custom-background="true"] {
+  --color-surface-layer: color-mix(in srgb, var(--color-surface) var(--app-surface-opacity), transparent);
+  --color-sidebar-layer: color-mix(in srgb, var(--color-sidebar) var(--app-surface-opacity), transparent);
 }
 
 .app-shell[data-theme="dark"] {
@@ -126,7 +133,7 @@ button {
   flex: 1;
   min-width: 0;
   height: 100%;
-  background: var(--color-surface);
+  background: var(--color-surface-layer);
 }
 
 .icon-button {

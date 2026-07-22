@@ -25,6 +25,7 @@ function conversation(id: string, content = id): Conversation {
     contextSummary: "",
     compressedUntilMessageId: null,
     contextCompressionCount: 0,
+    enabledSkillIds: [],
     permissionMode: "askSensitive",
     projectId: null,
     collectionId: null,

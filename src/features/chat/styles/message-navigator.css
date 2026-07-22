@@ -76,7 +76,7 @@
 .message-navigator-preview > span { display: block; margin-top: 8px; color: var(--color-muted); font-size: 10px; }
 
 .message-list-shell-has-navigator .message-thread {
-  width: min(820px, calc(100% - 96px));
+  width: min(var(--chat-content-max-width), calc(100% - 96px));
 }
 
 @media (max-width: 900px) {

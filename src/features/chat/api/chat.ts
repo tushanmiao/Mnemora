@@ -1,5 +1,5 @@
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
-import type { MessageRole, ModelUsage } from "../../../types/chat";
+import type { AiPermissionMode, MessageRole, ModelUsage, ToolTrace } from "../../../types/chat";
 import type { ChatAttachment } from "../../../types/attachment";
 
 /** React 交给 Rust 的最小非流式消息，不包含 API Model、Base URL 或 API Key。 */
@@ -10,6 +10,9 @@ export type ChatCompletionRequest = {
   messageId?: string;
   operation?: "chatComplete" | "contextCompression";
   systemPrompt: string;
+  activatedSkillIds?: string[];
+  slashSkillId?: string;
+  permissionMode?: AiPermissionMode;
   messages: Array<{
     role: MessageRole;
     content: string;
@@ -27,6 +30,8 @@ export type ChatCompletionResponse = {
   reasoning?: string;
   finishReason?: string;
   usage?: ModelUsage;
+  activatedSkillIds?: string[];
+  toolTraces?: ToolTrace[];
 };
 
 export type ModelErrorKind =
@@ -78,6 +83,31 @@ export type ModelStreamEvent =
       conversationId: string;
       messageId: string;
       delta: string;
+    }
+  | {
+      type: "toolTrace";
+      runId: string;
+      conversationId: string;
+      messageId: string;
+      trace: ToolTrace;
+    }
+  | {
+      type: "toolApprovalRequested";
+      runId: string;
+      conversationId: string;
+      messageId: string;
+      approvalId: string;
+      trace: ToolTrace;
+    }
+  | {
+      type: "skillActivated";
+      runId: string;
+      conversationId: string;
+      messageId: string;
+      skillId: string;
+      name: string;
+      version: string;
+      contentHash: string;
     }
   | {
       type: "completed";
@@ -134,6 +164,12 @@ export function startChatStream(
 export function cancelChatStream(runId: string): Promise<boolean> {
   if (!isTauri()) return Promise.resolve(false);
   return invoke<boolean>("chat_stream_cancel", { runId });
+}
+
+/** 解析一次待处理工具审批；发送端只会消费第一项决定。 */
+export function resolveToolApproval(approvalId: string, approved: boolean): Promise<boolean> {
+  if (!isTauri()) return Promise.resolve(false);
+  return invoke<boolean>("chat_tool_approval_resolve", { approvalId, approved });
 }
 
 /** 把 Tauri、JavaScript 或未知错误统一成界面可以安全显示的结构。 */

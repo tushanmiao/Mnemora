@@ -9,12 +9,53 @@
 }
 
 .composer-box {
+  position: relative;
   padding: 10px 10px 8px;
   border: 1px solid var(--color-border);
   border-radius: 8px;
   background: var(--color-surface-raised);
   box-shadow: var(--shadow-composer);
 }
+
+.slash-command-menu {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  left: 0;
+  z-index: 20;
+  display: grid;
+  max-height: 320px;
+  padding: 6px;
+  gap: 2px;
+  overflow-y: auto;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface-raised);
+  box-shadow: var(--shadow-menu);
+}
+
+.slash-command-menu button {
+  display: grid;
+  min-height: 48px;
+  padding: 7px 9px;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  border-radius: 5px;
+  color: var(--color-text-secondary);
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.slash-command-menu button:hover,
+.slash-command-menu .slash-command-active { background: var(--color-active); color: var(--color-text); }
+.slash-command-menu button > span { display: grid; min-width: 0; gap: 2px; }
+.slash-command-menu strong { font-size: 12px; }
+.slash-command-menu small { overflow: hidden; color: var(--color-muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.slash-command-menu em { color: var(--color-muted); font: 10px Consolas, monospace; }
+.composer-command-feedback { margin: 0; color: var(--color-muted); font-size: 11px; line-height: 1.45; }
 
 .composer-textarea {
   display: block;
@@ -46,6 +87,42 @@
   line-height: 1.45;
 }
 
+.composer-skill-tags {
+  display: flex;
+  padding: 0 5px 7px;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.composer-skill-tags > span {
+  display: inline-flex;
+  height: 24px;
+  padding: 0 4px 0 7px;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--color-border);
+  border-radius: 5px;
+  color: var(--color-accent);
+  background: var(--color-accent-soft);
+  font-size: 11px;
+}
+
+.composer-skill-tags button {
+  display: grid;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: 4px;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+}
+
+.composer-skill-tags button:hover { background: var(--color-hover); }
+.composer-skill-tags button:disabled { cursor: not-allowed; opacity: 0.5; }
+
 .composer-toolbar {
   display: flex;
   align-items: center;
@@ -68,6 +145,77 @@
 .composer-tools .icon-button:disabled {
   cursor: not-allowed;
   opacity: 0.45;
+}
+
+.skill-picker { position: relative; }
+.skill-picker-active { color: var(--color-accent); background: var(--color-accent-soft); }
+
+.skill-picker-menu {
+  position: absolute;
+  bottom: 40px;
+  left: 0;
+  z-index: 45;
+  display: grid;
+  width: 320px;
+  max-height: 330px;
+  padding: 6px;
+  gap: 2px;
+  overflow-y: auto;
+  border: 1px solid var(--color-border);
+  border-radius: 7px;
+  background: var(--color-surface-raised);
+  box-shadow: var(--shadow-menu);
+}
+
+.skill-picker-menu header {
+  display: flex;
+  height: 34px;
+  padding: 0 7px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.skill-picker-menu header strong { font-size: 12px; }
+.skill-picker-menu header span { color: var(--color-muted); font-size: 10px; }
+
+.skill-picker-menu > button {
+  display: flex;
+  min-height: 50px;
+  padding: 7px;
+  align-items: flex-start;
+  gap: 8px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.skill-picker-menu > button:hover { background: var(--color-hover); }
+.skill-picker-menu > button:disabled { cursor: not-allowed; opacity: 0.45; }
+
+.skill-picker-check {
+  display: grid;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  place-items: center;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  color: #ffffff;
+  background: var(--color-accent);
+}
+
+.skill-picker-menu > button > span:last-child { display: grid; min-width: 0; gap: 2px; }
+.skill-picker-menu strong { font-size: 12px; }
+.skill-picker-menu small {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--color-muted);
+  font-size: 10px;
+  line-height: 1.4;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .send-button {

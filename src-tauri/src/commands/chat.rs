@@ -6,10 +6,12 @@
 use tauri::{ipc::Channel, State};
 
 use crate::{
-    ai::{error::ModelError, types::ModelResponse},
+    ai::error::ModelError,
     chat::{
         service,
-        types::{ChatCompletionRequest, ChatStreamRequest, ModelStreamEvent},
+        types::{
+            ChatCompletionRequest, ChatCompletionResponse, ChatStreamRequest, ModelStreamEvent,
+        },
     },
     state::AppState,
 };
@@ -18,7 +20,7 @@ use crate::{
 pub async fn chat_complete(
     state: State<'_, AppState>,
     request: ChatCompletionRequest,
-) -> Result<ModelResponse, ModelError> {
+) -> Result<ChatCompletionResponse, ModelError> {
     service::complete(&state, request).await
 }
 
@@ -37,4 +39,13 @@ pub async fn chat_stream_cancel(
     run_id: String,
 ) -> Result<bool, ModelError> {
     service::cancel(&state, &run_id).await
+}
+
+#[tauri::command]
+pub async fn chat_tool_approval_resolve(
+    state: State<'_, AppState>,
+    approval_id: String,
+    approved: bool,
+) -> Result<bool, ModelError> {
+    service::resolve_tool_approval(&state, &approval_id, approved).await
 }

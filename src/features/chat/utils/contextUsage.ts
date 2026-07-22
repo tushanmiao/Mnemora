@@ -49,10 +49,7 @@ function estimateAttachmentTokens(message: ChatMessage, includeImageBodies: bool
 
 function effectiveInputTokens(message: ChatMessage) {
   const usage = message.usage;
-  if (!usage?.inputTokens) return null;
-  return usage.inputTokens
-    + (usage.cacheReadTokens ?? 0)
-    + (usage.cacheWriteTokens ?? 0);
+  return usage?.contextInputTokens ?? usage?.inputTokens ?? null;
 }
 
 /**

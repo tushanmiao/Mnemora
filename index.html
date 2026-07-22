@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -7,7 +7,18 @@
   </head>
 
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div class="static-startup" role="status" aria-live="polite">
+        <strong>Mnemora</strong>
+        <span>正在启动...</span>
+      </div>
+    </div>
+    <style>
+      html,body,#root{width:100%;height:100%;margin:0}
+      body{font-family:"Segoe UI","Microsoft YaHei UI",sans-serif;background:#f7f8f6;color:#252a27}
+      .static-startup{display:grid;height:100%;place-content:center;gap:8px;text-align:center}
+      .static-startup strong{font-size:18px}.static-startup span{color:#7a827d;font-size:13px}
+    </style>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

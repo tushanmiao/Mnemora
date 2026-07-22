@@ -13,7 +13,7 @@ use crate::ai::{
     stream::{send_sse_request, sse::SseReadOutcome},
     types::{
         ModelRequest, ModelResponse, ModelRole, ModelStreamChunk, ModelStreamOutcome,
-        ModelStreamSummary, ModelUsage, ProviderRequestContext,
+        ModelStreamSummary, ModelToolCall, ModelUsage, ProviderRequestContext,
     },
 };
 
@@ -63,6 +63,7 @@ where
     let mut saw_text = false;
     let mut finish_reason = None;
     let mut usage = None;
+    let mut pending_tool_calls = Vec::<PendingToolCall>::new();
     let outcome = send_sse_request(
         request_builder.json(&body),
         context.api_key,
@@ -95,6 +96,27 @@ where
                     saw_text = true;
                     on_chunk(ModelStreamChunk::TextDelta(delta))?;
                 }
+                if let Some(tool_calls) = choice
+                    .pointer("/delta/tool_calls")
+                    .and_then(Value::as_array)
+                {
+                    for raw_call in tool_calls {
+                        let index =
+                            raw_call.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+                        while pending_tool_calls.len() <= index {
+                            pending_tool_calls.push(PendingToolCall::default());
+                        }
+                        let (id, name, arguments_delta) =
+                            accumulate_tool_call_delta(raw_call, &mut pending_tool_calls[index]);
+                        on_chunk(ModelStreamChunk::ToolCallDelta {
+                            index,
+                            id,
+                            name,
+                            arguments_delta,
+                            provider_signature: None,
+                        })?;
+                    }
+                }
                 if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
                     finish_reason = Some(reason.to_string());
                 }
@@ -110,7 +132,8 @@ where
     if outcome == SseReadOutcome::Cancelled {
         return Ok(ModelStreamOutcome::Cancelled);
     }
-    if !saw_text {
+    let tool_calls = finish_pending_tool_calls(pending_tool_calls)?;
+    if !saw_text && tool_calls.is_empty() {
         return Err(ModelError::invalid_response(
             "OpenAI Chat 流式响应没有可显示的文本内容。",
         ));
@@ -118,6 +141,7 @@ where
     Ok(ModelStreamOutcome::Completed(ModelStreamSummary {
         finish_reason,
         usage,
+        tool_calls,
     }))
 }
 
@@ -127,11 +151,16 @@ pub(crate) fn request_body(request: &ModelRequest) -> Value {
         messages.push(json!({ "role": "system", "content": system_prompt }));
     }
     messages.extend(request.messages.iter().map(|message| {
-        let role = match message.role {
-            ModelRole::User => "user",
-            ModelRole::Assistant => "assistant",
-        };
-        if message.images.is_empty() {
+        if message.role == ModelRole::Tool {
+            let result = message.tool_result.as_ref();
+            return json!({
+                "role": "tool",
+                "tool_call_id": result.map(|value| value.call_id.as_str()).unwrap_or_default(),
+                "content": result.map(|value| value.content.as_str()).unwrap_or(message.content.as_str())
+            });
+        }
+        let role = if message.role == ModelRole::User { "user" } else { "assistant" };
+        let mut value = if message.images.is_empty() {
             json!({ "role": role, "content": message.content })
         } else {
             let mut content = Vec::new();
@@ -147,7 +176,15 @@ pub(crate) fn request_body(request: &ModelRequest) -> Value {
                 })
             }));
             json!({ "role": role, "content": content })
+        };
+        if !message.tool_calls.is_empty() {
+            value["tool_calls"] = Value::Array(message.tool_calls.iter().map(|call| json!({
+                "id": call.id,
+                "type": "function",
+                "function": { "name": call.name, "arguments": call.arguments.to_string() }
+            })).collect());
         }
+        value
     }));
 
     let mut body = Map::from_iter([
@@ -170,6 +207,28 @@ pub(crate) fn request_body(request: &ModelRequest) -> Value {
             Value::String("medium".to_string()),
         );
     }
+    if !request.tools.is_empty() {
+        body.insert(
+            "tools".to_string(),
+            Value::Array(
+                request
+                    .tools
+                    .iter()
+                    .map(|tool| {
+                        json!({
+                            "type": "function",
+                            "function": {
+                                "name": tool.name,
+                                "description": tool.description,
+                                "parameters": tool.input_schema,
+                                "strict": true
+                            }
+                        })
+                    })
+                    .collect(),
+            ),
+        );
+    }
     Value::Object(body)
 }
 
@@ -183,7 +242,8 @@ fn parse_response(value: &Value, include_reasoning: bool) -> Result<ModelRespons
         .get("message")
         .ok_or_else(|| ModelError::invalid_response("OpenAI Chat 响应缺少 message。"))?;
     let text = extract_message_text(message);
-    if text.is_empty() {
+    let tool_calls = parse_tool_calls(message)?;
+    if text.is_empty() && tool_calls.is_empty() {
         return Err(ModelError::invalid_response(
             "OpenAI Chat 响应没有可显示的文本内容。",
         ));
@@ -199,7 +259,122 @@ fn parse_response(value: &Value, include_reasoning: bool) -> Result<ModelRespons
             .and_then(Value::as_str)
             .map(str::to_string),
         usage: value.get("usage").map(parse_usage),
+        tool_calls,
     })
+}
+
+#[derive(Default)]
+struct PendingToolCall {
+    id: String,
+    name: String,
+    arguments: String,
+}
+
+fn parse_tool_calls(message: &Value) -> Result<Vec<ModelToolCall>, ModelError> {
+    message
+        .get("tool_calls")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .enumerate()
+        .map(|(index, call)| {
+            let id = non_empty_string(call.get("id").and_then(Value::as_str))
+                .unwrap_or_else(|| fallback_tool_call_id(index));
+            let name = call
+                .pointer("/function/name")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let arguments = call
+                .pointer("/function/arguments")
+                .and_then(Value::as_str)
+                .unwrap_or("{}");
+            parse_tool_call(&id, name, arguments)
+        })
+        .collect()
+}
+
+fn accumulate_tool_call_delta(
+    raw_call: &Value,
+    pending: &mut PendingToolCall,
+) -> (Option<String>, Option<String>, String) {
+    // 部分 OpenAI 兼容网关会在后续参数分片中重复发送空 ID 或空名称。
+    // 空值只能表示“本分片没有更新”，不能覆盖首个分片中已经收到的真实值。
+    let id = non_empty_string(raw_call.get("id").and_then(Value::as_str));
+    let name = non_empty_string(raw_call.pointer("/function/name").and_then(Value::as_str));
+    let arguments_delta = raw_call
+        .pointer("/function/arguments")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+
+    if let Some(value) = id.as_ref() {
+        pending.id = value.clone();
+    }
+    if let Some(value) = name.as_ref() {
+        pending.name = value.clone();
+    }
+    pending.arguments.push_str(&arguments_delta);
+
+    (id, name, arguments_delta)
+}
+
+fn finish_pending_tool_calls(
+    calls: Vec<PendingToolCall>,
+) -> Result<Vec<ModelToolCall>, ModelError> {
+    calls
+        .into_iter()
+        .enumerate()
+        .filter(|(_, call)| {
+            !call.id.trim().is_empty()
+                || !call.name.trim().is_empty()
+                || !call.arguments.trim().is_empty()
+        })
+        .map(|(index, call)| {
+            let id =
+                non_empty_string(Some(&call.id)).unwrap_or_else(|| fallback_tool_call_id(index));
+            parse_tool_call(&id, &call.name, &call.arguments)
+        })
+        .collect()
+}
+
+fn parse_tool_call(id: &str, name: &str, arguments: &str) -> Result<ModelToolCall, ModelError> {
+    let id = id.trim();
+    let name = name.trim();
+    if id.is_empty() || name.is_empty() {
+        return Err(ModelError::invalid_response(
+            "OpenAI Chat 工具调用缺少 ID 或名称。",
+        ));
+    }
+    let arguments = if arguments.trim().is_empty() {
+        "{}"
+    } else {
+        arguments
+    };
+    let arguments = serde_json::from_str::<Value>(arguments).map_err(|_| {
+        ModelError::invalid_response("OpenAI Chat 工具调用参数不是有效 JSON 对象。")
+    })?;
+    if !arguments.is_object() {
+        return Err(ModelError::invalid_response(
+            "OpenAI Chat 工具调用参数必须是 JSON 对象。",
+        ));
+    }
+    Ok(ModelToolCall {
+        id: id.to_string(),
+        name: name.to_string(),
+        arguments,
+        provider_signature: None,
+    })
+}
+
+fn non_empty_string(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn fallback_tool_call_id(index: usize) -> String {
+    format!("call_mnemora_{index}_{}", uuid::Uuid::new_v4().simple())
 }
 
 fn request_reasoning(message: &Value) -> Option<String> {
@@ -282,7 +457,10 @@ fn parse_usage(value: &Value) -> ModelUsage {
 mod tests {
     use serde_json::json;
 
-    use crate::ai::types::{ModelImage, ModelMessage, ModelOptions, ModelRequest, ModelRole};
+    use crate::ai::types::{
+        ModelImage, ModelMessage, ModelOptions, ModelRequest, ModelRole, ModelTool, ModelToolCall,
+        ModelToolResult,
+    };
 
     #[test]
     fn maps_system_prompt_and_messages() {
@@ -293,8 +471,11 @@ mod tests {
                 role: ModelRole::User,
                 content: "Hello".to_string(),
                 images: Vec::new(),
+                tool_calls: Vec::new(),
+                tool_result: None,
             }],
             options: ModelOptions::default(),
+            tools: Vec::new(),
         });
 
         assert_eq!(body["model"], "gpt-test");
@@ -316,8 +497,11 @@ mod tests {
                     media_type: "image/png".to_string(),
                     data_base64: "aGVsbG8=".to_string(),
                 }],
+                tool_calls: Vec::new(),
+                tool_result: None,
             }],
             options: ModelOptions::default(),
+            tools: Vec::new(),
         });
 
         assert_eq!(body["messages"][0]["content"][0]["type"], "text");
@@ -361,11 +545,14 @@ mod tests {
                 role: ModelRole::User,
                 content: "Solve it".to_string(),
                 images: Vec::new(),
+                tool_calls: Vec::new(),
+                tool_result: None,
             }],
             options: ModelOptions {
                 thinking_enabled: true,
                 ..ModelOptions::default()
             },
+            tools: Vec::new(),
         });
         assert_eq!(body["reasoning_effort"], "medium");
 
@@ -383,5 +570,179 @@ mod tests {
         .unwrap();
         assert_eq!(response.text, "Answer");
         assert_eq!(response.reasoning.as_deref(), Some("Plan first."));
+    }
+
+    #[test]
+    fn maps_tools_calls_and_results() {
+        let body = super::request_body(&ModelRequest {
+            model: "gpt-test".to_string(),
+            system_prompt: None,
+            messages: vec![
+                ModelMessage {
+                    role: ModelRole::Assistant,
+                    content: String::new(),
+                    images: Vec::new(),
+                    tool_calls: vec![ModelToolCall {
+                        id: "call_1".to_string(),
+                        name: "skill".to_string(),
+                        arguments: json!({ "id": "summarize" }),
+                        provider_signature: None,
+                    }],
+                    tool_result: None,
+                },
+                ModelMessage {
+                    role: ModelRole::Tool,
+                    content: String::new(),
+                    images: Vec::new(),
+                    tool_calls: Vec::new(),
+                    tool_result: Some(ModelToolResult {
+                        call_id: "call_1".to_string(),
+                        name: "skill".to_string(),
+                        content: "loaded".to_string(),
+                        is_error: false,
+                    }),
+                },
+            ],
+            options: ModelOptions::default(),
+            tools: vec![ModelTool {
+                name: "skill".to_string(),
+                description: "load skill".to_string(),
+                input_schema: json!({ "type": "object" }),
+            }],
+        });
+
+        assert_eq!(body["tools"][0]["function"]["name"], "skill");
+        assert_eq!(body["messages"][0]["tool_calls"][0]["id"], "call_1");
+        assert_eq!(body["messages"][1]["tool_call_id"], "call_1");
+    }
+
+    #[test]
+    fn accepts_tool_only_response_and_keeps_stream_arguments_separate() {
+        let response = super::parse_response(
+            &json!({
+                "choices": [{
+                    "message": {
+                        "content": null,
+                        "tool_calls": [
+                            { "id": "call_1", "function": { "name": "first", "arguments": "{\"value\":1}" } },
+                            { "id": "call_2", "function": { "name": "second", "arguments": "{\"value\":2}" } }
+                        ]
+                    },
+                    "finish_reason": "tool_calls"
+                }]
+            }),
+            false,
+        )
+        .unwrap();
+        assert!(response.text.is_empty());
+        assert_eq!(response.tool_calls.len(), 2);
+
+        let calls = super::finish_pending_tool_calls(vec![
+            super::PendingToolCall {
+                id: "call_1".to_string(),
+                name: "first".to_string(),
+                arguments: "{\"value\":1}".to_string(),
+            },
+            super::PendingToolCall {
+                id: "call_2".to_string(),
+                name: "second".to_string(),
+                arguments: "{\"value\":2}".to_string(),
+            },
+        ])
+        .unwrap();
+        assert_eq!(calls[0].arguments["value"], 1);
+        assert_eq!(calls[1].arguments["value"], 2);
+    }
+
+    #[test]
+    fn stream_tool_call_keeps_real_id_and_name_over_empty_continuations() {
+        let mut pending = super::PendingToolCall::default();
+        let first = json!({
+            "id": " call_real ",
+            "function": {
+                "name": " code-explanation ",
+                "arguments": "{\"path\":"
+            }
+        });
+        let continuation = json!({
+            "id": "",
+            "function": {
+                "name": "   ",
+                "arguments": "\"src/main.rs\"}"
+            }
+        });
+
+        let (first_id, first_name, _) = super::accumulate_tool_call_delta(&first, &mut pending);
+        let (continuation_id, continuation_name, _) =
+            super::accumulate_tool_call_delta(&continuation, &mut pending);
+
+        assert_eq!(first_id.as_deref(), Some("call_real"));
+        assert_eq!(first_name.as_deref(), Some("code-explanation"));
+        assert_eq!(continuation_id, None);
+        assert_eq!(continuation_name, None);
+
+        let calls = super::finish_pending_tool_calls(vec![pending]).unwrap();
+        assert_eq!(calls[0].id, "call_real");
+        assert_eq!(calls[0].name, "code-explanation");
+        assert_eq!(calls[0].arguments["path"], "src/main.rs");
+    }
+
+    #[test]
+    fn stream_tool_call_generates_id_when_gateway_omits_it() {
+        let mut pending = super::PendingToolCall::default();
+        let chunk = json!({
+            "id": "",
+            "function": {
+                "name": "code-explanation",
+                "arguments": "{}"
+            }
+        });
+
+        let (id, name, _) = super::accumulate_tool_call_delta(&chunk, &mut pending);
+        assert_eq!(id, None);
+        assert_eq!(name.as_deref(), Some("code-explanation"));
+
+        let calls = super::finish_pending_tool_calls(vec![pending]).unwrap();
+        assert!(calls[0].id.starts_with("call_mnemora_0_"));
+        assert_eq!(calls[0].name, "code-explanation");
+    }
+
+    #[test]
+    fn non_stream_tool_call_generates_id_but_still_requires_name() {
+        let response = super::parse_response(
+            &json!({
+                "choices": [{
+                    "message": {
+                        "content": null,
+                        "tool_calls": [{
+                            "id": " ",
+                            "function": { "name": "code-explanation", "arguments": "" }
+                        }]
+                    },
+                    "finish_reason": "tool_calls"
+                }]
+            }),
+            false,
+        )
+        .unwrap();
+        assert!(response.tool_calls[0].id.starts_with("call_mnemora_0_"));
+        assert_eq!(response.tool_calls[0].arguments, json!({}));
+
+        let error = super::parse_response(
+            &json!({
+                "choices": [{
+                    "message": {
+                        "content": null,
+                        "tool_calls": [{
+                            "id": "call_1",
+                            "function": { "name": "", "arguments": "{}" }
+                        }]
+                    }
+                }]
+            }),
+            false,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("缺少 ID 或名称"));
     }
 }

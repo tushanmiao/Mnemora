@@ -1,14 +1,16 @@
 import { open } from "@tauri-apps/plugin-dialog";
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import {
   ArrowUp,
   BookOpenText,
+  Command,
   LoaderCircle,
   Paperclip,
   SlidersHorizontal,
   Square,
 } from "lucide-react";
 import type { ChatAttachment, PendingChatAttachment } from "../../../types/attachment";
+import type { SkillActivationSelection, SkillSummary } from "../../../types/skill";
 import {
   cancelChatAttachmentTask,
   discardImportedChatAttachments,
@@ -18,8 +20,13 @@ import {
   savePastedChatAttachment,
 } from "../api/attachments";
 import type { ContextUsageEstimate } from "../utils/contextUsage";
+import type { ChatMessage } from "../../../types/chat";
+import type { LocalSlashCommand, SlashCommandExecutionResult } from "../commands/slashCommands";
+import { buildSlashSuggestions, parseSlashInput } from "../commands/slashCommands";
+import { resolveSkillActivation } from "../utils/skillActivation";
 import { ChatAttachments } from "./ChatAttachments";
 import { ContextUsageIndicator } from "./ContextUsageIndicator";
+import { ActiveSkillTags, SkillPicker } from "./SkillPicker";
 import "../styles/chat-input.css";
 
 const MAX_ATTACHMENTS = 8;
@@ -35,8 +42,21 @@ type ChatInputProps = {
   contextMessageCount: number;
   contextCompressionCount?: number;
   contextDisabled?: boolean;
-  onSend: (content: string, attachments?: ChatAttachment[]) => void;
+  contextMessages?: ChatMessage[];
+  contextSystemPrompt?: string;
+  skills: SkillSummary[];
+  selectedSkillIds: string[];
+  onSelectedSkillsChange: (skillIds: string[]) => void;
+  onSend: (
+    content: string,
+    attachments?: ChatAttachment[],
+    skillActivation?: SkillActivationSelection,
+  ) => void;
   onStop?: () => void;
+  onSlashCommand: (
+    command: LocalSlashCommand,
+    argumentsValue: string,
+  ) => Promise<SlashCommandExecutionResult> | SlashCommandExecutionResult;
 };
 
 function fileToBase64(file: File) {
@@ -84,21 +104,38 @@ export function ChatInput({
   contextMessageCount,
   contextCompressionCount = 0,
   contextDisabled = false,
+  contextMessages = [],
+  contextSystemPrompt = "",
+  skills,
+  selectedSkillIds,
+  onSelectedSkillsChange,
   onSend,
   onStop,
+  onSlashCommand,
 }: ChatInputProps) {
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<PendingChatAttachment[]>([]);
   const [attachmentError, setAttachmentError] = useState("");
   const [preparingAttachments, setPreparingAttachments] = useState(false);
+  const [commandRunning, setCommandRunning] = useState(false);
+  const [commandFeedback, setCommandFeedback] = useState("");
+  const [unknownSlashConfirmation, setUnknownSlashConfirmation] = useState<string | null>(null);
+  const [selectedCommandIndex, setSelectedCommandIndex] = useState(0);
   const preparingAttachmentsRef = useRef(false);
   const attachmentsRef = useRef(attachments);
   const attachmentSessionRef = useRef(0);
   const activeAttachmentTaskRef = useRef<string | null>(null);
   const previousConversationIdRef = useRef(conversationId);
   attachmentsRef.current = attachments;
-  const inputDisabled = disabled || busy || preparingAttachments;
+  const inputDisabled = disabled || busy || preparingAttachments || commandRunning;
   const canSend = !inputDisabled && (draft.trim().length > 0 || attachments.length > 0);
+  const slashSuggestions = useMemo(() => buildSlashSuggestions(draft, skills), [draft, skills]);
+  const slashMenuOpen = !inputDisabled && draft.trimStart().startsWith("/") && !draft.includes("\n") && slashSuggestions.length > 0;
+
+  useEffect(() => {
+    setSelectedCommandIndex(0);
+    setUnknownSlashConfirmation(null);
+  }, [draft]);
 
   const discardPendingAttachments = (items: readonly PendingChatAttachment[]) => {
     for (const attachment of items) {
@@ -185,6 +222,50 @@ export function ChatInput({
 
   const submitMessage = async () => {
     if (!canSend || !conversationId || preparingAttachmentsRef.current) return;
+    const parsedCommand = parseSlashInput(draft, skills);
+    if (parsedCommand?.kind === "unknown") {
+      if (unknownSlashConfirmation !== draft) {
+        setUnknownSlashConfirmation(draft);
+        setCommandFeedback(`未知命令：${parsedCommand.trigger}。再次按 Enter 可将它作为普通文本发送。`);
+        return;
+      }
+    }
+    if (parsedCommand?.kind === "conflict") {
+      setCommandFeedback(`命令 ${parsedCommand.trigger} 被多个技能重复声明，请先在技能设置中解决冲突。`);
+      return;
+    }
+    if (parsedCommand?.kind === "local") {
+      if (parsedCommand.command === "attach") {
+        setDraft("");
+        setCommandFeedback("");
+        setUnknownSlashConfirmation(null);
+        await openAttachmentPicker();
+        return;
+      }
+      setCommandRunning(true);
+      setCommandFeedback("");
+      try {
+        const result = await onSlashCommand(parsedCommand.command, parsedCommand.arguments);
+        if (!result.executed) {
+          setCommandFeedback(result.message ?? "命令没有执行。");
+          return;
+        }
+        setDraft(parsedCommand.command === "help" ? "/" : "");
+        setCommandFeedback(parsedCommand.command === "help" ? "" : (result.message ?? ""));
+        setUnknownSlashConfirmation(null);
+        if (parsedCommand.command === "new" || parsedCommand.command === "clear") {
+          const pending = attachmentsRef.current;
+          attachmentsRef.current = [];
+          setAttachments([]);
+          discardPendingAttachments(pending);
+        }
+      } catch (error) {
+        setCommandFeedback(errorMessage(error, "命令执行失败。"));
+      } finally {
+        setCommandRunning(false);
+      }
+      return;
+    }
     const targetConversationId = conversationId;
     const session = attachmentSessionRef.current;
     const pending = attachmentsRef.current;
@@ -210,8 +291,14 @@ export function ChatInput({
         }
         return;
       }
-      onSend(draft, storedAttachments);
+      onSend(
+        draft,
+        storedAttachments,
+        resolveSkillActivation(draft, selectedSkillIds, skills),
+      );
       setDraft("");
+      setCommandFeedback("");
+      setUnknownSlashConfirmation(null);
       attachmentsRef.current = [];
       setAttachments([]);
     } catch (error) {
@@ -233,6 +320,30 @@ export function ChatInput({
   };
 
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (slashMenuOpen && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
+      event.preventDefault();
+      const direction = event.key === "ArrowDown" ? 1 : -1;
+      setSelectedCommandIndex((current) => (
+        (current + direction + slashSuggestions.length) % slashSuggestions.length
+      ));
+      return;
+    }
+    if (slashMenuOpen && event.key === "Escape") {
+      event.preventDefault();
+      setDraft("");
+      setCommandFeedback("");
+      setUnknownSlashConfirmation(null);
+      return;
+    }
+    if (slashMenuOpen && (event.key === "Tab" || event.key === "Enter") && !event.shiftKey) {
+      const selected = slashSuggestions[selectedCommandIndex] ?? slashSuggestions[0];
+      const currentToken = draft.trimStart().split(/\s+/, 1)[0]?.toLocaleLowerCase("en-US");
+      if (selected && (event.key === "Tab" || currentToken !== selected.trigger)) {
+        event.preventDefault();
+        setDraft(`${selected.trigger} `);
+        return;
+      }
+    }
     if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
     event.preventDefault();
     void submitMessage();
@@ -280,7 +391,37 @@ export function ChatInput({
             variant="composer"
             onRemove={removeAttachment}
           />
+          <ActiveSkillTags
+            skills={skills}
+            selectedSkillIds={selectedSkillIds}
+            disabled={inputDisabled}
+            onChange={onSelectedSkillsChange}
+          />
           {attachmentError ? <p className="composer-attachment-error" role="alert">{attachmentError}</p> : null}
+          {commandFeedback ? <p className="composer-command-feedback" role="status">{commandFeedback}</p> : null}
+          {slashMenuOpen ? (
+            <div className="slash-command-menu" role="listbox" aria-label="Slash 命令">
+              {slashSuggestions.map((item, index) => (
+                <button
+                  type="button"
+                  role="option"
+                  aria-selected={index === selectedCommandIndex}
+                  className={index === selectedCommandIndex ? "slash-command-active" : ""}
+                  key={`${item.kind}:${item.skillId ?? item.trigger}:${item.trigger}`}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => {
+                    setDraft(`${item.trigger} `);
+                    setCommandFeedback("");
+                    setUnknownSlashConfirmation(null);
+                  }}
+                >
+                  <Command size={15} />
+                  <span><strong>{item.trigger}</strong><small>{item.title} · {item.description}</small></span>
+                  {item.argumentHint ? <em>{item.argumentHint}</em> : null}
+                </button>
+              ))}
+            </div>
+          ) : null}
           <textarea
             className="composer-textarea"
             rows={2}
@@ -288,7 +429,11 @@ export function ChatInput({
             aria-label="消息输入框"
             disabled={inputDisabled}
             value={draft}
-            onChange={(event) => setDraft(event.target.value)}
+            onChange={(event) => {
+              setDraft(event.target.value);
+              setCommandFeedback("");
+              setUnknownSlashConfirmation(null);
+            }}
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
           />
@@ -308,6 +453,12 @@ export function ChatInput({
               <button className="icon-button" type="button" title="选择文献" disabled={inputDisabled}>
                 <BookOpenText size={18} />
               </button>
+              <SkillPicker
+                skills={skills}
+                selectedSkillIds={selectedSkillIds}
+                disabled={inputDisabled}
+                onChange={onSelectedSkillsChange}
+              />
               <button className="icon-button" type="button" title="对话选项" disabled={inputDisabled}>
                 <SlidersHorizontal size={18} />
               </button>
@@ -321,6 +472,9 @@ export function ChatInput({
                 compressionCount={contextCompressionCount}
                 disabled={contextDisabled}
                 placement="up"
+                messages={contextMessages}
+                systemPrompt={contextSystemPrompt}
+                availableSkillCount={skills.filter((skill) => skill.enabled).length}
               />
               <button
                 className={`send-button${busy && onStop ? " stop-button" : ""}`}

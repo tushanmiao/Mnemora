@@ -2,8 +2,11 @@ mod ai;
 mod chat;
 mod commands;
 mod html_preview;
+mod memory;
 mod request_debug;
 mod settings;
+mod skills;
+mod startup_log;
 mod state;
 mod usage;
 mod window_lifecycle;
@@ -40,11 +43,13 @@ pub fn run() {
                 std::env::args().any(|argument| argument == AUTOSTART_ARG);
             let config_dir = app.path().app_config_dir().map_err(std::io::Error::other)?;
             let app_data_dir = app.path().app_data_dir().map_err(std::io::Error::other)?;
-            let app_state =
-                state::AppState::new(config_dir, app_data_dir).map_err(std::io::Error::other)?;
+            let resource_dir = app.path().resource_dir().map_err(std::io::Error::other)?;
+            let log_dir = app.path().app_log_dir().map_err(std::io::Error::other)?;
+            let app_state = state::AppState::new(config_dir, app_data_dir, resource_dir, log_dir)
+                .map_err(std::io::Error::other)?;
             app.manage(app_state);
             app.manage(html_preview::HtmlPreviewState::default());
-            window_lifecycle::setup_tray(&app.handle()).map_err(std::io::Error::other)?;
+            window_lifecycle::setup_tray(app.handle()).map_err(std::io::Error::other)?;
 
             // 仅普通交互式启动创建主窗口；开机自启只保留 Rust 后端和托盘，避免启动 WebView2 进程组。
             if !launched_from_autostart {
@@ -62,10 +67,12 @@ pub fn run() {
             commands::app_settings::load_application_settings,
             commands::app_settings::save_application_settings,
             commands::app_settings::export_settings_bundle,
+            commands::app_settings::inspect_settings_bundle,
             commands::app_settings::import_settings_bundle,
             commands::chat::chat_complete,
             commands::chat::chat_stream_start,
             commands::chat::chat_stream_cancel,
+            commands::chat::chat_tool_approval_resolve,
             commands::attachments::inspect_chat_attachments,
             commands::attachments::save_pasted_chat_attachment,
             commands::attachments::discard_staged_chat_attachment,
@@ -81,12 +88,26 @@ pub fn run() {
             commands::conversations::clear_conversations,
             commands::html_preview::html_preview_open,
             commands::html_preview::html_preview_get,
+            commands::memory::memory_load,
+            commands::memory::memory_save,
+            commands::memory::memory_clear,
+            commands::memory::memory_get_directory,
+            commands::memory::memory_open_directory,
             commands::providers::fetch_provider_models,
             commands::providers::test_provider_connection,
             commands::settings::load_model_settings,
             commands::settings::save_model_settings,
             commands::settings::set_provider_api_key,
             commands::settings::delete_provider_api_key,
+            commands::skills::skills_list,
+            commands::skills::skills_get_detail,
+            commands::skills::skills_import,
+            commands::skills::skills_set_enabled,
+            commands::skills::skills_uninstall,
+            commands::skills::skills_restore_builtin,
+            commands::startup::record_startup_error,
+            usage::usage_get_summary,
+            usage::usage_get_records,
             usage::usage_get_stats,
             usage::usage_clear,
             request_debug::request_debug_get_records,
@@ -102,8 +123,13 @@ pub fn run() {
                 }
                 let state = app_handle.state::<state::AppState>();
                 let cancelled = tauri::async_runtime::block_on(state.cancel_all_chat_runs());
+                let approvals =
+                    tauri::async_runtime::block_on(state.cancel_all_tool_approvals());
                 if cancelled > 0 {
                     eprintln!("Cancelled {cancelled} active chat run(s) on application exit.");
+                }
+                if approvals > 0 {
+                    eprintln!("Cancelled {approvals} pending tool approval(s) on application exit.");
                 }
                 let attachment_tasks = state.cancel_all_attachment_tasks();
                 let staged_attachments = state.cleanup_current_staged_attachments();

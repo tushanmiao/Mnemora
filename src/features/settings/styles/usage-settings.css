@@ -87,6 +87,9 @@
 .usage-table td { height: 48px; padding: 7px 11px; border-top: 1px solid var(--color-border-soft); }
 .usage-table td:nth-child(2) { display: grid; min-width: 140px; align-content: center; gap: 2px; }
 .usage-table td:nth-child(2) span { color: var(--color-muted); font-size: 10px; }
+.usage-filters { display: flex; margin-top: 10px; gap: 8px; flex-wrap: wrap; }
+.usage-filters .settings-input { width: auto; min-width: 150px; }
+.usage-load-more { display: flex; margin: 12px auto 0; }
 .usage-status { display: inline-flex; min-height: 22px; padding: 0 7px; align-items: center; border-radius: 4px; font-style: normal; }
 .usage-status-success { color: var(--color-accent); background: var(--color-accent-soft); }
 .usage-status-error { color: var(--color-danger); background: var(--color-danger-soft); }

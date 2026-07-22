@@ -1,23 +1,47 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
+import { RootErrorBoundary } from "./bootstrap/RootErrorBoundary";
+import { StartupFailure } from "./bootstrap/StartupFailure";
+import {
+  createStartupDiagnostic,
+  installGlobalErrorCapture,
+  recordStartupDiagnostic,
+  setStartupStage,
+} from "./bootstrap/startupDiagnostics";
+import "./bootstrap/startup.css";
 
-const root = ReactDOM.createRoot(document.getElementById("root") as HTMLElement);
+installGlobalErrorCapture();
+const rootElement = document.getElementById("root");
+if (!rootElement) throw new Error("找不到应用根节点 #root。");
+const root = ReactDOM.createRoot(rootElement);
 
 async function renderWindow() {
+  setStartupStage("import-window");
   if (window.location.hash.startsWith("#html-preview/")) {
     const { default: HtmlPreviewWindow } = await import(
       "./features/html-preview/HtmlPreviewWindow"
     );
-    root.render(<HtmlPreviewWindow />);
+    setStartupStage("render-window");
+    root.render(<RootErrorBoundary title="HTML 预览启动失败"><HtmlPreviewWindow /></RootErrorBoundary>);
+    setStartupStage("ready");
     return;
   }
 
   const { default: App } = await import("./App");
+  setStartupStage("render-window");
   root.render(
     <React.StrictMode>
-      <App />
+      <RootErrorBoundary>
+        <App />
+      </RootErrorBoundary>
     </React.StrictMode>,
   );
+  setStartupStage("ready");
 }
 
-void renderWindow();
+void renderWindow().catch((reason) => {
+  const diagnostic = createStartupDiagnostic(reason);
+  recordStartupDiagnostic(diagnostic);
+  console.error("Mnemora 启动失败", diagnostic);
+  root.render(<StartupFailure diagnostic={diagnostic} />);
+});

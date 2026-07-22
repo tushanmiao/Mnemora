@@ -7,7 +7,7 @@
   height: 100%;
   flex-direction: column;
   border-right: 1px solid var(--color-border);
-  background: var(--color-sidebar);
+  background: var(--color-sidebar-layer);
   transition: width 180ms ease, min-width 180ms ease;
 }
 
@@ -162,6 +162,12 @@
   height: 32px;
   color: var(--color-text-secondary);
   font-size: 12px;
+}
+
+.extension-item-active {
+  color: var(--color-text);
+  background: var(--color-active);
+  font-weight: 600;
 }
 
 .sidebar-divider {

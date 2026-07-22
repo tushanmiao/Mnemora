@@ -8,6 +8,8 @@ export interface AssistantProfile {
   systemPrompt: string;
   modelId: string | null;
   permissionMode: AiPermissionMode;
+  /** 新对话默认允许使用的 Skill ID。 */
+  skillIds: string[];
   createdAt: number;
   updatedAt: number;
 }

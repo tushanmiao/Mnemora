@@ -26,15 +26,16 @@ import type { ConversationListItem } from "../../../types/conversation";
 import "../styles/sidebar.css";
 
 const extensionItems = [
-  { label: "助手", icon: Bot },
-  { label: "技能", icon: Sparkles },
-  { label: "知识库", icon: BookOpenText },
-  { label: "插件", icon: Plug },
+  { id: "assistants", label: "助手", icon: Bot },
+  { id: "skills", label: "技能", icon: Sparkles },
+  { id: "knowledge", label: "知识库", icon: BookOpenText },
+  { id: "plugins", label: "插件", icon: Plug },
 ];
 
 type SidebarProps = {
   collapsed: boolean;
   settingsOpen: boolean;
+  skillsOpen: boolean;
   userDisplayName: string;
   userAvatar: string;
   conversations: ConversationListItem[];
@@ -48,12 +49,14 @@ type SidebarProps = {
   onClearConversations: () => void;
   onLoadMoreConversations: () => void;
   onOpenSettings: () => void;
+  onOpenSkills: () => void;
   onToggleCollapse: () => void;
 };
 
 export function Sidebar({
   collapsed,
   settingsOpen,
+  skillsOpen,
   userDisplayName,
   userAvatar,
   conversations,
@@ -67,6 +70,7 @@ export function Sidebar({
   onClearConversations,
   onLoadMoreConversations,
   onOpenSettings,
+  onOpenSkills,
   onToggleCollapse,
 }: SidebarProps) {
   const normalizedDisplayName = userDisplayName.trim() || "Mnemora 用户";
@@ -180,8 +184,14 @@ export function Sidebar({
 
         {extensionsOpen && !collapsed ? (
           <div className="extension-list">
-            {extensionItems.map(({ label, icon: Icon }) => (
-              <button className="extension-item" type="button" key={label}>
+            {extensionItems.map(({ id, label, icon: Icon }) => (
+              <button
+                className={`extension-item${id === "skills" && skillsOpen ? " extension-item-active" : ""}`}
+                type="button"
+                key={id}
+                aria-current={id === "skills" && skillsOpen ? "page" : undefined}
+                onClick={id === "skills" ? onOpenSkills : undefined}
+              >
                 <Icon size={15} />
                 <span>{label}</span>
               </button>

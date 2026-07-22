@@ -1,0 +1,288 @@
+/* 主题方案只定义应用表面；强调色在文件末尾独立覆盖交互颜色。 */
+.app-shell[data-theme-preset="forest"] {
+  --color-app: #f1f5f1;
+  --color-surface: #f8faf7;
+  --color-surface-raised: #ffffff;
+  --color-sidebar: #e7eee7;
+  --color-border: #d1dbd2;
+  --color-border-soft: #dce4dc;
+  --color-text: #202821;
+  --color-text-secondary: #465048;
+  --color-muted: #6f7a72;
+  --color-faint: #8b958d;
+  --color-hover: #dfe7df;
+  --color-user-bubble: #eaf0ea;
+  --shadow-menu: 0 10px 28px rgb(31 57 40 / 14%);
+  --shadow-composer: 0 6px 20px rgb(35 61 44 / 9%);
+}
+
+.app-shell[data-theme="dark"][data-theme-preset="forest"] {
+  --color-app: #131814;
+  --color-surface: #18201a;
+  --color-surface-raised: #222b24;
+  --color-sidebar: #1b241d;
+  --color-border: #344038;
+  --color-border-soft: #2d3931;
+  --color-text: #edf2ee;
+  --color-text-secondary: #c4cec6;
+  --color-muted: #97a39a;
+  --color-faint: #7c8980;
+  --color-hover: #29342c;
+  --color-user-bubble: #273129;
+  --shadow-menu: 0 12px 30px rgb(0 0 0 / 32%);
+  --shadow-composer: 0 8px 24px rgb(0 0 0 / 24%);
+}
+
+.app-shell[data-theme-preset="ocean"] {
+  --color-app: #f1f5f6;
+  --color-surface: #f7fafb;
+  --color-surface-raised: #ffffff;
+  --color-sidebar: #e6eef0;
+  --color-border: #cfdbde;
+  --color-border-soft: #dbe4e6;
+  --color-text: #20272a;
+  --color-text-secondary: #465157;
+  --color-muted: #6e7b81;
+  --color-faint: #89969b;
+  --color-hover: #dde7e9;
+  --color-user-bubble: #e9eff1;
+  --shadow-menu: 0 10px 28px rgb(31 52 61 / 14%);
+  --shadow-composer: 0 6px 20px rgb(36 59 68 / 9%);
+}
+
+.app-shell[data-theme="dark"][data-theme-preset="ocean"] {
+  --color-app: #12171a;
+  --color-surface: #172025;
+  --color-surface-raised: #212b30;
+  --color-sidebar: #1a2328;
+  --color-border: #334047;
+  --color-border-soft: #2c383e;
+  --color-text: #edf1f3;
+  --color-text-secondary: #c4ccd0;
+  --color-muted: #96a1a7;
+  --color-faint: #7b878d;
+  --color-hover: #28343a;
+  --color-user-bubble: #263137;
+  --shadow-menu: 0 12px 30px rgb(0 0 0 / 32%);
+  --shadow-composer: 0 8px 24px rgb(0 0 0 / 24%);
+}
+
+.app-shell[data-theme-preset="rose"] {
+  --color-app: #f7f3f4;
+  --color-surface: #fbf8f9;
+  --color-surface-raised: #ffffff;
+  --color-sidebar: #f0e7ea;
+  --color-border: #dfd2d6;
+  --color-border-soft: #e7dcdf;
+  --color-text: #2c2527;
+  --color-text-secondary: #554a4d;
+  --color-muted: #7e7075;
+  --color-faint: #998b90;
+  --color-hover: #eadfe2;
+  --color-user-bubble: #f2e9ec;
+  --shadow-menu: 0 10px 28px rgb(74 39 50 / 13%);
+  --shadow-composer: 0 6px 20px rgb(77 45 55 / 8%);
+}
+
+.app-shell[data-theme="dark"][data-theme-preset="rose"] {
+  --color-app: #191416;
+  --color-surface: #21191c;
+  --color-surface-raised: #2c2226;
+  --color-sidebar: #251c20;
+  --color-border: #43343a;
+  --color-border-soft: #3a2d32;
+  --color-text: #f3edef;
+  --color-text-secondary: #d1c4c8;
+  --color-muted: #aa989e;
+  --color-faint: #8c7a80;
+  --color-hover: #35292e;
+  --color-user-bubble: #31262a;
+  --shadow-menu: 0 12px 30px rgb(0 0 0 / 32%);
+  --shadow-composer: 0 8px 24px rgb(0 0 0 / 24%);
+}
+
+.app-shell[data-theme-preset="paper"] {
+  --color-app: #f5f3ed;
+  --color-surface: #faf9f5;
+  --color-surface-raised: #fffefa;
+  --color-sidebar: #ece9e1;
+  --color-border: #dad6cc;
+  --color-border-soft: #e3dfd6;
+  --color-text: #2c2a25;
+  --color-text-secondary: #57534b;
+  --color-muted: #7d786e;
+  --color-faint: #999287;
+  --color-hover: #e6e2d9;
+  --color-user-bubble: #efede6;
+  --shadow-menu: 0 10px 28px rgb(66 57 40 / 13%);
+  --shadow-composer: 0 6px 20px rgb(65 57 43 / 8%);
+}
+
+.app-shell[data-theme="dark"][data-theme-preset="paper"] {
+  --color-app: #181713;
+  --color-surface: #201e19;
+  --color-surface-raised: #2a2721;
+  --color-sidebar: #24211c;
+  --color-border: #403c33;
+  --color-border-soft: #37342c;
+  --color-text: #f1efe9;
+  --color-text-secondary: #ccc8bd;
+  --color-muted: #a19b8e;
+  --color-faint: #857f73;
+  --color-hover: #332f28;
+  --color-user-bubble: #2f2c25;
+  --shadow-menu: 0 12px 30px rgb(0 0 0 / 32%);
+  --shadow-composer: 0 8px 24px rgb(0 0 0 / 24%);
+}
+
+.app-shell[data-theme-preset="graphite"] {
+  --color-app: #f2f3f3;
+  --color-surface: #f8f9f9;
+  --color-surface-raised: #ffffff;
+  --color-sidebar: #e7e9e9;
+  --color-border: #d1d5d5;
+  --color-border-soft: #dde0e0;
+  --color-text: #222626;
+  --color-text-secondary: #4b5151;
+  --color-muted: #737b7b;
+  --color-faint: #8e9696;
+  --color-hover: #dfe3e3;
+  --color-user-bubble: #e9ecec;
+  --shadow-menu: 0 10px 28px rgb(32 41 41 / 14%);
+  --shadow-composer: 0 6px 20px rgb(39 48 48 / 9%);
+}
+
+.app-shell[data-theme="dark"][data-theme-preset="graphite"] {
+  --color-app: #101212;
+  --color-surface: #161919;
+  --color-surface-raised: #202424;
+  --color-sidebar: #191d1d;
+  --color-border: #343a3a;
+  --color-border-soft: #2c3232;
+  --color-text: #f0f2f2;
+  --color-text-secondary: #c6cccc;
+  --color-muted: #99a1a1;
+  --color-faint: #7d8585;
+  --color-hover: #292e2e;
+  --color-user-bubble: #262b2b;
+  --shadow-menu: 0 12px 30px rgb(0 0 0 / 34%);
+  --shadow-composer: 0 8px 24px rgb(0 0 0 / 26%);
+}
+
+.app-shell[data-theme-preset="highContrast"] {
+  --color-app: #ffffff;
+  --color-surface: #ffffff;
+  --color-surface-raised: #ffffff;
+  --color-sidebar: #f1f1f1;
+  --color-border: #777777;
+  --color-border-soft: #aaaaaa;
+  --color-text: #000000;
+  --color-text-secondary: #202020;
+  --color-muted: #3f3f3f;
+  --color-faint: #5f5f5f;
+  --color-hover: #dddddd;
+  --color-user-bubble: #eeeeee;
+  --shadow-menu: 0 8px 20px rgb(0 0 0 / 24%);
+  --shadow-composer: 0 4px 14px rgb(0 0 0 / 16%);
+}
+
+.app-shell[data-theme="dark"][data-theme-preset="highContrast"] {
+  --color-app: #000000;
+  --color-surface: #060606;
+  --color-surface-raised: #111111;
+  --color-sidebar: #050505;
+  --color-border: #aaaaaa;
+  --color-border-soft: #666666;
+  --color-text: #ffffff;
+  --color-text-secondary: #eeeeee;
+  --color-muted: #d0d0d0;
+  --color-faint: #a8a8a8;
+  --color-hover: #2b2b2b;
+  --color-user-bubble: #1d1d1d;
+  --shadow-menu: 0 10px 28px rgb(0 0 0 / 55%);
+  --shadow-composer: 0 6px 20px rgb(0 0 0 / 45%);
+}
+
+.app-shell[data-theme-color="neutral"] {
+  --color-accent: #3f6f5a;
+  --color-accent-hover: #335d4a;
+  --color-accent-soft: #e6eee8;
+  --color-active: #dce4dd;
+}
+
+.app-shell[data-theme-color="warm"] {
+  --color-accent: #9a5b3f;
+  --color-accent-hover: #7f4933;
+  --color-accent-soft: #f4e9e2;
+  --color-active: #ece3de;
+}
+
+.app-shell[data-theme-color="cool"] {
+  --color-accent: #397789;
+  --color-accent-hover: #2f6473;
+  --color-accent-soft: #e1eef1;
+  --color-active: #dde9eb;
+}
+
+.app-shell[data-theme-color="rose"] {
+  --color-accent: #a04761;
+  --color-accent-hover: #85384f;
+  --color-accent-soft: #f5e5ea;
+  --color-active: #eddae0;
+}
+
+.app-shell[data-theme-color="amber"] {
+  --color-accent: #946515;
+  --color-accent-hover: #79510f;
+  --color-accent-soft: #f5ecd8;
+  --color-active: #ede2c9;
+}
+
+.app-shell[data-theme-color="violet"] {
+  --color-accent: #6f56a3;
+  --color-accent-hover: #5c4689;
+  --color-accent-soft: #ece7f5;
+  --color-active: #e3dcef;
+}
+
+.app-shell[data-theme="dark"][data-theme-color="neutral"] {
+  --color-accent: #67967d;
+  --color-accent-hover: #78a68e;
+  --color-accent-soft: #2a3931;
+  --color-active: #334239;
+}
+
+.app-shell[data-theme="dark"][data-theme-color="warm"] {
+  --color-accent: #c58a6d;
+  --color-accent-hover: #d49a7d;
+  --color-accent-soft: #3b2e29;
+  --color-active: #3b312d;
+}
+
+.app-shell[data-theme="dark"][data-theme-color="cool"] {
+  --color-accent: #70a6b4;
+  --color-accent-hover: #82b6c3;
+  --color-accent-soft: #25363a;
+  --color-active: #293a3e;
+}
+
+.app-shell[data-theme="dark"][data-theme-color="rose"] {
+  --color-accent: #d6819a;
+  --color-accent-hover: #e291a7;
+  --color-accent-soft: #3d2930;
+  --color-active: #412d34;
+}
+
+.app-shell[data-theme="dark"][data-theme-color="amber"] {
+  --color-accent: #d4a856;
+  --color-accent-hover: #e0b766;
+  --color-accent-soft: #3a3223;
+  --color-active: #403724;
+}
+
+.app-shell[data-theme="dark"][data-theme-color="violet"] {
+  --color-accent: #a995d0;
+  --color-accent-hover: #b7a4dc;
+  --color-accent-soft: #302a3c;
+  --color-active: #352e43;
+}

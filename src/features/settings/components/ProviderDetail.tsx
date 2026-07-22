@@ -425,6 +425,36 @@ export function ProviderDetail(props: ProviderDetailProps) {
                     })}
                   />
                 </div>
+                <details className="model-pricing">
+                  <summary>用量价格（USD / 百万 Token）</summary>
+                  <div className="model-pricing-grid">
+                    {([
+                      ["inputPerMillion", "普通输入"],
+                      ["outputPerMillion", "输出"],
+                      ["cacheReadPerMillion", "缓存读取"],
+                      ["cacheWritePerMillion", "缓存创建"],
+                    ] as const).map(([key, label]) => (
+                      <label key={key}>
+                        <span>{label}</span>
+                        <input
+                          className="settings-input"
+                          type="number"
+                          min={0}
+                          step="0.0001"
+                          value={model.pricing?.[key] ?? ""}
+                          placeholder="未设置"
+                          onChange={(event) => onUpdateModel(model.id, {
+                            pricing: {
+                              ...model.pricing,
+                              currency: "USD",
+                              [key]: event.target.value ? Number(event.target.value) : undefined,
+                            },
+                          })}
+                        />
+                      </label>
+                    ))}
+                  </div>
+                </details>
                 <button
                   className={`model-row-action model-default-button${isDefault ? " model-default-button-active" : ""}`}
                   type="button"

@@ -18,6 +18,7 @@ use super::{
         ProviderRequestContext,
     },
 };
+use crate::usage::normalize::{apply_stream_metrics, normalize_usage};
 use sse::SseReadOutcome;
 
 pub(crate) async fn send_sse_request<F>(
@@ -50,27 +51,38 @@ where
     F: FnMut(ModelStreamChunk) -> Result<(), ModelError>,
 {
     let started_at = Instant::now();
+    let mut first_token_ms = None;
+    let mut observe_chunk = |chunk: ModelStreamChunk| {
+        first_token_ms
+            .get_or_insert_with(|| started_at.elapsed().as_millis().min(u64::MAX as u128) as u64);
+        on_chunk(chunk)
+    };
     let mut outcome = match context.protocol {
         ApiProtocol::OpenAiChatCompletions => {
-            openai_chat::stream(client, context, request, cancellation, on_chunk).await
+            openai_chat::stream(client, context, request, cancellation, &mut observe_chunk).await
         }
         ApiProtocol::OpenAiResponses => {
-            openai_responses::stream(client, context, request, cancellation, on_chunk).await
+            openai_responses::stream(client, context, request, cancellation, &mut observe_chunk)
+                .await
         }
         ApiProtocol::AnthropicMessages => {
-            anthropic::stream(client, context, request, cancellation, on_chunk).await
+            anthropic::stream(client, context, request, cancellation, &mut observe_chunk).await
         }
         ApiProtocol::GeminiGenerateContent => {
-            gemini::stream(client, context, request, cancellation, on_chunk).await
+            gemini::stream(client, context, request, cancellation, &mut observe_chunk).await
         }
     }?;
 
     if let ModelStreamOutcome::Completed(summary) = &mut outcome {
         let duration_ms = started_at.elapsed().as_millis().min(u64::MAX as u128) as u64;
-        summary
-            .usage
-            .get_or_insert_with(ModelUsage::default)
-            .total_duration_ms = Some(duration_ms);
+        apply_stream_metrics(
+            summary.usage.get_or_insert_with(ModelUsage::default),
+            duration_ms,
+            first_token_ms,
+        );
+        if let Some(usage) = summary.usage.take() {
+            summary.usage = Some(normalize_usage(context.protocol, usage));
+        }
     }
     Ok(outcome)
 }

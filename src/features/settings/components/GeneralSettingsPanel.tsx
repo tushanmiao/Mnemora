@@ -15,8 +15,20 @@ import {
   exportSettingsBundle,
   importSettingsBundle,
 } from "../api/appSettings";
-import type { AppSettings, SettingsBundle, ThemeColor, ThemeMode } from "../../../types/appSettings";
+import type {
+  AppSettings,
+  SettingsBundle,
+  ThemeColor,
+  ThemeMode,
+  ThemePreset,
+} from "../../../types/appSettings";
 import type { ModelSettings } from "../../../types/modelSettings";
+import {
+  DEFAULT_SURFACE_OPACITY,
+  MAX_SURFACE_OPACITY,
+  MIN_SURFACE_OPACITY,
+  validateThemeBackgroundCss,
+} from "../utils/themeBackground";
 import "../styles/general-settings.css";
 
 type Feedback = { kind: "success" | "error"; message: string } | null;
@@ -34,6 +46,23 @@ type GeneralSettingsPanelProps = {
 const TOKEN_OPTIONS = [4_096, 8_192, 16_384, 32_768, 65_536, 131_072];
 const MAX_AVATAR_BYTES = 2 * 1024 * 1024;
 const ACCEPTED_AVATAR_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
+const THEME_PRESET_OPTIONS: Array<{ value: ThemePreset; label: string }> = [
+  { value: "mnemora", label: "Mnemora" },
+  { value: "forest", label: "森林" },
+  { value: "ocean", label: "海洋" },
+  { value: "rose", label: "玫瑰" },
+  { value: "paper", label: "纸张" },
+  { value: "graphite", label: "石墨" },
+  { value: "highContrast", label: "高对比" },
+];
+const THEME_COLOR_OPTIONS: Array<{ value: ThemeColor; label: string }> = [
+  { value: "neutral", label: "松绿" },
+  { value: "warm", label: "陶土" },
+  { value: "cool", label: "湖蓝" },
+  { value: "rose", label: "玫瑰" },
+  { value: "amber", label: "琥珀" },
+  { value: "violet", label: "紫罗兰" },
+];
 
 export function GeneralSettingsPanel({
   settings,
@@ -47,6 +76,7 @@ export function GeneralSettingsPanel({
   const [draft, setDraft] = useState(settings);
   const [saving, setSaving] = useState(false);
   const [backupBusy, setBackupBusy] = useState(false);
+  const [includeMemoryInBackup, setIncludeMemoryInBackup] = useState(false);
   const avatarInputRef = useRef<HTMLInputElement>(null);
   const [feedback, setFeedback] = useState<Feedback>(
     initialError ? { kind: "error", message: initialError } : null,
@@ -76,14 +106,36 @@ export function GeneralSettingsPanel({
   const updateDraft = <Key extends keyof AppSettings>(key: Key, value: AppSettings[Key]) => {
     setDraft((current) => {
       const next = { ...current, [key]: value };
-      if (key === "theme" || key === "themeColor" || key === "fontSize") onPreview(next);
+      if (key === "theme" || key === "themePreset" || key === "themeColor" || key === "fontSize") onPreview(next);
       return next;
     });
     setFeedback(null);
   };
 
+  const updateThemeBackground = (patch: Partial<AppSettings["themeBackground"]>) => {
+    setDraft((current) => {
+      const next = {
+        ...current,
+        themeBackground: { ...current.themeBackground, ...patch },
+      };
+      onPreview(next);
+      return next;
+    });
+    setFeedback(null);
+  };
+
+  const backgroundError = draft.themeBackground.enabled
+    ? draft.themeBackground.css.trim()
+      ? validateThemeBackgroundCss(draft.themeBackground.css)
+      : "请输入颜色或渐变形式的 CSS background 值。"
+    : null;
+
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (backgroundError) {
+      setFeedback({ kind: "error", message: backgroundError });
+      return;
+    }
     setSaving(true);
     setFeedback(null);
     try {
@@ -101,11 +153,14 @@ export function GeneralSettingsPanel({
   };
 
   const handleExport = async () => {
-    if (!window.confirm("导出文件将包含 API Key。请确认保存位置安全，并避免上传到公开仓库。")) return;
+    const memoryNotice = includeMemoryInBackup
+      ? "，以及 L1/L2 跨会话记忆"
+      : "";
+    if (!window.confirm(`导出文件将包含 API Key${memoryNotice}。请确认保存位置安全，并避免上传到公开仓库。`)) return;
     setBackupBusy(true);
     setFeedback(null);
     try {
-      const exported = await exportSettingsBundle();
+      const exported = await exportSettingsBundle(includeMemoryInBackup);
       if (exported) setFeedback({ kind: "success", message: "完整设置已导出，请妥善保管备份文件。" });
     } catch (error) {
       setFeedback({ kind: "error", message: error instanceof Error ? error.message : String(error) });
@@ -122,7 +177,12 @@ export function GeneralSettingsPanel({
       if (bundle) {
         onImported(bundle);
         setDraft(bundle.appSettings);
-        setFeedback({ kind: "success", message: "基础设置、模型供应商和 API Key 已恢复。" });
+        setFeedback({
+          kind: "success",
+          message: bundle.memoryImported
+            ? "基础设置、模型供应商、API Key 和跨会话记忆已恢复。"
+            : "基础设置、模型供应商和 API Key 已恢复；当前记忆保持不变。",
+        });
       }
     } catch (error) {
       setFeedback({ kind: "error", message: error instanceof Error ? error.message : String(error) });
@@ -186,27 +246,88 @@ export function GeneralSettingsPanel({
               onChange={(value) => updateDraft("theme", value as ThemeMode)}
             />
           </SettingRow>
-          <SettingRow label="主题颜色">
-            <div className="theme-color-options" role="radiogroup" aria-label="主题颜色">
-              {([
-                ["neutral", "中性"],
-                ["warm", "暖白"],
-                ["cool", "冷白"],
-              ] as const).map(([value, label]) => (
+          <SettingRow label="主题方案" stack>
+            <div className="theme-preset-options" role="radiogroup" aria-label="主题方案">
+              {THEME_PRESET_OPTIONS.map((option) => (
                 <button
-                  className={`theme-color-option theme-color-${value}${draft.themeColor === value ? " theme-color-option-active" : ""}`}
+                  className={`theme-preset-option${draft.themePreset === option.value ? " theme-preset-option-active" : ""}`}
+                  data-theme-preset-preview={option.value}
                   type="button"
                   role="radio"
-                  aria-checked={draft.themeColor === value}
-                  key={value}
-                  onClick={() => updateDraft("themeColor", value as ThemeColor)}
+                  aria-checked={draft.themePreset === option.value}
+                  key={option.value}
+                  onClick={() => updateDraft("themePreset", option.value)}
                 >
-                  <span className="theme-color-swatch" aria-hidden="true" />
-                  <span>{label}</span>
+                  <span className="theme-preset-swatch" aria-hidden="true">
+                    <i /><i /><i />
+                  </span>
+                  <span>{option.label}</span>
                 </button>
               ))}
             </div>
           </SettingRow>
+          <SettingRow label="强调色">
+            <div className="theme-color-options" role="radiogroup" aria-label="主题颜色">
+              {THEME_COLOR_OPTIONS.map((option) => (
+                <button
+                  className={`theme-color-option theme-color-${option.value}${draft.themeColor === option.value ? " theme-color-option-active" : ""}`}
+                  type="button"
+                  role="radio"
+                  aria-checked={draft.themeColor === option.value}
+                  key={option.value}
+                  onClick={() => updateDraft("themeColor", option.value)}
+                >
+                  <span className="theme-color-swatch" aria-hidden="true" />
+                  <span>{option.label}</span>
+                </button>
+              ))}
+            </div>
+          </SettingRow>
+          <SettingRow label="自定义背景" description="使用受限的 CSS background 值；不允许 URL、脚本或完整样式表。">
+            <Toggle
+              checked={draft.themeBackground.enabled}
+              onChange={(enabled) => updateThemeBackground({ enabled })}
+            />
+          </SettingRow>
+          {draft.themeBackground.enabled ? (
+            <>
+              <SettingRow label="背景 CSS" stack>
+                <div className="theme-background-editor">
+                  <textarea
+                    className={`theme-background-input${backgroundError ? " theme-background-input-error" : ""}`}
+                    value={draft.themeBackground.css}
+                    rows={3}
+                    spellCheck={false}
+                    aria-invalid={Boolean(backgroundError)}
+                    placeholder="linear-gradient(135deg, #f7f8f6, #dfeae3)"
+                    onChange={(event) => updateThemeBackground({ css: event.target.value })}
+                  />
+                  <div
+                    className="theme-background-preview"
+                    style={{ background: backgroundError || !draft.themeBackground.css.trim()
+                      ? "var(--color-app)"
+                      : draft.themeBackground.css.trim() }}
+                    aria-label="自定义背景预览"
+                  />
+                  {backgroundError ? <span className="theme-background-error">{backgroundError}</span> : null}
+                </div>
+              </SettingRow>
+              <SettingRow label="表面透明度">
+                <div className="font-size-control theme-opacity-control">
+                  <input
+                    type="range"
+                    min={MIN_SURFACE_OPACITY}
+                    max={MAX_SURFACE_OPACITY}
+                    step={1}
+                    value={draft.themeBackground.surfaceOpacity}
+                    aria-label="主题表面透明度"
+                    onChange={(event) => updateThemeBackground({ surfaceOpacity: Number(event.target.value) })}
+                  />
+                  <output>{draft.themeBackground.surfaceOpacity}%</output>
+                </div>
+              </SettingRow>
+            </>
+          ) : null}
           <SettingRow label="显示字体大小" description="调整对话正文、输入框和界面基础文字大小。">
             <div className="font-size-control">
               <input
@@ -221,6 +342,32 @@ export function GeneralSettingsPanel({
               <output>{draft.fontSize} px</output>
             </div>
           </SettingRow>
+          <div className="appearance-reset-row">
+            <button
+              className="settings-button settings-button-secondary"
+              type="button"
+              onClick={() => {
+                const next = {
+                  ...draft,
+                  theme: "system" as const,
+                  themePreset: "mnemora" as const,
+                  themeColor: "neutral" as const,
+                  themeBackground: {
+                    enabled: false,
+                    css: "",
+                    surfaceOpacity: DEFAULT_SURFACE_OPACITY,
+                  },
+                  fontSize: 14,
+                };
+                setDraft(next);
+                onPreview(next);
+                setFeedback(null);
+              }}
+            >
+              <RefreshCw size={15} />
+              <span>恢复默认外观</span>
+            </button>
+          </div>
         </section>
 
         <section className="general-settings-section">
@@ -377,6 +524,18 @@ export function GeneralSettingsPanel({
 
         <section className="general-settings-section">
           <h3>备份与恢复</h3>
+          <label className="backup-memory-option">
+            <input
+              type="checkbox"
+              checked={includeMemoryInBackup}
+              disabled={backupBusy}
+              onChange={(event) => setIncludeMemoryInBackup(event.target.checked)}
+            />
+            <span>
+              <strong>包含跨会话记忆</strong>
+              <small>默认不包含。勾选后会把 L1/L2 正文写入备份文件。</small>
+            </span>
+          </label>
           <div className="backup-settings-row">
             <div>
               <strong>完整设置备份</strong>

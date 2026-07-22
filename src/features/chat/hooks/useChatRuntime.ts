@@ -7,9 +7,10 @@ import {
   type ModelStreamEvent,
 } from "../api/chat";
 import type { AppSettings, ResponseLanguage } from "../../../types/appSettings";
-import type { ChatMessage } from "../../../types/chat";
+import type { ActivatedSkillSnapshot, ChatMessage } from "../../../types/chat";
 import type { ChatAttachment } from "../../../types/attachment";
 import type { Conversation } from "../../../types/conversation";
+import type { SkillActivationSelection, SkillSummary } from "../../../types/skill";
 import type {
   ProviderConfig,
   ProviderModelConfig,
@@ -30,6 +31,11 @@ import {
   contextSummaryPrompt,
   toModelMessages,
 } from "../utils/contextCompression";
+import {
+  createActivatedSkillSnapshots,
+  refreshActivatedSkillSnapshots,
+  resolveSkillActivation,
+} from "../utils/skillActivation";
 
 const MAX_TEMPORARY_TITLE_LENGTH = 24;
 const RESPONSE_LANGUAGE_PROMPTS: Partial<Record<ResponseLanguage, string>> = {
@@ -56,10 +62,13 @@ type PreparedGeneration = {
   pendingUserMessage: ChatMessage | null;
   assistantMessageId: string;
   selectedModel: SelectedModel;
+  activatedSkillIds: string[];
+  slashSkillId?: string;
 };
 
 type UseChatRuntimeOptions = {
   appSettings: AppSettings;
+  skills: SkillSummary[];
   currentConversation: Conversation | null;
   currentModel: SelectedModel | null;
   conversationsRef: MutableRefObject<Conversation[]>;
@@ -89,6 +98,7 @@ function createAssistantMessage(
   conversationId: string,
   selectedModel: SelectedModel,
   messageId: string = crypto.randomUUID(),
+  activatedSkills: ActivatedSkillSnapshot[] = [],
 ): ChatMessage {
   const now = Date.now();
   return {
@@ -107,6 +117,7 @@ function createAssistantMessage(
       providerId: selectedModel.provider.id,
       providerName: selectedModel.provider.name,
     },
+    activatedSkills,
   };
 }
 
@@ -124,17 +135,20 @@ async function compressConversation(
   conversation: Conversation,
   selectedModel: SelectedModel,
   pendingUserMessage: ChatMessage | null,
+  options: { force?: boolean; focus?: string } = {},
 ) {
   const contextWindowTokens = selectedModel.model.contextWindowTokens;
-  if (!contextWindowTokens) return null;
-  const projectedMessages = pendingUserMessage
-    ? [...activeContextMessages(conversation), pendingUserMessage]
-    : activeContextMessages(conversation);
-  const projected = estimateConversationContext(
-    projectedMessages,
-    composeSystemPrompt(settings, conversation),
-  );
-  if (projected.tokens / contextWindowTokens < AUTO_COMPRESSION_RATIO) return null;
+  if (!options.force) {
+    if (!contextWindowTokens) return null;
+    const projectedMessages = pendingUserMessage
+      ? [...activeContextMessages(conversation), pendingUserMessage]
+      : activeContextMessages(conversation);
+    const projected = estimateConversationContext(
+      projectedMessages,
+      composeSystemPrompt(settings, conversation),
+    );
+    if (projected.tokens / contextWindowTokens < AUTO_COMPRESSION_RATIO) return null;
+  }
 
   const candidates = compressionCandidates(conversation);
   const boundary = candidates[candidates.length - 1];
@@ -149,7 +163,8 @@ async function compressConversation(
       "你负责压缩对话上下文。",
       "保留事实、用户偏好、约束、关键结论、代码或文件名称、待办事项和未解决问题。",
       "删除寒暄、重复内容和无关细节。不要回答对话中的问题，只输出可供后续模型继续工作的中文摘要。",
-    ].join("\n"),
+      options.focus?.trim() ? `用户要求本次压缩重点保留：${options.focus.trim()}` : "",
+    ].filter(Boolean).join("\n"),
     messages: [{
       role: "user",
       content: compressionTranscript(conversation.contextSummary, candidates),
@@ -167,6 +182,7 @@ async function compressConversation(
 
 export function useChatRuntime({
   appSettings,
+  skills,
   currentConversation,
   currentModel,
   conversationsRef,
@@ -213,6 +229,7 @@ export function useChatRuntime({
               reasoning: streamedMessage?.reasoning || message.reasoning,
               status: terminal.status,
               usage: terminal.usage ?? message.usage,
+              toolTraces: message.toolTraces?.map(({ approvalId: _approvalId, ...trace }) => trace),
               errorMessage: terminal.errorMessage,
               updatedAt,
             }
@@ -223,6 +240,21 @@ export function useChatRuntime({
     cacheConversation(nextConversation);
     saveStableConversation(nextConversation);
   }, [cacheConversation, conversationsRef, saveStableConversation]);
+
+  const updateStreamingMessageMetadata = useCallback((
+    run: ActiveStreamRun,
+    update: (message: ChatMessage) => ChatMessage,
+  ) => {
+    const conversation = conversationsRef.current.find((item) => item.id === run.conversationId);
+    if (!conversation) return;
+    cacheConversation({
+      ...conversation,
+      messages: conversation.messages.map((message) => (
+        message.id === run.messageId ? update(message) : message
+      )),
+      updatedAt: Date.now(),
+    });
+  }, [cacheConversation, conversationsRef]);
 
   const handleStreamEvent = useCallback((event: ModelStreamEvent) => {
     const run = activeStreamRunRef.current;
@@ -243,6 +275,42 @@ export function useChatRuntime({
       case "reasoningDelta":
         appendStreamingReasoningDelta(run.messageId, event.delta);
         return;
+      case "toolTrace":
+      case "toolApprovalRequested":
+        updateStreamingMessageMetadata(run, (message) => {
+          const nextTrace = {
+            ...event.trace,
+            approvalId: event.type === "toolApprovalRequested" ? event.approvalId : undefined,
+          };
+          const traces = message.toolTraces ?? [];
+          const existing = traces.findIndex((trace) => trace.callId === nextTrace.callId);
+          return {
+            ...message,
+            toolTraces: existing < 0
+              ? [...traces, nextTrace]
+              : traces.map((trace, index) => index === existing ? nextTrace : trace),
+          };
+        });
+        return;
+      case "skillActivated":
+        updateStreamingMessageMetadata(run, (message) => (
+          message.activatedSkills?.some((skill) => skill.id === event.skillId)
+            ? message
+            : {
+                ...message,
+                activatedSkills: [
+                  ...(message.activatedSkills ?? []),
+                  {
+                    id: event.skillId,
+                    name: event.name,
+                    version: event.version,
+                    contentHash: event.contentHash,
+                    activation: "model" as const,
+                  },
+                ],
+              }
+        ));
+        return;
       case "completed":
         run.terminalReceived = true;
         finalizeStreamRun(run, { status: "completed", usage: event.usage });
@@ -255,7 +323,7 @@ export function useChatRuntime({
         run.terminalReceived = true;
         finalizeStreamRun(run, { status: "error", errorMessage: event.error.message });
     }
-  }, [finalizeStreamRun]);
+  }, [finalizeStreamRun, updateStreamingMessageMetadata]);
 
   const stopGeneration = useCallback(() => {
     const run = activeStreamRunRef.current;
@@ -270,6 +338,8 @@ export function useChatRuntime({
     pendingUserMessage,
     assistantMessageId,
     selectedModel,
+    activatedSkillIds,
+    slashSkillId,
   }: PreparedGeneration) => {
     const targetConversationId = initialRunningConversation.id;
     protectConversation(targetConversationId);
@@ -315,6 +385,9 @@ export function useChatRuntime({
         conversationId: targetConversationId,
         messageId: assistantMessageId,
         systemPrompt: composeSystemPrompt(appSettings, runningConversation),
+        activatedSkillIds,
+        slashSkillId,
+        permissionMode: runningConversation.permissionMode,
         messages: modelMessages,
         options: {
           maxOutputTokens: appSettings.maxOutputTokens,
@@ -346,6 +419,16 @@ export function useChatRuntime({
       const conversation = conversationsRef.current.find((item) => item.id === targetConversationId);
       if (conversation) {
         const completedAt = Date.now();
+        const modelActivatedSkills = (response.activatedSkillIds ?? []).flatMap((skillId) => {
+          const skill = skills.find((item) => item.id === skillId && item.enabled);
+          return skill ? [{
+            id: skill.id,
+            name: skill.name,
+            version: skill.version,
+            contentHash: skill.contentHash,
+            activation: "model" as const,
+          }] : [];
+        });
         const completedConversation: Conversation = {
           ...conversation,
           messages: conversation.messages.map((message) => (
@@ -356,6 +439,13 @@ export function useChatRuntime({
                   reasoning: response.reasoning,
                   status: "completed",
                   usage: response.usage,
+                  activatedSkills: [
+                    ...(message.activatedSkills ?? []),
+                    ...modelActivatedSkills.filter((skill) => (
+                      !message.activatedSkills?.some((current) => current.id === skill.id)
+                    )),
+                  ].slice(0, 3),
+                  toolTraces: response.toolTraces,
                   updatedAt: completedAt,
                 }
               : message
@@ -409,11 +499,13 @@ export function useChatRuntime({
     releaseConversation,
     requestInFlightRef,
     saveStableConversation,
+    skills,
   ]);
 
   const sendMessage = useCallback(async (
     rawContent: string,
     attachments: ChatAttachment[] = [],
+    skillActivation?: SkillActivationSelection,
   ) => {
     const content = rawContent.trim();
     const targetConversation = currentConversation;
@@ -436,7 +528,16 @@ export function useChatRuntime({
       createdAt: now,
       updatedAt: now,
     };
-    const assistantMessage = createAssistantMessage(targetConversation.id, selectedModel);
+    const effectiveActivation = skillActivation ?? {
+      skillIds: targetConversation.enabledSkillIds,
+    };
+    const activatedSkills = createActivatedSkillSnapshots(effectiveActivation, skills);
+    const assistantMessage = createAssistantMessage(
+      targetConversation.id,
+      selectedModel,
+      undefined,
+      activatedSkills,
+    );
     const runningConversation: Conversation = {
       ...targetConversation,
       title: targetConversation.messages.length === 0
@@ -453,8 +554,10 @@ export function useChatRuntime({
       pendingUserMessage: userMessage,
       assistantMessageId: assistantMessage.id,
       selectedModel,
+      activatedSkillIds: activatedSkills.map((skill) => skill.id),
+      slashSkillId: effectiveActivation.slashSkillId,
     });
-  }, [currentConversation, currentModel, requestInFlightRef, runPreparedGeneration]);
+  }, [currentConversation, currentModel, requestInFlightRef, runPreparedGeneration, skills]);
 
   const regenerateMessage = useCallback(async (messageId: string) => {
     const targetConversation = currentConversation;
@@ -473,7 +576,17 @@ export function useChatRuntime({
       messages: history,
       updatedAt: now,
     });
-    const assistantMessage = createAssistantMessage(targetConversation.id, selectedModel, messageId);
+    const originalAssistantMessage = targetConversation.messages[messageIndex];
+    const activatedSkills = refreshActivatedSkillSnapshots(
+      originalAssistantMessage.activatedSkills ?? [],
+      skills,
+    );
+    const assistantMessage = createAssistantMessage(
+      targetConversation.id,
+      selectedModel,
+      messageId,
+      activatedSkills,
+    );
     const runningConversation: Conversation = {
       ...compressionConversation,
       messages: [...history, assistantMessage],
@@ -486,8 +599,10 @@ export function useChatRuntime({
       pendingUserMessage: null,
       assistantMessageId: assistantMessage.id,
       selectedModel,
+      activatedSkillIds: activatedSkills.map((skill) => skill.id),
+      slashSkillId: activatedSkills.find((skill) => skill.activation === "slash")?.id,
     });
-  }, [currentConversation, currentModel, requestInFlightRef, runPreparedGeneration]);
+  }, [currentConversation, currentModel, requestInFlightRef, runPreparedGeneration, skills]);
 
   const editMessage = useCallback(async (messageId: string, rawContent: string) => {
     const content = rawContent.trim();
@@ -546,7 +661,18 @@ export function useChatRuntime({
       return;
     }
 
-    const assistantMessage = createAssistantMessage(targetConversation.id, selectedModel);
+    const activation = resolveSkillActivation(
+      content,
+      targetConversation.enabledSkillIds,
+      skills,
+    );
+    const activatedSkills = createActivatedSkillSnapshots(activation, skills);
+    const assistantMessage = createAssistantMessage(
+      targetConversation.id,
+      selectedModel,
+      undefined,
+      activatedSkills,
+    );
     const runningConversation: Conversation = {
       ...compressionConversation,
       messages: [...history, assistantMessage],
@@ -559,6 +685,8 @@ export function useChatRuntime({
       pendingUserMessage: null,
       assistantMessageId: assistantMessage.id,
       selectedModel,
+      activatedSkillIds: activatedSkills.map((skill) => skill.id),
+      slashSkillId: activation.slashSkillId,
     });
   }, [
     cacheConversation,
@@ -567,6 +695,7 @@ export function useChatRuntime({
     requestInFlightRef,
     runPreparedGeneration,
     saveStableConversation,
+    skills,
   ]);
 
   const deleteMessage = useCallback((messageId: string) => {
@@ -583,6 +712,65 @@ export function useChatRuntime({
     saveStableConversation(nextConversation);
   }, [cacheConversation, currentConversation, requestInFlightRef, saveStableConversation]);
 
+  const compactConversation = useCallback(async (focus = "") => {
+    const targetConversation = currentConversation;
+    const selectedModel = currentModel;
+    if (!targetConversation || !selectedModel) {
+      return { executed: false, message: "当前没有可压缩的对话或模型。" };
+    }
+    if (requestInFlightRef.current) {
+      return { executed: false, message: "请先等待当前回复结束。" };
+    }
+    if (compressionCandidates(targetConversation).length === 0) {
+      return { executed: false, message: "当前有效消息太少，暂时不需要压缩。" };
+    }
+
+    protectConversation(targetConversation.id);
+    requestInFlightRef.current = true;
+    setRequestInFlight(true);
+    try {
+      const compression = await compressConversation(
+        appSettings,
+        targetConversation,
+        selectedModel,
+        null,
+        { force: true, focus },
+      );
+      if (!compression?.summary) {
+        return { executed: false, message: "模型没有返回可用的压缩摘要。" };
+      }
+      const current = conversationsRef.current.find((item) => item.id === targetConversation.id);
+      if (!current) return { executed: false, message: "对话已切换，未保存压缩结果。" };
+      const next: Conversation = {
+        ...current,
+        contextSummary: compression.summary,
+        compressedUntilMessageId: compression.boundaryMessageId,
+        contextCompressionCount: current.contextCompressionCount + 1,
+        updatedAt: Date.now(),
+      };
+      cacheConversation(next);
+      saveStableConversation(next);
+      return { executed: true, message: "上下文已压缩。" };
+    } catch (error) {
+      const modelError = normalizeModelError(error);
+      return { executed: false, message: `压缩失败：${modelError.message}` };
+    } finally {
+      requestInFlightRef.current = false;
+      setRequestInFlight(false);
+      releaseConversation(targetConversation.id);
+    }
+  }, [
+    appSettings,
+    cacheConversation,
+    conversationsRef,
+    currentConversation,
+    currentModel,
+    protectConversation,
+    releaseConversation,
+    requestInFlightRef,
+    saveStableConversation,
+  ]);
+
   return {
     requestInFlight,
     stopRequested,
@@ -591,5 +779,6 @@ export function useChatRuntime({
     editMessage,
     regenerateMessage,
     deleteMessage,
+    compactConversation,
   };
 }

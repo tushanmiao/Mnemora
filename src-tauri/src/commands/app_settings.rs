@@ -6,7 +6,7 @@
 use std::{
     collections::{BTreeMap, HashSet},
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 use serde::{Deserialize, Serialize};
@@ -14,11 +14,12 @@ use tauri::{AppHandle, State};
 use tauri_plugin_autostart::ManagerExt;
 
 use crate::{
+    memory::MemoryLayer,
     settings::{app_types::AppSettings, types::ModelSettings},
     state::AppState,
 };
 
-const EXPORT_VERSION: u32 = 2;
+const EXPORT_VERSION: u32 = 3;
 const MAX_IMPORT_BYTES: u64 = 8 * 1024 * 1024;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -27,6 +28,23 @@ pub struct SettingsBundle {
     pub version: u32,
     pub app_settings: AppSettings,
     pub model_settings: ModelSettings,
+    #[serde(default)]
+    pub memory_imported: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SettingsBundleInspection {
+    pub version: u32,
+    pub contains_memory: bool,
+    pub memory_bytes: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MemoryBackup {
+    pub l1: String,
+    pub l2: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -37,6 +55,8 @@ struct SettingsBundleFile {
     pub model_settings: ModelSettings,
     #[serde(default)]
     pub provider_api_keys: Option<BTreeMap<String, String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory: Option<MemoryBackup>,
 }
 
 fn join_error(error: impl std::fmt::Display) -> String {
@@ -105,6 +125,7 @@ pub async fn save_application_settings(
 pub async fn export_settings_bundle(
     state: State<'_, AppState>,
     path: String,
+    include_memory: bool,
 ) -> Result<(), String> {
     let path = validate_user_path(path)?;
     let app_settings = state
@@ -123,6 +144,7 @@ pub async fn export_settings_bundle(
         .map(|provider| provider.id.clone())
         .collect::<Vec<_>>();
     let secrets = state.secrets;
+    let memory_repository = state.memory_repository.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let mut provider_api_keys = BTreeMap::new();
         for provider_id in provider_ids {
@@ -130,11 +152,20 @@ pub async fn export_settings_bundle(
                 provider_api_keys.insert(provider_id, api_key);
             }
         }
+        let memory = if include_memory {
+            Some(MemoryBackup {
+                l1: memory_repository.read(MemoryLayer::L1)?,
+                l2: memory_repository.read(MemoryLayer::L2)?,
+            })
+        } else {
+            None
+        };
         let bundle = SettingsBundleFile {
             version: EXPORT_VERSION,
             app_settings,
             model_settings,
             provider_api_keys: Some(provider_api_keys),
+            memory,
         };
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
@@ -149,10 +180,31 @@ pub async fn export_settings_bundle(
 }
 
 #[tauri::command]
+pub async fn inspect_settings_bundle(path: String) -> Result<SettingsBundleInspection, String> {
+    let path = validate_user_path(path)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let bundle = read_bundle_file(&path)?;
+        let memory_bytes = bundle
+            .memory
+            .as_ref()
+            .map(|memory| memory.l1.len().saturating_add(memory.l2.len()))
+            .unwrap_or(0);
+        Ok(SettingsBundleInspection {
+            version: bundle.version,
+            contains_memory: bundle.memory.is_some(),
+            memory_bytes,
+        })
+    })
+    .await
+    .map_err(join_error)?
+}
+
+#[tauri::command]
 pub async fn import_settings_bundle(
     app: AppHandle,
     state: State<'_, AppState>,
     path: String,
+    include_memory: bool,
 ) -> Result<SettingsBundle, String> {
     let path = validate_user_path(path)?;
     let previous_launch_at_startup = state
@@ -162,20 +214,10 @@ pub async fn import_settings_bundle(
         .launch_at_startup;
     let app_repository = state.app_settings_repository.clone();
     let model_repository = state.model_settings_repository.clone();
+    let memory_repository = state.memory_repository.clone();
     let secrets = state.secrets;
     let bundle = tauri::async_runtime::spawn_blocking(move || {
-        let metadata = fs::metadata(&path)
-            .map_err(|error| format!("Failed to inspect settings import: {error}"))?;
-        if metadata.len() > MAX_IMPORT_BYTES {
-            return Err("Settings import file is too large".to_string());
-        }
-        let raw =
-            fs::read(&path).map_err(|error| format!("Failed to read settings import: {error}"))?;
-        let mut file_bundle: SettingsBundleFile = serde_json::from_slice(&raw)
-            .map_err(|error| format!("Failed to parse settings import: {error}"))?;
-        if file_bundle.version > EXPORT_VERSION {
-            return Err("Settings import version is newer than this app".to_string());
-        }
+        let mut file_bundle = read_bundle_file(&path)?;
         file_bundle.app_settings = file_bundle.app_settings.normalize_and_validate()?;
         file_bundle.model_settings = file_bundle.model_settings.normalize_and_validate()?;
 
@@ -200,6 +242,12 @@ pub async fn import_settings_bundle(
             }
         }
 
+        if include_memory {
+            if let Some(memory) = &file_bundle.memory {
+                validate_memory_backup(memory)?;
+            }
+        }
+
         app_repository.save(&file_bundle.app_settings)?;
         model_repository.save(&file_bundle.model_settings)?;
         if let Some(provider_api_keys) = file_bundle.provider_api_keys {
@@ -211,11 +259,17 @@ pub async fn import_settings_bundle(
                 }
             }
         }
+        let memory_imported = include_memory && file_bundle.memory.is_some();
+        if let Some(memory) = file_bundle.memory.as_ref().filter(|_| include_memory) {
+            memory_repository.save(MemoryLayer::L1, &memory.l1)?;
+            memory_repository.save(MemoryLayer::L2, &memory.l2)?;
+        }
         secrets.refresh_api_key_statuses(&mut file_bundle.model_settings)?;
         Ok::<_, String>(SettingsBundle {
             version: EXPORT_VERSION,
             app_settings: file_bundle.app_settings,
             model_settings: file_bundle.model_settings,
+            memory_imported,
         })
     })
     .await
@@ -234,4 +288,86 @@ pub async fn import_settings_bundle(
         .map_err(|_| "Model settings lock is unavailable".to_string())? =
         bundle.model_settings.clone();
     Ok(bundle)
+}
+
+fn read_bundle_file(path: &Path) -> Result<SettingsBundleFile, String> {
+    let metadata = fs::metadata(path)
+        .map_err(|error| format!("Failed to inspect settings import: {error}"))?;
+    if metadata.len() > MAX_IMPORT_BYTES {
+        return Err("Settings import file is too large".to_string());
+    }
+    let raw = fs::read(path).map_err(|error| format!("Failed to read settings import: {error}"))?;
+    let bundle = serde_json::from_slice::<SettingsBundleFile>(&raw)
+        .map_err(|error| format!("Failed to parse settings import: {error}"))?;
+    if bundle.version > EXPORT_VERSION {
+        return Err("Settings import version is newer than this app".to_string());
+    }
+    Ok(bundle)
+}
+
+fn validate_memory_backup(memory: &MemoryBackup) -> Result<(), String> {
+    validate_memory_text(MemoryLayer::L1, &memory.l1)?;
+    validate_memory_text(MemoryLayer::L2, &memory.l2)
+}
+
+fn validate_memory_text(layer: MemoryLayer, content: &str) -> Result<(), String> {
+    if content.len() > layer.max_bytes() {
+        return Err(format!(
+            "{} cannot exceed {} bytes",
+            layer.file_name(),
+            layer.max_bytes()
+        ));
+    }
+    let normalized = content.to_ascii_lowercase();
+    let forbidden = [
+        "api key",
+        "api key:",
+        "api_key:",
+        "authorization:",
+        "bearer ",
+        "password",
+        "密码",
+        "私钥",
+        "-----begin private key-----",
+        "ignore previous instructions",
+        "ignore all previous instructions",
+        "忽略之前的指令",
+        "<mnemora_memory_l1>",
+    ];
+    if forbidden.iter().any(|needle| normalized.contains(needle)) {
+        return Err(format!(
+            "{} contains credentials or prompt-injection text",
+            layer.file_name()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{validate_memory_text, MemoryLayer, SettingsBundleFile};
+    use crate::{settings::app_types::AppSettings, settings::types::ModelSettings};
+
+    #[test]
+    fn old_settings_bundle_without_memory_remains_importable() {
+        let value = json!({
+            "version": 2,
+            "appSettings": AppSettings::default(),
+            "modelSettings": ModelSettings::default()
+        });
+        let bundle: SettingsBundleFile = serde_json::from_value(value).unwrap();
+        assert_eq!(bundle.version, 2);
+        assert!(bundle.memory.is_none());
+        assert!(bundle.provider_api_keys.is_none());
+    }
+
+    #[test]
+    fn memory_backup_validation_checks_each_layer_and_sensitive_markers() {
+        assert!(validate_memory_text(MemoryLayer::L1, &"x".repeat(5_000)).is_ok());
+        assert!(validate_memory_text(MemoryLayer::L1, &"x".repeat(5_001)).is_err());
+        assert!(validate_memory_text(MemoryLayer::L2, "Bearer secret").is_err());
+        assert!(validate_memory_text(MemoryLayer::L2, "普通的长期记忆").is_ok());
+    }
 }

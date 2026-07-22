@@ -19,17 +19,57 @@ export interface ModelSnapshot {
   providerName: string;
 }
 
+/** 一条助手消息实际使用的 Skill 版本快照。 */
+export interface ActivatedSkillSnapshot {
+  id: string;
+  name: string;
+  version: string;
+  contentHash: string;
+  activation: "manual" | "slash" | "model";
+}
+
 /** 一次助手回复的供应商无关用量数据。 */
 export interface ModelUsage {
   inputTokens?: number;
+  nonCachedInputTokens?: number;
+  contextInputTokens?: number;
   outputTokens?: number;
   totalTokens?: number;
   reasoningTokens?: number;
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
-  cost?: number;
+  usageSource?: "providerReported" | "gatewayNormalized" | "estimated" | "missing";
+  costUsd?: number;
+  costSource?: "providerReported" | "localCalculated" | "missing";
+  pricingSnapshot?: {
+    inputPerMillion?: number;
+    outputPerMillion?: number;
+    cacheReadPerMillion?: number;
+    cacheWritePerMillion?: number;
+    currency: string;
+    capturedAtMs: number;
+    settingsVersion: number;
+  };
   timeToFirstTokenMs?: number;
+  generationDurationMs?: number;
+  outputTokensPerSecond?: number;
   totalDurationMs?: number;
+  callCount?: number;
+}
+
+export type ToolTraceStatus = "awaitingApproval" | "running" | "completed" | "rejected" | "failed";
+
+/** 助手消息只保存有界工具轨迹，不保存完整工具结果。 */
+export interface ToolTrace {
+  callId: string;
+  name: string;
+  status: ToolTraceStatus;
+  risk: "builtinRead" | "conversationRead" | "memoryRead" | "memoryWrite";
+  argumentSummary: string;
+  preview?: string;
+  durationMs?: number;
+  /** 仅当前运行等待审批时存在，Rust 持久化会忽略该临时字段。 */
+  approvalId?: string;
 }
 
 /** 用户在聊天时间线中看到的一条消息。 */
@@ -48,6 +88,8 @@ export interface ChatMessage {
   modelId?: string;
   modelSnapshot?: ModelSnapshot;
   usage?: ModelUsage;
+  activatedSkills?: ActivatedSkillSnapshot[];
+  toolTraces?: ToolTrace[];
   errorMessage?: string;
 }
 

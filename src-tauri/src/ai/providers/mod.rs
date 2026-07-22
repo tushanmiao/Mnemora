@@ -108,9 +108,12 @@ pub(crate) fn build_debug_request(
                         ),
                     })
                     .collect(),
+                tool_calls: message.tool_calls.clone(),
+                tool_result: message.tool_result.clone(),
             })
             .collect(),
         options: request.options,
+        tools: request.tools.clone(),
     };
     let (url, body, default_auth) = match context.protocol {
         ApiProtocol::OpenAiChatCompletions => {
@@ -412,8 +415,11 @@ mod tests {
                     media_type: "image/png".to_string(),
                     data_base64: "secret-image-payload".to_string(),
                 }],
+                tool_calls: Vec::new(),
+                tool_result: None,
             }],
             options: ModelOptions::default(),
+            tools: Vec::new(),
         };
         let context = ProviderRequestContext {
             protocol: ApiProtocol::OpenAiChatCompletions,

@@ -27,6 +27,15 @@ export type AuthScheme =
   | "xApiKey"
   | "xGoogApiKey";
 
+/** 本地成本计算使用的每百万 Token 价格。当前只支持 USD。 */
+export interface ModelPricing {
+  inputPerMillion?: number;
+  outputPerMillion?: number;
+  cacheReadPerMillion?: number;
+  cacheWritePerMillion?: number;
+  currency: "USD";
+}
+
 /** 一个供应商下的模型映射。 */
 export interface ProviderModelConfig {
   /** Mnemora 内部使用的稳定模型 ID。 */
@@ -37,6 +46,8 @@ export interface ProviderModelConfig {
   displayName: string;
   /** 模型上下文窗口大小，用于计算当前对话的上下文占用。 */
   contextWindowTokens: number | null;
+  /** 可选价格；每条用量记录会保存当时的快照，后续修改不会重算历史。 */
+  pricing?: ModelPricing;
   /** 关闭后不出现在可选模型中，但配置仍然保留。 */
   enabled: boolean;
 }
@@ -80,7 +91,7 @@ export type ProviderApiKeyUpdate =
   | { providerId: string; action: "set"; apiKey: string }
   | { providerId: string; action: "delete" };
 
-export const CURRENT_MODEL_SETTINGS_VERSION = 3;
+export const CURRENT_MODEL_SETTINGS_VERSION = 4;
 
 /** 创建首次启动时的三家官方供应商配置。 */
 export function createInitialModelSettings(): ModelSettings {

@@ -6,15 +6,18 @@ use std::{
     sync::{Mutex as StdMutex, RwLock},
     time::Duration,
 };
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::{oneshot, Mutex, Semaphore};
 use tokio_util::sync::CancellationToken;
 
 use crate::chat::storage::ConversationRepository;
+use crate::memory::MemoryRepository;
 use crate::request_debug::RequestDebugRecord;
 use crate::settings::{
     app_repository::AppSettingsRepository, app_types::AppSettings,
     repository::ModelSettingsRepository, secrets::SecretStore, types::ModelSettings,
 };
+use crate::skills::SkillRepository;
+use crate::startup_log::StartupErrorLog;
 
 /** Tauri 全局共享状态。HTTP Client、设置快照和仓库在整个应用生命周期内复用。 */
 pub struct AppState {
@@ -25,14 +28,19 @@ pub struct AppState {
     pub model_settings_repository: ModelSettingsRepository,
     pub secrets: SecretStore,
     pub active_chat_runs: Mutex<HashMap<String, CancellationToken>>,
+    pub pending_tool_approvals: Mutex<HashMap<String, oneshot::Sender<bool>>>,
     pub active_attachment_tasks: StdMutex<HashMap<String, CancellationToken>>,
     pub attachment_preview_gate: Semaphore,
     pub staged_attachment_paths: StdMutex<HashSet<PathBuf>>,
     pub conversation_repository: ConversationRepository,
     pub conversation_writes: Mutex<()>,
+    pub skill_repository: SkillRepository,
+    pub memory_repository: MemoryRepository,
+    pub skill_operations: Mutex<()>,
     pub usage_dir: PathBuf,
     pub usage_operations: Mutex<()>,
     pub request_debug_records: StdMutex<VecDeque<RequestDebugRecord>>,
+    pub startup_error_log: StartupErrorLog,
 }
 
 fn cancel_chat_run_tokens(runs: &HashMap<String, CancellationToken>) -> usize {
@@ -43,7 +51,12 @@ fn cancel_chat_run_tokens(runs: &HashMap<String, CancellationToken>) -> usize {
 }
 
 impl AppState {
-    pub fn new(config_dir: PathBuf, app_data_dir: PathBuf) -> Result<Self, String> {
+    pub fn new(
+        config_dir: PathBuf,
+        app_data_dir: PathBuf,
+        resource_dir: PathBuf,
+        log_dir: PathBuf,
+    ) -> Result<Self, String> {
         let http = Client::builder()
             .connect_timeout(Duration::from_secs(30))
             .timeout(Duration::from_secs(600))
@@ -61,6 +74,9 @@ impl AppState {
         };
         let model_settings_repository = ModelSettingsRepository::new(config_dir);
         let usage_dir = crate::usage::usage_dir(&app_data_dir);
+        let skill_repository =
+            SkillRepository::new(resource_dir.join("skills"), app_data_dir.join("skills"));
+        let memory_repository = MemoryRepository::new(app_data_dir.clone());
         let conversation_repository = ConversationRepository::new(app_data_dir);
         if let Err(error) = crate::chat::attachments::cleanup_staged_attachments_older_than(
             crate::chat::attachments::STAGED_ATTACHMENT_MAX_AGE,
@@ -90,14 +106,19 @@ impl AppState {
             model_settings_repository,
             secrets,
             active_chat_runs: Mutex::new(HashMap::new()),
+            pending_tool_approvals: Mutex::new(HashMap::new()),
             active_attachment_tasks: StdMutex::new(HashMap::new()),
             attachment_preview_gate: Semaphore::new(2),
             staged_attachment_paths: StdMutex::new(HashSet::new()),
             conversation_repository,
             conversation_writes: Mutex::new(()),
+            skill_repository,
+            memory_repository,
+            skill_operations: Mutex::new(()),
             usage_dir,
             usage_operations: Mutex::new(()),
             request_debug_records: StdMutex::new(crate::request_debug::empty_store()),
+            startup_error_log: StartupErrorLog::new(log_dir),
         })
     }
 
@@ -105,6 +126,14 @@ impl AppState {
     pub async fn cancel_all_chat_runs(&self) -> usize {
         let runs = self.active_chat_runs.lock().await;
         cancel_chat_run_tokens(&runs)
+    }
+
+    /** 丢弃所有一次性审批发送端，等待中的 Agent 会收到通道关闭并按拒绝处理。 */
+    pub async fn cancel_all_tool_approvals(&self) -> usize {
+        let mut approvals = self.pending_tool_approvals.lock().await;
+        let count = approvals.len();
+        approvals.clear();
+        count
     }
 
     pub fn register_attachment_task(

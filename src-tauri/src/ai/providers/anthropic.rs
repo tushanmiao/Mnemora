@@ -13,7 +13,7 @@ use crate::ai::{
     stream::{send_sse_request, sse::SseReadOutcome},
     types::{
         ModelRequest, ModelResponse, ModelRole, ModelStreamChunk, ModelStreamOutcome,
-        ModelStreamSummary, ModelUsage, ProviderRequestContext,
+        ModelStreamSummary, ModelToolCall, ModelUsage, ProviderRequestContext,
     },
 };
 
@@ -86,6 +86,7 @@ where
     let mut finish_reason = None;
     let mut usage = ModelUsage::default();
     let mut has_usage = false;
+    let mut pending_tool_calls = Vec::<PendingToolCall>::new();
     let outcome = send_sse_request(
         request_builder.json(&body),
         context.api_key,
@@ -124,8 +125,61 @@ where
                             }
                         }
                     }
+                    Some("input_json_delta") => {
+                        let index =
+                            value.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+                        ensure_pending(&mut pending_tool_calls, index);
+                        let delta = value
+                            .pointer("/delta/partial_json")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string();
+                        pending_tool_calls[index].arguments.push_str(&delta);
+                        on_chunk(ModelStreamChunk::ToolCallDelta {
+                            index,
+                            id: None,
+                            name: None,
+                            arguments_delta: delta,
+                            provider_signature: None,
+                        })?;
+                    }
                     _ => {}
                 },
+                "content_block_start" => {
+                    let block = value.get("content_block").unwrap_or(&Value::Null);
+                    if block.get("type").and_then(Value::as_str) == Some("tool_use") {
+                        let index =
+                            value.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+                        ensure_pending(&mut pending_tool_calls, index);
+                        let call = &mut pending_tool_calls[index];
+                        call.id = block
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string();
+                        call.name = block
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string();
+                        // Anthropic 通常在 start 事件中发送空对象，真正参数随后由
+                        // input_json_delta 给出。空对象不能先拼成 "{}"，否则会得到
+                        // "{}{...}" 这种无效 JSON。
+                        let initial = block.get("input").filter(|value| {
+                            value.as_object().is_some_and(|object| !object.is_empty())
+                        });
+                        if let Some(initial) = initial {
+                            call.arguments.push_str(&initial.to_string());
+                        }
+                        on_chunk(ModelStreamChunk::ToolCallDelta {
+                            index,
+                            id: (!call.id.is_empty()).then(|| call.id.clone()),
+                            name: (!call.name.is_empty()).then(|| call.name.clone()),
+                            arguments_delta: initial.map(Value::to_string).unwrap_or_default(),
+                            provider_signature: None,
+                        })?;
+                    }
+                }
                 "message_delta" => {
                     if let Some(reason) =
                         value.pointer("/delta/stop_reason").and_then(Value::as_str)
@@ -156,7 +210,8 @@ where
     if outcome == SseReadOutcome::Cancelled {
         return Ok(ModelStreamOutcome::Cancelled);
     }
-    if !saw_text {
+    let tool_calls = finish_pending_tool_calls(pending_tool_calls)?;
+    if !saw_text && tool_calls.is_empty() {
         return Err(ModelError::invalid_response(
             "Anthropic 流式响应没有可显示的文本内容。",
         ));
@@ -164,6 +219,7 @@ where
     Ok(ModelStreamOutcome::Completed(ModelStreamSummary {
         finish_reason,
         usage: has_usage.then_some(usage),
+        tool_calls,
     }))
 }
 
@@ -196,43 +252,50 @@ pub(crate) fn request_body(request: &ModelRequest) -> Value {
     } else if let Some(temperature) = request.options.temperature {
         body.insert("temperature".to_string(), json!(temperature));
     }
+    if !request.tools.is_empty() {
+        body.insert(
+            "tools".to_string(),
+            Value::Array(
+                request
+                    .tools
+                    .iter()
+                    .map(|tool| {
+                        json!({
+                            "name": tool.name,
+                            "description": tool.description,
+                            "input_schema": tool.input_schema
+                        })
+                    })
+                    .collect(),
+            ),
+        );
+    }
     Value::Object(body)
 }
 
 fn merged_messages(request: &ModelRequest) -> Vec<Value> {
-    let mut merged = Vec::<(ModelRole, String, Vec<crate::ai::types::ModelImage>)>::new();
+    let mut merged = Vec::<Value>::new();
     for message in &request.messages {
-        if let Some((last_role, last_content, last_images)) = merged.last_mut() {
-            if *last_role == message.role {
-                if !message.content.trim().is_empty() {
-                    if !last_content.trim().is_empty() {
-                        last_content.push_str("\n\n");
-                    }
-                    last_content.push_str(&message.content);
-                }
-                last_images.extend(message.images.clone());
-                continue;
+        let role = if message.role == ModelRole::Assistant {
+            "assistant"
+        } else {
+            "user"
+        };
+        let mut content = Vec::new();
+        if message.role == ModelRole::Tool {
+            if let Some(result) = message.tool_result.as_ref() {
+                content.push(json!({
+                    "type": "tool_result",
+                    "tool_use_id": result.call_id,
+                    "content": result.content,
+                    "is_error": result.is_error
+                }));
             }
-        }
-        merged.push((
-            message.role,
-            message.content.clone(),
-            message.images.clone(),
-        ));
-    }
-
-    merged
-        .into_iter()
-        .map(|(role, text, images)| {
-            let role = match role {
-                ModelRole::User => "user",
-                ModelRole::Assistant => "assistant",
-            };
-            let mut content = Vec::new();
-            if !text.trim().is_empty() {
-                content.push(json!({ "type": "text", "text": text }));
+        } else {
+            if !message.content.trim().is_empty() {
+                content.push(json!({ "type": "text", "text": message.content }));
             }
-            content.extend(images.into_iter().map(|image| {
+            content.extend(message.images.iter().map(|image| {
                 json!({
                     "type": "image",
                     "source": {
@@ -242,9 +305,53 @@ fn merged_messages(request: &ModelRequest) -> Vec<Value> {
                     }
                 })
             }));
-            json!({ "role": role, "content": content })
-        })
-        .collect()
+            content.extend(message.tool_calls.iter().map(|call| {
+                json!({
+                    "type": "tool_use",
+                    "id": call.id,
+                    "name": call.name,
+                    "input": call.arguments
+                })
+            }));
+        }
+        if let Some(last) = merged
+            .last_mut()
+            .filter(|last| last.get("role").and_then(Value::as_str) == Some(role))
+        {
+            if let Some(parts) = last.get_mut("content").and_then(Value::as_array_mut) {
+                merge_content_parts(parts, content);
+                continue;
+            }
+        }
+        merged.push(json!({ "role": role, "content": content }));
+    }
+    merged
+}
+
+fn merge_content_parts(target: &mut Vec<Value>, mut incoming: Vec<Value>) {
+    let can_merge_text = target
+        .last()
+        .and_then(|part| part.get("type"))
+        .and_then(Value::as_str)
+        == Some("text")
+        && incoming
+            .first()
+            .and_then(|part| part.get("type"))
+            .and_then(Value::as_str)
+            == Some("text");
+    if can_merge_text {
+        let next = incoming
+            .remove(0)
+            .get("text")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        if let Some(text_value) = target.last_mut().and_then(|part| part.get_mut("text")) {
+            let text = text_value.as_str().unwrap_or_default().to_string();
+            *text_value = Value::String(format!("{text}\n\n{next}"));
+        }
+    }
+    target.extend(incoming);
 }
 
 fn parse_response(value: &Value, include_reasoning: bool) -> Result<ModelResponse, ModelError> {
@@ -257,7 +364,8 @@ fn parse_response(value: &Value, include_reasoning: bool) -> Result<ModelRespons
         .filter(|part| part.get("type").and_then(Value::as_str) == Some("text"))
         .filter_map(|part| part.get("text").and_then(Value::as_str))
         .collect::<String>();
-    if text.is_empty() {
+    let tool_calls = parse_tool_calls(content)?;
+    if text.is_empty() && tool_calls.is_empty() {
         return Err(ModelError::invalid_response(
             "Anthropic 响应没有可显示的文本内容。",
         ));
@@ -280,6 +388,67 @@ fn parse_response(value: &Value, include_reasoning: bool) -> Result<ModelRespons
             .and_then(Value::as_str)
             .map(str::to_string),
         usage: value.get("usage").map(parse_usage),
+        tool_calls,
+    })
+}
+
+#[derive(Default)]
+struct PendingToolCall {
+    id: String,
+    name: String,
+    arguments: String,
+}
+
+fn ensure_pending(calls: &mut Vec<PendingToolCall>, index: usize) {
+    while calls.len() <= index {
+        calls.push(PendingToolCall::default());
+    }
+}
+
+fn parse_tool_calls(content: &[Value]) -> Result<Vec<ModelToolCall>, ModelError> {
+    content
+        .iter()
+        .filter(|part| part.get("type").and_then(Value::as_str) == Some("tool_use"))
+        .map(|part| {
+            let id = part.get("id").and_then(Value::as_str).unwrap_or_default();
+            let name = part.get("name").and_then(Value::as_str).unwrap_or_default();
+            let arguments = part.get("input").cloned().unwrap_or_else(|| json!({}));
+            build_tool_call(id, name, arguments)
+        })
+        .collect()
+}
+
+fn finish_pending_tool_calls(
+    calls: Vec<PendingToolCall>,
+) -> Result<Vec<ModelToolCall>, ModelError> {
+    calls
+        .into_iter()
+        .filter(|call| !call.id.is_empty() || !call.name.is_empty())
+        .map(|call| {
+            let raw_arguments = if call.arguments.trim().is_empty() {
+                "{}"
+            } else {
+                call.arguments.as_str()
+            };
+            let arguments = serde_json::from_str(raw_arguments).map_err(|_| {
+                ModelError::invalid_response("Anthropic 工具调用参数不是有效 JSON 对象。")
+            })?;
+            build_tool_call(&call.id, &call.name, arguments)
+        })
+        .collect()
+}
+
+fn build_tool_call(id: &str, name: &str, arguments: Value) -> Result<ModelToolCall, ModelError> {
+    if id.trim().is_empty() || name.trim().is_empty() || !arguments.is_object() {
+        return Err(ModelError::invalid_response(
+            "Anthropic 工具调用缺少 ID、名称或对象参数。",
+        ));
+    }
+    Ok(ModelToolCall {
+        id: id.to_string(),
+        name: name.to_string(),
+        arguments,
+        provider_signature: None,
     })
 }
 
@@ -340,7 +509,10 @@ pub fn parse_models(value: &Value) -> Result<Vec<String>, String> {
 mod tests {
     use serde_json::json;
 
-    use crate::ai::types::{ModelImage, ModelMessage, ModelOptions, ModelRequest, ModelRole};
+    use crate::ai::types::{
+        ModelImage, ModelMessage, ModelOptions, ModelRequest, ModelRole, ModelTool, ModelToolCall,
+        ModelToolResult,
+    };
 
     #[test]
     fn parses_anthropic_models() {
@@ -361,14 +533,19 @@ mod tests {
                     role: ModelRole::User,
                     content: "One".to_string(),
                     images: Vec::new(),
+                    tool_calls: Vec::new(),
+                    tool_result: None,
                 },
                 ModelMessage {
                     role: ModelRole::User,
                     content: "Two".to_string(),
                     images: Vec::new(),
+                    tool_calls: Vec::new(),
+                    tool_result: None,
                 },
             ],
             options: ModelOptions::default(),
+            tools: Vec::new(),
         });
 
         assert_eq!(body["system"], "Be concise");
@@ -390,8 +567,11 @@ mod tests {
                     media_type: "image/png".to_string(),
                     data_base64: "aGVsbG8=".to_string(),
                 }],
+                tool_calls: Vec::new(),
+                tool_result: None,
             }],
             options: ModelOptions::default(),
+            tools: Vec::new(),
         });
 
         assert_eq!(body["messages"][0]["content"][1]["type"], "image");
@@ -440,12 +620,15 @@ mod tests {
                 role: ModelRole::User,
                 content: "Solve it".to_string(),
                 images: Vec::new(),
+                tool_calls: Vec::new(),
+                tool_result: None,
             }],
             options: ModelOptions {
                 max_output_tokens: Some(4_096),
                 thinking_enabled: true,
                 ..ModelOptions::default()
             },
+            tools: Vec::new(),
         });
         assert_eq!(body["thinking"]["type"], "enabled");
         assert_eq!(body["thinking"]["budget_tokens"], 1_024);
@@ -463,5 +646,75 @@ mod tests {
         .unwrap();
         assert_eq!(response.text, "Answer");
         assert_eq!(response.reasoning.as_deref(), Some("Plan first."));
+    }
+
+    #[test]
+    fn maps_tool_use_and_adjacent_tool_result() {
+        let body = super::request_body(&ModelRequest {
+            model: "claude-test".to_string(),
+            system_prompt: None,
+            messages: vec![
+                ModelMessage {
+                    role: ModelRole::Assistant,
+                    content: String::new(),
+                    images: Vec::new(),
+                    tool_calls: vec![ModelToolCall {
+                        id: "toolu_1".to_string(),
+                        name: "skill".to_string(),
+                        arguments: json!({ "id": "summarize" }),
+                        provider_signature: None,
+                    }],
+                    tool_result: None,
+                },
+                ModelMessage {
+                    role: ModelRole::Tool,
+                    content: String::new(),
+                    images: Vec::new(),
+                    tool_calls: Vec::new(),
+                    tool_result: Some(ModelToolResult {
+                        call_id: "toolu_1".to_string(),
+                        name: "skill".to_string(),
+                        content: "loaded".to_string(),
+                        is_error: false,
+                    }),
+                },
+            ],
+            options: ModelOptions::default(),
+            tools: vec![ModelTool {
+                name: "skill".to_string(),
+                description: "load skill".to_string(),
+                input_schema: json!({ "type": "object" }),
+            }],
+        });
+
+        assert_eq!(body["tools"][0]["input_schema"]["type"], "object");
+        assert_eq!(body["messages"][0]["content"][0]["type"], "tool_use");
+        assert_eq!(body["messages"][1]["content"][0]["type"], "tool_result");
+        assert_eq!(body["messages"][1]["content"][0]["tool_use_id"], "toolu_1");
+    }
+
+    #[test]
+    fn accepts_tool_only_response_and_empty_stream_start_input() {
+        let response = super::parse_response(
+            &json!({
+                "content": [
+                    { "type": "tool_use", "id": "toolu_1", "name": "first", "input": { "value": 1 } },
+                    { "type": "tool_use", "id": "toolu_2", "name": "second", "input": { "value": 2 } }
+                ],
+                "stop_reason": "tool_use"
+            }),
+            false,
+        )
+        .unwrap();
+        assert!(response.text.is_empty());
+        assert_eq!(response.tool_calls.len(), 2);
+
+        let calls = super::finish_pending_tool_calls(vec![super::PendingToolCall {
+            id: "toolu_1".to_string(),
+            name: "empty".to_string(),
+            arguments: String::new(),
+        }])
+        .unwrap();
+        assert_eq!(calls[0].arguments, json!({}));
     }
 }

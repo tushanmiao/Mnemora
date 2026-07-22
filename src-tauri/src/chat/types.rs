@@ -5,14 +5,16 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::conversation_types::AiPermissionMode;
 use super::storage::ConversationRepository;
 use crate::{
     ai::{
         error::ModelError,
-        types::{ModelMessage, ModelOptions, ModelRequest, ModelRole, ModelUsage},
+        types::{ModelMessage, ModelOptions, ModelRequest, ModelResponse, ModelRole, ModelUsage},
     },
     chat::{attachments::load_model_image, conversation_types::StoredChatAttachment},
     settings::types::validate_stable_id,
+    skills::SkillRepository,
 };
 
 const MAX_MESSAGES: usize = 500;
@@ -23,6 +25,7 @@ const MAX_OUTPUT_TOKENS: u32 = 131_072;
 const MAX_ATTACHMENTS_PER_MESSAGE: usize = 8;
 const MAX_MODEL_IMAGES: usize = 4;
 const MAX_MODEL_IMAGE_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_ACTIVATED_SKILLS: usize = 3;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -47,6 +50,12 @@ pub struct ChatCompletionRequest {
     pub operation: Option<String>,
     #[serde(default)]
     pub system_prompt: String,
+    #[serde(default)]
+    pub activated_skill_ids: Vec<String>,
+    #[serde(default)]
+    pub slash_skill_id: Option<String>,
+    #[serde(default)]
+    pub permission_mode: AiPermissionMode,
     pub messages: Vec<ChatModelMessage>,
     #[serde(default)]
     pub options: ModelOptions,
@@ -60,6 +69,18 @@ pub struct ChatStreamRequest {
     pub conversation_id: String,
     pub message_id: String,
     pub completion: ChatCompletionRequest,
+}
+
+/** 非流式 Chat 在模型结果之外返回有界 Agent 元数据。 */
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatCompletionResponse {
+    #[serde(flatten)]
+    pub response: ModelResponse,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub activated_skill_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_traces: Vec<crate::chat::agent::ToolTraceSnapshot>,
 }
 
 impl ChatStreamRequest {
@@ -81,6 +102,7 @@ impl ChatStreamRequest {
     rename_all = "camelCase",
     rename_all_fields = "camelCase"
 )]
+#[allow(clippy::large_enum_variant)]
 pub enum ModelStreamEvent {
     Started {
         run_id: String,
@@ -98,6 +120,28 @@ pub enum ModelStreamEvent {
         conversation_id: String,
         message_id: String,
         delta: String,
+    },
+    ToolTrace {
+        run_id: String,
+        conversation_id: String,
+        message_id: String,
+        trace: crate::chat::agent::ToolTraceSnapshot,
+    },
+    ToolApprovalRequested {
+        run_id: String,
+        conversation_id: String,
+        message_id: String,
+        approval_id: String,
+        trace: crate::chat::agent::ToolTraceSnapshot,
+    },
+    SkillActivated {
+        run_id: String,
+        conversation_id: String,
+        message_id: String,
+        skill_id: String,
+        name: String,
+        version: String,
+        content_hash: String,
     },
     Completed {
         run_id: String,
@@ -147,6 +191,41 @@ impl ChatCompletionRequest {
         }
         if self.system_prompt.len() > MAX_SYSTEM_PROMPT_BYTES {
             return Err(ModelError::invalid_configuration("System Prompt 过长。"));
+        }
+        if self.activated_skill_ids.len() > MAX_ACTIVATED_SKILLS {
+            return Err(ModelError::invalid_configuration(format!(
+                "每轮最多激活 {MAX_ACTIVATED_SKILLS} 个技能。"
+            )));
+        }
+        if let Some(slash_skill_id) = self.slash_skill_id.as_deref() {
+            crate::skills::validate_skill_id(slash_skill_id)
+                .map_err(ModelError::invalid_configuration)?;
+            if !self
+                .activated_skill_ids
+                .iter()
+                .any(|skill_id| skill_id == slash_skill_id)
+            {
+                return Err(ModelError::invalid_configuration(
+                    "Slash Skill 必须同时出现在本轮激活技能列表中。",
+                ));
+            }
+        }
+        let mut skill_ids = std::collections::HashSet::new();
+        for skill_id in &self.activated_skill_ids {
+            crate::skills::validate_skill_id(skill_id)
+                .map_err(ModelError::invalid_configuration)?;
+            if !skill_ids.insert(skill_id) {
+                return Err(ModelError::invalid_configuration(
+                    "本轮技能列表包含重复 ID。",
+                ));
+            }
+        }
+        if self.operation.as_deref() == Some("contextCompression")
+            && (!self.activated_skill_ids.is_empty() || self.slash_skill_id.is_some())
+        {
+            return Err(ModelError::invalid_configuration(
+                "上下文压缩请求不能激活技能。",
+            ));
         }
 
         let mut total_bytes = self.system_prompt.len();
@@ -208,6 +287,7 @@ impl ChatCompletionRequest {
         self,
         api_model: String,
         repository: &ConversationRepository,
+        skill_repository: &SkillRepository,
     ) -> Result<ModelRequest, ModelError> {
         let conversation_id = self.conversation_id.as_deref();
         let mut image_bytes = 0u64;
@@ -216,9 +296,33 @@ impl ChatCompletionRequest {
             .messages
             .iter()
             .rposition(|message| message.role == ModelRole::User);
+        let last_user_content = last_user_index.map(|index| self.messages[index].content.clone());
+        if let Some(slash_skill_id) = self.slash_skill_id.as_deref() {
+            let content = last_user_content.as_deref().ok_or_else(|| {
+                ModelError::invalid_configuration("Slash Skill 请求缺少用户消息。")
+            })?;
+            let resolved = skill_repository
+                .resolve_user_content(content, &[slash_skill_id.to_string()])
+                .map_err(ModelError::invalid_configuration)?;
+            if resolved == content {
+                return Err(ModelError::invalid_configuration(
+                    "Slash Skill 触发词与当前用户消息不匹配。",
+                ));
+            }
+        }
+        let content_skill_ids = self
+            .slash_skill_id
+            .as_ref()
+            .map(|skill_id| vec![skill_id.clone()])
+            .unwrap_or_else(|| self.activated_skill_ids.clone());
         let mut messages = Vec::with_capacity(self.messages.len());
         for (message_index, message) in self.messages.into_iter().enumerate() {
             let mut content = message.content;
+            if Some(message_index) == last_user_index && message.role == ModelRole::User {
+                content = skill_repository
+                    .resolve_user_content(&content, &content_skill_ids)
+                    .map_err(ModelError::invalid_configuration)?;
+            }
             let mut images = Vec::new();
             let mut files = Vec::new();
             let mut historical_images = Vec::new();
@@ -275,14 +379,31 @@ impl ChatCompletionRequest {
                 role: message.role,
                 content,
                 images,
+                tool_calls: Vec::new(),
+                tool_result: None,
             });
+        }
+        let mut system_prompt = self.system_prompt.trim().to_string();
+        let skill_prompt = skill_repository
+            .render_activated_skills(&self.activated_skill_ids, last_user_content.as_deref())
+            .map_err(ModelError::invalid_configuration)?;
+        if !skill_prompt.is_empty() {
+            if !system_prompt.is_empty() {
+                system_prompt.push_str("\n\n");
+            }
+            system_prompt.push_str(&skill_prompt);
+        }
+        if system_prompt.len() > MAX_SYSTEM_PROMPT_BYTES {
+            return Err(ModelError::invalid_configuration(
+                "System Prompt 与技能正文合计过长，请减少技能或自定义指令。",
+            ));
         }
         Ok(ModelRequest {
             model: api_model,
-            system_prompt: (!self.system_prompt.trim().is_empty())
-                .then(|| self.system_prompt.trim().to_string()),
+            system_prompt: (!system_prompt.is_empty()).then_some(system_prompt),
             messages,
             options: self.options,
+            tools: Vec::new(),
         })
     }
 }
@@ -291,6 +412,7 @@ impl ChatCompletionRequest {
 mod tests {
     use std::fs;
 
+    use crate::chat::conversation_types::AiPermissionMode;
     use uuid::Uuid;
 
     use crate::ai::{
@@ -323,6 +445,9 @@ mod tests {
             message_id: None,
             operation: None,
             system_prompt: String::new(),
+            activated_skill_ids: Vec::new(),
+            slash_skill_id: None,
+            permission_mode: AiPermissionMode::AskSensitive,
             messages: vec![super::ChatModelMessage {
                 role: ModelRole::User,
                 content: content.to_string(),
@@ -381,7 +506,11 @@ mod tests {
         });
 
         let model_request = request
-            .into_model_request("vision-model".to_string(), &repository)
+            .into_model_request(
+                "vision-model".to_string(),
+                &repository,
+                &crate::skills::SkillRepository::new(root.join("builtin"), root.join("skills")),
+            )
             .unwrap();
         assert!(model_request.messages[0].images.is_empty());
         assert!(model_request.messages[0].content.contains("历史图片附件"));
@@ -390,6 +519,41 @@ mod tests {
             model_request.messages[2].images[0].name,
             "attachment-new.png"
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn model_request_injects_skill_body_and_removes_the_slash_trigger() {
+        let root = std::env::temp_dir().join(format!("mnemora-chat-skill-{}", Uuid::new_v4()));
+        let builtin = root.join("builtin").join("summarize");
+        fs::create_dir_all(&builtin).unwrap();
+        fs::write(
+            builtin.join("SKILL.md"),
+            "---\nid: summarize\nname: 内容总结\ndescription: 总结当前内容。\nversion: 1.0.0\ntriggers: [/summary]\n---\n先提取事实，再生成摘要。重点：$ARGUMENTS\n",
+        )
+        .unwrap();
+        let conversation_repository = ConversationRepository::new(root.join("conversations"));
+        let skill_repository =
+            crate::skills::SkillRepository::new(root.join("builtin"), root.join("skills"));
+        let mut request = request("/summary 重点保留结论");
+        request.system_prompt = "全局规则".to_string();
+        request.activated_skill_ids = vec!["summarize".to_string()];
+
+        let model_request = request
+            .into_model_request(
+                "test-model".to_string(),
+                &conversation_repository,
+                &skill_repository,
+            )
+            .unwrap();
+
+        assert_eq!(model_request.messages[0].content, "重点保留结论");
+        let system_prompt = model_request.system_prompt.unwrap();
+        assert!(system_prompt.starts_with("全局规则"));
+        assert!(system_prompt.contains("<mnemora_skill id=\"summarize\""));
+        assert!(system_prompt.contains("先提取事实，再生成摘要。"));
+        assert!(system_prompt.contains("重点：重点保留结论"));
+        assert!(!system_prompt.contains("$ARGUMENTS"));
         let _ = fs::remove_dir_all(root);
     }
 

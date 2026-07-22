@@ -33,6 +33,8 @@ export interface Conversation {
   compressedUntilMessageId: string | null;
   /** 当前对话累计自动压缩次数。 */
   contextCompressionCount: number;
+  /** 当前对话默认启用、可在发送时激活的 Skill ID。 */
+  enabledSkillIds: string[];
   /** 当前对话执行工具时采用的权限模式。 */
   permissionMode: AiPermissionMode;
   /** 对话所属项目 ID；为空表示未加入项目。 */

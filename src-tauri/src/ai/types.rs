@@ -10,12 +10,13 @@ use serde::{Deserialize, Serialize};
 
 pub use crate::settings::types::{ApiProtocol, AuthScheme};
 
-/** 模型历史消息只保留第一版实际支持的用户和助手角色。 */
+/** 统一消息角色；System Prompt 保持在请求顶层，工具结果使用 Tool。 */
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ModelRole {
     User,
     Assistant,
+    Tool,
 }
 
 /** 请求生命周期内使用的图片正文；Base64 不进入会话持久化。 */
@@ -35,6 +36,41 @@ pub struct ModelMessage {
     pub content: String,
     #[serde(default)]
     pub images: Vec<ModelImage>,
+    #[serde(default)]
+    pub tool_calls: Vec<ModelToolCall>,
+    #[serde(default)]
+    pub tool_result: Option<ModelToolResult>,
+}
+
+/** 提供给模型的供应商无关函数工具定义。 */
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelTool {
+    pub name: String,
+    pub description: String,
+    pub input_schema: serde_json::Value,
+}
+
+/** 模型产生的结构化工具调用；`provider_signature` 用于回放 Gemini 签名。 */
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelToolCall {
+    pub id: String,
+    pub name: String,
+    pub arguments: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_signature: Option<String>,
+}
+
+/** 工具执行完成后回传模型的有界结果。 */
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelToolResult {
+    pub call_id: String,
+    pub name: String,
+    pub content: String,
+    #[serde(default)]
+    pub is_error: bool,
 }
 
 /** 四种协议都能合理映射的最小公共生成参数。 */
@@ -56,6 +92,7 @@ pub struct ModelRequest {
     pub system_prompt: Option<String>,
     pub messages: Vec<ModelMessage>,
     pub options: ModelOptions,
+    pub tools: Vec<ModelTool>,
 }
 
 /** 一次请求使用的供应商运行时上下文；API Key 只以短生命周期引用存在。 */
@@ -67,7 +104,30 @@ pub struct ProviderRequestContext<'a> {
 }
 
 /** 四种协议统一后的 Token 用量与本地耗时。 */
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum UsageSource {
+    ProviderReported,
+    GatewayNormalized,
+    Estimated,
+    #[default]
+    Missing,
+}
+
+/** 一次调用计算成本时使用的价格副本，避免历史成本随设置变化。 */
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PricingSnapshot {
+    pub input_per_million: Option<f64>,
+    pub output_per_million: Option<f64>,
+    pub cache_read_per_million: Option<f64>,
+    pub cache_write_per_million: Option<f64>,
+    pub currency: String,
+    pub captured_at_ms: u64,
+    pub settings_version: u32,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelUsage {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -83,11 +143,36 @@ pub struct ModelUsage {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_write_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub non_cached_input_tokens: Option<u64>,
+    /** 最后一次成功模型调用的有效输入，用于上下文圆环，不是多轮累计值。 */
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_input_tokens: Option<u64>,
+    #[serde(default)]
+    pub usage_source: UsageSource,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub total_duration_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time_to_first_token_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub generation_duration_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_tokens_per_second: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost_source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pricing_snapshot: Option<PricingSnapshot>,
+    #[serde(default = "default_call_count")]
+    pub call_count: u32,
+}
+
+fn default_call_count() -> u32 {
+    1
 }
 
 /** 非流式模型调用的统一结果。 */
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelResponse {
     pub text: String,
@@ -97,24 +182,36 @@ pub struct ModelResponse {
     pub finish_reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<ModelUsage>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<ModelToolCall>,
 }
 
 /** 流式适配器产生的正文或思考增量，两者在界面和存储中保持独立。 */
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(clippy::enum_variant_names)]
 pub enum ModelStreamChunk {
     TextDelta(String),
     ReasoningDelta(String),
+    ToolCallDelta {
+        index: usize,
+        id: Option<String>,
+        name: Option<String>,
+        arguments_delta: String,
+        provider_signature: Option<String>,
+    },
 }
 
 /** 供应商流正常结束时汇总的停止原因和用量。 */
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ModelStreamSummary {
     pub finish_reason: Option<String>,
     pub usage: Option<ModelUsage>,
+    pub tool_calls: Vec<ModelToolCall>,
 }
 
 /** 区分供应商正常结束和用户主动取消，不把取消伪装成模型错误。 */
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub enum ModelStreamOutcome {
     Completed(ModelStreamSummary),
     Cancelled,

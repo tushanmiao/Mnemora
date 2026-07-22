@@ -396,6 +396,7 @@ mod tests {
             context_summary: String::new(),
             compressed_until_message_id: None,
             context_compression_count: 0,
+            enabled_skill_ids: Vec::new(),
             permission_mode: AiPermissionMode::AskSensitive,
             project_id: None,
             collection_id: None,
@@ -483,6 +484,8 @@ mod tests {
             model_id: None,
             model_snapshot: None,
             usage: None,
+            activated_skills: Vec::new(),
+            tool_traces: Vec::new(),
             error_message: None,
         };
         conversation.messages = vec![message("message-1"), message("message-2")];

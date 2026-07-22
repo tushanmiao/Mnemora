@@ -27,6 +27,7 @@ function createConversation(): Conversation {
     contextSummary: "",
     compressedUntilMessageId: null,
     contextCompressionCount: 0,
+    enabledSkillIds: [],
     permissionMode: "askSensitive",
     projectId: null,
     collectionId: null,
@@ -376,6 +377,40 @@ export function useConversations(onNavigateToChat: () => void) {
     updateConversationListTotal,
   ]);
 
+  /** Slash `/clear` 使用后端优先删除，失败时不提前移除界面数据。 */
+  const deleteCurrentConversationPermanently = useCallback(async () => {
+    const conversationId = currentConversationIdRef.current;
+    if (
+      !conversationId
+      || requestInFlightRef.current
+      || protectedConversationIdsRef.current.has(conversationId)
+    ) return false;
+
+    const pendingWrite = conversationSaveChainsRef.current.get(conversationId);
+    if (pendingWrite) await pendingWrite;
+    if (STARTS_IN_TAURI) {
+      const removed = await removeStoredConversation(conversationId);
+      if (!removed) throw new Error("当前对话已经不存在，未执行清除。");
+    }
+
+    const remainingItems = conversationListItemsRef.current.filter(
+      (item) => item.id !== conversationId,
+    );
+    replaceConversationListItems(remainingItems);
+    updateConversationListTotal(conversationListTotalRef.current - 1);
+    nextConversationOffsetRef.current = Math.max(0, nextConversationOffsetRef.current - 1);
+    updateConversationListHasMore(remainingItems.length < conversationListTotalRef.current);
+    conversationsRef.current = conversationsRef.current.filter((item) => item.id !== conversationId);
+    setConversations(conversationsRef.current);
+    currentConversationIdRef.current = null;
+    setCurrentConversationId(null);
+    return true;
+  }, [
+    replaceConversationListItems,
+    updateConversationListHasMore,
+    updateConversationListTotal,
+  ]);
+
   const updateCurrentConversation = useCallback((
     update: (conversation: Conversation) => Conversation,
   ) => {
@@ -405,6 +440,7 @@ export function useConversations(onNavigateToChat: () => void) {
     selectConversation,
     deleteConversation,
     clearConversations,
+    deleteCurrentConversationPermanently,
     updateCurrentConversation,
   };
 }

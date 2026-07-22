@@ -4,7 +4,7 @@
   min-width: 0;
   height: 100%;
   grid-template-rows: 64px minmax(0, 1fr);
-  background: var(--color-surface);
+  background: var(--color-surface-layer);
 }
 
 .settings-header {
@@ -43,8 +43,28 @@
 .settings-nav {
   padding: 18px 12px;
   border-right: 1px solid var(--color-border);
-  background: var(--color-sidebar);
+  background: var(--color-sidebar-layer);
 }
+
+.settings-panel-loading {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  place-items: center;
+  color: var(--color-muted);
+  font-size: 12px;
+}
+
+.settings-about {
+  display: grid;
+  width: min(560px, 100%);
+  padding: 22px 0;
+  gap: 8px;
+  border-top: 1px solid var(--color-border-soft);
+}
+
+.settings-about strong { font-size: 18px; }
+.settings-about span, .settings-about p { margin: 0; color: var(--color-muted); font-size: 12px; }
 
 .settings-nav-item {
   display: flex;
@@ -554,6 +574,41 @@
   border-bottom: 0;
 }
 
+.model-row > .model-default-button {
+  grid-column: 5;
+  grid-row: 1;
+}
+
+.model-row > .model-delete-button {
+  grid-column: 6;
+  grid-row: 1;
+}
+
+.model-pricing {
+  grid-column: 2 / 5;
+  grid-row: 2;
+  min-width: 0;
+  color: var(--color-muted);
+  font-size: 11px;
+}
+
+.model-pricing summary {
+  width: fit-content;
+  cursor: pointer;
+}
+
+.model-pricing-grid {
+  display: grid;
+  margin-top: 8px;
+  grid-template-columns: repeat(4, minmax(90px, 1fr));
+  gap: 8px;
+}
+
+.model-pricing-grid label {
+  display: grid;
+  gap: 4px;
+}
+
 .model-enabled-toggle {
   display: grid;
   width: 20px;
@@ -784,6 +839,20 @@
     grid-row: 2;
   }
 
+  .model-row > .settings-field:nth-child(4) {
+    grid-column: 2 / -1;
+    grid-row: 3;
+  }
+
+  .model-row > .model-pricing {
+    grid-column: 2 / -1;
+    grid-row: 4;
+  }
+
+  .model-pricing-grid {
+    grid-template-columns: repeat(2, minmax(100px, 1fr));
+  }
+
   .model-row > .model-enabled-toggle {
     grid-column: 1;
     grid-row: 1;
@@ -791,11 +860,11 @@
 
   .model-row > .model-default-button {
     grid-column: 3;
-    grid-row: 3;
+    grid-row: 5;
   }
 
   .model-row > .model-delete-button {
     grid-column: 4;
-    grid-row: 3;
+    grid-row: 5;
   }
 }
