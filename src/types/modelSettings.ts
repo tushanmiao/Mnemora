@@ -36,6 +36,15 @@ export interface ModelPricing {
   currency: "USD";
 }
 
+/**
+ * 用户对模型能力的显式覆盖；字段缺省表示"跟随内置模型数据库的默认判断"。
+ * 主要服务于中转站上改了名、数据库匹配不到的模型。
+ */
+export interface ModelCapabilities {
+  /** 是否支持图片输入（视觉）。false 时发送图片会在请求前被拦截。 */
+  vision?: boolean;
+}
+
 /** 一个供应商下的模型映射。 */
 export interface ProviderModelConfig {
   /** Mnemora 内部使用的稳定模型 ID。 */
@@ -48,6 +57,8 @@ export interface ProviderModelConfig {
   contextWindowTokens: number | null;
   /** 可选价格；每条用量记录会保存当时的快照，后续修改不会重算历史。 */
   pricing?: ModelPricing;
+  /** 能力覆盖；缺省时跟随内置模型数据库。 */
+  capabilities?: ModelCapabilities;
   /** 关闭后不出现在可选模型中，但配置仍然保留。 */
   enabled: boolean;
 }

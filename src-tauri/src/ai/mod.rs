@@ -5,6 +5,7 @@
 
 pub mod dispatcher;
 pub mod error;
+pub mod model;
 pub mod providers;
 pub mod stream;
 pub mod types;

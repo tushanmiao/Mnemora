@@ -296,6 +296,18 @@ impl ChatCompletionRequest {
             .messages
             .iter()
             .rposition(|message| message.role == ModelRole::User);
+        // 未答尾部：最后一条助手消息之后的用户消息。前端只会把 completed 的消息发给
+        // 后端，所以出现在这里的助手消息一定是成功回复；尾部消息（含图片）从未被模型
+        // 成功消费过。图片正文只对未答尾部发送——已被成功回答的历史图片降级为文字说明，
+        // 维持"不重复发送历史图片"的 token/内存设计；而中转站失败后重新提问时，
+        // 上一条带图消息仍在尾部，图片不会丢失（修复"失败后再问就胡说"的场景）。
+        let last_assistant_index = self
+            .messages
+            .iter()
+            .rposition(|message| message.role == ModelRole::Assistant);
+        let in_unanswered_tail = |message_index: usize| {
+            last_assistant_index.is_none_or(|assistant_index| message_index > assistant_index)
+        };
         let last_user_content = last_user_index.map(|index| self.messages[index].content.clone());
         if let Some(slash_skill_id) = self.slash_skill_id.as_deref() {
             let content = last_user_content.as_deref().ok_or_else(|| {
@@ -328,7 +340,7 @@ impl ChatCompletionRequest {
             let mut historical_images = Vec::new();
             for attachment in message.attachments {
                 if attachment.kind == "image" {
-                    if Some(message_index) != last_user_index {
+                    if !in_unanswered_tail(message_index) {
                         historical_images.push(attachment.name);
                         continue;
                     }
@@ -479,6 +491,8 @@ mod tests {
 
     #[test]
     fn model_request_only_loads_images_from_last_user_message() {
+        // 已被成功回答的历史图片降级为文字说明；只有未答尾部（此处即最后一条用户消息）
+        // 携带图片正文。
         let root = std::env::temp_dir().join(format!("mnemora-chat-request-{}", Uuid::new_v4()));
         let repository = ConversationRepository::new(root.clone());
         let directory = repository.attachments_directory("conversation-1").unwrap();
@@ -519,6 +533,47 @@ mod tests {
             model_request.messages[2].images[0].name,
             "attachment-new.png"
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn model_request_keeps_images_for_unanswered_tail_messages() {
+        // 中转站失败场景：带图消息没有得到成功回复（失败的助手消息不会被前端发来），
+        // 用户随后追问。此时带图消息仍在未答尾部，图片必须重新发送而不是降级为
+        // 文字说明——否则模型从未见过图，只能胡猜。
+        let root = std::env::temp_dir().join(format!("mnemora-chat-retry-{}", Uuid::new_v4()));
+        let repository = ConversationRepository::new(root.clone());
+        let directory = repository.attachments_directory("conversation-1").unwrap();
+        fs::create_dir_all(&directory).unwrap();
+        let image_path = "33333333-3333-4333-8333-333333333333_shot.png";
+        let image = image::RgbImage::from_pixel(8, 6, image::Rgb([12, 34, 56]));
+        image.save(directory.join(image_path)).unwrap();
+
+        let mut request = request("看看这张图");
+        request.conversation_id = Some("conversation-1".to_string());
+        request.messages[0]
+            .attachments
+            .push(image_attachment("attachment-shot", image_path));
+        // 没有助手消息（上一轮失败被过滤），用户直接追问。
+        request.messages.push(super::ChatModelMessage {
+            role: ModelRole::User,
+            content: "怎么没回答？再看一次".to_string(),
+            attachments: Vec::new(),
+        });
+
+        let model_request = request
+            .into_model_request(
+                "vision-model".to_string(),
+                &repository,
+                &crate::skills::SkillRepository::new(root.join("builtin"), root.join("skills")),
+            )
+            .unwrap();
+        assert_eq!(model_request.messages[0].images.len(), 1);
+        assert_eq!(
+            model_request.messages[0].images[0].name,
+            "attachment-shot.png"
+        );
+        assert!(!model_request.messages[0].content.contains("历史图片附件"));
         let _ = fs::remove_dir_all(root);
     }
 

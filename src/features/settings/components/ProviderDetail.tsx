@@ -15,6 +15,15 @@ import type {
   ProviderKind,
   ProviderModelConfig,
 } from "../../../types/modelSettings";
+import { matchModelDefaults, resolveSupportsVision } from "../../../data/modelMatching";
+
+const CAPABILITY_BADGES = [
+  ["reasoning", "推理"],
+  ["functionCalling", "工具"],
+  ["webSearch", "联网"],
+  ["imageGeneration", "生图"],
+  ["embedding", "嵌入"],
+] as const;
 
 const PROVIDER_KIND_LABELS: Record<ProviderKind, string> = {
   openai: "OpenAI 官方",
@@ -425,6 +434,66 @@ export function ProviderDetail(props: ProviderDetailProps) {
                     })}
                   />
                 </div>
+                {(() => {
+                  const capabilities = matchModelDefaults(model.apiModel)?.capabilities;
+                  const vision = resolveSupportsVision(model.apiModel, model.capabilities?.vision);
+                  const badges: Array<{ key: string; label: string; tone: "on" | "off" }> = [];
+                  if (vision === true) badges.push({ key: "vision", label: "视觉", tone: "on" });
+                  if (vision === false) badges.push({ key: "vision", label: "不支持图片", tone: "off" });
+                  for (const [key, label] of CAPABILITY_BADGES) {
+                    if (capabilities?.[key]) badges.push({ key, label, tone: "on" });
+                  }
+                  return (
+                    <div className="model-meta-row">
+                      <div className="model-badges" aria-label="模型能力">
+                        {badges.length > 0 ? (
+                          badges.map((badge) => (
+                            <span
+                              className={badge.tone === "off"
+                                ? "model-badge model-badge-off"
+                                : "model-badge"}
+                              key={badge.key}
+                            >
+                              {badge.label}
+                            </span>
+                          ))
+                        ) : (
+                          <span className="model-badge model-badge-unknown">能力未收录</span>
+                        )}
+                      </div>
+                      <label className="model-vision-override" htmlFor={`vision-${model.id}`}>
+                        <span>图片能力</span>
+                        <select
+                          id={`vision-${model.id}`}
+                          className="settings-input settings-select"
+                          value={model.capabilities?.vision === undefined
+                            ? "auto"
+                            : model.capabilities.vision
+                              ? "on"
+                              : "off"}
+                          onChange={(event) => {
+                            const value = event.target.value;
+                            onUpdateModel(model.id, {
+                              capabilities: value === "auto"
+                                ? undefined
+                                : { vision: value === "on" },
+                            });
+                          }}
+                        >
+                          <option value="auto">
+                            {resolveSupportsVision(model.apiModel) === true
+                              ? "自动（支持）"
+                              : resolveSupportsVision(model.apiModel) === false
+                                ? "自动（不支持）"
+                                : "自动（未收录，放行）"}
+                          </option>
+                          <option value="on">支持图片</option>
+                          <option value="off">不支持图片</option>
+                        </select>
+                      </label>
+                    </div>
+                  );
+                })()}
                 <details className="model-pricing">
                   <summary>用量价格（USD / 百万 Token）</summary>
                   <div className="model-pricing-grid">
@@ -433,26 +502,31 @@ export function ProviderDetail(props: ProviderDetailProps) {
                       ["outputPerMillion", "输出"],
                       ["cacheReadPerMillion", "缓存读取"],
                       ["cacheWritePerMillion", "缓存创建"],
-                    ] as const).map(([key, label]) => (
-                      <label key={key}>
-                        <span>{label}</span>
-                        <input
-                          className="settings-input"
-                          type="number"
-                          min={0}
-                          step="0.0001"
-                          value={model.pricing?.[key] ?? ""}
-                          placeholder="未设置"
-                          onChange={(event) => onUpdateModel(model.id, {
-                            pricing: {
-                              ...model.pricing,
-                              currency: "USD",
-                              [key]: event.target.value ? Number(event.target.value) : undefined,
-                            },
-                          })}
-                        />
-                      </label>
-                    ))}
+                    ] as const).map(([key, label]) => {
+                      // 占位显示数据库默认价：留空即采用该默认（与后端定价回退一致），
+                      // 中转站倍率不同的用户在此覆盖。
+                      const defaultPrice = matchModelDefaults(model.apiModel)?.pricing?.[key];
+                      return (
+                        <label key={key}>
+                          <span>{label}</span>
+                          <input
+                            className="settings-input"
+                            type="number"
+                            min={0}
+                            step="0.0001"
+                            value={model.pricing?.[key] ?? ""}
+                            placeholder={defaultPrice !== undefined ? `默认 ${defaultPrice}` : "未设置"}
+                            onChange={(event) => onUpdateModel(model.id, {
+                              pricing: {
+                                ...model.pricing,
+                                currency: "USD",
+                                [key]: event.target.value ? Number(event.target.value) : undefined,
+                              },
+                            })}
+                          />
+                        </label>
+                      );
+                    })}
                   </div>
                 </details>
                 <button

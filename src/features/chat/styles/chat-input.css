@@ -147,6 +147,22 @@
   opacity: 0.45;
 }
 
+/* 当前模型不支持图片时，附件按钮进入"仅文档"模式（参考 cherry-studio 的入口级提示）。 */
+.composer-tools .icon-button-document-only {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  width: auto;
+  padding: 0 8px;
+}
+
+.document-only-badge {
+  font-size: 11px;
+  line-height: 1;
+  color: var(--color-muted);
+  white-space: nowrap;
+}
+
 .skill-picker { position: relative; }
 .skill-picker-active { color: var(--color-accent); background: var(--color-accent-soft); }
 
@@ -271,4 +287,56 @@
   color: var(--color-faint);
   font-size: 11px;
   text-align: center;
+}
+
+/* 引用回答片段的引用条（选中助手输出 → 引用提问） */
+.composer-quote-bar {
+  display: flex;
+  min-width: 0;
+  margin: 8px 10px 0;
+  padding: 6px 10px;
+  align-items: flex-start;
+  gap: 7px;
+  border-left: 3px solid var(--color-accent);
+  border-radius: 6px;
+  color: var(--color-muted);
+  background: var(--color-surface-raised);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.composer-quote-bar > svg {
+  margin-top: 2px;
+  flex-shrink: 0;
+  color: var(--color-accent);
+}
+
+.composer-quote-text {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.composer-quote-clear {
+  display: inline-grid;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  place-items: center;
+  flex-shrink: 0;
+  border: 0;
+  border-radius: 5px;
+  color: var(--color-muted);
+  background: transparent;
+  cursor: pointer;
+}
+
+.composer-quote-clear:hover {
+  color: var(--color-text);
+  background: var(--color-hover);
 }

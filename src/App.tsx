@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
 import "./styles/app.css";
 import "./styles/themes.css";
 import { ChatHeader, type ModelSelectorGroup } from "./features/chat/components/ChatHeader";
@@ -16,6 +16,7 @@ import { resolveThemeBackgroundCss } from "./features/settings/utils/themeBackgr
 import { useSkills } from "./features/skills/hooks/useSkills";
 import type { AiPermissionMode } from "./types/chat";
 import { resolveDefaultModel } from "./types/modelSettings";
+import { resolveSupportsVision } from "./data/modelMatching";
 
 type AppView = "chat" | "settings";
 
@@ -33,6 +34,11 @@ function App() {
   const settings = useAppSettings();
   const skills = useSkills();
   const conversations = useConversations(navigateToChat);
+  // 选中助手回答片段后的引用状态；切换会话即失效。
+  const [quotedText, setQuotedText] = useState<string | null>(null);
+  useEffect(() => {
+    setQuotedText(null);
+  }, [conversations.currentConversationId]);
 
   const currentModel = useMemo(() => {
     const conversation = conversations.currentConversation;
@@ -267,6 +273,7 @@ function App() {
             onEditMessage={chatRuntime.editMessage}
             onRegenerateMessage={chatRuntime.regenerateMessage}
             onDeleteMessage={chatRuntime.deleteMessage}
+            onQuoteMessage={setQuotedText}
           />
           <ChatInput
             conversationId={conversations.currentConversationId}
@@ -283,6 +290,14 @@ function App() {
                   : "向 Mnemora 提问..."}
             contextUsage={contextUsage}
             contextWindowTokens={currentModel?.model.contextWindowTokens ?? null}
+            supportsVision={currentModel
+              ? resolveSupportsVision(
+                  currentModel.model.apiModel,
+                  currentModel.model.capabilities?.vision,
+                ) ?? null
+              : null}
+            quote={quotedText}
+            onQuoteClear={() => setQuotedText(null)}
             contextMessageCount={conversations.currentConversation?.messages.length ?? 0}
             contextCompressionCount={conversations.currentConversation?.contextCompressionCount ?? 0}
             contextDisabled={!conversations.currentConversation || !currentModel}

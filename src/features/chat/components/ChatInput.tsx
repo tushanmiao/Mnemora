@@ -6,8 +6,10 @@ import {
   Command,
   LoaderCircle,
   Paperclip,
+  Quote,
   SlidersHorizontal,
   Square,
+  X,
 } from "lucide-react";
 import type { ChatAttachment, PendingChatAttachment } from "../../../types/attachment";
 import type { SkillActivationSelection, SkillSummary } from "../../../types/skill";
@@ -39,6 +41,12 @@ type ChatInputProps = {
   placeholder?: string;
   contextUsage: ContextUsageEstimate;
   contextWindowTokens: number | null;
+  /** 当前模型是否支持图片输入；false 时禁止添加图片附件，null 表示未知（放行）。 */
+  supportsVision?: boolean | null;
+  /** 从助手回答中选中的引用片段；发送时作为引用上下文并入消息。 */
+  quote?: string | null;
+  /** 用户移除引用条或发送完成后调用。 */
+  onQuoteClear?: () => void;
   contextMessageCount: number;
   contextCompressionCount?: number;
   contextDisabled?: boolean;
@@ -101,6 +109,9 @@ export function ChatInput({
   placeholder = "向 Mnemora 提问...",
   contextUsage,
   contextWindowTokens,
+  supportsVision = null,
+  quote = null,
+  onQuoteClear,
   contextMessageCount,
   contextCompressionCount = 0,
   contextDisabled = false,
@@ -166,10 +177,21 @@ export function ChatInput({
   }, []);
 
   const addAttachments = (incoming: PendingChatAttachment[]) => {
+    // 图片门禁：当前模型明确不支持视觉时，图片附件在入口处拒绝（与后端拦截一致）。
+    let accepted = incoming;
+    let visionError = "";
+    if (supportsVision === false) {
+      const rejectedImages = incoming.filter((attachment) => attachment.kind === "image");
+      if (rejectedImages.length > 0) {
+        accepted = incoming.filter((attachment) => attachment.kind !== "image");
+        visionError = "当前模型不支持图片输入。请切换到支持视觉的模型，或在设置的模型能力中手动开启。";
+        discardPendingAttachments(rejectedImages);
+      }
+    }
     const current = attachmentsRef.current;
     const existing = new Set(current.map((attachment) => attachment.path));
     const duplicates: PendingChatAttachment[] = [];
-    const unique = incoming.filter((attachment) => {
+    const unique = accepted.filter((attachment) => {
       if (existing.has(attachment.path)) {
         duplicates.push(attachment);
         return false;
@@ -185,7 +207,7 @@ export function ChatInput({
         void discardStagedChatAttachment(attachment.path);
       }
     } else {
-      setAttachmentError("");
+      setAttachmentError(visionError);
     }
     const next = [...current, ...unique.slice(0, available)];
     attachmentsRef.current = next;
@@ -291,11 +313,18 @@ export function ChatInput({
         }
         return;
       }
+      // 引用片段以 Markdown 引用块并入消息开头：模型能天然理解 "> " 语义，
+      // 会话历史里也保留了"针对哪段内容提问"的完整上下文。
+      const quoted = quote?.trim();
+      const contentWithQuote = quoted
+        ? `${quoted.split(/\r?\n/).map((line) => `> ${line}`).join("\n")}\n\n${draft}`
+        : draft;
       onSend(
-        draft,
+        contentWithQuote,
         storedAttachments,
         resolveSkillActivation(draft, selectedSkillIds, skills),
       );
+      onQuoteClear?.();
       setDraft("");
       setCommandFeedback("");
       setUnknownSlashConfirmation(null);
@@ -386,6 +415,21 @@ export function ChatInput({
     <footer className="composer-area">
       <div className="composer-inner">
         <form className="composer-box" onSubmit={handleSubmit}>
+          {quote ? (
+            <div className="composer-quote-bar" aria-label="引用的回答片段">
+              <Quote size={14} />
+              <span className="composer-quote-text">{quote}</span>
+              <button
+                className="composer-quote-clear"
+                type="button"
+                title="移除引用"
+                aria-label="移除引用"
+                onClick={() => onQuoteClear?.()}
+              >
+                <X size={14} />
+              </button>
+            </div>
+          ) : null}
           <ChatAttachments
             attachments={attachments}
             variant="composer"
@@ -441,14 +485,21 @@ export function ChatInput({
           <div className="composer-toolbar">
             <div className="composer-tools">
               <button
-                className="icon-button"
+                className={supportsVision === false ? "icon-button icon-button-document-only" : "icon-button"}
                 type="button"
-                title="添加附件"
-                aria-label="添加附件"
+                title={supportsVision === false
+                  ? "当前模型不支持图片，仅可添加文档附件"
+                  : "添加附件"}
+                aria-label={supportsVision === false
+                  ? "添加附件（当前模型不支持图片，仅可添加文档）"
+                  : "添加附件"}
                 disabled={inputDisabled}
                 onClick={() => void openAttachmentPicker()}
               >
                 <Paperclip size={18} />
+                {supportsVision === false ? (
+                  <span className="document-only-badge" aria-hidden="true">仅文档</span>
+                ) : null}
               </button>
               <button className="icon-button" type="button" title="选择文献" disabled={inputDisabled}>
                 <BookOpenText size={18} />

@@ -9,6 +9,7 @@ import {
   Copy,
   LoaderCircle,
   Pencil,
+  Quote,
   RefreshCcw,
   Sparkles,
   Wrench,
@@ -25,6 +26,8 @@ import "../styles/message-bubble.css";
 
 const LONG_USER_MESSAGE_CHARACTERS = 420;
 const LONG_USER_MESSAGE_LINES = 8;
+/** 引用片段的长度上限；超长选区截断，避免把整篇回答塞回上下文。 */
+const MAX_QUOTE_CHARACTERS = 2_000;
 const MESSAGE_TIME_FORMATTER = new Intl.DateTimeFormat("zh-CN", {
   year: "numeric",
   month: "short",
@@ -42,6 +45,8 @@ type MessageBubbleProps = {
   onEdit: (messageId: string, content: string) => void;
   onRegenerate: (messageId: string) => void;
   onDelete: (messageId: string) => void;
+  /** 选中助手回答的部分文本后点击"引用提问"时回调；不传则不显示引用入口。 */
+  onQuote?: (text: string) => void;
 };
 
 export type MessageBubbleUiState = {
@@ -64,6 +69,7 @@ export const MessageBubble = memo(function MessageBubble({
   onEdit,
   onRegenerate,
   onDelete,
+  onQuote,
 }: MessageBubbleProps) {
   const isAssistant = message.role === "assistant";
   const canStream = isAssistant && (
@@ -96,6 +102,48 @@ export const MessageBubble = memo(function MessageBubble({
   const [copied, setCopied] = useState(false);
   const [resolvingApprovalId, setResolvingApprovalId] = useState<string | null>(null);
   const copyResetTimerRef = useRef<number | null>(null);
+  const quoteHostRef = useRef<HTMLDivElement | null>(null);
+  const [quoteAnchor, setQuoteAnchor] = useState<{
+    left: number;
+    top: number;
+    text: string;
+  } | null>(null);
+
+  // 选中助手回答的部分文本 → 在选区下方浮出"引用提问"按钮。
+  const handleQuoteMouseUp = () => {
+    if (!onQuote) return;
+    const host = quoteHostRef.current;
+    const selection = window.getSelection();
+    if (!host || !selection || selection.isCollapsed || selection.rangeCount === 0) {
+      setQuoteAnchor(null);
+      return;
+    }
+    const { anchorNode, focusNode } = selection;
+    if (!anchorNode || !focusNode || !host.contains(anchorNode) || !host.contains(focusNode)) {
+      setQuoteAnchor(null);
+      return;
+    }
+    const text = selection.toString().trim();
+    if (!text) {
+      setQuoteAnchor(null);
+      return;
+    }
+    const range = selection.getRangeAt(0).getBoundingClientRect();
+    const hostRect = host.getBoundingClientRect();
+    setQuoteAnchor({
+      left: Math.max(24, Math.min(range.left - hostRect.left + range.width / 2, hostRect.width - 24)),
+      top: range.bottom - hostRect.top + 6,
+      text: text.length > MAX_QUOTE_CHARACTERS ? `${text.slice(0, MAX_QUOTE_CHARACTERS)}…` : text,
+    });
+  };
+
+  useEffect(() => {
+    if (!quoteAnchor) return;
+    // 点击气泡外任意处收起浮动按钮；按钮自身通过 stopPropagation 幸免。
+    const hide = () => setQuoteAnchor(null);
+    document.addEventListener("mousedown", hide);
+    return () => document.removeEventListener("mousedown", hide);
+  }, [quoteAnchor]);
 
   useEffect(() => {
     if (!isStreaming) return;
@@ -275,7 +323,32 @@ export const MessageBubble = memo(function MessageBubble({
               ) : null}
               {hasContent ? (
                 isAssistant ? (
-                  <MarkdownMessage content={displayedContent} streaming={isStreaming} />
+                  <div
+                    className="message-quote-host"
+                    ref={quoteHostRef}
+                    onMouseUp={handleQuoteMouseUp}
+                  >
+                    <MarkdownMessage content={displayedContent} streaming={isStreaming} />
+                    {quoteAnchor ? (
+                      <button
+                        className="message-quote-fab"
+                        type="button"
+                        style={{ left: quoteAnchor.left, top: quoteAnchor.top }}
+                        onMouseDown={(event) => {
+                          event.preventDefault();
+                          event.stopPropagation();
+                        }}
+                        onClick={() => {
+                          onQuote?.(quoteAnchor.text);
+                          setQuoteAnchor(null);
+                          window.getSelection()?.removeAllRanges();
+                        }}
+                      >
+                        <Quote size={13} />
+                        <span>引用提问</span>
+                      </button>
+                    ) : null}
+                  </div>
                 ) : (
                   <>
                     <div

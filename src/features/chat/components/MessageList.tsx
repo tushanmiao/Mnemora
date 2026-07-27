@@ -57,6 +57,8 @@ type MessageListProps = {
   onEditMessage: (messageId: string, content: string) => void;
   onRegenerateMessage: (messageId: string) => void;
   onDeleteMessage: (messageId: string) => void;
+  /** 选中助手回答部分文本后点击"引用提问"；不传则消息气泡不显示引用入口。 */
+  onQuoteMessage?: (text: string) => void;
 };
 
 function prefersReducedMotion() {
@@ -84,6 +86,7 @@ export function MessageList({
   onEditMessage,
   onRegenerateMessage,
   onDeleteMessage,
+  onQuoteMessage,
 }: MessageListProps) {
   const listRef = useRef<HTMLElement>(null);
   const threadRef = useRef<HTMLDivElement>(null);
@@ -228,6 +231,7 @@ export function MessageList({
         onEdit={onEditMessage}
         onRegenerate={onRegenerateMessage}
         onDelete={onDeleteMessage}
+        onQuote={onQuoteMessage}
       />
     </div>
   ), [
@@ -238,6 +242,7 @@ export function MessageList({
     onDeleteMessage,
     onEditMessage,
     onRegenerateMessage,
+    onQuoteMessage,
     updateMessageUiState,
   ]);
 

@@ -60,6 +60,22 @@ fn default_currency() -> String {
     "USD".to_string()
 }
 
+/// 用户对模型能力的显式覆盖；`None` 表示"跟随内置模型数据库的默认判断"。
+/// 主要服务于中转站上改了名、数据库匹配不到的模型。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelCapabilities {
+    /// 是否支持图片输入（视觉）。`Some(false)` 时发送图片会在请求前被拦截。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vision: Option<bool>,
+}
+
+impl ModelCapabilities {
+    pub fn is_empty(&self) -> bool {
+        self.vision.is_none()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderModelConfig {
@@ -70,6 +86,9 @@ pub struct ProviderModelConfig {
     pub context_window_tokens: Option<u64>,
     #[serde(default)]
     pub pricing: Option<ModelPricing>,
+    /// 能力覆盖；缺省时跟随内置模型数据库。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<ModelCapabilities>,
     pub enabled: bool,
 }
 
@@ -232,6 +251,12 @@ impl ModelSettings {
                         model.id
                     ));
                 }
+                if model
+                    .capabilities
+                    .is_some_and(|capabilities| capabilities.is_empty())
+                {
+                    model.capabilities = None;
+                }
                 if let Some(pricing) = &mut model.pricing {
                     pricing.currency = pricing.currency.trim().to_ascii_uppercase();
                     if pricing.currency.is_empty() {
@@ -362,6 +387,7 @@ mod tests {
             display_name: "  ".to_string(),
             context_window_tokens: Some(128_000),
             pricing: None,
+            capabilities: None,
             enabled: true,
         });
 
@@ -385,6 +411,7 @@ mod tests {
                 display_name: "One".to_string(),
                 context_window_tokens: None,
                 pricing: None,
+                capabilities: None,
                 enabled: true,
             },
             ProviderModelConfig {
@@ -393,6 +420,7 @@ mod tests {
                 display_name: "Two".to_string(),
                 context_window_tokens: None,
                 pricing: None,
+                capabilities: None,
                 enabled: true,
             },
         ];
@@ -413,6 +441,7 @@ mod tests {
             display_name: "Model Context".to_string(),
             context_window_tokens: None,
             pricing: None,
+            capabilities: None,
             enabled: true,
         });
         let settings = settings.normalize_and_validate().unwrap();

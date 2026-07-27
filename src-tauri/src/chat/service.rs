@@ -42,6 +42,8 @@ struct ResolvedTarget {
     api_model: String,
     display_name: String,
     pricing: Option<ModelPricing>,
+    /// 是否支持图片输入：用户覆盖优先，其次内置模型数据库；`None` 表示未知（放行）。
+    supports_vision: Option<bool>,
 }
 
 struct PreparedCall {
@@ -1080,6 +1082,19 @@ async fn prepare_call(
     })
     .await
     .map_err(|error| ModelError::provider(format!("读取聊天附件任务失败：{error}")))??;
+    // 图片门禁：确定不支持视觉的模型不允许发送图片，避免中转站/模型胡乱响应污染会话。
+    // 只拦截 Some(false)；未收录的模型（None）保持放行，不误伤新模型。
+    if target.supports_vision == Some(false)
+        && model_request
+            .messages
+            .iter()
+            .any(|message| !message.images.is_empty())
+    {
+        return Err(ModelError::invalid_configuration(format!(
+            "当前模型 {} 不支持图片输入。请切换到支持视觉的模型，或移除本条消息中的图片附件；也可以在设置的模型能力中手动开启视觉。",
+            target.display_name
+        )));
+    }
     if use_agent_tools {
         let l1_memory = if memory_settings.enabled
             && memory_settings.inject_l1
@@ -1316,6 +1331,17 @@ fn resolve_target(
         return Err(ModelError::invalid_configuration("当前模型已经停用。"));
     }
 
+    // 定价：用户显式配置优先，缺省回退到内置模型数据库的默认价（Kivio 同款优先级）。
+    let pricing = model
+        .pricing
+        .clone()
+        .or_else(|| crate::ai::model::database_pricing(&model.api_model));
+    // 视觉能力：用户覆盖 → 内置模型数据库 → 名称家族启发式；均未知时返回 None，由调用方放行。
+    let supports_vision = model
+        .capabilities
+        .and_then(|capabilities| capabilities.vision)
+        .or_else(|| crate::ai::model::resolve_supports_vision(&model.api_model));
+
     Ok(ResolvedTarget {
         provider_id: provider.id.clone(),
         provider_name: provider.name.clone(),
@@ -1326,7 +1352,8 @@ fn resolve_target(
         base_url: provider.base_url.clone(),
         api_model: model.api_model.clone(),
         display_name: model.display_name.clone(),
-        pricing: model.pricing.clone(),
+        pricing,
+        supports_vision,
     })
 }
 
@@ -1338,9 +1365,73 @@ mod tests {
         error::{ModelError, ModelErrorKind},
         types::{ModelUsage, UsageSource},
     };
-    use crate::settings::types::{ModelSettings, ProviderKind, ProviderModelConfig};
+    use crate::settings::types::{
+        ModelCapabilities, ModelSettings, ProviderKind, ProviderModelConfig,
+    };
     use tokio::sync::oneshot;
     use tokio_util::sync::CancellationToken;
+
+    fn push_model(settings: &mut ModelSettings, api_model: &str) {
+        settings.providers[0].models.push(ProviderModelConfig {
+            id: "model-1".to_string(),
+            api_model: api_model.to_string(),
+            display_name: api_model.to_string(),
+            context_window_tokens: None,
+            pricing: None,
+            capabilities: None,
+            enabled: true,
+        });
+    }
+
+    #[test]
+    fn vision_resolves_from_database_when_no_override() {
+        let mut settings = ModelSettings::default();
+        push_model(&mut settings, "gpt-5.5");
+        let target = super::resolve_target(&settings, "official-openai", "model-1").unwrap();
+        assert_eq!(target.supports_vision, Some(true));
+    }
+
+    #[test]
+    fn vision_override_wins_over_database() {
+        let mut settings = ModelSettings::default();
+        push_model(&mut settings, "gpt-5.5");
+        settings.providers[0].models[0].capabilities = Some(ModelCapabilities {
+            vision: Some(false),
+        });
+        let target = super::resolve_target(&settings, "official-openai", "model-1").unwrap();
+        assert_eq!(target.supports_vision, Some(false));
+    }
+
+    #[test]
+    fn vision_unknown_model_stays_none() {
+        let mut settings = ModelSettings::default();
+        push_model(&mut settings, "totally-unknown-model-xyz");
+        let target = super::resolve_target(&settings, "official-openai", "model-1").unwrap();
+        assert_eq!(target.supports_vision, None);
+    }
+
+    #[test]
+    fn pricing_falls_back_to_database_defaults() {
+        let mut settings = ModelSettings::default();
+        push_model(&mut settings, "gpt-5.5");
+        let target = super::resolve_target(&settings, "official-openai", "model-1").unwrap();
+        let pricing = target.pricing.expect("database pricing should apply");
+        assert!(pricing.input_per_million.is_some());
+
+        // 用户显式配置优先于数据库默认。
+        settings.providers[0].models[0].pricing = Some(crate::settings::types::ModelPricing {
+            input_per_million: Some(1.23),
+            output_per_million: None,
+            cache_read_per_million: None,
+            cache_write_per_million: None,
+            currency: "USD".to_string(),
+        });
+        let target = super::resolve_target(&settings, "official-openai", "model-1").unwrap();
+        assert_eq!(
+            target.pricing.and_then(|pricing| pricing.input_per_million),
+            Some(1.23)
+        );
+    }
 
     #[test]
     fn resolves_model_only_within_requested_provider() {
@@ -1351,6 +1442,7 @@ mod tests {
             display_name: "GPT Test".to_string(),
             context_window_tokens: Some(128_000),
             pricing: None,
+            capabilities: None,
             enabled: true,
         });
 
@@ -1368,6 +1460,7 @@ mod tests {
             display_name: "GPT Test".to_string(),
             context_window_tokens: Some(128_000),
             pricing: None,
+            capabilities: None,
             enabled: false,
         });
         assert!(super::resolve_target(&settings, "official-openai", "model-1").is_err());

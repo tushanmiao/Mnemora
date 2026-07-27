@@ -17,6 +17,7 @@ import type {
 } from "../../../types/modelSettings";
 import { ProviderDetail } from "./ProviderDetail";
 import { ProviderList } from "./ProviderList";
+import { matchModelDefaults } from "../../../data/modelMatching";
 
 type ProviderField = "name" | "baseUrl";
 type ProviderErrors = Partial<Record<ProviderField, string>>;
@@ -478,11 +479,15 @@ export function ModelSettingsPanel({
       return;
     }
 
+    // 内置模型数据库自动填充：上下文窗口 / 显示名 / 默认定价（用户随后可改）。
+    // 视觉能力不写入配置，保持"自动"跟随数据库，避免固化后数据库更新不生效。
+    const defaults = matchModelDefaults(apiModel);
     const model: ProviderModelConfig = {
       id: createId("model"),
       apiModel,
-      displayName: newDisplayName.trim() || apiModel,
-      contextWindowTokens: 128_000,
+      displayName: newDisplayName.trim() || defaults?.displayName || apiModel,
+      contextWindowTokens: defaults?.contextWindowTokens ?? 128_000,
+      pricing: defaults?.pricing,
       enabled: true,
     };
 
@@ -653,7 +658,7 @@ export function ModelSettingsPanel({
               }}
               onSelectAvailableModel={(model) => {
                 setNewApiModel(model);
-                setNewDisplayName(model);
+                setNewDisplayName(matchModelDefaults(model)?.displayName ?? model);
               }}
               onNewApiModelChange={(value) => {
                 setNewApiModel(value);

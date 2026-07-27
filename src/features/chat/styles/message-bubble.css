@@ -441,3 +441,33 @@
     transition: none;
   }
 }
+
+/* 选中助手回答 → 浮动"引用提问"按钮 */
+.message-quote-host {
+  position: relative;
+}
+
+.message-quote-fab {
+  display: inline-flex;
+  position: absolute;
+  z-index: 12;
+  padding: 4px 10px;
+  align-items: center;
+  gap: 5px;
+  transform: translateX(-50%);
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  color: var(--color-accent);
+  background: var(--color-surface-raised);
+  box-shadow: 0 4px 14px rgb(0 0 0 / 0.13);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.message-quote-fab:hover {
+  color: var(--color-surface);
+  border-color: var(--color-accent);
+  background: var(--color-accent);
+}
