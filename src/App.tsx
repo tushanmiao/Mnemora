@@ -1,4 +1,13 @@
-import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
 import "./styles/app.css";
 import "./styles/themes.css";
 import { ChatHeader, type ModelSelectorGroup } from "./features/chat/components/ChatHeader";
@@ -14,18 +23,52 @@ import { SettingsPage, type SettingsCategory } from "./features/settings/compone
 import { useAppSettings } from "./features/settings/hooks/useAppSettings";
 import { resolveThemeBackgroundCss } from "./features/settings/utils/themeBackground";
 import { useSkills } from "./features/skills/hooks/useSkills";
+import {
+  DEFAULT_LAYOUT_PREFERENCES,
+  LAYOUT_PANEL_LIMITS,
+  useLayoutPreferences,
+} from "./features/layout/hooks/useLayoutPreferences";
 import type { AiPermissionMode } from "./types/chat";
 import { resolveDefaultModel } from "./types/modelSettings";
 import { resolveSupportsVision } from "./data/modelMatching";
+import type {
+  WorkContextView,
+  WorkLibraryView,
+  WorkspaceMode,
+} from "./features/workspace/types";
 
-type AppView = "chat" | "settings";
+const WorkWorkspace = lazy(() => import("./features/workspace/components/WorkWorkspace"));
+const WorkContextPanel = lazy(() => import("./features/workspace/components/WorkContextPanel").then(
+  (module) => ({ default: module.WorkContextPanel }),
+));
+
+type AppView = "workspace" | "settings";
+
+const CHAT_WORKSPACE_MIN_WIDTH = 420;
+const WORK_MAIN_MIN_WIDTH = 520;
 
 function App() {
-  const [activeView, setActiveView] = useState<AppView>("chat");
+  const appShellRef = useRef<HTMLElement>(null);
+  const [activeView, setActiveView] = useState<AppView>("workspace");
+  const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("chat");
+  const [workLibraryView, setWorkLibraryView] = useState<WorkLibraryView>("all");
+  const [workSearchQuery, setWorkSearchQuery] = useState("");
+  // Work 以文献阅读为主，右侧工具栏按需打开；Chat 不默认占用阅读空间。
+  const [workContextPanelOpen, setWorkContextPanelOpen] = useState(false);
+  const [workContextView, setWorkContextView] = useState<WorkContextView>("info");
   const [settingsCategory, setSettingsCategory] = useState<SettingsCategory>("general");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [modelMenuRequest, setModelMenuRequest] = useState(0);
-  const navigateToChat = useCallback(() => setActiveView("chat"), []);
+  const { preferences: layoutPreferences, savePanelWidth } = useLayoutPreferences();
+  const navigateToWorkspace = useCallback(() => setActiveView("workspace"), []);
+  const changeWorkspaceMode = useCallback((mode: WorkspaceMode) => {
+    setWorkspaceMode(mode);
+    setActiveView("workspace");
+  }, []);
+  const changeWorkLibraryView = useCallback((view: WorkLibraryView) => {
+    setWorkLibraryView(view);
+    setActiveView("workspace");
+  }, []);
   const openSettings = useCallback((category: SettingsCategory = "general") => {
     setSettingsCategory(category);
     setActiveView("settings");
@@ -33,7 +76,7 @@ function App() {
 
   const settings = useAppSettings();
   const skills = useSkills();
-  const conversations = useConversations(navigateToChat);
+  const conversations = useConversations(navigateToWorkspace);
   // 选中助手回答片段后的引用状态；切换会话即失效。
   const [quotedText, setQuotedText] = useState<string | null>(null);
   useEffect(() => {
@@ -182,6 +225,47 @@ function App() {
     }));
   }, [conversations, skills.skills]);
 
+  const sidebarWidth = workspaceMode === "chat"
+    ? layoutPreferences.chatSidebarWidth
+    : layoutPreferences.workSidebarWidth;
+  const sidebarDefaultWidth = workspaceMode === "chat"
+    ? DEFAULT_LAYOUT_PREFERENCES.chatSidebarWidth
+    : DEFAULT_LAYOUT_PREFERENCES.workSidebarWidth;
+
+  const previewSidebarWidth = useCallback((width: number) => {
+    appShellRef.current?.style.setProperty("--sidebar-width", `${Math.round(width)}px`);
+  }, []);
+  const commitSidebarWidth = useCallback((width: number) => {
+    savePanelWidth(workspaceMode === "chat" ? "chatSidebar" : "workSidebar", width);
+  }, [savePanelWidth, workspaceMode]);
+  const getSidebarMaxWidth = useCallback(() => (
+    Math.max(
+      LAYOUT_PANEL_LIMITS.chatSidebar.min,
+      Math.min(
+        LAYOUT_PANEL_LIMITS.chatSidebar.max,
+        window.innerWidth - CHAT_WORKSPACE_MIN_WIDTH,
+      ),
+    )
+  ), []);
+
+  const previewWorkContextWidth = useCallback((width: number) => {
+    appShellRef.current?.style.setProperty("--work-context-width", `${Math.round(width)}px`);
+  }, []);
+  const commitWorkContextWidth = useCallback((width: number) => {
+    savePanelWidth("workContext", width);
+  }, [savePanelWidth]);
+  const getWorkContextMaxWidth = useCallback((handle: HTMLButtonElement) => {
+    const stage = handle.closest<HTMLElement>(".workspace-stage");
+    const availableWidth = stage?.getBoundingClientRect().width ?? window.innerWidth;
+    return Math.max(
+      LAYOUT_PANEL_LIMITS.workContext.min,
+      Math.min(
+        LAYOUT_PANEL_LIMITS.workContext.max,
+        availableWidth - WORK_MAIN_MIN_WIDTH,
+      ),
+    );
+  }, []);
+
   const customBackground = resolveThemeBackgroundCss(settings.appSettings.themeBackground);
   const appThemeStyle = {
     "--app-font-size": `${settings.appSettings.fontSize}px`,
@@ -189,10 +273,103 @@ function App() {
     "--app-surface-opacity": `${customBackground
       ? settings.appSettings.themeBackground.surfaceOpacity
       : 100}%`,
+    "--sidebar-width": `${sidebarWidth}px`,
+    "--work-context-width": `${layoutPreferences.workContextWidth}px`,
   } as CSSProperties;
+
+  const workResourceLabel = {
+    all: "全部文献",
+    recent: "最近阅读",
+    favorites: "收藏",
+    unfiled: "未分类",
+    notes: "笔记",
+    "mind-maps": "思维导图",
+    trash: "回收站",
+  } satisfies Record<WorkLibraryView, string>;
+
+  const chatWorkspace = (
+    <section
+      className={`chat-workspace${workspaceMode === "work" ? " chat-workspace-panel" : ""}`}
+      aria-label={workspaceMode === "work" ? "文献 AI 对话" : "当前对话"}
+      key="shared-chat-workspace"
+    >
+      <ChatHeader
+        title={conversations.currentConversation?.title ?? "未选择对话"}
+        modelLabel={currentModel
+          ? `${currentModel.provider.name} · ${currentModel.model.displayName}`
+          : "配置模型"}
+        modelTitle={currentModel
+          ? `${currentModel.provider.name} / ${currentModel.model.apiModel}`
+          : "模型设置"}
+        modelConfigured={Boolean(currentModel)}
+        modelGroups={modelGroups}
+        selectedProviderId={currentModel?.provider.id ?? null}
+        selectedModelId={currentModel?.model.id ?? null}
+        modelSelectionDisabled={!conversations.currentConversation || chatRuntime.requestInFlight}
+        modelMenuRequest={modelMenuRequest}
+        permission={conversations.currentConversation?.permissionMode ?? "askSensitive"}
+        permissionDisabled={!conversations.currentConversation}
+        theme={settings.resolvedTheme}
+        compact={workspaceMode === "work"}
+        onModelChange={handleModelChange}
+        onPermissionChange={handlePermissionChange}
+        onToggleTheme={settings.toggleTheme}
+      />
+      <MessageList
+        messages={conversations.currentConversation?.messages ?? []}
+        conversationId={conversations.currentConversationId}
+        hasConversation={conversations.currentConversation !== null}
+        actionsDisabled={chatRuntime.requestInFlight}
+        canRegenerate={Boolean(currentModel)}
+        suggestionsDisabled={!currentModel || chatRuntime.requestInFlight}
+        onCreateConversation={conversations.createNewConversation}
+        onSuggestionSelect={chatRuntime.sendMessage}
+        onEditMessage={chatRuntime.editMessage}
+        onRegenerateMessage={chatRuntime.regenerateMessage}
+        onDeleteMessage={chatRuntime.deleteMessage}
+        onQuoteMessage={setQuotedText}
+      />
+      <ChatInput
+        conversationId={conversations.currentConversationId}
+        busy={chatRuntime.requestInFlight}
+        stopDisabled={chatRuntime.stopRequested}
+        disabled={!conversations.currentConversation || !currentModel}
+        key={conversations.currentConversation?.id ?? "no-conversation"}
+        placeholder={!conversations.currentConversation
+          ? "请先新建对话"
+          : !currentModel
+            ? "请先配置默认模型"
+            : chatRuntime.requestInFlight
+              ? "正在等待模型回复"
+              : "向 Mnemora 提问..."}
+        contextUsage={contextUsage}
+        contextWindowTokens={currentModel?.model.contextWindowTokens ?? null}
+        supportsVision={currentModel
+          ? resolveSupportsVision(
+              currentModel.model.apiModel,
+              currentModel.model.capabilities?.vision,
+            ) ?? null
+          : null}
+        quote={quotedText}
+        onQuoteClear={() => setQuotedText(null)}
+        contextMessageCount={conversations.currentConversation?.messages.length ?? 0}
+        contextCompressionCount={conversations.currentConversation?.contextCompressionCount ?? 0}
+        contextDisabled={!conversations.currentConversation || !currentModel}
+        contextMessages={conversations.currentConversation?.messages ?? []}
+        contextSystemPrompt={settings.appSettings.systemPrompt}
+        skills={skills.skills}
+        selectedSkillIds={conversations.currentConversation?.enabledSkillIds ?? []}
+        onSelectedSkillsChange={handleConversationSkillsChange}
+        onSend={chatRuntime.sendMessage}
+        onStop={settings.appSettings.streamEnabled ? chatRuntime.stopGeneration : undefined}
+        onSlashCommand={handleSlashCommand}
+      />
+    </section>
+  );
 
   return (
     <main
+      ref={appShellRef}
       className="app-shell"
       data-theme={settings.resolvedTheme}
       data-theme-preset={settings.appSettings.themePreset}
@@ -202,6 +379,9 @@ function App() {
       aria-label="Mnemora application"
     >
       <Sidebar
+        mode={workspaceMode}
+        workLibraryView={workLibraryView}
+        workSearchQuery={workSearchQuery}
         collapsed={sidebarCollapsed}
         settingsOpen={activeView === "settings"}
         skillsOpen={activeView === "settings" && settingsCategory === "skills"}
@@ -219,7 +399,19 @@ function App() {
         onLoadMoreConversations={conversations.loadMoreConversations}
         onOpenSettings={() => openSettings("general")}
         onOpenSkills={() => openSettings("skills")}
+        onModeChange={changeWorkspaceMode}
+        onWorkLibraryViewChange={changeWorkLibraryView}
+        onWorkSearchQueryChange={setWorkSearchQuery}
         onToggleCollapse={() => setSidebarCollapsed((collapsed) => !collapsed)}
+        resize={{
+          value: sidebarWidth,
+          defaultValue: sidebarDefaultWidth,
+          minValue: LAYOUT_PANEL_LIMITS.chatSidebar.min,
+          maxValue: LAYOUT_PANEL_LIMITS.chatSidebar.max,
+          getMaxValue: getSidebarMaxWidth,
+          onPreview: previewSidebarWidth,
+          onCommit: commitSidebarWidth,
+        }}
       />
 
       {activeView === "settings" ? (
@@ -230,7 +422,7 @@ function App() {
           skillState={skills}
           initialError={settings.modelSettingsError}
           appSettingsError={settings.appSettingsError}
-          onBack={navigateToChat}
+          onBack={navigateToWorkspace}
           onCategoryChange={setSettingsCategory}
           onSave={settings.saveModelSettings}
           onPreviewAppSettings={settings.previewAppSettings}
@@ -239,77 +431,45 @@ function App() {
           onDefaultModelChange={settings.changeDefaultModel}
         />
       ) : (
-        <section className="chat-workspace" aria-label="当前对话">
-          <ChatHeader
-            title={conversations.currentConversation?.title ?? "未选择对话"}
-            modelLabel={currentModel
-              ? `${currentModel.provider.name} · ${currentModel.model.displayName}`
-              : "配置模型"}
-            modelTitle={currentModel
-              ? `${currentModel.provider.name} / ${currentModel.model.apiModel}`
-              : "模型设置"}
-            modelConfigured={Boolean(currentModel)}
-            modelGroups={modelGroups}
-            selectedProviderId={currentModel?.provider.id ?? null}
-            selectedModelId={currentModel?.model.id ?? null}
-            modelSelectionDisabled={!conversations.currentConversation || chatRuntime.requestInFlight}
-            modelMenuRequest={modelMenuRequest}
-            permission={conversations.currentConversation?.permissionMode ?? "askSensitive"}
-            permissionDisabled={!conversations.currentConversation}
-            theme={settings.resolvedTheme}
-            onModelChange={handleModelChange}
-            onPermissionChange={handlePermissionChange}
-            onToggleTheme={settings.toggleTheme}
-          />
-          <MessageList
-            messages={conversations.currentConversation?.messages ?? []}
-            conversationId={conversations.currentConversationId}
-            hasConversation={conversations.currentConversation !== null}
-            actionsDisabled={chatRuntime.requestInFlight}
-            canRegenerate={Boolean(currentModel)}
-            suggestionsDisabled={!currentModel || chatRuntime.requestInFlight}
-            onCreateConversation={conversations.createNewConversation}
-            onSuggestionSelect={chatRuntime.sendMessage}
-            onEditMessage={chatRuntime.editMessage}
-            onRegenerateMessage={chatRuntime.regenerateMessage}
-            onDeleteMessage={chatRuntime.deleteMessage}
-            onQuoteMessage={setQuotedText}
-          />
-          <ChatInput
-            conversationId={conversations.currentConversationId}
-            busy={chatRuntime.requestInFlight}
-            stopDisabled={chatRuntime.stopRequested}
-            disabled={!conversations.currentConversation || !currentModel}
-            key={conversations.currentConversation?.id ?? "no-conversation"}
-            placeholder={!conversations.currentConversation
-              ? "请先新建对话"
-              : !currentModel
-                ? "请先配置默认模型"
-                : chatRuntime.requestInFlight
-                  ? "正在等待模型回复"
-                  : "向 Mnemora 提问..."}
-            contextUsage={contextUsage}
-            contextWindowTokens={currentModel?.model.contextWindowTokens ?? null}
-            supportsVision={currentModel
-              ? resolveSupportsVision(
-                  currentModel.model.apiModel,
-                  currentModel.model.capabilities?.vision,
-                ) ?? null
-              : null}
-            quote={quotedText}
-            onQuoteClear={() => setQuotedText(null)}
-            contextMessageCount={conversations.currentConversation?.messages.length ?? 0}
-            contextCompressionCount={conversations.currentConversation?.contextCompressionCount ?? 0}
-            contextDisabled={!conversations.currentConversation || !currentModel}
-            contextMessages={conversations.currentConversation?.messages ?? []}
-            contextSystemPrompt={settings.appSettings.systemPrompt}
-            skills={skills.skills}
-            selectedSkillIds={conversations.currentConversation?.enabledSkillIds ?? []}
-            onSelectedSkillsChange={handleConversationSkillsChange}
-            onSend={chatRuntime.sendMessage}
-            onStop={settings.appSettings.streamEnabled ? chatRuntime.stopGeneration : undefined}
-            onSlashCommand={handleSlashCommand}
-          />
+        <section
+          className="workspace-stage"
+          data-workspace-mode={workspaceMode}
+          data-context-open={workContextPanelOpen ? "true" : "false"}
+        >
+          {/* Work 条件挂载，后续 PDF 阅读器在这里随模式切换卸载并释放资源。 */}
+          {workspaceMode === "work" ? (
+            <Suspense fallback={<div className="workspace-loading" role="status">正在打开 Work</div>}>
+              <WorkWorkspace
+                libraryView={workLibraryView}
+                searchQuery={workSearchQuery}
+                contextPanelOpen={workContextPanelOpen}
+                chatBusy={chatRuntime.requestInFlight}
+                onToggleContextPanel={() => setWorkContextPanelOpen((open) => !open)}
+              />
+              {workContextPanelOpen ? (
+                <WorkContextPanel
+                  activeView={workContextView}
+                  resourceLabel={workResourceLabel[workLibraryView]}
+                  searchQuery={workSearchQuery}
+                  chatBusy={chatRuntime.requestInFlight}
+                  chatPanel={chatWorkspace}
+                  onViewChange={setWorkContextView}
+                  onClose={() => setWorkContextPanelOpen(false)}
+                  resize={{
+                    value: layoutPreferences.workContextWidth,
+                    defaultValue: DEFAULT_LAYOUT_PREFERENCES.workContextWidth,
+                    minValue: LAYOUT_PANEL_LIMITS.workContext.min,
+                    maxValue: LAYOUT_PANEL_LIMITS.workContext.max,
+                    getMaxValue: getWorkContextMaxWidth,
+                    onPreview: previewWorkContextWidth,
+                    onCommit: commitWorkContextWidth,
+                  }}
+                />
+              ) : null}
+            </Suspense>
+          ) : null}
+
+          {workspaceMode === "chat" ? chatWorkspace : null}
         </section>
       )}
     </main>

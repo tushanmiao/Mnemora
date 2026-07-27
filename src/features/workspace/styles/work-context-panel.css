@@ -1,0 +1,214 @@
+.work-context-panel {
+  position: relative;
+  display: grid;
+  min-width: 0;
+  height: 100%;
+  grid-template-columns: minmax(0, 1fr) 42px;
+  overflow: hidden;
+  border-left: 1px solid var(--color-border);
+  background: var(--color-surface-layer);
+}
+
+.work-context-body,
+.work-context-chat {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+.work-context-chat > .chat-workspace {
+  height: 100%;
+}
+
+.work-context-rail {
+  position: relative;
+  z-index: 35;
+  display: flex;
+  min-height: 0;
+  padding: 6px 4px;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  border-left: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+
+.work-context-rail .icon-button {
+  width: 32px;
+  height: 32px;
+}
+
+.work-context-tool-list {
+  display: grid;
+  gap: 4px;
+}
+
+.work-context-tool {
+  position: relative;
+  color: var(--color-muted);
+}
+
+.work-context-tool:hover {
+  color: var(--color-text-secondary);
+  background: var(--color-hover);
+}
+
+.work-context-tool-active {
+  color: var(--color-accent);
+  background: var(--color-accent-soft);
+}
+
+.work-context-tool-active::before {
+  position: absolute;
+  top: 5px;
+  bottom: 5px;
+  left: -5px;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--color-accent);
+  content: "";
+}
+
+.work-context-status-dot {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 6px;
+  height: 6px;
+  border: 1px solid var(--color-surface);
+  border-radius: 50%;
+  background: var(--color-accent);
+}
+
+.work-context-more {
+  position: relative;
+  margin-top: auto;
+}
+
+.work-context-menu {
+  position: absolute;
+  top: 0;
+  right: 38px;
+  z-index: 50;
+  width: 160px;
+  padding: 5px;
+  border: 1px solid var(--color-border);
+  border-radius: 7px;
+  background: var(--color-surface-raised);
+  box-shadow: var(--shadow-menu);
+}
+
+.work-context-menu button {
+  display: flex;
+  width: 100%;
+  height: 34px;
+  padding: 0 8px;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  border-radius: 5px;
+  color: var(--color-text-secondary);
+  background: transparent;
+  font-size: 12px;
+  text-align: left;
+}
+
+.work-context-menu button:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.work-context-empty {
+  display: grid;
+  height: 100%;
+  padding: 32px 20px;
+  place-items: center;
+  align-content: center;
+  gap: 8px;
+  color: var(--color-muted);
+  text-align: center;
+}
+
+.work-context-empty svg {
+  color: var(--color-faint);
+}
+
+.work-context-empty h2,
+.work-context-empty p {
+  margin: 0;
+}
+
+.work-context-empty h2 {
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.work-context-empty p {
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.work-context-info {
+  height: 100%;
+  padding: 18px;
+  overflow-y: auto;
+}
+
+.work-context-info > header {
+  display: flex;
+  padding-bottom: 16px;
+  align-items: center;
+  gap: 10px;
+  border-bottom: 1px solid var(--color-border-soft);
+}
+
+.work-context-info > header > svg {
+  color: var(--color-accent);
+}
+
+.work-context-info h2,
+.work-context-info header span {
+  margin: 0;
+}
+
+.work-context-info h2 {
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.work-context-info header span {
+  color: var(--color-muted);
+  font-size: 11px;
+}
+
+.work-context-info dl {
+  margin: 10px 0 0;
+}
+
+.work-context-info dl > div {
+  display: grid;
+  min-height: 38px;
+  grid-template-columns: 82px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  border-bottom: 1px solid var(--color-border-soft);
+  font-size: 11px;
+}
+
+.work-context-info dt {
+  color: var(--color-muted);
+}
+
+.work-context-info dd {
+  display: flex;
+  min-width: 0;
+  margin: 0;
+  align-items: center;
+  gap: 5px;
+  overflow: hidden;
+  color: var(--color-text-secondary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

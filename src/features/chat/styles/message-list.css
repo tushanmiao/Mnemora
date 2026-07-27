@@ -153,6 +153,19 @@
   line-height: 1.45;
 }
 
+.chat-workspace-panel .suggestion-grid {
+  margin-top: 24px;
+  grid-template-columns: 1fr;
+}
+
+.chat-workspace-panel .suggestion-item {
+  min-height: 68px;
+  grid-template-columns: 24px minmax(0, 1fr);
+  align-items: center;
+  align-content: center;
+  gap: 10px;
+}
+
 @media (max-width: 900px) {
   .message-thread {
     width: calc(100% - 32px);

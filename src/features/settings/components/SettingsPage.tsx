@@ -68,7 +68,7 @@ export function SettingsPage(props: SettingsPageProps) {
     if (
       activeCategory === "memory"
       && memoryDirty
-      && !window.confirm("记忆中有未保存修改。返回聊天将放弃这些修改，是否继续？")
+      && !window.confirm("记忆中有未保存修改。返回工作区将放弃这些修改，是否继续？")
     ) return;
     setMemoryDirty(false);
     props.onBack();
@@ -87,7 +87,7 @@ export function SettingsPage(props: SettingsPageProps) {
   return (
     <section className="settings-page" aria-label="设置">
       <header className="settings-header">
-        <button className="icon-button" type="button" title="返回聊天" onClick={goBack}>
+        <button className="icon-button" type="button" title="返回工作区" onClick={goBack}>
           <ArrowLeft size={19} />
         </button>
         <div>

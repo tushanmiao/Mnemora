@@ -23,6 +23,13 @@ import {
   Trash2,
 } from "lucide-react";
 import type { ConversationListItem } from "../../../types/conversation";
+import {
+  PanelResizeHandle,
+  type PanelResizeHandleProps,
+} from "../../layout/components/PanelResizeHandle";
+import { WorkspaceModeSwitch } from "../../workspace/components/WorkspaceModeSwitch";
+import { WorkSidebarNavigation } from "../../workspace/components/WorkSidebarNavigation";
+import type { WorkLibraryView, WorkspaceMode } from "../../workspace/types";
 import "../styles/sidebar.css";
 
 const extensionItems = [
@@ -33,6 +40,9 @@ const extensionItems = [
 ];
 
 type SidebarProps = {
+  mode: WorkspaceMode;
+  workLibraryView: WorkLibraryView;
+  workSearchQuery: string;
   collapsed: boolean;
   settingsOpen: boolean;
   skillsOpen: boolean;
@@ -50,10 +60,17 @@ type SidebarProps = {
   onLoadMoreConversations: () => void;
   onOpenSettings: () => void;
   onOpenSkills: () => void;
+  onModeChange: (mode: WorkspaceMode) => void;
+  onWorkLibraryViewChange: (view: WorkLibraryView) => void;
+  onWorkSearchQueryChange: (query: string) => void;
   onToggleCollapse: () => void;
+  resize: Omit<PanelResizeHandleProps, "edge" | "label">;
 };
 
 export function Sidebar({
+  mode,
+  workLibraryView,
+  workSearchQuery,
   collapsed,
   settingsOpen,
   skillsOpen,
@@ -71,7 +88,11 @@ export function Sidebar({
   onLoadMoreConversations,
   onOpenSettings,
   onOpenSkills,
+  onModeChange,
+  onWorkLibraryViewChange,
+  onWorkSearchQueryChange,
   onToggleCollapse,
+  resize,
 }: SidebarProps) {
   const normalizedDisplayName = userDisplayName.trim() || "Mnemora 用户";
   const avatarInitial = (Array.from(normalizedDisplayName)[0] ?? "M").toUpperCase();
@@ -149,7 +170,11 @@ export function Sidebar({
         </button>
       </div>
 
-      <nav className="sidebar-actions" aria-label="主要功能">
+      <WorkspaceModeSwitch mode={mode} collapsed={collapsed} onChange={onModeChange} />
+
+      {mode === "chat" ? (
+        <>
+          <nav className="sidebar-actions" aria-label="主要功能">
         <button
           className="sidebar-action sidebar-action-primary"
           type="button"
@@ -198,11 +223,11 @@ export function Sidebar({
             ))}
           </div>
         ) : null}
-      </nav>
+          </nav>
 
-      <div className="sidebar-divider" />
+          <div className="sidebar-divider" />
 
-      <section className="conversation-section" aria-label="对话分类">
+          <section className="conversation-section" aria-label="对话分类">
         <div className="conversation-tabs">
           <button
             className={activeSection === "recent" ? "conversation-tab conversation-tab-active" : "conversation-tab"}
@@ -346,7 +371,17 @@ export function Sidebar({
             </button>
           )}
         </div>
-      </section>
+          </section>
+        </>
+      ) : (
+        <WorkSidebarNavigation
+          collapsed={collapsed}
+          activeView={workLibraryView}
+          searchQuery={workSearchQuery}
+          onViewChange={onWorkLibraryViewChange}
+          onSearchQueryChange={onWorkSearchQueryChange}
+        />
+      )}
 
       <div className="sidebar-footer">
         <div className="user-profile">
@@ -368,6 +403,14 @@ export function Sidebar({
           <Settings size={18} />
         </button>
       </div>
+
+      {!collapsed ? (
+        <PanelResizeHandle
+          {...resize}
+          edge="right"
+          label={mode === "chat" ? "调整 Chat 侧边栏宽度" : "调整 Work 侧边栏宽度"}
+        />
+      ) : null}
     </aside>
   );
 }

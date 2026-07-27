@@ -1,0 +1,141 @@
+.work-tab-strip {
+  display: flex;
+  min-width: 0;
+  height: 44px;
+  padding: 0 8px 0 10px;
+  align-items: center;
+  gap: 4px;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+
+.work-tab-list {
+  display: flex;
+  min-width: 0;
+  align-self: stretch;
+  flex: 1;
+  gap: 1px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.work-tab-list::-webkit-scrollbar {
+  display: none;
+}
+
+.work-resource-tab {
+  position: relative;
+  display: flex;
+  min-width: 126px;
+  max-width: 220px;
+  height: 36px;
+  margin-top: 7px;
+  align-items: center;
+  border: 1px solid transparent;
+  border-bottom: 0;
+  border-radius: 6px 6px 0 0;
+  color: var(--color-muted);
+  background: transparent;
+}
+
+.work-resource-tab:hover {
+  color: var(--color-text-secondary);
+  background: var(--color-hover);
+}
+
+.work-resource-tab-active {
+  color: var(--color-text);
+  border-color: var(--color-border);
+  background: var(--color-surface-layer);
+}
+
+.work-resource-tab-active::after {
+  position: absolute;
+  right: 0;
+  bottom: -1px;
+  left: 0;
+  height: 1px;
+  background: var(--color-surface-layer);
+  content: "";
+}
+
+.work-resource-tab-main {
+  display: flex;
+  min-width: 0;
+  height: 100%;
+  padding: 0 10px;
+  align-items: center;
+  flex: 1;
+  gap: 7px;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+}
+
+.work-resource-tab-main span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.work-resource-tab-active .work-resource-tab-main svg {
+  color: var(--color-accent);
+}
+
+.work-resource-tab-close {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  width: 24px;
+  height: 24px;
+  margin-right: 4px;
+  padding: 0;
+  place-items: center;
+  flex: 0 0 24px;
+  border: 0;
+  border-radius: 4px;
+  color: var(--color-muted);
+  background: transparent;
+  cursor: pointer;
+}
+
+.work-resource-tab-close:hover {
+  color: var(--color-text);
+  background: var(--color-hover);
+}
+
+.work-tab-overflow:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.work-context-toggle[aria-pressed="true"] {
+  color: var(--color-accent);
+  background: var(--color-active);
+}
+
+.work-context-toggle {
+  position: relative;
+}
+
+.work-context-status-dot {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 6px;
+  height: 6px;
+  border: 1px solid var(--color-surface);
+  border-radius: 50%;
+  background: var(--color-accent);
+}
+
+@media (max-width: 820px) {
+  .work-resource-tab {
+    min-width: 112px;
+    max-width: 170px;
+  }
+}

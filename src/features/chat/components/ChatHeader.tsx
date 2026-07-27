@@ -5,6 +5,7 @@ import {
   Moon,
   MoreHorizontal,
   PanelRight,
+  PanelRightClose,
   ShieldCheck,
   Star,
   Sun,
@@ -27,9 +28,11 @@ type ChatHeaderProps = {
   permission: AiPermissionMode;
   permissionDisabled: boolean;
   theme: "light" | "dark";
+  compact?: boolean;
   onModelChange: (providerId: string, modelId: string) => void;
   onPermissionChange: (permission: AiPermissionMode) => void;
   onToggleTheme: () => void;
+  onClosePanel?: () => void;
 };
 
 export type ModelSelectorOption = {
@@ -58,9 +61,11 @@ export function ChatHeader({
   permission,
   permissionDisabled,
   theme,
+  compact = false,
   onModelChange,
   onPermissionChange,
   onToggleTheme,
+  onClosePanel,
 }: ChatHeaderProps) {
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [permissionMenuOpen, setPermissionMenuOpen] = useState(false);
@@ -198,20 +203,34 @@ export function ChatHeader({
             </div>
           ) : null}
         </div>
-        <button
-          className="icon-button"
-          type="button"
-          title={theme === "light" ? "切换到深色模式" : "切换到浅色模式"}
-          onClick={onToggleTheme}
-        >
-          {theme === "light" ? <Moon size={18} /> : <Sun size={18} />}
-        </button>
-        <button className="icon-button" type="button" title="打开详情面板">
-          <PanelRight size={18} />
-        </button>
-        <button className="icon-button" type="button" title="更多操作">
-          <MoreHorizontal size={19} />
-        </button>
+        {compact && onClosePanel ? (
+          <button
+            className="icon-button"
+            type="button"
+            title="收起 AI 对话"
+            aria-label="收起 AI 对话"
+            onClick={onClosePanel}
+          >
+            <PanelRightClose size={18} />
+          </button>
+        ) : !compact ? (
+          <>
+            <button
+              className="icon-button"
+              type="button"
+              title={theme === "light" ? "切换到深色模式" : "切换到浅色模式"}
+              onClick={onToggleTheme}
+            >
+              {theme === "light" ? <Moon size={18} /> : <Sun size={18} />}
+            </button>
+            <button className="icon-button" type="button" title="打开详情面板">
+              <PanelRight size={18} />
+            </button>
+            <button className="icon-button" type="button" title="更多操作">
+              <MoreHorizontal size={19} />
+            </button>
+          </>
+        ) : null}
       </div>
     </header>
   );
