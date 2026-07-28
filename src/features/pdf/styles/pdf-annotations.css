@@ -1,0 +1,203 @@
+.pdf-annotations-panel {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.pdf-annotations-panel > header {
+  display: flex;
+  padding: 0 10px 0 14px;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--color-border-soft);
+  flex: 0 0 46px;
+}
+
+.pdf-annotations-panel > header > div {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
+.pdf-annotations-panel > header > div svg {
+  color: var(--color-accent);
+}
+
+.pdf-annotations-panel > header > div span {
+  color: var(--color-muted);
+  font-size: 10px;
+}
+
+.pdf-annotations-panel > header > button {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: 5px;
+  color: var(--color-muted);
+  background: transparent;
+}
+
+.pdf-annotations-panel > header > button:hover,
+.pdf-annotations-panel > header > button.is-active {
+  color: var(--color-accent);
+  background: var(--color-accent-soft);
+}
+
+.pdf-annotation-panel-colors {
+  display: flex;
+  padding: 0 14px;
+  align-items: center;
+  gap: 8px;
+  border-bottom: 1px solid var(--color-border-soft);
+  flex: 0 0 34px;
+}
+
+.pdf-panel-error {
+  margin: 0;
+  padding: 7px 14px;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-danger) 24%, var(--color-border));
+  color: var(--color-danger);
+  background: color-mix(in srgb, var(--color-danger) 7%, transparent);
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+
+.pdf-annotations-list {
+  min-height: 0;
+  padding: 10px;
+  flex: 1;
+  overflow-y: auto;
+}
+
+.pdf-panel-loading,
+.pdf-panel-empty {
+  display: flex;
+  min-height: 180px;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 8px;
+  color: var(--color-muted);
+  font-size: 11px;
+}
+
+.pdf-panel-loading svg,
+.pdf-annotation-item .is-spinning {
+  animation: pdf-panel-spin 900ms linear infinite;
+}
+
+.pdf-annotation-item {
+  margin-bottom: 9px;
+  padding: 9px;
+  border: 1px solid var(--color-border-soft);
+  border-left: 3px solid var(--pdf-annotation-color);
+  border-radius: 6px;
+  background: var(--color-surface-raised);
+}
+
+.pdf-annotation-item > header button {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  height: 26px;
+  padding: 0 3px;
+  grid-template-columns: 15px auto minmax(0, 1fr) 14px;
+  align-items: center;
+  gap: 5px;
+  border: 0;
+  color: var(--color-text-secondary);
+  background: transparent;
+  font-size: 10px;
+  text-align: left;
+}
+
+.pdf-annotation-item > header button strong {
+  justify-self: end;
+  font-weight: 600;
+}
+
+.pdf-annotation-item blockquote {
+  display: -webkit-box;
+  max-height: 76px;
+  margin: 6px 2px 8px;
+  overflow: hidden;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  line-height: 1.55;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.pdf-annotation-item-colors {
+  display: flex;
+  height: 24px;
+  padding: 0 2px;
+  align-items: center;
+  gap: 7px;
+}
+
+.pdf-annotation-item textarea {
+  width: 100%;
+  min-height: 64px;
+  margin-top: 5px;
+  padding: 7px;
+  resize: vertical;
+  border: 1px solid var(--color-border);
+  border-radius: 5px;
+  outline: 0;
+  color: var(--color-text);
+  background: var(--color-surface);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.pdf-annotation-item textarea:focus {
+  border-color: var(--color-accent);
+}
+
+.pdf-annotation-item footer {
+  display: flex;
+  margin-top: 7px;
+  align-items: center;
+  gap: 4px;
+}
+
+.pdf-annotation-item footer button {
+  display: inline-flex;
+  height: 27px;
+  padding: 0 7px;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  border-radius: 4px;
+  color: var(--color-muted);
+  background: transparent;
+  font-size: 10px;
+}
+
+.pdf-annotation-item footer button:hover:not(:disabled) {
+  color: var(--color-text-secondary);
+  background: var(--color-hover);
+}
+
+.pdf-annotation-item footer button:disabled {
+  opacity: 0.4;
+}
+
+.pdf-annotation-item footer .is-danger {
+  margin-left: auto;
+  color: var(--color-danger);
+}
+
+@keyframes pdf-panel-spin {
+  to { transform: rotate(360deg); }
+}

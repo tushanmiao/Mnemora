@@ -25,6 +25,13 @@
   background: var(--color-surface-raised);
   font-size: 11px;
   font-weight: 600;
+  cursor: pointer;
+}
+
+.work-library-actions button:not(:disabled):hover {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+  background: var(--color-accent-soft);
 }
 
 .work-library-actions button:disabled {
@@ -152,6 +159,123 @@
   font-size: 11px;
 }
 
+.work-collection-list {
+  position: relative;
+  display: grid;
+  gap: 2px;
+}
+
+.work-collection-editor {
+  display: grid;
+  min-height: 34px;
+  padding: 3px 5px 3px 10px;
+  grid-template-columns: 16px minmax(0, 1fr) 26px 26px;
+  align-items: center;
+  gap: 4px;
+  color: var(--color-muted);
+}
+
+.work-collection-editor input {
+  min-width: 0;
+  height: 28px;
+  padding: 0 7px;
+  border: 1px solid var(--color-accent);
+  border-radius: 5px;
+  outline: 0;
+  color: var(--color-text);
+  background: var(--color-surface-raised);
+  font-size: 11px;
+}
+
+.work-collection-editor button,
+.work-collection-more {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: 5px;
+  color: var(--color-muted);
+  background: transparent;
+  cursor: pointer;
+}
+
+.work-collection-editor button:hover,
+.work-collection-more:hover {
+  color: var(--color-text-secondary);
+  background: var(--color-hover);
+}
+
+.work-collection-editor button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.work-collection-item-wrap {
+  position: relative;
+}
+
+.work-collection-item {
+  padding-right: 50px;
+}
+
+.work-collection-item small {
+  margin-left: auto;
+  color: var(--color-faint);
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.work-collection-more {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  opacity: 0;
+}
+
+.work-collection-item-wrap:hover .work-collection-more,
+.work-collection-more[aria-expanded="true"] {
+  opacity: 1;
+}
+
+.work-collection-menu {
+  position: absolute;
+  top: 31px;
+  right: 2px;
+  z-index: 60;
+  width: 142px;
+  padding: 4px;
+  border: 1px solid var(--color-border);
+  border-radius: 7px;
+  background: var(--color-surface-raised);
+  box-shadow: var(--shadow-menu);
+}
+
+.work-collection-menu button {
+  display: flex;
+  width: 100%;
+  height: 31px;
+  padding: 0 7px;
+  align-items: center;
+  gap: 7px;
+  border: 0;
+  border-radius: 5px;
+  color: var(--color-text-secondary);
+  background: transparent;
+  cursor: pointer;
+  font-size: 11px;
+  text-align: left;
+}
+
+.work-collection-menu button:hover {
+  background: var(--color-hover);
+}
+
+.work-collection-menu .work-collection-menu-danger {
+  color: var(--color-danger);
+}
+
 .work-tree-trash {
   margin-top: 10px;
   padding-left: 10px;
@@ -196,6 +320,13 @@
   width: 40px;
   padding: 0;
   justify-content: center;
+}
+
+.work-sidebar-navigation-collapsed .work-collection-more,
+.work-sidebar-navigation-collapsed .work-collection-menu,
+.work-sidebar-navigation-collapsed .work-collection-editor,
+.work-sidebar-navigation-collapsed .work-collection-item small {
+  display: none;
 }
 
 .work-sidebar-navigation-collapsed .work-tree-heading-button {

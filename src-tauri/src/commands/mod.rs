@@ -3,6 +3,7 @@ pub mod attachments;
 pub mod chat;
 pub mod conversations;
 pub mod html_preview;
+pub mod library;
 pub mod memory;
 pub mod providers;
 pub mod settings;

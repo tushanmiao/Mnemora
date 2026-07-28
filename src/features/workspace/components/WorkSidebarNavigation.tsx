@@ -1,19 +1,25 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   BookOpenText,
+  Check,
   ChevronDown,
   ChevronRight,
   Clock3,
   FilePlus2,
+  Folder,
   FolderPlus,
   FolderTree,
   Inbox,
+  MoreHorizontal,
   Network,
   NotebookPen,
+  Pencil,
   Search,
   Star,
   Trash2,
+  X,
 } from "lucide-react";
+import type { LibraryCollection } from "../../library/types";
 import type { WorkLibraryView } from "../types";
 import "../styles/work-sidebar-navigation.css";
 
@@ -21,8 +27,17 @@ type WorkSidebarNavigationProps = {
   collapsed: boolean;
   activeView: WorkLibraryView;
   searchQuery: string;
+  collections: LibraryCollection[];
+  selectedCollectionId: string | null;
+  busy: boolean;
+  runtimeAvailable: boolean;
   onViewChange: (view: WorkLibraryView) => void;
   onSearchQueryChange: (query: string) => void;
+  onCollectionSelect: (collectionId: string) => void;
+  onImport: () => Promise<unknown>;
+  onCreateCollection: (name: string) => Promise<LibraryCollection>;
+  onRenameCollection: (collectionId: string, name: string) => Promise<void>;
+  onDeleteCollection: (collectionId: string) => Promise<boolean>;
 };
 
 const primaryViews = [
@@ -41,23 +56,92 @@ export function WorkSidebarNavigation({
   collapsed,
   activeView,
   searchQuery,
+  collections,
+  selectedCollectionId,
+  busy,
+  runtimeAvailable,
   onViewChange,
   onSearchQueryChange,
+  onCollectionSelect,
+  onImport,
+  onCreateCollection,
+  onRenameCollection,
+  onDeleteCollection,
 }: WorkSidebarNavigationProps) {
   const [collectionsOpen, setCollectionsOpen] = useState(true);
   const [outcomesOpen, setOutcomesOpen] = useState(true);
+  const [creatingCollection, setCreatingCollection] = useState(false);
+  const [collectionName, setCollectionName] = useState("");
+  const [renamingCollectionId, setRenamingCollectionId] = useState<string | null>(null);
+  const [collectionMenuId, setCollectionMenuId] = useState<string | null>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function closeMenu(event: MouseEvent) {
+      if (!menuRef.current?.contains(event.target as Node)) setCollectionMenuId(null);
+    }
+    document.addEventListener("mousedown", closeMenu);
+    return () => document.removeEventListener("mousedown", closeMenu);
+  }, []);
+
+  useEffect(() => {
+    if (!collapsed) return;
+    setCreatingCollection(false);
+    setRenamingCollectionId(null);
+    setCollectionMenuId(null);
+  }, [collapsed]);
+
+  const submitCollection = async () => {
+    const name = collectionName.trim();
+    if (!name) return;
+    try {
+      if (renamingCollectionId) {
+        await onRenameCollection(renamingCollectionId, name);
+      } else {
+        await onCreateCollection(name);
+      }
+    } catch {
+      return;
+    }
+    setCollectionName("");
+    setCreatingCollection(false);
+    setRenamingCollectionId(null);
+    setCollectionMenuId(null);
+  };
+
+  const cancelCollectionEditor = () => {
+    setCollectionName("");
+    setCreatingCollection(false);
+    setRenamingCollectionId(null);
+  };
 
   return (
     <section
       className={`work-sidebar-navigation${collapsed ? " work-sidebar-navigation-collapsed" : ""}`}
       aria-label="Work 文献库导航"
+      ref={menuRef}
     >
       <div className="work-library-actions">
-        <button type="button" title="导入文献" disabled>
+        <button
+          type="button"
+          title={runtimeAvailable ? "导入 PDF 文献" : "请在桌面应用中导入 PDF"}
+          disabled={busy || !runtimeAvailable}
+          onClick={() => void onImport().catch(() => undefined)}
+        >
           <FilePlus2 size={17} />
           <span>导入</span>
         </button>
-        <button type="button" title="新建分类" disabled>
+        <button
+          type="button"
+          title="新建分类"
+          disabled={busy || !runtimeAvailable}
+          onClick={() => {
+            setCreatingCollection(true);
+            setRenamingCollectionId(null);
+            setCollectionName("");
+            setCollectionsOpen(true);
+          }}
+        >
           <FolderPlus size={17} />
           <span>分类</span>
         </button>
@@ -81,19 +165,22 @@ export function WorkSidebarNavigation({
             <strong>我的文库</strong>
           </div>
           <nav className="work-tree-items">
-            {primaryViews.map(({ id, label, icon: Icon }) => (
-              <button
-                className={`work-tree-item${activeView === id ? " work-tree-item-active" : ""}`}
-                type="button"
-                title={collapsed ? label : undefined}
-                aria-current={activeView === id ? "page" : undefined}
-                key={id}
-                onClick={() => onViewChange(id)}
-              >
-                <Icon size={16} />
-                <span>{label}</span>
-              </button>
-            ))}
+            {primaryViews.map(({ id, label, icon: Icon }) => {
+              const active = activeView === id && selectedCollectionId === null;
+              return (
+                <button
+                  className={`work-tree-item${active ? " work-tree-item-active" : ""}`}
+                  type="button"
+                  title={collapsed ? label : undefined}
+                  aria-current={active ? "page" : undefined}
+                  key={id}
+                  onClick={() => onViewChange(id)}
+                >
+                  <Icon size={16} />
+                  <span>{label}</span>
+                </button>
+              );
+            })}
           </nav>
         </section>
 
@@ -109,7 +196,99 @@ export function WorkSidebarNavigation({
             <strong>分类</strong>
           </button>
           {collectionsOpen && !collapsed ? (
-            <div className="work-tree-empty">暂无分类</div>
+            <div className="work-collection-list">
+              {creatingCollection || renamingCollectionId ? (
+                <div className="work-collection-editor">
+                  <Folder size={15} />
+                  <input
+                    autoFocus
+                    value={collectionName}
+                    maxLength={120}
+                    aria-label={renamingCollectionId ? "新的分类名称" : "分类名称"}
+                    placeholder="分类名称"
+                    onChange={(event) => setCollectionName(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") void submitCollection();
+                      if (event.key === "Escape") cancelCollectionEditor();
+                    }}
+                  />
+                  <button
+                    type="button"
+                    title="保存分类"
+                    disabled={busy || !collectionName.trim()}
+                    onClick={() => void submitCollection()}
+                  >
+                    <Check size={14} />
+                  </button>
+                  <button type="button" title="取消" onClick={cancelCollectionEditor}>
+                    <X size={14} />
+                  </button>
+                </div>
+              ) : null}
+
+              {collections.map((collection) => {
+                const active = selectedCollectionId === collection.id;
+                return (
+                  <div className="work-collection-item-wrap" key={collection.id}>
+                    <button
+                      className={`work-tree-item work-collection-item${active ? " work-tree-item-active" : ""}`}
+                      type="button"
+                      aria-current={active ? "page" : undefined}
+                      title={collection.name}
+                      onClick={() => onCollectionSelect(collection.id)}
+                    >
+                      <Folder size={15} />
+                      <span>{collection.name}</span>
+                      <small>{collection.itemCount}</small>
+                    </button>
+                    <button
+                      className="work-collection-more"
+                      type="button"
+                      title="分类操作"
+                      aria-expanded={collectionMenuId === collection.id}
+                      onClick={() => setCollectionMenuId((current) => (
+                        current === collection.id ? null : collection.id
+                      ))}
+                    >
+                      <MoreHorizontal size={14} />
+                    </button>
+                    {collectionMenuId === collection.id ? (
+                      <div className="work-collection-menu" role="menu">
+                        <button
+                          type="button"
+                          role="menuitem"
+                          onClick={() => {
+                            setRenamingCollectionId(collection.id);
+                            setCollectionName(collection.name);
+                            setCreatingCollection(false);
+                            setCollectionMenuId(null);
+                          }}
+                        >
+                          <Pencil size={14} />
+                          <span>重命名</span>
+                        </button>
+                        <button
+                          className="work-collection-menu-danger"
+                          type="button"
+                          role="menuitem"
+                          onClick={() => {
+                            setCollectionMenuId(null);
+                            if (!window.confirm(`删除分类“${collection.name}”吗？文献本身不会被删除。`)) return;
+                            void onDeleteCollection(collection.id).catch(() => false);
+                          }}
+                        >
+                          <Trash2 size={14} />
+                          <span>删除分类</span>
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })}
+              {collections.length === 0 && !creatingCollection ? (
+                <div className="work-tree-empty">暂无分类</div>
+              ) : null}
+            </div>
           ) : null}
         </section>
 
@@ -144,10 +323,10 @@ export function WorkSidebarNavigation({
         </section>
 
         <button
-          className={`work-tree-item work-tree-trash${activeView === "trash" ? " work-tree-item-active" : ""}`}
+          className={`work-tree-item work-tree-trash${activeView === "trash" && !selectedCollectionId ? " work-tree-item-active" : ""}`}
           type="button"
           title={collapsed ? "回收站" : undefined}
-          aria-current={activeView === "trash" ? "page" : undefined}
+          aria-current={activeView === "trash" && !selectedCollectionId ? "page" : undefined}
           onClick={() => onViewChange("trash")}
         >
           <Trash2 size={16} />

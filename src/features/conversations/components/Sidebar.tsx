@@ -23,6 +23,7 @@ import {
   Trash2,
 } from "lucide-react";
 import type { ConversationListItem } from "../../../types/conversation";
+import type { LibraryCollection } from "../../library/types";
 import {
   PanelResizeHandle,
   type PanelResizeHandleProps,
@@ -43,6 +44,10 @@ type SidebarProps = {
   mode: WorkspaceMode;
   workLibraryView: WorkLibraryView;
   workSearchQuery: string;
+  workCollections: LibraryCollection[];
+  workSelectedCollectionId: string | null;
+  workLibraryBusy: boolean;
+  workLibraryRuntimeAvailable: boolean;
   collapsed: boolean;
   settingsOpen: boolean;
   skillsOpen: boolean;
@@ -63,6 +68,11 @@ type SidebarProps = {
   onModeChange: (mode: WorkspaceMode) => void;
   onWorkLibraryViewChange: (view: WorkLibraryView) => void;
   onWorkSearchQueryChange: (query: string) => void;
+  onWorkCollectionSelect: (collectionId: string) => void;
+  onWorkImport: () => Promise<unknown>;
+  onWorkCreateCollection: (name: string) => Promise<LibraryCollection>;
+  onWorkRenameCollection: (collectionId: string, name: string) => Promise<void>;
+  onWorkDeleteCollection: (collectionId: string) => Promise<boolean>;
   onToggleCollapse: () => void;
   resize: Omit<PanelResizeHandleProps, "edge" | "label">;
 };
@@ -71,6 +81,10 @@ export function Sidebar({
   mode,
   workLibraryView,
   workSearchQuery,
+  workCollections,
+  workSelectedCollectionId,
+  workLibraryBusy,
+  workLibraryRuntimeAvailable,
   collapsed,
   settingsOpen,
   skillsOpen,
@@ -91,6 +105,11 @@ export function Sidebar({
   onModeChange,
   onWorkLibraryViewChange,
   onWorkSearchQueryChange,
+  onWorkCollectionSelect,
+  onWorkImport,
+  onWorkCreateCollection,
+  onWorkRenameCollection,
+  onWorkDeleteCollection,
   onToggleCollapse,
   resize,
 }: SidebarProps) {
@@ -378,8 +397,17 @@ export function Sidebar({
           collapsed={collapsed}
           activeView={workLibraryView}
           searchQuery={workSearchQuery}
+          collections={workCollections}
+          selectedCollectionId={workSelectedCollectionId}
+          busy={workLibraryBusy}
+          runtimeAvailable={workLibraryRuntimeAvailable}
           onViewChange={onWorkLibraryViewChange}
           onSearchQueryChange={onWorkSearchQueryChange}
+          onCollectionSelect={onWorkCollectionSelect}
+          onImport={onWorkImport}
+          onCreateCollection={onWorkCreateCollection}
+          onRenameCollection={onWorkRenameCollection}
+          onDeleteCollection={onWorkDeleteCollection}
         />
       )}
 

@@ -108,9 +108,55 @@
   background: var(--color-hover);
 }
 
-.work-tab-overflow:disabled {
-  cursor: not-allowed;
-  opacity: 0.4;
+.work-tab-overflow-wrap {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.work-tab-overflow-menu {
+  position: absolute;
+  top: 38px;
+  right: 0;
+  z-index: 70;
+  width: 230px;
+  max-height: min(360px, calc(100vh - 80px));
+  padding: 5px;
+  overflow-y: auto;
+  border: 1px solid var(--color-border);
+  border-radius: 7px;
+  background: var(--color-surface-raised);
+  box-shadow: var(--shadow-menu);
+}
+
+.work-tab-overflow-menu button {
+  display: flex;
+  width: 100%;
+  height: 34px;
+  padding: 0 8px;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  border-radius: 5px;
+  color: var(--color-text-secondary);
+  background: transparent;
+  cursor: pointer;
+  font-size: 11px;
+  text-align: left;
+}
+
+.work-tab-overflow-menu button:hover,
+.work-tab-overflow-menu .work-tab-overflow-active {
+  background: var(--color-hover);
+}
+
+.work-tab-overflow-menu .work-tab-overflow-active {
+  color: var(--color-accent);
+}
+
+.work-tab-overflow-menu span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .work-context-toggle[aria-pressed="true"] {

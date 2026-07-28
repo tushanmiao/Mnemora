@@ -519,18 +519,19 @@ mod tests {
         );
         assert_eq!(skills.len(), 11);
         for skill in &skills {
-            assert!(skill.license.as_deref().is_some_and(|value| !value.is_empty()));
+            assert!(skill
+                .license
+                .as_deref()
+                .is_some_and(|value| !value.is_empty()));
             assert!(skill
                 .provenance
                 .repository
                 .as_deref()
                 .is_some_and(|value| value.starts_with("https://github.com/")));
             assert!(skill.provenance.adapted);
-            assert!(skill
-                .provenance
-                .revision
-                .as_deref()
-                .is_some_and(|value| value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit())));
+            assert!(skill.provenance.revision.as_deref().is_some_and(
+                |value| value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+            ));
             let directory = builtin_dir.join(&skill.id);
             assert!(directory.join("SOURCE.md").is_file());
             assert!(directory.join("LICENSE.txt").is_file());

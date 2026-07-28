@@ -23,6 +23,9 @@ import { SettingsPage, type SettingsCategory } from "./features/settings/compone
 import { useAppSettings } from "./features/settings/hooks/useAppSettings";
 import { resolveThemeBackgroundCss } from "./features/settings/utils/themeBackground";
 import { useSkills } from "./features/skills/hooks/useSkills";
+import { PdfReaderBridgeProvider } from "./features/pdf/context/PdfReaderContext";
+import { useLibrary } from "./features/library/hooks/useLibrary";
+import type { LibrarySort } from "./features/library/types";
 import {
   DEFAULT_LAYOUT_PREFERENCES,
   LAYOUT_PANEL_LIMITS,
@@ -53,6 +56,8 @@ function App() {
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("chat");
   const [workLibraryView, setWorkLibraryView] = useState<WorkLibraryView>("all");
   const [workSearchQuery, setWorkSearchQuery] = useState("");
+  const [workCollectionId, setWorkCollectionId] = useState<string | null>(null);
+  const [workLibrarySort, setWorkLibrarySort] = useState<LibrarySort>("updated");
   // Work 以文献阅读为主，右侧工具栏按需打开；Chat 不默认占用阅读空间。
   const [workContextPanelOpen, setWorkContextPanelOpen] = useState(false);
   const [workContextView, setWorkContextView] = useState<WorkContextView>("info");
@@ -67,6 +72,12 @@ function App() {
   }, []);
   const changeWorkLibraryView = useCallback((view: WorkLibraryView) => {
     setWorkLibraryView(view);
+    setWorkCollectionId(null);
+    setActiveView("workspace");
+  }, []);
+  const changeWorkCollection = useCallback((collectionId: string) => {
+    setWorkCollectionId(collectionId);
+    setWorkLibraryView("all");
     setActiveView("workspace");
   }, []);
   const openSettings = useCallback((category: SettingsCategory = "general") => {
@@ -77,6 +88,13 @@ function App() {
   const settings = useAppSettings();
   const skills = useSkills();
   const conversations = useConversations(navigateToWorkspace);
+  const library = useLibrary({
+    enabled: activeView === "workspace" && workspaceMode === "work",
+    view: workLibraryView,
+    searchQuery: workSearchQuery,
+    collectionId: workCollectionId,
+    sort: workLibrarySort,
+  });
   // 选中助手回答片段后的引用状态；切换会话即失效。
   const [quotedText, setQuotedText] = useState<string | null>(null);
   useEffect(() => {
@@ -286,6 +304,12 @@ function App() {
     "mind-maps": "思维导图",
     trash: "回收站",
   } satisfies Record<WorkLibraryView, string>;
+  const selectedWorkCollection = library.collections.find(
+    (collection) => collection.id === workCollectionId,
+  ) ?? null;
+  const activeWorkResourceLabel = library.selectedItem?.title
+    ?? selectedWorkCollection?.name
+    ?? workResourceLabel[workLibraryView];
 
   const chatWorkspace = (
     <section
@@ -382,6 +406,10 @@ function App() {
         mode={workspaceMode}
         workLibraryView={workLibraryView}
         workSearchQuery={workSearchQuery}
+        workCollections={library.collections}
+        workSelectedCollectionId={workCollectionId}
+        workLibraryBusy={library.actionPending}
+        workLibraryRuntimeAvailable={library.runtimeAvailable}
         collapsed={sidebarCollapsed}
         settingsOpen={activeView === "settings"}
         skillsOpen={activeView === "settings" && settingsCategory === "skills"}
@@ -402,6 +430,15 @@ function App() {
         onModeChange={changeWorkspaceMode}
         onWorkLibraryViewChange={changeWorkLibraryView}
         onWorkSearchQueryChange={setWorkSearchQuery}
+        onWorkCollectionSelect={changeWorkCollection}
+        onWorkImport={library.importPdfs}
+        onWorkCreateCollection={library.createCollection}
+        onWorkRenameCollection={library.renameCollection}
+        onWorkDeleteCollection={async (collectionId) => {
+          const removed = await library.removeCollection(collectionId);
+          if (removed && workCollectionId === collectionId) setWorkCollectionId(null);
+          return removed;
+        }}
         onToggleCollapse={() => setSidebarCollapsed((collapsed) => !collapsed)}
         resize={{
           value: sidebarWidth,
@@ -438,35 +475,64 @@ function App() {
         >
           {/* Work 条件挂载，后续 PDF 阅读器在这里随模式切换卸载并释放资源。 */}
           {workspaceMode === "work" ? (
-            <Suspense fallback={<div className="workspace-loading" role="status">正在打开 Work</div>}>
-              <WorkWorkspace
-                libraryView={workLibraryView}
-                searchQuery={workSearchQuery}
-                contextPanelOpen={workContextPanelOpen}
-                chatBusy={chatRuntime.requestInFlight}
-                onToggleContextPanel={() => setWorkContextPanelOpen((open) => !open)}
-              />
-              {workContextPanelOpen ? (
-                <WorkContextPanel
-                  activeView={workContextView}
-                  resourceLabel={workResourceLabel[workLibraryView]}
+            <PdfReaderBridgeProvider>
+              <Suspense fallback={<div className="workspace-loading" role="status">正在打开 Work</div>}>
+                <WorkWorkspace
+                  libraryView={workLibraryView}
                   searchQuery={workSearchQuery}
+                  collectionName={selectedWorkCollection?.name ?? null}
+                  items={library.items}
+                  total={library.total}
+                  loading={library.loading}
+                  error={library.error}
+                  notice={library.notice}
+                  actionPending={library.actionPending}
+                  selectedItem={library.selectedItem}
+                  selectedItemLoading={library.selectedItemLoading}
+                  selectionError={library.selectionError}
+                  sort={workLibrarySort}
+                  contextPanelOpen={workContextPanelOpen}
                   chatBusy={chatRuntime.requestInFlight}
-                  chatPanel={chatWorkspace}
-                  onViewChange={setWorkContextView}
-                  onClose={() => setWorkContextPanelOpen(false)}
-                  resize={{
-                    value: layoutPreferences.workContextWidth,
-                    defaultValue: DEFAULT_LAYOUT_PREFERENCES.workContextWidth,
-                    minValue: LAYOUT_PANEL_LIMITS.workContext.min,
-                    maxValue: LAYOUT_PANEL_LIMITS.workContext.max,
-                    getMaxValue: getWorkContextMaxWidth,
-                    onPreview: previewWorkContextWidth,
-                    onCommit: commitWorkContextWidth,
-                  }}
+                  onToggleContextPanel={() => setWorkContextPanelOpen((open) => !open)}
+                  onImport={library.importPdfs}
+                  onRefresh={library.refresh}
+                  onDismissNotice={library.clearNotice}
+                  onSortChange={setWorkLibrarySort}
+                  onSelectItem={library.selectItem}
+                  onMarkOpened={library.markOpened}
+                  onOpenExternal={library.openExternal}
+                  onSetFavorite={library.setFavorite}
+                  onMoveToTrash={library.moveToTrash}
+                  onRestoreItem={library.restoreItem}
+                  onDeletePermanently={library.deletePermanently}
                 />
-              ) : null}
-            </Suspense>
+                {workContextPanelOpen ? (
+                  <WorkContextPanel
+                    activeView={workContextView}
+                    resourceLabel={activeWorkResourceLabel}
+                    resourceCount={library.total}
+                    searchQuery={workSearchQuery}
+                    chatBusy={chatRuntime.requestInFlight}
+                    chatPanel={chatWorkspace}
+                    libraryItem={library.selectedItem}
+                    collections={library.collections}
+                    itemSaving={library.actionPending}
+                    onViewChange={setWorkContextView}
+                    onClose={() => setWorkContextPanelOpen(false)}
+                    onSaveLibraryItem={library.saveItem}
+                    resize={{
+                      value: layoutPreferences.workContextWidth,
+                      defaultValue: DEFAULT_LAYOUT_PREFERENCES.workContextWidth,
+                      minValue: LAYOUT_PANEL_LIMITS.workContext.min,
+                      maxValue: LAYOUT_PANEL_LIMITS.workContext.max,
+                      getMaxValue: getWorkContextMaxWidth,
+                      onPreview: previewWorkContextWidth,
+                      onCommit: commitWorkContextWidth,
+                    }}
+                  />
+                ) : null}
+              </Suspense>
+            </PdfReaderBridgeProvider>
           ) : null}
 
           {workspaceMode === "chat" ? chatWorkspace : null}

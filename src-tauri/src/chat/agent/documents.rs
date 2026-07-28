@@ -49,9 +49,9 @@ pub(super) fn read_docx_blocks(
         .map_err(|error| ModelError::invalid_configuration(format!("打开 DOCX 失败：{error}")))?;
     let mut archive = ZipArchive::new(file)
         .map_err(|error| ModelError::invalid_configuration(format!("DOCX 格式无效：{error}")))?;
-    let document = archive.by_name("word/document.xml").map_err(|_| {
-        ModelError::invalid_configuration("DOCX 缺少 word/document.xml。")
-    })?;
+    let document = archive
+        .by_name("word/document.xml")
+        .map_err(|_| ModelError::invalid_configuration("DOCX 缺少 word/document.xml。"))?;
     if document.size() > MAX_OFFICE_XML_ENTRY_BYTES {
         return Err(ModelError::invalid_configuration(
             "DOCX 主文档 XML 超过 16 MB 解析上限。",
@@ -101,13 +101,7 @@ pub(super) fn read_docx_blocks(
                             cell_paragraphs.push(value);
                         }
                     } else if row_depth == 0
-                        && push_docx_block(
-                            value,
-                            start,
-                            end,
-                            &mut block_index,
-                            &mut selected,
-                        )
+                        && push_docx_block(value, start, end, &mut block_index, &mut selected)
                     {
                         break;
                     }
@@ -121,7 +115,13 @@ pub(super) fn read_docx_blocks(
                     row_depth = row_depth.saturating_sub(1);
                     let value = row_cells
                         .drain(..)
-                        .map(|value| if value.is_empty() { "[空]".to_string() } else { value })
+                        .map(|value| {
+                            if value.is_empty() {
+                                "[空]".to_string()
+                            } else {
+                                value
+                            }
+                        })
                         .collect::<Vec<_>>()
                         .join(" | ");
                     if push_docx_block(value, start, end, &mut block_index, &mut selected) {
@@ -234,9 +234,7 @@ pub(super) fn read_xlsx_rows(
     }
     let sheet_catalog = sheet_names.join("、");
     let content = if rows.is_empty() {
-        format!(
-            "工作表“{sheet_name}”中没有第 {start} 到 {end} 行。可用工作表：{sheet_catalog}"
-        )
+        format!("工作表“{sheet_name}”中没有第 {start} 到 {end} 行。可用工作表：{sheet_catalog}")
     } else {
         format!(
             "可用工作表：{sheet_catalog}\n当前工作表：{sheet_name}\n\n{}",
@@ -258,8 +256,9 @@ fn preflight_office_zip(path: &Path) -> Result<(), ModelError> {
     let file = File::open(path).map_err(|error| {
         ModelError::invalid_configuration(format!("打开 Office 附件失败：{error}"))
     })?;
-    let mut archive = ZipArchive::new(file)
-        .map_err(|error| ModelError::invalid_configuration(format!("Office 文件不是有效 ZIP：{error}")))?;
+    let mut archive = ZipArchive::new(file).map_err(|error| {
+        ModelError::invalid_configuration(format!("Office 文件不是有效 ZIP：{error}"))
+    })?;
     if archive.len() > MAX_OFFICE_ZIP_ENTRIES {
         return Err(ModelError::invalid_configuration(
             "Office 文件内部条目超过 4096 个。",
@@ -308,12 +307,9 @@ fn push_docx_block(
 fn positive_argument(arguments: &Value, key: &str, default: u64) -> Result<u64, ModelError> {
     match arguments.get(key) {
         None => Ok(default),
-        Some(value) => value
-            .as_u64()
-            .filter(|value| *value > 0)
-            .ok_or_else(|| {
-                ModelError::invalid_configuration(format!("工具参数 {key} 必须是正整数。"))
-            }),
+        Some(value) => value.as_u64().filter(|value| *value > 0).ok_or_else(|| {
+            ModelError::invalid_configuration(format!("工具参数 {key} 必须是正整数。"))
+        }),
     }
 }
 

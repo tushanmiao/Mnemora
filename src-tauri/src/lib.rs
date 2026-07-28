@@ -2,6 +2,7 @@ mod ai;
 mod chat;
 mod commands;
 mod html_preview;
+mod library;
 mod memory;
 mod request_debug;
 mod settings;
@@ -88,6 +89,32 @@ pub fn run() {
             commands::conversations::clear_conversations,
             commands::html_preview::html_preview_open,
             commands::html_preview::html_preview_get,
+            commands::library::library_list_items,
+            commands::library::library_get_item,
+            commands::library::library_import_pdfs,
+            commands::library::library_update_item,
+            commands::library::library_set_favorite,
+            commands::library::library_move_to_trash,
+            commands::library::library_restore_item,
+            commands::library::library_delete_permanently,
+            commands::library::library_mark_opened,
+            commands::library::library_open_item,
+            commands::library::library_read_pdf_range,
+            commands::library::library_get_reading_state,
+            commands::library::library_save_reading_state,
+            commands::library::library_list_annotations,
+            commands::library::library_create_annotation,
+            commands::library::library_update_annotation,
+            commands::library::library_delete_annotation,
+            commands::library::library_list_notes,
+            commands::library::library_get_note,
+            commands::library::library_create_note,
+            commands::library::library_update_note,
+            commands::library::library_delete_note,
+            commands::library::library_list_collections,
+            commands::library::library_create_collection,
+            commands::library::library_rename_collection,
+            commands::library::library_delete_collection,
             commands::memory::memory_load,
             commands::memory::memory_save,
             commands::memory::memory_clear,

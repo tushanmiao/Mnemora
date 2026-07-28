@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from "react";
 import {
   BookOpenText,
   ChevronDown,
@@ -36,6 +37,17 @@ export function WorkTabStrip({
   onTabClose,
   onToggleContextPanel,
 }: WorkTabStripProps) {
+  const [overflowOpen, setOverflowOpen] = useState(false);
+  const overflowRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function closeOverflow(event: MouseEvent) {
+      if (!overflowRef.current?.contains(event.target as Node)) setOverflowOpen(false);
+    }
+    document.addEventListener("mousedown", closeOverflow);
+    return () => document.removeEventListener("mousedown", closeOverflow);
+  }, []);
+
   return (
     <header className="work-tab-strip">
       <nav className="work-tab-list" role="tablist" aria-label="打开的 Work 资源">
@@ -71,9 +83,40 @@ export function WorkTabStrip({
         })}
       </nav>
 
-      <button className="icon-button work-tab-overflow" type="button" title="全部页签" disabled>
-        <ChevronDown size={16} />
-      </button>
+      <div className="work-tab-overflow-wrap" ref={overflowRef}>
+        <button
+          className="icon-button work-tab-overflow"
+          type="button"
+          title="全部页签"
+          aria-expanded={overflowOpen}
+          onClick={() => setOverflowOpen((open) => !open)}
+        >
+          <ChevronDown size={16} />
+        </button>
+        {overflowOpen ? (
+          <div className="work-tab-overflow-menu" role="menu">
+            {tabs.map((tab) => {
+              const Icon = tabIcons[tab.kind];
+              return (
+                <button
+                  className={tab.id === activeTabId ? "work-tab-overflow-active" : ""}
+                  type="button"
+                  role="menuitem"
+                  key={tab.id}
+                  title={tab.title}
+                  onClick={() => {
+                    onTabSelect(tab.id);
+                    setOverflowOpen(false);
+                  }}
+                >
+                  <Icon size={15} />
+                  <span>{tab.title}</span>
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
+      </div>
       {!contextPanelOpen ? (
         <button
           className="icon-button work-context-toggle"

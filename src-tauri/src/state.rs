@@ -10,6 +10,7 @@ use tokio::sync::{oneshot, Mutex, Semaphore};
 use tokio_util::sync::CancellationToken;
 
 use crate::chat::storage::ConversationRepository;
+use crate::library::LibraryRepository;
 use crate::memory::MemoryRepository;
 use crate::request_debug::RequestDebugRecord;
 use crate::settings::{
@@ -34,6 +35,8 @@ pub struct AppState {
     pub staged_attachment_paths: StdMutex<HashSet<PathBuf>>,
     pub conversation_repository: ConversationRepository,
     pub conversation_writes: Mutex<()>,
+    pub library_repository: LibraryRepository,
+    pub library_operations: Mutex<()>,
     pub skill_repository: SkillRepository,
     pub memory_repository: MemoryRepository,
     pub skill_operations: Mutex<()>,
@@ -77,6 +80,7 @@ impl AppState {
         let skill_repository =
             SkillRepository::new(resource_dir.join("skills"), app_data_dir.join("skills"));
         let memory_repository = MemoryRepository::new(app_data_dir.clone());
+        let library_repository = LibraryRepository::new(app_data_dir.clone());
         let conversation_repository = ConversationRepository::new(app_data_dir);
         if let Err(error) = crate::chat::attachments::cleanup_staged_attachments_older_than(
             crate::chat::attachments::STAGED_ATTACHMENT_MAX_AGE,
@@ -112,6 +116,8 @@ impl AppState {
             staged_attachment_paths: StdMutex::new(HashSet::new()),
             conversation_repository,
             conversation_writes: Mutex::new(()),
+            library_repository,
+            library_operations: Mutex::new(()),
             skill_repository,
             memory_repository,
             skill_operations: Mutex::new(()),

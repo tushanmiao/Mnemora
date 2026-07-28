@@ -1,0 +1,465 @@
+.mnemora-pdf-reader {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  background: var(--color-app);
+  container-type: inline-size;
+}
+
+.mnemora-pdf-toolbar {
+  display: flex;
+  min-height: 46px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--color-border-soft);
+  background: color-mix(in srgb, var(--color-surface) 94%, transparent);
+  flex-shrink: 0;
+}
+
+.mnemora-pdf-toolbar-group {
+  display: flex;
+  min-width: 0;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+}
+
+.mnemora-pdf-annotation-colors {
+  display: flex;
+  height: 30px;
+  padding: 0 4px;
+  align-items: center;
+  gap: 3px;
+  border-right: 1px solid var(--color-border-soft);
+}
+
+.mnemora-pdf-color-swatch {
+  width: 15px;
+  height: 15px;
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: 50%;
+  background: var(--pdf-annotation-color);
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 14%);
+  cursor: pointer;
+}
+
+.mnemora-pdf-color-swatch.is-active {
+  border-color: var(--color-surface);
+  box-shadow: 0 0 0 2px var(--color-text-secondary);
+}
+
+.mnemora-pdf-color-swatch:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.mnemora-pdf-color-yellow { --pdf-annotation-color: #f4cf4f; }
+.mnemora-pdf-color-green { --pdf-annotation-color: #69c982; }
+.mnemora-pdf-color-blue { --pdf-annotation-color: #64a8e8; }
+.mnemora-pdf-color-pink { --pdf-annotation-color: #ed87aa; }
+.mnemora-pdf-color-purple { --pdf-annotation-color: #a88be0; }
+
+.mnemora-pdf-toolbar .icon-button {
+  display: inline-flex;
+  width: 30px;
+  height: 30px;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+  border: 0;
+  border-radius: 5px;
+  color: var(--color-text-secondary);
+  background: transparent;
+}
+
+.mnemora-pdf-toolbar .icon-button:hover:not(:disabled),
+.mnemora-pdf-toolbar .icon-button.is-active {
+  color: var(--color-text);
+  background: var(--color-hover);
+}
+
+.mnemora-pdf-toolbar .icon-button:disabled {
+  opacity: 0.4;
+}
+
+.mnemora-pdf-toolbar-title {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  overflow: hidden;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
+.mnemora-pdf-toolbar-title span {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mnemora-pdf-page-input {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--color-muted);
+  font-size: 12px;
+}
+
+.mnemora-pdf-page-input input {
+  width: 42px;
+  height: 28px;
+  padding: 0 5px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  color: var(--color-text);
+  background: var(--color-surface-raised);
+  text-align: center;
+  font-size: 12px;
+}
+
+.mnemora-pdf-page-input input::-webkit-inner-spin-button,
+.mnemora-pdf-page-input input::-webkit-outer-spin-button {
+  appearance: none;
+}
+
+.mnemora-pdf-zoom-label {
+  min-width: 42px;
+  color: var(--color-muted);
+  font-size: 11px;
+  text-align: center;
+}
+
+.mnemora-pdf-search-bar {
+  display: flex;
+  min-height: 42px;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--color-border-soft);
+  background: var(--color-surface);
+  color: var(--color-muted);
+}
+
+.mnemora-pdf-search-bar input {
+  min-width: 0;
+  flex: 1;
+  height: 29px;
+  padding: 0 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  color: var(--color-text);
+  background: var(--color-surface-raised);
+  font-size: 12px;
+}
+
+.mnemora-pdf-search-bar > button:not(.icon-button) {
+  height: 29px;
+  padding: 0 11px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  color: var(--color-text-secondary);
+  background: var(--color-surface-raised);
+  font-size: 12px;
+}
+
+.mnemora-pdf-search-results {
+  display: flex;
+  max-height: 180px;
+  flex-direction: column;
+  overflow: auto;
+  border-bottom: 1px solid var(--color-border-soft);
+  background: var(--color-surface);
+}
+
+.mnemora-pdf-search-results button {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  padding: 7px 14px;
+  border: 0;
+  border-bottom: 1px solid var(--color-border-soft);
+  color: var(--color-text-secondary);
+  background: transparent;
+  text-align: left;
+  font-size: 11px;
+}
+
+.mnemora-pdf-search-results button:hover {
+  background: var(--color-hover);
+}
+
+.mnemora-pdf-search-results strong {
+  color: var(--color-text);
+  font-size: 11px;
+}
+
+.mnemora-pdf-search-results span {
+  overflow: hidden;
+  max-width: 100%;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mnemora-pdf-annotation-error {
+  display: flex;
+  min-height: 34px;
+  padding: 5px 10px 5px 14px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-danger) 28%, var(--color-border));
+  color: var(--color-danger);
+  background: color-mix(in srgb, var(--color-danger) 8%, var(--color-surface));
+  font-size: 11px;
+}
+
+.mnemora-pdf-annotation-error button {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: 4px;
+  color: currentColor;
+  background: transparent;
+}
+
+.mnemora-pdf-selection-toolbar {
+  position: fixed;
+  z-index: 160;
+  display: flex;
+  height: 34px;
+  padding: 3px;
+  align-items: center;
+  gap: 2px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-surface-raised);
+  box-shadow: var(--shadow-menu);
+  transform: translateX(-50%);
+}
+
+.mnemora-pdf-selection-toolbar button {
+  display: grid;
+  width: 27px;
+  height: 27px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: 4px;
+  color: var(--color-text-secondary);
+  background: transparent;
+  cursor: pointer;
+}
+
+.mnemora-pdf-selection-toolbar button:hover {
+  color: var(--color-accent);
+  background: var(--color-hover);
+}
+
+.mnemora-pdf-selection-color {
+  width: 12px;
+  height: 12px;
+  margin: 0 3px;
+  border-radius: 50%;
+  background: var(--pdf-annotation-color);
+}
+
+.mnemora-pdf-reader-scroll {
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+  overscroll-behavior: contain;
+  background: var(--color-app);
+}
+
+.mnemora-pdf-page-list {
+  display: flex;
+  width: max-content;
+  min-width: 100%;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+  padding: 22px 22px 80px;
+}
+
+.mnemora-pdf-page-shell {
+  position: relative;
+  display: flex;
+  box-sizing: border-box;
+  min-height: 240px;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 16px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: #fff;
+  box-shadow: 0 2px 8px rgb(0 0 0 / 8%);
+  contain: layout paint style;
+}
+
+.mnemora-pdf-page-surface {
+  position: relative;
+  min-width: 280px;
+  min-height: 180px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.mnemora-pdf-page-canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  max-width: none;
+  background: #fff;
+}
+
+.mnemora-pdf-annotation-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.mnemora-pdf-annotation {
+  position: absolute;
+  box-sizing: border-box;
+  background: color-mix(in srgb, var(--pdf-annotation-color) 44%, transparent);
+  transition: box-shadow 120ms ease;
+}
+
+.mnemora-pdf-annotation-underline {
+  border-bottom: max(1px, 0.12em) solid var(--pdf-annotation-color);
+  background: transparent;
+}
+
+.mnemora-pdf-annotation-area {
+  border: 2px solid var(--pdf-annotation-color);
+  background: color-mix(in srgb, var(--pdf-annotation-color) 12%, transparent);
+}
+
+.mnemora-pdf-annotation.is-focused {
+  box-shadow: 0 0 0 2px #fff, 0 0 0 4px var(--color-accent);
+}
+
+.mnemora-pdf-text-layer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  color-scheme: only light;
+  line-height: 1;
+  text-align: initial;
+  transform-origin: 0 0;
+  user-select: text;
+  z-index: 2;
+  --min-font-size: 1;
+  --min-font-size-inv: calc(1 / var(--min-font-size));
+}
+
+.mnemora-pdf-area-selector {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.mnemora-pdf-area-selector > span {
+  position: absolute;
+  border: 1px solid var(--pdf-annotation-color, var(--color-accent));
+  background: color-mix(in srgb, var(--pdf-annotation-color, var(--color-accent)) 16%, transparent);
+}
+
+.mnemora-pdf-text-layer :is(span, br) {
+  position: absolute;
+  color: transparent;
+  cursor: text;
+  transform-origin: 0% 0%;
+  white-space: pre;
+  user-select: text;
+  --scale-x: 1;
+  --rotate: 0deg;
+}
+
+.mnemora-pdf-text-layer > :not(.markedContent),
+.mnemora-pdf-text-layer .markedContent span:not(.markedContent) {
+  z-index: 1;
+  font-size: calc(var(--total-scale-factor) * var(--font-height));
+  transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv));
+}
+
+.mnemora-pdf-text-layer .markedContent {
+  display: contents;
+}
+
+.mnemora-pdf-page-status {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  padding: 4px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  color: var(--color-muted);
+  background: rgb(255 255 255 / 88%);
+  font-size: 11px;
+  transform: translateX(-50%);
+  z-index: 2;
+}
+
+.mnemora-pdf-page-error,
+.mnemora-pdf-reader-error {
+  color: #a23b35;
+}
+
+.mnemora-pdf-reader-state {
+  display: flex;
+  min-height: 300px;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  padding: 24px;
+  color: var(--color-muted);
+  font-size: 13px;
+}
+
+.mnemora-pdf-reader-state[role="alert"] {
+  flex-direction: column;
+}
+
+.mnemora-pdf-reader-state strong {
+  color: var(--color-text);
+}
+
+@media (max-width: 760px) {
+  .mnemora-pdf-toolbar-title {
+    display: none;
+  }
+
+  .mnemora-pdf-page-list {
+    padding-inline: 10px;
+  }
+}
+
+@container (max-width: 680px) {
+  .mnemora-pdf-toolbar-title {
+    display: none;
+  }
+
+  .mnemora-pdf-annotation-colors {
+    display: none;
+  }
+}

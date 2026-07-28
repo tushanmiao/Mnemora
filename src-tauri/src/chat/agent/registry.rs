@@ -21,8 +21,7 @@ use crate::{
 
 use super::{
     documents::{
-        read_docx_blocks, read_xlsx_rows, MAX_DOCX_BLOCKS_PER_CALL,
-        MAX_XLSX_ROWS_PER_CALL,
+        read_docx_blocks, read_xlsx_rows, MAX_DOCX_BLOCKS_PER_CALL, MAX_XLSX_ROWS_PER_CALL,
     },
     types::{ToolExecution, ToolRisk},
 };
@@ -526,10 +525,7 @@ fn validate_tool_arguments(call: &ModelToolCall) -> Result<(), ModelError> {
             }
         }
         "read_docx_blocks" => {
-            ensure_object_keys(
-                &call.arguments,
-                &["attachmentId", "startBlock", "endBlock"],
-            )?;
+            ensure_object_keys(&call.arguments, &["attachmentId", "startBlock", "endBlock"])?;
             required_string(&call.arguments, "attachmentId")?;
             validate_optional_positive_integer(&call.arguments, "startBlock")?;
             validate_optional_positive_integer(&call.arguments, "endBlock")?;
@@ -901,11 +897,45 @@ fn is_text_attachment(attachment: &StoredChatAttachment) -> bool {
             | "application/javascript"
     ) || matches!(
         attachment_extension(&attachment.name).as_str(),
-        "rs" | "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" | "py" | "java"
-            | "c" | "cc" | "cpp" | "h" | "hpp" | "cs" | "go" | "rb" | "php"
-            | "swift" | "kt" | "kts" | "sql" | "toml" | "yaml" | "yml" | "xml"
-            | "html" | "htm" | "css" | "scss" | "less" | "sh" | "bash" | "ps1"
-            | "bat" | "cmd" | "ini" | "conf" | "env" | "log"
+        "rs" | "ts"
+            | "tsx"
+            | "js"
+            | "jsx"
+            | "mjs"
+            | "cjs"
+            | "py"
+            | "java"
+            | "c"
+            | "cc"
+            | "cpp"
+            | "h"
+            | "hpp"
+            | "cs"
+            | "go"
+            | "rb"
+            | "php"
+            | "swift"
+            | "kt"
+            | "kts"
+            | "sql"
+            | "toml"
+            | "yaml"
+            | "yml"
+            | "xml"
+            | "html"
+            | "htm"
+            | "css"
+            | "scss"
+            | "less"
+            | "sh"
+            | "bash"
+            | "ps1"
+            | "bat"
+            | "cmd"
+            | "ini"
+            | "conf"
+            | "env"
+            | "log"
     )
 }
 
@@ -919,8 +949,7 @@ fn is_docx_attachment(attachment: &StoredChatAttachment) -> bool {
 }
 
 fn is_xlsx_attachment(attachment: &StoredChatAttachment) -> bool {
-    attachment.mime_type
-        == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    attachment.mime_type == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 }
 
 fn attachment_extension(name: &str) -> String {
