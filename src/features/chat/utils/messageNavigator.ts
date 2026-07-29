@@ -28,11 +28,14 @@ export function buildMessageNavigatorNodes(messages: ChatMessage[]) {
       const attachmentTitle = message.attachments?.length
         ? `附件：${message.attachments.map((attachment) => attachment.name).join("、")}`
         : "";
+      const literatureTitle = message.literatureReferences?.[0]
+        ? `文献：${message.literatureReferences[0].title}，第 ${message.literatureReferences[0].pageIndex + 1} 页`
+        : "";
       current = {
         id: `turn-${message.id}`,
         targetMessageId: message.id,
         targetRenderIndex: index,
-        title: preview(message.content) || attachmentTitle || "空消息",
+        title: preview(message.content) || attachmentTitle || literatureTitle || "空消息",
         answerPreview: "",
         modelLabel: "",
       };

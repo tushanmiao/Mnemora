@@ -4,6 +4,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type PointerEvent as ReactPointerEvent,
 } from "react";
 import {
   ArrowDown,
@@ -13,6 +14,7 @@ import {
   Highlighter,
   Minus,
   MoveHorizontal,
+  MessageCircleQuestion,
   Plus,
   ScanLine,
   Search,
@@ -52,6 +54,12 @@ import {
 import type { PdfOutlineEntry } from "../context/PdfReaderContext";
 import { usePdfReaderBridge } from "../context/PdfReaderContext";
 import { PDF_ANNOTATION_COLORS, type PdfTextSelection } from "../types";
+import type { LiteratureReference } from "../../../types/chat";
+import {
+  createLiteratureReference,
+  MAX_LITERATURE_REFERENCE_TEXT_BYTES,
+  normalizeLiteratureText,
+} from "../../chat/utils/literatureReferences";
 import { PdfPage } from "./PdfPage";
 import "../styles/pdf-reader.css";
 
@@ -64,6 +72,7 @@ type PdfReaderProps = {
   item: LibraryItem;
   onOpenExternal: (itemId: string) => Promise<LibraryItem>;
   onOpenNote: (note: Pick<LibraryNote, "id" | "title">) => void;
+  onAskSelection: (reference: LiteratureReference) => void;
 };
 
 type ReadingPosition = {
@@ -111,17 +120,19 @@ class TauriPdfRangeTransport extends PDFDataRangeTransport {
   }
 }
 
-export function PdfReader({ item, onOpenExternal, onOpenNote }: PdfReaderProps) {
+export function PdfReader({ item, onOpenExternal, onOpenNote, onAskSelection }: PdfReaderProps) {
   const { register, unregister } = usePdfReaderBridge();
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const pageRefs = useRef(new Map<number, HTMLDivElement>());
   const saveTimerRef = useRef<number | null>(null);
   const scrollFrameRef = useRef<number | null>(null);
+  const pageNavigationFrameRef = useRef<number | null>(null);
   const searchGenerationRef = useRef(0);
   const resourceGenerationRef = useRef(0);
   const notesLoadRef = useRef({ itemId: "", loading: false, loaded: false });
   const annotationCreateRef = useRef(false);
   const focusTimerRef = useRef<number | null>(null);
+  const selectionColorMenuRef = useRef<HTMLDivElement>(null);
   const restoringRef = useRef(false);
   const readingStateReadyRef = useRef(false);
   const pendingRestoreRef = useRef<ReadingPosition | null>(null);
@@ -148,6 +159,7 @@ export function PdfReader({ item, onOpenExternal, onOpenNote }: PdfReaderProps) 
   const [annotationMode, setAnnotationMode] = useState<"text" | "area">("text");
   const [annotationColor, setAnnotationColor] = useState<LibraryAnnotationColor>("yellow");
   const [textSelection, setTextSelection] = useState<PdfTextSelection | null>(null);
+  const [selectionColorMenuOpen, setSelectionColorMenuOpen] = useState(false);
   const [focusedAnnotationId, setFocusedAnnotationId] = useState<string | null>(null);
 
   const scheduleSave = useCallback((next: ReadingPosition) => {
@@ -177,13 +189,14 @@ export function PdfReader({ item, onOpenExternal, onOpenNote }: PdfReaderProps) 
   const scrollToPage = useCallback((pageIndex: number, behavior: ScrollBehavior = "smooth") => {
     const container = scrollContainerRef.current;
     const page = pageRefs.current.get(Math.max(0, pageIndex));
-    if (!container || !page) return;
+    if (!container || !page) return false;
     const containerRect = container.getBoundingClientRect();
     const pageRect = page.getBoundingClientRect();
     container.scrollTo({
       top: container.scrollTop + pageRect.top - containerRect.top - 20,
       behavior,
     });
+    return true;
   }, []);
 
   useEffect(() => () => unregister(item.id), [item.id, unregister]);
@@ -191,13 +204,32 @@ export function PdfReader({ item, onOpenExternal, onOpenNote }: PdfReaderProps) 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
+      if (selectionColorMenuOpen) {
+        setSelectionColorMenuOpen(false);
+        return;
+      }
       setTextSelection(null);
       setAnnotationMode("text");
       window.getSelection()?.removeAllRanges();
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, []);
+  }, [selectionColorMenuOpen]);
+
+  useEffect(() => {
+    if (!selectionColorMenuOpen) return;
+    const closeColorMenu = (event: PointerEvent) => {
+      if (!selectionColorMenuRef.current?.contains(event.target as Node)) {
+        setSelectionColorMenuOpen(false);
+      }
+    };
+    document.addEventListener("pointerdown", closeColorMenu);
+    return () => document.removeEventListener("pointerdown", closeColorMenu);
+  }, [selectionColorMenuOpen]);
+
+  useEffect(() => {
+    if (!textSelection) setSelectionColorMenuOpen(false);
+  }, [textSelection]);
 
   useEffect(() => {
     const generation = resourceGenerationRef.current + 1;
@@ -405,6 +437,7 @@ export function PdfReader({ item, onOpenExternal, onOpenNote }: PdfReaderProps) 
 
   useEffect(() => () => {
     if (scrollFrameRef.current !== null) cancelAnimationFrame(scrollFrameRef.current);
+    if (pageNavigationFrameRef.current !== null) cancelAnimationFrame(pageNavigationFrameRef.current);
     if (focusTimerRef.current !== null) window.clearTimeout(focusTimerRef.current);
   }, []);
 
@@ -453,13 +486,83 @@ export function PdfReader({ item, onOpenExternal, onOpenNote }: PdfReaderProps) 
     scheduleSave({ ...readingRef.current, zoom: normalized });
   };
 
+  const goToPage = useCallback((pageIndex: number) => {
+    if (!Number.isFinite(pageIndex) || pageCount <= 0) return;
+    const normalized = Math.max(0, Math.min(pageCount - 1, Math.trunc(pageIndex)));
+    if (pageNavigationFrameRef.current !== null) {
+      cancelAnimationFrame(pageNavigationFrameRef.current);
+      pageNavigationFrameRef.current = null;
+    }
+    let attempts = 0;
+    const navigate = () => {
+      pageNavigationFrameRef.current = null;
+      if (scrollToPage(normalized) || attempts >= 30) return;
+      attempts += 1;
+      pageNavigationFrameRef.current = requestAnimationFrame(navigate);
+    };
+    navigate();
+    setCurrentPage(normalized + 1);
+    scheduleSave({ ...readingRef.current, pageIndex: normalized, scrollOffset: 0 });
+  }, [pageCount, scheduleSave, scrollToPage]);
+
   const submitPage = (value: string) => {
     const page = Number.parseInt(value, 10);
     if (!Number.isFinite(page) || page < 1 || page > pageCount) return;
-    scrollToPage(page - 1);
-    setCurrentPage(page);
-    scheduleSave({ ...readingRef.current, pageIndex: page - 1, scrollOffset: 0 });
+    goToPage(page - 1);
   };
+
+  const readPageText = useCallback(async (pageIndex: number) => {
+    if (!pdf || pageIndex < 0 || pageIndex >= pdf.numPages) {
+      throw new Error("目标 PDF 页面不可用。");
+    }
+    const page = await pdf.getPage(pageIndex + 1);
+    const content = await page.getTextContent();
+    const parts: string[] = [];
+    let capturedCharacters = 0;
+    const captureLimit = MAX_LITERATURE_REFERENCE_TEXT_BYTES * 2;
+    for (const entry of content.items) {
+      if (!("str" in entry)) continue;
+      const remaining = captureLimit - capturedCharacters;
+      if (remaining <= 0) break;
+      const text = entry.str.slice(0, remaining);
+      parts.push(text);
+      parts.push("hasEOL" in entry && entry.hasEOL ? "\n" : " ");
+      capturedCharacters += text.length + 1;
+    }
+    if (pageIndex !== currentPage - 1) page.cleanup();
+    const text = normalizeLiteratureText(parts.join(""));
+    if (!text) throw new Error("当前页面没有可引用的文字内容。扫描版 PDF 需要后续 OCR 支持。");
+    return text;
+  }, [currentPage, pdf]);
+
+  const askSelectedText = useCallback(() => {
+    if (!textSelection) return;
+    const reference = createLiteratureReference({
+      libraryItemId: item.id,
+      title: item.title,
+      pageIndex: textSelection.pageIndex,
+      kind: "selection",
+      text: textSelection.text,
+    });
+    if (!reference) {
+      setAnnotationError("当前 PDF 选区无法加入文献引用，请重新选择文字后重试。");
+      return;
+    }
+    if (typeof onAskSelection !== "function") {
+      setAnnotationError("文献 Chat 尚未准备好，请重新打开 Work 后重试。");
+      return;
+    }
+    onAskSelection(reference);
+    setTextSelection(null);
+    window.getSelection()?.removeAllRanges();
+  }, [item.id, item.title, onAskSelection, textSelection]);
+
+  const preserveSelectionToolbarPointer = useCallback((
+    event: ReactPointerEvent<HTMLDivElement>,
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+  }, []);
 
   const runSearch = async () => {
     const query = searchQuery.trim().toLocaleLowerCase();
@@ -555,14 +658,14 @@ export function PdfReader({ item, onOpenExternal, onOpenNote }: PdfReaderProps) 
   }, [annotationColor, item.id]);
 
   const goToAnnotation = useCallback((annotation: LibraryAnnotation) => {
-    scrollToPage(annotation.pageIndex);
+    goToPage(annotation.pageIndex);
     setFocusedAnnotationId(annotation.id);
     if (focusTimerRef.current !== null) window.clearTimeout(focusTimerRef.current);
     focusTimerRef.current = window.setTimeout(() => {
       focusTimerRef.current = null;
       setFocusedAnnotationId(null);
     }, 1800);
-  }, [scrollToPage]);
+  }, [goToPage]);
 
   const setReaderAnnotationMode = useCallback((mode: "text" | "area") => {
     setAnnotationMode(mode);
@@ -682,7 +785,8 @@ export function PdfReader({ item, onOpenExternal, onOpenNote }: PdfReaderProps) 
       noteError,
       annotationMode,
       annotationColor,
-      goToPage: scrollToPage,
+      goToPage,
+      readPageText,
       goToAnnotation,
       setAnnotationMode: setReaderAnnotationMode,
       setAnnotationColor,
@@ -705,6 +809,7 @@ export function PdfReader({ item, onOpenExternal, onOpenNote }: PdfReaderProps) 
     deleteAnnotationAction,
     deleteNoteAction,
     goToAnnotation,
+    goToPage,
     item.id,
     loadNotesAction,
     noteError,
@@ -716,7 +821,7 @@ export function PdfReader({ item, onOpenExternal, onOpenNote }: PdfReaderProps) 
     pageCount,
     pdf,
     register,
-    scrollToPage,
+    readPageText,
     setReaderAnnotationMode,
     unregister,
     updateAnnotationAction,
@@ -890,6 +995,7 @@ export function PdfReader({ item, onOpenExternal, onOpenNote }: PdfReaderProps) 
           role="toolbar"
           aria-label="PDF 文字批注"
           style={{ left: textSelection.clientX, top: textSelection.clientY }}
+          onPointerDown={preserveSelectionToolbarPointer}
         >
           <button type="button" title="高亮" aria-label="高亮" onClick={() => void createTextAnnotation("highlight")}>
             <Highlighter size={15} />
@@ -897,7 +1003,41 @@ export function PdfReader({ item, onOpenExternal, onOpenNote }: PdfReaderProps) 
           <button type="button" title="下划线" aria-label="下划线" onClick={() => void createTextAnnotation("underline")}>
             <Underline size={15} />
           </button>
-          <span className={`mnemora-pdf-selection-color mnemora-pdf-color-${annotationColor}`} aria-hidden="true" />
+          <button type="button" title="问 AI" aria-label="使用此选区询问 AI" onClick={askSelectedText}>
+            <MessageCircleQuestion size={15} />
+          </button>
+          <div className="mnemora-pdf-selection-color-picker" ref={selectionColorMenuRef}>
+            <button
+              className="mnemora-pdf-selection-color-button"
+              type="button"
+              title="切换高亮颜色"
+              aria-label="切换高亮颜色"
+              aria-haspopup="menu"
+              aria-expanded={selectionColorMenuOpen}
+              onClick={() => setSelectionColorMenuOpen((open) => !open)}
+            >
+              <span className={`mnemora-pdf-selection-color mnemora-pdf-color-${annotationColor}`} aria-hidden="true" />
+            </button>
+            {selectionColorMenuOpen ? (
+              <div className="mnemora-pdf-selection-color-menu" role="menu" aria-label="选择高亮颜色">
+                {PDF_ANNOTATION_COLORS.map((color) => (
+                  <button
+                    className={`mnemora-pdf-selection-color-option mnemora-pdf-color-${color.id}${annotationColor === color.id ? " is-active" : ""}`}
+                    type="button"
+                    role="menuitemradio"
+                    aria-label={color.label}
+                    aria-checked={annotationColor === color.id}
+                    title={color.label}
+                    key={color.id}
+                    onClick={() => {
+                      setAnnotationColor(color.id);
+                      setSelectionColorMenuOpen(false);
+                    }}
+                  />
+                ))}
+              </div>
+            ) : null}
+          </div>
           <button type="button" title="取消" aria-label="取消批注" onClick={() => {
             setTextSelection(null);
             window.getSelection()?.removeAllRanges();

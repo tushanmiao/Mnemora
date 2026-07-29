@@ -165,7 +165,12 @@ button {
   --chat-content-max-width: 100%;
   --chat-reading-max-width: 100%;
 
+  width: 100%;
+  max-width: 100%;
+  overflow: clip;
   grid-template-rows: 52px minmax(0, 1fr) auto;
+  container-name: work-chat;
+  container-type: inline-size;
 }
 
 .workspace-loading {

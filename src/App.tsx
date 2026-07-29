@@ -27,16 +27,22 @@ import { PdfReaderBridgeProvider } from "./features/pdf/context/PdfReaderContext
 import { useLibrary } from "./features/library/hooks/useLibrary";
 import type { LibrarySort } from "./features/library/types";
 import {
+  appendLiteratureReference,
+  normalizeLinkedLibraryItemIds,
+} from "./features/chat/utils/literatureReferences";
+import {
   DEFAULT_LAYOUT_PREFERENCES,
   LAYOUT_PANEL_LIMITS,
   useLayoutPreferences,
 } from "./features/layout/hooks/useLayoutPreferences";
-import type { AiPermissionMode } from "./types/chat";
+import type { AiPermissionMode, LiteratureReference } from "./types/chat";
 import { resolveDefaultModel } from "./types/modelSettings";
 import { resolveSupportsVision } from "./data/modelMatching";
 import type {
   WorkContextView,
   WorkLibraryView,
+  LiteratureNavigationRequest,
+  WorkPdfDocument,
   WorkspaceMode,
 } from "./features/workspace/types";
 
@@ -64,6 +70,13 @@ function App() {
   const [settingsCategory, setSettingsCategory] = useState<SettingsCategory>("general");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [modelMenuRequest, setModelMenuRequest] = useState(0);
+  const [composerFocusRequest, setComposerFocusRequest] = useState(0);
+  const [pendingLiteratureReferences, setPendingLiteratureReferences] = useState<LiteratureReference[]>([]);
+  const pendingLiteratureReferencesRef = useRef<LiteratureReference[]>([]);
+  const workScopeInitializedConversationRef = useRef<string | null>(null);
+  const [literatureReferenceError, setLiteratureReferenceError] = useState("");
+  const [workPdfDocuments, setWorkPdfDocuments] = useState<WorkPdfDocument[]>([]);
+  const [literatureNavigationRequest, setLiteratureNavigationRequest] = useState<LiteratureNavigationRequest | null>(null);
   const { preferences: layoutPreferences, savePanelWidth } = useLayoutPreferences();
   const navigateToWorkspace = useCallback(() => setActiveView("workspace"), []);
   const changeWorkspaceMode = useCallback((mode: WorkspaceMode) => {
@@ -99,7 +112,127 @@ function App() {
   const [quotedText, setQuotedText] = useState<string | null>(null);
   useEffect(() => {
     setQuotedText(null);
+    pendingLiteratureReferencesRef.current = [];
+    workScopeInitializedConversationRef.current = null;
+    setPendingLiteratureReferences([]);
+    setLiteratureReferenceError("");
   }, [conversations.currentConversationId]);
+
+  const updateLinkedLibraryItemIds = useCallback((itemIds: string[]) => {
+    if (conversations.requestInFlightRef.current) {
+      setLiteratureReferenceError("AI 正在生成，结束后再修改文献范围。");
+      return;
+    }
+    const normalized = normalizeLinkedLibraryItemIds(itemIds);
+    if (normalized.length < new Set(itemIds).size) {
+      setLiteratureReferenceError("文献范围最多关联 12 篇有效文献。");
+    } else {
+      setLiteratureReferenceError("");
+    }
+    conversations.updateCurrentConversation((conversation) => ({
+      ...conversation,
+      linkedLibraryItemIds: normalized,
+      updatedAt: Date.now(),
+    }));
+  }, [conversations.requestInFlightRef, conversations.updateCurrentConversation]);
+
+  const addLiteratureReference = useCallback((reference: LiteratureReference) => {
+    if (!conversations.currentConversation) {
+      setLiteratureReferenceError("请先新建或选择一个对话，再加入文献引用。");
+      setWorkContextPanelOpen(true);
+      setWorkContextView("chat");
+      return;
+    }
+    if (conversations.requestInFlightRef.current) {
+      setLiteratureReferenceError("AI 正在生成，结束后再加入新的文献引用。");
+      setWorkContextPanelOpen(true);
+      setWorkContextView("chat");
+      return;
+    }
+    setWorkContextPanelOpen(true);
+    setWorkContextView("chat");
+    setComposerFocusRequest((request) => request + 1);
+    const result = appendLiteratureReference(
+      pendingLiteratureReferencesRef.current,
+      reference,
+    );
+    setLiteratureReferenceError(result.error);
+    if (!result.added) return;
+    pendingLiteratureReferencesRef.current = result.references;
+    setPendingLiteratureReferences(result.references);
+    conversations.updateCurrentConversation((conversation) => ({
+      ...conversation,
+      linkedLibraryItemIds: normalizeLinkedLibraryItemIds([
+        ...(conversation.linkedLibraryItemIds ?? []),
+        reference.libraryItemId,
+      ]),
+      updatedAt: Date.now(),
+    }));
+  }, [
+    conversations.currentConversation,
+    conversations.requestInFlightRef,
+    conversations.updateCurrentConversation,
+  ]);
+
+  const removePendingLiteratureReference = useCallback((referenceId: string) => {
+    const next = pendingLiteratureReferencesRef.current.filter(
+      (reference) => reference.id !== referenceId,
+    );
+    pendingLiteratureReferencesRef.current = next;
+    setPendingLiteratureReferences(next);
+    setLiteratureReferenceError("");
+  }, []);
+
+  const clearPendingLiteratureReferences = useCallback(() => {
+    pendingLiteratureReferencesRef.current = [];
+    setPendingLiteratureReferences([]);
+    setLiteratureReferenceError("");
+  }, []);
+
+  const openLiteratureReference = useCallback((reference: LiteratureReference) => {
+    setActiveView("workspace");
+    setWorkspaceMode("work");
+    setWorkContextPanelOpen(true);
+    setWorkContextView("chat");
+    setLiteratureNavigationRequest({
+      requestId: crypto.randomUUID(),
+      libraryItemId: reference.libraryItemId,
+      title: reference.title,
+      pageIndex: reference.pageIndex,
+    });
+  }, []);
+
+  const handleLiteratureNavigationHandled = useCallback((requestId: string) => {
+    setLiteratureNavigationRequest((current) => (
+      current?.requestId === requestId ? null : current
+    ));
+  }, []);
+
+  useEffect(() => {
+    if (
+      workspaceMode !== "work"
+      || !workContextPanelOpen
+      || workContextView !== "chat"
+      || !conversations.currentConversation
+      || conversations.requestInFlightRef.current
+    ) return;
+    if (workScopeInitializedConversationRef.current === conversations.currentConversation.id) return;
+    if ((conversations.currentConversation.linkedLibraryItemIds?.length ?? 0) > 0) {
+      workScopeInitializedConversationRef.current = conversations.currentConversation.id;
+      return;
+    }
+    const activeDocument = workPdfDocuments.find((document) => document.active);
+    if (!activeDocument) return;
+    workScopeInitializedConversationRef.current = conversations.currentConversation.id;
+    updateLinkedLibraryItemIds([activeDocument.libraryItemId]);
+  }, [
+    conversations.currentConversation,
+    updateLinkedLibraryItemIds,
+    workContextPanelOpen,
+    workContextView,
+    workPdfDocuments,
+    workspaceMode,
+  ]);
 
   const currentModel = useMemo(() => {
     const conversation = conversations.currentConversation;
@@ -352,6 +485,7 @@ function App() {
         onRegenerateMessage={chatRuntime.regenerateMessage}
         onDeleteMessage={chatRuntime.deleteMessage}
         onQuoteMessage={setQuotedText}
+        onLiteratureReferenceOpen={openLiteratureReference}
       />
       <ChatInput
         conversationId={conversations.currentConversationId}
@@ -366,6 +500,7 @@ function App() {
             : chatRuntime.requestInFlight
               ? "正在等待模型回复"
               : "向 Mnemora 提问..."}
+        focusRequest={composerFocusRequest}
         contextUsage={contextUsage}
         contextWindowTokens={currentModel?.model.contextWindowTokens ?? null}
         supportsVision={currentModel
@@ -376,6 +511,9 @@ function App() {
           : null}
         quote={quotedText}
         onQuoteClear={() => setQuotedText(null)}
+        literatureReferences={pendingLiteratureReferences}
+        onLiteratureReferenceRemove={removePendingLiteratureReference}
+        onLiteratureReferencesClear={clearPendingLiteratureReferences}
         contextMessageCount={conversations.currentConversation?.messages.length ?? 0}
         contextCompressionCount={conversations.currentConversation?.contextCompressionCount ?? 0}
         contextDisabled={!conversations.currentConversation || !currentModel}
@@ -493,7 +631,11 @@ function App() {
                   sort={workLibrarySort}
                   contextPanelOpen={workContextPanelOpen}
                   chatBusy={chatRuntime.requestInFlight}
+                  literatureNavigationRequest={literatureNavigationRequest}
                   onToggleContextPanel={() => setWorkContextPanelOpen((open) => !open)}
+                  onAskSelection={addLiteratureReference}
+                  onPdfDocumentsChange={setWorkPdfDocuments}
+                  onLiteratureNavigationHandled={handleLiteratureNavigationHandled}
                   onImport={library.importPdfs}
                   onRefresh={library.refresh}
                   onDismissNotice={library.clearNotice}
@@ -514,11 +656,18 @@ function App() {
                     searchQuery={workSearchQuery}
                     chatBusy={chatRuntime.requestInFlight}
                     chatPanel={chatWorkspace}
+                    pdfDocuments={workPdfDocuments}
+                    linkedLibraryItemIds={conversations.currentConversation?.linkedLibraryItemIds ?? []}
+                    literatureReferenceError={literatureReferenceError}
+                    conversationAvailable={conversations.currentConversation !== null}
                     libraryItem={library.selectedItem}
                     collections={library.collections}
                     itemSaving={library.actionPending}
                     onViewChange={setWorkContextView}
                     onClose={() => setWorkContextPanelOpen(false)}
+                    onLinkedLibraryItemIdsChange={updateLinkedLibraryItemIds}
+                    onAddLiteratureReference={addLiteratureReference}
+                    onClearLiteratureReferenceError={() => setLiteratureReferenceError("")}
                     onSaveLibraryItem={library.saveItem}
                     resize={{
                       value: layoutPreferences.workContextWidth,

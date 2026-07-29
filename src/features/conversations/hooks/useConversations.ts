@@ -28,6 +28,7 @@ function createConversation(): Conversation {
     compressedUntilMessageId: null,
     contextCompressionCount: 0,
     enabledSkillIds: [],
+    linkedLibraryItemIds: [],
     permissionMode: "askSensitive",
     projectId: null,
     collectionId: null,
@@ -41,7 +42,10 @@ function toConversationListItem(conversation: Conversation): ConversationListIte
   const lastMessage = [...conversation.messages]
     .reverse()
     .find((message) => (
-      message.content || message.errorMessage || (message.attachments?.length ?? 0) > 0
+      message.content
+      || message.errorMessage
+      || (message.attachments?.length ?? 0) > 0
+      || (message.literatureReferences?.length ?? 0) > 0
     ));
   const attachmentPreview = lastMessage?.attachments?.length
     ? `附件：${lastMessage.attachments.map((attachment) => attachment.name).join("、")}`
@@ -49,7 +53,11 @@ function toConversationListItem(conversation: Conversation): ConversationListIte
   return {
     id: conversation.id,
     title: conversation.title,
-    preview: lastMessage?.content || lastMessage?.errorMessage || attachmentPreview || "暂无消息",
+    preview: lastMessage?.content
+      || lastMessage?.errorMessage
+      || attachmentPreview
+      || lastMessage?.literatureReferences?.[0]?.title
+      || "暂无消息",
     messageCount: conversation.messages.length,
     assistantId: conversation.assistantId,
     providerId: conversation.providerId,

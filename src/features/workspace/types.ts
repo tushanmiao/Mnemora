@@ -22,5 +22,20 @@ export type WorkResourceTab = {
   resourceId?: string;
 };
 
+/** Work Chat 范围选择器使用的轻量 PDF 页签信息，不持有 PDF.js 资源。 */
+export type WorkPdfDocument = {
+  libraryItemId: string;
+  title: string;
+  active: boolean;
+};
+
+/** 点击聊天中的文献引用后交给 WorkWorkspace 的一次性跳转请求。 */
+export type LiteratureNavigationRequest = {
+  requestId: string;
+  libraryItemId: string;
+  title: string;
+  pageIndex: number;
+};
+
 /** 右侧面板只处理当前活动资源，不保存第二套业务数据。 */
 export type WorkContextView = "chat" | "navigator" | "annotations" | "notes" | "info";

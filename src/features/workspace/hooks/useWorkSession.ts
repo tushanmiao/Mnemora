@@ -125,13 +125,13 @@ export function useWorkSession() {
     setSession((current) => ({ ...current, activeTabId: LIBRARY_TAB.id }));
   }, []);
 
-  const openPdf = useCallback((item: LibraryItem) => {
-    const tabId = `pdf:${item.id}`;
+  const openPdfReference = useCallback((itemId: string, title: string) => {
+    const tabId = `pdf:${itemId}`;
     setSession((current) => {
       const existing = current.tabs.find((tab) => tab.id === tabId);
       if (existing) {
         const tabs = current.tabs.map((tab) => tab.id === tabId
-          ? { ...tab, title: item.title }
+          ? { ...tab, title }
           : tab);
         return { ...current, tabs, activeTabId: tabId };
       }
@@ -140,9 +140,9 @@ export function useWorkSession() {
         {
           id: tabId,
           kind: "pdf" as const,
-          title: item.title,
+          title,
           closable: true,
-          resourceId: item.id,
+          resourceId: itemId,
         },
       ].slice(-(MAX_OPEN_WORK_TABS - 1));
       return {
@@ -152,6 +152,10 @@ export function useWorkSession() {
       };
     });
   }, []);
+
+  const openPdf = useCallback((item: LibraryItem) => {
+    openPdfReference(item.id, item.title);
+  }, [openPdfReference]);
 
   const closeTab = useCallback((tabId: string) => {
     setSession((current) => {
@@ -184,6 +188,7 @@ export function useWorkSession() {
     selectTab,
     showLibrary,
     openPdf,
+    openPdfReference,
     openNote,
     updateNoteTab,
     closeTab,

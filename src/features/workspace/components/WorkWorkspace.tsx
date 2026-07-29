@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowDownAZ,
   ArrowDownWideNarrow,
@@ -20,7 +20,13 @@ import {
   Trash2,
 } from "lucide-react";
 import type { LibraryItem, LibrarySort } from "../../library/types";
-import type { WorkLibraryView } from "../types";
+import type { LiteratureReference } from "../../../types/chat";
+import { usePdfReaderBridge } from "../../pdf/context/PdfReaderContext";
+import type {
+  LiteratureNavigationRequest,
+  WorkLibraryView,
+  WorkPdfDocument,
+} from "../types";
 import { useWorkSession } from "../hooks/useWorkSession";
 import { WorkTabStrip } from "./WorkTabStrip";
 import "../styles/work-workspace.css";
@@ -45,7 +51,11 @@ type WorkWorkspaceProps = {
   sort: LibrarySort;
   contextPanelOpen: boolean;
   chatBusy: boolean;
+  literatureNavigationRequest: LiteratureNavigationRequest | null;
   onToggleContextPanel: () => void;
+  onAskSelection: (reference: LiteratureReference) => void;
+  onPdfDocumentsChange: (documents: WorkPdfDocument[]) => void;
+  onLiteratureNavigationHandled: (requestId: string) => void;
   onImport: () => Promise<unknown>;
   onRefresh: () => void;
   onDismissNotice: () => void;
@@ -92,7 +102,11 @@ export function WorkWorkspace({
   sort,
   contextPanelOpen,
   chatBusy,
+  literatureNavigationRequest,
   onToggleContextPanel,
+  onAskSelection,
+  onPdfDocumentsChange,
+  onLiteratureNavigationHandled,
   onImport,
   onRefresh,
   onDismissNotice,
@@ -106,11 +120,27 @@ export function WorkWorkspace({
   onDeletePermanently,
 }: WorkWorkspaceProps) {
   const session = useWorkSession();
+  const { controller: pdfController } = usePdfReaderBridge();
   const [sortMenuOpen, setSortMenuOpen] = useState(false);
   const [itemMenuId, setItemMenuId] = useState<string | null>(null);
   const [noteTotal, setNoteTotal] = useState(0);
   const menuAreaRef = useRef<HTMLDivElement>(null);
   const libraryContextRef = useRef({ libraryView, searchQuery, collectionName });
+  const pdfDocuments = useMemo<WorkPdfDocument[]>(() => session.tabs.flatMap((tab) => (
+    tab.kind === "pdf" && tab.resourceId
+      ? [{
+          libraryItemId: tab.resourceId,
+          title: tab.title,
+          active: tab.id === session.activeTab.id,
+        }]
+      : []
+  )), [session.activeTab.id, session.tabs]);
+
+  useEffect(() => {
+    onPdfDocumentsChange(pdfDocuments);
+  }, [onPdfDocumentsChange, pdfDocuments]);
+
+  useEffect(() => () => onPdfDocumentsChange([]), [onPdfDocumentsChange]);
 
   useEffect(() => {
     const previous = libraryContextRef.current;
@@ -140,6 +170,25 @@ export function WorkWorkspace({
       session.openPdf(item);
     }
   }, [selectedItem, session.activeTab, session.openPdf]);
+
+  useEffect(() => {
+    const request = literatureNavigationRequest;
+    if (!request) return;
+    const targetTabId = `pdf:${request.libraryItemId}`;
+    if (session.activeTab.id !== targetTabId) {
+      session.openPdfReference(request.libraryItemId, request.title);
+      return;
+    }
+    if (pdfController?.itemId !== request.libraryItemId) return;
+    pdfController.goToPage(request.pageIndex);
+    onLiteratureNavigationHandled(request.requestId);
+  }, [
+    literatureNavigationRequest,
+    onLiteratureNavigationHandled,
+    pdfController,
+    session.activeTab.id,
+    session.openPdfReference,
+  ]);
 
   useEffect(() => {
     function closeMenus(event: MouseEvent) {
@@ -196,6 +245,7 @@ export function WorkWorkspace({
               item={activePdfItem}
               onOpenExternal={onOpenExternal}
               onOpenNote={session.openNote}
+              onAskSelection={onAskSelection}
             />
           </Suspense>
         ) : (

@@ -26,6 +26,7 @@ function conversation(id: string, content = id): Conversation {
     compressedUntilMessageId: null,
     contextCompressionCount: 0,
     enabledSkillIds: [],
+    linkedLibraryItemIds: [],
     permissionMode: "askSensitive",
     projectId: null,
     collectionId: null,
@@ -71,5 +72,22 @@ describe("trimConversationCache", () => {
     });
 
     expect(result.map((item) => item.id)).toEqual(["current"]);
+  });
+
+  it("includes literature reference text in the cache budget", () => {
+    const plain = conversation("plain", "question");
+    const cited = conversation("cited", "question");
+    cited.messages[0].literatureReferences = [{
+      id: "reference-1",
+      libraryItemId: "item-1",
+      title: "Paper",
+      pageIndex: 0,
+      kind: "page",
+      text: "evidence".repeat(200),
+    }];
+
+    expect(estimateConversationTextBytes(cited)).toBeGreaterThan(
+      estimateConversationTextBytes(plain) + 2_000,
+    );
   });
 });

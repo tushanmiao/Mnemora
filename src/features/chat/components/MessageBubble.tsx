@@ -2,6 +2,7 @@ import { memo, useEffect, useRef, useState, type FormEvent } from "react";
 import {
   AlertCircle,
   Bot,
+  BookOpenText,
   BrainCircuit,
   Check,
   ChevronDown,
@@ -17,7 +18,7 @@ import {
   UserRound,
   X,
 } from "lucide-react";
-import type { ChatMessage } from "../../../types/chat";
+import type { ChatMessage, LiteratureReference } from "../../../types/chat";
 import { MarkdownMessage } from "./MarkdownMessage";
 import { ChatAttachments } from "./ChatAttachments";
 import { useStreamingMessage } from "../stores/streamingStore";
@@ -47,6 +48,7 @@ type MessageBubbleProps = {
   onDelete: (messageId: string) => void;
   /** 选中助手回答的部分文本后点击"引用提问"时回调；不传则不显示引用入口。 */
   onQuote?: (text: string) => void;
+  onLiteratureReferenceOpen?: (reference: LiteratureReference) => void;
 };
 
 export type MessageBubbleUiState = {
@@ -70,6 +72,7 @@ export const MessageBubble = memo(function MessageBubble({
   onRegenerate,
   onDelete,
   onQuote,
+  onLiteratureReferenceOpen,
 }: MessageBubbleProps) {
   const isAssistant = message.role === "assistant";
   const canStream = isAssistant && (
@@ -81,9 +84,11 @@ export const MessageBubble = memo(function MessageBubble({
   const isStreaming = message.status === "streaming" || streamingSnapshot !== null;
   const hasContent = displayedContent.trim().length > 0;
   const attachments = message.attachments ?? [];
+  const literatureReferences = message.literatureReferences ?? [];
   const activatedSkills = message.activatedSkills ?? [];
   const toolTraces = message.toolTraces ?? [];
   const hasAttachments = attachments.length > 0;
+  const hasLiteratureReferences = (message.literatureReferences?.length ?? 0) > 0;
   const hasReasoning = displayedReasoning.trim().length > 0;
   const isWaiting = isAssistant
     && message.status === "pending"
@@ -190,7 +195,7 @@ export const MessageBubble = memo(function MessageBubble({
   const submitEdit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const content = editDraft.trim();
-    if ((!content && !hasAttachments) || actionsDisabled) return;
+    if ((!content && !hasAttachments && !hasLiteratureReferences) || actionsDisabled) return;
     onUiStateChange(message.id, {
       editing: false,
       editDraft: content,
@@ -234,7 +239,7 @@ export const MessageBubble = memo(function MessageBubble({
                   type="submit"
                   title="保存修改"
                   aria-label="保存修改"
-                  disabled={(!editDraft.trim() && !hasAttachments) || actionsDisabled}
+                  disabled={(!editDraft.trim() && !hasAttachments && !hasLiteratureReferences) || actionsDisabled}
                 >
                   <Check size={16} />
                 </button>
@@ -320,6 +325,23 @@ export const MessageBubble = memo(function MessageBubble({
                   conversationId={message.conversationId}
                   variant="message"
                 />
+              ) : null}
+              {hasLiteratureReferences ? (
+                <div className="message-literature-references" aria-label="消息引用的文献">
+                  {literatureReferences.map((reference) => (
+                    <button
+                      type="button"
+                      title={`打开 ${reference.title} 第 ${reference.pageIndex + 1} 页`}
+                      disabled={!onLiteratureReferenceOpen}
+                      key={reference.id}
+                      onClick={() => onLiteratureReferenceOpen?.(reference)}
+                    >
+                      <BookOpenText size={13} />
+                      <span>{reference.title}</span>
+                      <small>第 {reference.pageIndex + 1} 页</small>
+                    </button>
+                  ))}
+                </div>
               ) : null}
               {hasContent ? (
                 isAssistant ? (
@@ -408,7 +430,7 @@ export const MessageBubble = memo(function MessageBubble({
                 type="button"
                 title={isAssistant ? "修改回答" : "修改并重新发送"}
                 aria-label={isAssistant ? "修改回答" : "修改并重新发送"}
-                disabled={actionsDisabled || (!message.content.trim() && !hasAttachments)}
+                disabled={actionsDisabled || (!message.content.trim() && !hasAttachments && !hasLiteratureReferences)}
                 onClick={beginEditing}
               >
                 <Pencil size={15} />

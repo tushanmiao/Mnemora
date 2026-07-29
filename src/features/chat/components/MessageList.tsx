@@ -14,7 +14,7 @@ import {
   MessageSquarePlus,
 } from "lucide-react";
 import { Virtualizer, type VirtualizerHandle } from "virtua";
-import type { ChatMessage } from "../../../types/chat";
+import type { ChatMessage, LiteratureReference } from "../../../types/chat";
 import {
   activeMessageNavigatorNodeId,
   buildMessageNavigatorNodes,
@@ -59,6 +59,7 @@ type MessageListProps = {
   onDeleteMessage: (messageId: string) => void;
   /** 选中助手回答部分文本后点击"引用提问"；不传则消息气泡不显示引用入口。 */
   onQuoteMessage?: (text: string) => void;
+  onLiteratureReferenceOpen?: (reference: LiteratureReference) => void;
 };
 
 function prefersReducedMotion() {
@@ -87,6 +88,7 @@ export function MessageList({
   onRegenerateMessage,
   onDeleteMessage,
   onQuoteMessage,
+  onLiteratureReferenceOpen,
 }: MessageListProps) {
   const listRef = useRef<HTMLElement>(null);
   const threadRef = useRef<HTMLDivElement>(null);
@@ -232,6 +234,7 @@ export function MessageList({
         onRegenerate={onRegenerateMessage}
         onDelete={onDeleteMessage}
         onQuote={onQuoteMessage}
+        onLiteratureReferenceOpen={onLiteratureReferenceOpen}
       />
     </div>
   ), [
@@ -243,6 +246,7 @@ export function MessageList({
     onEditMessage,
     onRegenerateMessage,
     onQuoteMessage,
+    onLiteratureReferenceOpen,
     updateMessageUiState,
   ]);
 
@@ -284,6 +288,8 @@ export function MessageList({
     const thread = threadRef.current;
     if (!thread || typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(() => {
+      const list = listRef.current;
+      if (list && list.scrollLeft !== 0) list.scrollLeft = 0;
       if (isPinnedToBottomRef.current) requestScrollToBottom();
     });
     observer.observe(thread);

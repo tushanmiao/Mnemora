@@ -32,4 +32,18 @@ describe("message navigator", () => {
     expect(activeMessageNavigatorNodeId(nodes, 1)).toBe("turn-u1");
     expect(activeMessageNavigatorNodeId(nodes, 2)).toBe("turn-u2");
   });
+
+  it("uses a literature citation for an otherwise empty turn title", () => {
+    const cited = message("u1", "user", "");
+    cited.literatureReferences = [{
+      id: "reference-1",
+      libraryItemId: "item-1",
+      title: "Paper",
+      pageIndex: 4,
+      kind: "selection",
+      text: "Evidence",
+    }];
+
+    expect(buildMessageNavigatorNodes([cited])[0].title).toBe("文献：Paper，第 5 页");
+  });
 });

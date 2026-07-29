@@ -1,5 +1,8 @@
 .message-row {
   display: flex;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
   align-items: flex-start;
   gap: 12px;
 }
@@ -11,6 +14,7 @@
 .message-column {
   display: flex;
   width: min(var(--chat-reading-max-width), calc(100% - 60px));
+  max-width: 100%;
   min-width: 0;
   flex-direction: column;
 }
@@ -62,10 +66,28 @@
 
 .message-bubble-user {
   width: fit-content;
+  min-width: 0;
   padding: 10px 13px;
   border: 1px solid var(--color-border);
   border-radius: 8px 2px 8px 8px;
   background: var(--color-user-bubble);
+  overflow-wrap: anywhere;
+}
+
+.chat-workspace-panel .message-row {
+  gap: 8px;
+}
+
+.chat-workspace-panel .message-avatar {
+  width: 28px;
+  height: 28px;
+  flex-basis: 28px;
+}
+
+.chat-workspace-panel .message-column {
+  width: auto;
+  max-width: calc(100% - 36px);
+  flex: 1 1 auto;
 }
 
 .message-bubble-user.message-bubble-editing {
@@ -348,6 +370,59 @@
   line-height: 1.65;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.message-literature-references {
+  display: flex;
+  max-width: 100%;
+  margin: 0 0 8px;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.message-literature-references button {
+  display: grid;
+  min-width: 0;
+  max-width: min(100%, 340px);
+  height: 28px;
+  padding: 0 7px;
+  grid-template-columns: 14px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--color-border);
+  border-radius: 5px;
+  color: var(--color-text-secondary);
+  background: var(--color-surface-raised);
+  cursor: pointer;
+  font-size: 10px;
+}
+
+.message-row-user .message-literature-references button {
+  background: var(--color-surface);
+}
+
+.message-literature-references button:hover:not(:disabled) {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+.message-literature-references button:disabled {
+  cursor: default;
+}
+
+.message-literature-references button > svg {
+  color: var(--color-accent);
+}
+
+.message-literature-references button > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.message-literature-references button > small {
+  color: var(--color-muted);
+  white-space: nowrap;
 }
 
 .message-status svg,

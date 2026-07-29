@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   BookOpenText,
+  Check,
+  ChevronDown,
   Download,
   FileText,
   Files,
@@ -16,6 +18,7 @@ import {
   Save,
   Star,
 } from "lucide-react";
+import type { LiteratureReference } from "../../../types/chat";
 import type {
   LibraryCollection,
   LibraryItem,
@@ -29,6 +32,9 @@ import type { WorkContextView } from "../types";
 import { PdfNotesPanel } from "../../notes/components/PdfNotesPanel";
 import { PdfAnnotationsPanel } from "../../pdf/components/PdfAnnotationsPanel";
 import { PdfNavigatorPanel } from "../../pdf/components/PdfNavigatorPanel";
+import { usePdfReaderBridge } from "../../pdf/context/PdfReaderContext";
+import { createLiteratureReference, MAX_LINKED_LIBRARY_ITEMS } from "../../chat/utils/literatureReferences";
+import type { WorkPdfDocument } from "../types";
 import "../styles/work-context-panel.css";
 
 type WorkContextPanelProps = {
@@ -38,11 +44,18 @@ type WorkContextPanelProps = {
   searchQuery: string;
   chatBusy: boolean;
   chatPanel: ReactNode;
+  pdfDocuments: WorkPdfDocument[];
+  linkedLibraryItemIds: string[];
+  literatureReferenceError: string;
+  conversationAvailable: boolean;
   libraryItem: LibraryItem | null;
   collections: LibraryCollection[];
   itemSaving: boolean;
   onViewChange: (view: WorkContextView) => void;
   onClose: () => void;
+  onLinkedLibraryItemIdsChange: (itemIds: string[]) => void;
+  onAddLiteratureReference: (reference: LiteratureReference) => void;
+  onClearLiteratureReferenceError: () => void;
   onSaveLibraryItem: (update: LibraryItemUpdate) => Promise<LibraryItem>;
   resize: Omit<PanelResizeHandleProps, "edge" | "label">;
 };
@@ -62,11 +75,18 @@ export function WorkContextPanel({
   searchQuery,
   chatBusy,
   chatPanel,
+  pdfDocuments,
+  linkedLibraryItemIds,
+  literatureReferenceError,
+  conversationAvailable,
   libraryItem,
   collections,
   itemSaving,
   onViewChange,
   onClose,
+  onLinkedLibraryItemIdsChange,
+  onAddLiteratureReference,
+  onClearLiteratureReferenceError,
   onSaveLibraryItem,
   resize,
 }: WorkContextPanelProps) {
@@ -91,7 +111,18 @@ export function WorkContextPanel({
 
       <div className="work-context-body">
         {activeView === "chat" ? (
-          <div className="work-context-chat">{chatPanel}</div>
+          <div className="work-context-chat">
+            <LiteratureChatScope
+              documents={pdfDocuments}
+              linkedLibraryItemIds={linkedLibraryItemIds}
+              error={literatureReferenceError}
+              disabled={!conversationAvailable || chatBusy}
+              onLinkedLibraryItemIdsChange={onLinkedLibraryItemIdsChange}
+              onAddLiteratureReference={onAddLiteratureReference}
+              onClearError={onClearLiteratureReferenceError}
+            />
+            {chatPanel}
+          </div>
         ) : activeView === "info" ? (
           libraryItem ? (
             <LibraryItemInfoPanel
@@ -186,6 +217,157 @@ export function WorkContextPanel({
         </div>
       </nav>
     </aside>
+  );
+}
+
+type LiteratureChatScopeProps = {
+  documents: WorkPdfDocument[];
+  linkedLibraryItemIds: string[];
+  error: string;
+  disabled: boolean;
+  onLinkedLibraryItemIdsChange: (itemIds: string[]) => void;
+  onAddLiteratureReference: (reference: LiteratureReference) => void;
+  onClearError: () => void;
+};
+
+function LiteratureChatScope({
+  documents,
+  linkedLibraryItemIds,
+  error,
+  disabled,
+  onLinkedLibraryItemIdsChange,
+  onAddLiteratureReference,
+  onClearError,
+}: LiteratureChatScopeProps) {
+  const { controller } = usePdfReaderBridge();
+  const [scopeOpen, setScopeOpen] = useState(false);
+  const [readingPage, setReadingPage] = useState(false);
+  const [readError, setReadError] = useState("");
+  const scopeRef = useRef<HTMLDivElement>(null);
+  const activeDocument = documents.find((document) => document.active) ?? null;
+  const activeReaderAvailable = Boolean(
+    controller && activeDocument && controller.itemId === activeDocument.libraryItemId,
+  );
+  const visibleError = readError || error;
+
+  useEffect(() => {
+    if (!scopeOpen) return;
+    const close = (event: MouseEvent) => {
+      if (!scopeRef.current?.contains(event.target as Node)) setScopeOpen(false);
+    };
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [scopeOpen]);
+
+  const toggleDocument = (document: WorkPdfDocument) => {
+    const linked = linkedLibraryItemIds.includes(document.libraryItemId);
+    onClearError();
+    setReadError("");
+    onLinkedLibraryItemIdsChange(linked
+      ? linkedLibraryItemIds.filter((itemId) => itemId !== document.libraryItemId)
+      : [...linkedLibraryItemIds, document.libraryItemId]);
+  };
+
+  const addCurrentPage = async () => {
+    if (!controller || !activeDocument || !activeReaderAvailable || readingPage || disabled) return;
+    setReadingPage(true);
+    setReadError("");
+    onClearError();
+    try {
+      const pageIndex = Math.max(0, controller.currentPage - 1);
+      const text = await controller.readPageText(pageIndex);
+      const reference = createLiteratureReference({
+        libraryItemId: activeDocument.libraryItemId,
+        title: activeDocument.title,
+        pageIndex,
+        kind: "page",
+        text,
+      });
+      if (!reference) throw new Error("当前页面没有可引用的文字内容。");
+      onAddLiteratureReference(reference);
+    } catch (pageError) {
+      setReadError(pageError instanceof Error ? pageError.message : String(pageError));
+    } finally {
+      setReadingPage(false);
+    }
+  };
+
+  return (
+    <section className="work-literature-chat-scope" aria-label="文献 Chat 引用范围">
+      <div className="work-literature-scope-row">
+        <div className="work-literature-current" title={activeDocument?.title ?? "当前没有活动 PDF"}>
+          <BookOpenText size={14} />
+          <span>{activeDocument?.title ?? "未打开 PDF"}</span>
+        </div>
+        <div className="work-literature-scope-menu-wrap" ref={scopeRef}>
+          <button
+            className="work-literature-scope-button"
+            type="button"
+            disabled={disabled}
+            aria-expanded={scopeOpen}
+            onClick={() => setScopeOpen((open) => !open)}
+          >
+            <Files size={14} />
+            <span>范围 {linkedLibraryItemIds.length}</span>
+            <ChevronDown size={13} />
+          </button>
+          {scopeOpen ? (
+            <div className="work-literature-scope-menu" role="menu">
+              <header>
+                <strong>已打开的 PDF</strong>
+                <span>最多 {MAX_LINKED_LIBRARY_ITEMS} 篇</span>
+                <button
+                  type="button"
+                  disabled={disabled || linkedLibraryItemIds.length === 0}
+                  onClick={() => onLinkedLibraryItemIdsChange([])}
+                >
+                  清空
+                </button>
+              </header>
+              {documents.length > 0 ? documents.map((document) => {
+                const linked = linkedLibraryItemIds.includes(document.libraryItemId);
+                const limitReached = !linked
+                  && linkedLibraryItemIds.length >= MAX_LINKED_LIBRARY_ITEMS;
+                return (
+                  <button
+                    type="button"
+                    role="menuitemcheckbox"
+                    aria-checked={linked}
+                    disabled={disabled || limitReached}
+                    key={document.libraryItemId}
+                    onClick={() => toggleDocument(document)}
+                  >
+                    <span className={`work-literature-scope-check${linked ? " is-checked" : ""}`}>
+                      {linked ? <Check size={12} /> : null}
+                    </span>
+                    <span title={document.title}>{document.title}</span>
+                  </button>
+                );
+              }) : <p>请先在中间工作区打开 PDF。</p>}
+              <footer>范围仅表示允许引用，不会自动读取全文。</footer>
+            </div>
+          ) : null}
+        </div>
+        <button
+          className="work-literature-page-button"
+          type="button"
+          disabled={!activeReaderAvailable || disabled || readingPage}
+          onClick={() => void addCurrentPage()}
+        >
+          {readingPage ? <LoaderCircle size={14} /> : <FileText size={14} />}
+          <span>{readingPage ? "读取中" : "引用当前页"}</span>
+        </button>
+      </div>
+      {visibleError ? (
+        <div className="work-literature-scope-error" role="alert">
+          <span>{visibleError}</span>
+          <button type="button" aria-label="关闭文献引用错误" onClick={() => {
+            setReadError("");
+            onClearError();
+          }}>×</button>
+        </div>
+      ) : null}
+    </section>
   );
 }
 

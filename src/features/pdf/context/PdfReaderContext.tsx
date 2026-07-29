@@ -32,6 +32,8 @@ export type PdfReaderController = {
   annotationMode: "text" | "area";
   annotationColor: LibraryAnnotationColor;
   goToPage: (pageIndex: number) => void;
+  /** 按用户操作读取单页文本，不缓存全文。 */
+  readPageText: (pageIndex: number) => Promise<string>;
   goToAnnotation: (annotation: LibraryAnnotation) => void;
   setAnnotationMode: (mode: "text" | "area") => void;
   setAnnotationColor: (color: LibraryAnnotationColor) => void;

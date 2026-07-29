@@ -1,4 +1,5 @@
 import type { ChatMessage } from "../../../types/chat";
+import { formatLiteratureReferencesForModel } from "./literatureReferences";
 
 export type ContextUsageEstimate = {
   tokens: number;
@@ -52,6 +53,12 @@ function effectiveInputTokens(message: ChatMessage) {
   return usage?.contextInputTokens ?? usage?.inputTokens ?? null;
 }
 
+function estimateLiteratureReferenceTokens(message: ChatMessage) {
+  return estimateTextTokens(formatLiteratureReferencesForModel(
+    message.literatureReferences ?? [],
+  ));
+}
+
 /**
  * 优先使用最近一次供应商实报输入 Token 作为锚点，再补上该回复和后续消息。
  * 没有实报数据时只执行本地字符估算，不引入 tokenizer 依赖和常驻模型。
@@ -80,9 +87,10 @@ export function estimateConversationContext(
       .reduce(
         (total, item, relativeIndex) => {
           const absoluteIndex = index + 1 + relativeIndex;
-          return total
-            + estimateTextTokens(item.content)
-            + estimateAttachmentTokens(item, absoluteIndex === lastUserIndex);
+            return total
+              + estimateTextTokens(item.content)
+              + estimateLiteratureReferenceTokens(item)
+              + estimateAttachmentTokens(item, absoluteIndex === lastUserIndex);
         },
         0,
       );
@@ -97,6 +105,7 @@ export function estimateConversationContext(
       + messages.reduce(
         (total, message, index) => total
           + estimateTextTokens(message.content)
+          + estimateLiteratureReferenceTokens(message)
           + estimateAttachmentTokens(message, index === lastUserIndex),
         0,
       ),

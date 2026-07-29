@@ -20,6 +20,11 @@ const MAX_ATTACHMENTS_PER_MESSAGE: usize = 8;
 const MAX_ATTACHMENT_NAME_CHARS: usize = 255;
 const MAX_ATTACHMENT_MIME_BYTES: usize = 128;
 const MAX_ATTACHMENT_FILE_BYTES: u64 = 25 * 1024 * 1024;
+const MAX_LINKED_LIBRARY_ITEMS: usize = 12;
+const MAX_LITERATURE_REFERENCES_PER_MESSAGE: usize = 8;
+const MAX_LITERATURE_REFERENCE_TEXT_BYTES: usize = 32 * 1024;
+const MAX_LITERATURE_REFERENCE_TOTAL_BYTES: usize = 128 * 1024;
+const MAX_LITERATURE_PAGE_INDEX: u32 = 1_000_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -123,6 +128,45 @@ impl StoredChatAttachment {
     }
 }
 
+/** 用户明确从 Work 文献加入某条消息的 PDF 选区或单页引用。 */
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LiteratureReferenceKind {
+    Selection,
+    Page,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoredLiteratureReference {
+    pub id: String,
+    pub library_item_id: String,
+    pub title: String,
+    pub page_index: u32,
+    pub kind: LiteratureReferenceKind,
+    pub text: String,
+}
+
+impl StoredLiteratureReference {
+    fn validate(&self) -> Result<(), String> {
+        validate_stable_id("Literature reference ID", &self.id)?;
+        validate_stable_id("Literature library item ID", &self.library_item_id)?;
+        if self.title.trim().is_empty() || self.title.chars().count() > MAX_TITLE_CHARS {
+            return Err("Literature reference title is empty or too long".to_string());
+        }
+        if self.title.contains('\r') || self.title.contains('\n') {
+            return Err("Literature reference title must be a single line".to_string());
+        }
+        if self.page_index > MAX_LITERATURE_PAGE_INDEX {
+            return Err("Literature reference page index is invalid".to_string());
+        }
+        if self.text.trim().is_empty() || self.text.len() > MAX_LITERATURE_REFERENCE_TEXT_BYTES {
+            return Err("Literature reference text is empty or too long".to_string());
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StoredChatMessage {
@@ -132,6 +176,8 @@ pub struct StoredChatMessage {
     pub content: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<StoredChatAttachment>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub literature_references: Vec<StoredLiteratureReference>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<String>,
     pub status: MessageStatus,
@@ -172,6 +218,8 @@ pub struct StoredConversation {
     pub context_compression_count: u32,
     #[serde(default)]
     pub enabled_skill_ids: Vec<String>,
+    #[serde(default)]
+    pub linked_library_item_ids: Vec<String>,
     pub permission_mode: AiPermissionMode,
     pub project_id: Option<String>,
     pub collection_id: Option<String>,
@@ -257,6 +305,18 @@ impl StoredConversation {
                 return Err("Conversation contains duplicate skill IDs".to_string());
             }
         }
+        if self.linked_library_item_ids.len() > MAX_LINKED_LIBRARY_ITEMS {
+            return Err(format!(
+                "Conversation cannot link more than {MAX_LINKED_LIBRARY_ITEMS} library items"
+            ));
+        }
+        let mut linked_library_item_ids = std::collections::HashSet::new();
+        for item_id in &self.linked_library_item_ids {
+            validate_stable_id("Linked library item ID", item_id)?;
+            if !linked_library_item_ids.insert(item_id) {
+                return Err("Conversation contains duplicate linked library item IDs".to_string());
+            }
+        }
 
         for message in &self.messages {
             validate_stable_id("Message ID", &message.id)?;
@@ -273,6 +333,28 @@ impl StoredConversation {
             }
             for attachment in &message.attachments {
                 attachment.validate()?;
+            }
+            if message.literature_references.len() > MAX_LITERATURE_REFERENCES_PER_MESSAGE {
+                return Err(format!(
+                    "Chat message cannot exceed {MAX_LITERATURE_REFERENCES_PER_MESSAGE} literature references"
+                ));
+            }
+            if !message.literature_references.is_empty() && message.role != ModelRole::User {
+                return Err("Only user messages can contain literature references".to_string());
+            }
+            let mut reference_ids = std::collections::HashSet::new();
+            let mut reference_text_bytes = 0usize;
+            for reference in &message.literature_references {
+                reference.validate()?;
+                if !reference_ids.insert(&reference.id) {
+                    return Err(
+                        "Chat message contains duplicate literature reference IDs".to_string()
+                    );
+                }
+                reference_text_bytes = reference_text_bytes.saturating_add(reference.text.len());
+            }
+            if reference_text_bytes > MAX_LITERATURE_REFERENCE_TOTAL_BYTES {
+                return Err("Chat message literature references exceed the text budget".to_string());
             }
             if message
                 .reasoning
@@ -345,6 +427,12 @@ impl StoredConversation {
                             .collect::<Vec<_>>()
                             .join("、")
                     ))
+                } else if let Some(reference) = message.literature_references.first() {
+                    Some(format!(
+                        "文献：{}，第 {} 页",
+                        reference.title,
+                        reference.page_index + 1
+                    ))
                 } else {
                     None
                 }
@@ -372,4 +460,118 @@ fn validate_optional_id(label: &str, value: Option<&str>) -> Result<(), String> 
         validate_stable_id(label, value)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    fn conversation_with_message(role: ModelRole) -> StoredConversation {
+        StoredConversation {
+            id: "conversation-1".to_string(),
+            title: "Literature chat".to_string(),
+            messages: vec![StoredChatMessage {
+                id: "message-1".to_string(),
+                conversation_id: "conversation-1".to_string(),
+                role,
+                content: "请解释这段内容".to_string(),
+                attachments: Vec::new(),
+                literature_references: Vec::new(),
+                reasoning: None,
+                status: MessageStatus::Completed,
+                created_at: 1,
+                updated_at: 1,
+                model_id: None,
+                model_snapshot: None,
+                usage: None,
+                activated_skills: Vec::new(),
+                tool_traces: Vec::new(),
+                error_message: None,
+            }],
+            assistant_id: None,
+            provider_id: None,
+            model_id: None,
+            system_prompt: String::new(),
+            context_summary: String::new(),
+            compressed_until_message_id: None,
+            context_compression_count: 0,
+            enabled_skill_ids: Vec::new(),
+            linked_library_item_ids: Vec::new(),
+            permission_mode: AiPermissionMode::AskSensitive,
+            project_id: None,
+            collection_id: None,
+            pinned: false,
+            created_at: 1,
+            updated_at: 1,
+        }
+    }
+
+    fn reference() -> StoredLiteratureReference {
+        StoredLiteratureReference {
+            id: "reference-1".to_string(),
+            library_item_id: "item-1".to_string(),
+            title: "Paper".to_string(),
+            page_index: 2,
+            kind: LiteratureReferenceKind::Selection,
+            text: "Evidence".to_string(),
+        }
+    }
+
+    #[test]
+    fn old_conversation_json_defaults_literature_fields() {
+        let value = json!({
+            "id": "conversation-1",
+            "title": "Legacy",
+            "messages": [{
+                "id": "message-1",
+                "conversationId": "conversation-1",
+                "role": "user",
+                "content": "hello",
+                "status": "completed",
+                "createdAt": 1,
+                "updatedAt": 1
+            }],
+            "assistantId": null,
+            "providerId": null,
+            "modelId": null,
+            "systemPrompt": "",
+            "contextSummary": "",
+            "compressedUntilMessageId": null,
+            "contextCompressionCount": 0,
+            "enabledSkillIds": [],
+            "permissionMode": "askSensitive",
+            "projectId": null,
+            "collectionId": null,
+            "pinned": false,
+            "createdAt": 1,
+            "updatedAt": 1
+        });
+        let conversation: StoredConversation = serde_json::from_value(value).unwrap();
+        assert!(conversation.linked_library_item_ids.is_empty());
+        assert!(conversation.messages[0].literature_references.is_empty());
+        conversation.validate().unwrap();
+    }
+
+    #[test]
+    fn validates_bounded_user_literature_reference() {
+        let mut conversation = conversation_with_message(ModelRole::User);
+        conversation
+            .linked_library_item_ids
+            .push("item-1".to_string());
+        conversation.messages[0]
+            .literature_references
+            .push(reference());
+        conversation.validate().unwrap();
+    }
+
+    #[test]
+    fn rejects_literature_references_on_assistant_messages() {
+        let mut conversation = conversation_with_message(ModelRole::Assistant);
+        conversation.messages[0]
+            .literature_references
+            .push(reference());
+        assert!(conversation.validate().is_err());
+    }
 }

@@ -22,7 +22,7 @@ import {
   savePastedChatAttachment,
 } from "../api/attachments";
 import type { ContextUsageEstimate } from "../utils/contextUsage";
-import type { ChatMessage } from "../../../types/chat";
+import type { ChatMessage, LiteratureReference } from "../../../types/chat";
 import type { LocalSlashCommand, SlashCommandExecutionResult } from "../commands/slashCommands";
 import { buildSlashSuggestions, parseSlashInput } from "../commands/slashCommands";
 import { resolveSkillActivation } from "../utils/skillActivation";
@@ -39,6 +39,8 @@ type ChatInputProps = {
   busy?: boolean;
   stopDisabled?: boolean;
   placeholder?: string;
+  /** 外部交互（例如 PDF 选区问 AI）请求聚焦输入框的递增序号。 */
+  focusRequest?: number;
   contextUsage: ContextUsageEstimate;
   contextWindowTokens: number | null;
   /** 当前模型是否支持图片输入；false 时禁止添加图片附件，null 表示未知（放行）。 */
@@ -47,6 +49,10 @@ type ChatInputProps = {
   quote?: string | null;
   /** 用户移除引用条或发送完成后调用。 */
   onQuoteClear?: () => void;
+  /** Work 中待随本轮发送的 PDF 选区或单页引用。 */
+  literatureReferences?: LiteratureReference[];
+  onLiteratureReferenceRemove?: (referenceId: string) => void;
+  onLiteratureReferencesClear?: () => void;
   contextMessageCount: number;
   contextCompressionCount?: number;
   contextDisabled?: boolean;
@@ -59,6 +65,7 @@ type ChatInputProps = {
     content: string,
     attachments?: ChatAttachment[],
     skillActivation?: SkillActivationSelection,
+    literatureReferences?: LiteratureReference[],
   ) => void;
   onStop?: () => void;
   onSlashCommand: (
@@ -107,11 +114,15 @@ export function ChatInput({
   busy = false,
   stopDisabled = false,
   placeholder = "向 Mnemora 提问...",
+  focusRequest = 0,
   contextUsage,
   contextWindowTokens,
   supportsVision = null,
   quote = null,
   onQuoteClear,
+  literatureReferences = [],
+  onLiteratureReferenceRemove,
+  onLiteratureReferencesClear,
   contextMessageCount,
   contextCompressionCount = 0,
   contextDisabled = false,
@@ -133,15 +144,26 @@ export function ChatInput({
   const [unknownSlashConfirmation, setUnknownSlashConfirmation] = useState<string | null>(null);
   const [selectedCommandIndex, setSelectedCommandIndex] = useState(0);
   const preparingAttachmentsRef = useRef(false);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const attachmentsRef = useRef(attachments);
   const attachmentSessionRef = useRef(0);
   const activeAttachmentTaskRef = useRef<string | null>(null);
   const previousConversationIdRef = useRef(conversationId);
   attachmentsRef.current = attachments;
   const inputDisabled = disabled || busy || preparingAttachments || commandRunning;
-  const canSend = !inputDisabled && (draft.trim().length > 0 || attachments.length > 0);
+  const canSend = !inputDisabled && (
+    draft.trim().length > 0
+    || attachments.length > 0
+    || literatureReferences.length > 0
+  );
   const slashSuggestions = useMemo(() => buildSlashSuggestions(draft, skills), [draft, skills]);
   const slashMenuOpen = !inputDisabled && draft.trimStart().startsWith("/") && !draft.includes("\n") && slashSuggestions.length > 0;
+
+  useEffect(() => {
+    if (focusRequest <= 0 || inputDisabled) return;
+    const frame = requestAnimationFrame(() => textareaRef.current?.focus());
+    return () => cancelAnimationFrame(frame);
+  }, [focusRequest, inputDisabled]);
 
   useEffect(() => {
     setSelectedCommandIndex(0);
@@ -323,8 +345,10 @@ export function ChatInput({
         contentWithQuote,
         storedAttachments,
         resolveSkillActivation(draft, selectedSkillIds, skills),
+        literatureReferences,
       );
       onQuoteClear?.();
+      onLiteratureReferencesClear?.();
       setDraft("");
       setCommandFeedback("");
       setUnknownSlashConfirmation(null);
@@ -430,6 +454,30 @@ export function ChatInput({
               </button>
             </div>
           ) : null}
+          {literatureReferences.length > 0 ? (
+            <div className="composer-literature-references" aria-label="本轮文献引用">
+              {literatureReferences.map((reference) => (
+                <div className="composer-literature-reference" key={reference.id}>
+                  <BookOpenText size={14} />
+                  <span>
+                    <strong title={reference.title}>{reference.title}</strong>
+                    <small>
+                      第 {reference.pageIndex + 1} 页 · {reference.kind === "selection" ? "文字选区" : "当前页"}
+                    </small>
+                    <em title={reference.text}>{reference.text}</em>
+                  </span>
+                  <button
+                    type="button"
+                    title="移除文献引用"
+                    aria-label={`移除 ${reference.title} 第 ${reference.pageIndex + 1} 页引用`}
+                    onClick={() => onLiteratureReferenceRemove?.(reference.id)}
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : null}
           <ChatAttachments
             attachments={attachments}
             variant="composer"
@@ -468,6 +516,7 @@ export function ChatInput({
           ) : null}
           <textarea
             className="composer-textarea"
+            ref={textareaRef}
             rows={2}
             placeholder={placeholder}
             aria-label="消息输入框"

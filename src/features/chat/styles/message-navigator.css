@@ -79,9 +79,23 @@
   width: min(var(--chat-content-max-width), calc(100% - 96px));
 }
 
+.chat-workspace-panel .message-list-shell-has-navigator .message-thread {
+  width: calc(100% - 52px);
+}
+
 @media (max-width: 900px) {
   .message-navigator { display: none; }
   .message-list-shell-has-navigator .message-thread { width: calc(100% - 32px); }
+}
+
+@container work-chat (max-width: 420px) {
+  .chat-workspace-panel .message-navigator {
+    display: none;
+  }
+
+  .chat-workspace-panel .message-list-shell-has-navigator .message-thread {
+    width: calc(100% - 20px);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -52,4 +52,25 @@ describe("estimateConversationContext", () => {
 
     expect(estimate.tokens).toBe(40 + 765);
   });
+
+  it("counts explicitly included PDF reference text", () => {
+    const withoutReference = estimateConversationContext([
+      message({ content: "解释这一段" }),
+    ], "");
+    const withReference = estimateConversationContext([
+      message({
+        content: "解释这一段",
+        literatureReferences: [{
+          id: "reference-1",
+          libraryItemId: "item-1",
+          title: "Paper",
+          pageIndex: 0,
+          kind: "selection",
+          text: "A".repeat(400),
+        }],
+      }),
+    ], "");
+
+    expect(withReference.tokens).toBeGreaterThan(withoutReference.tokens + 90);
+  });
 });

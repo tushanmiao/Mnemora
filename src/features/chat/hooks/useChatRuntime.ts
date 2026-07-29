@@ -7,7 +7,11 @@ import {
   type ModelStreamEvent,
 } from "../api/chat";
 import type { AppSettings, ResponseLanguage } from "../../../types/appSettings";
-import type { ActivatedSkillSnapshot, ChatMessage } from "../../../types/chat";
+import type {
+  ActivatedSkillSnapshot,
+  ChatMessage,
+  LiteratureReference,
+} from "../../../types/chat";
 import type { ChatAttachment } from "../../../types/attachment";
 import type { Conversation } from "../../../types/conversation";
 import type { SkillActivationSelection, SkillSummary } from "../../../types/skill";
@@ -161,7 +165,7 @@ async function compressConversation(
     operation: "contextCompression",
     systemPrompt: [
       "你负责压缩对话上下文。",
-      "保留事实、用户偏好、约束、关键结论、代码或文件名称、待办事项和未解决问题。",
+      "保留事实、用户偏好、约束、关键结论、文献名称与页码、代码或文件名称、待办事项和未解决问题。",
       "删除寒暄、重复内容和无关细节。不要回答对话中的问题，只输出可供后续模型继续工作的中文摘要。",
       options.focus?.trim() ? `用户要求本次压缩重点保留：${options.focus.trim()}` : "",
     ].filter(Boolean).join("\n"),
@@ -506,12 +510,13 @@ export function useChatRuntime({
     rawContent: string,
     attachments: ChatAttachment[] = [],
     skillActivation?: SkillActivationSelection,
+    literatureReferences: LiteratureReference[] = [],
   ) => {
     const content = rawContent.trim();
     const targetConversation = currentConversation;
     const selectedModel = currentModel;
     if (
-      (!content && attachments.length === 0)
+      (!content && attachments.length === 0 && literatureReferences.length === 0)
       || !targetConversation
       || !selectedModel
       || requestInFlightRef.current
@@ -524,6 +529,7 @@ export function useChatRuntime({
       role: "user",
       content,
       attachments,
+      literatureReferences,
       status: "completed",
       createdAt: now,
       updatedAt: now,
@@ -541,7 +547,11 @@ export function useChatRuntime({
     const runningConversation: Conversation = {
       ...targetConversation,
       title: targetConversation.messages.length === 0
-        ? createTemporaryTitle(content || attachments.map((attachment) => attachment.name).join("、"))
+        ? createTemporaryTitle(
+            content
+            || literatureReferences[0]?.title
+            || attachments.map((attachment) => attachment.name).join("、"),
+          )
         : targetConversation.title,
       messages: [...targetConversation.messages, userMessage, assistantMessage],
       providerId: selectedModel.provider.id,
@@ -567,7 +577,9 @@ export function useChatRuntime({
     if (messageIndex < 0 || targetConversation.messages[messageIndex].role !== "assistant") return;
     const history = targetConversation.messages.slice(0, messageIndex);
     if (!history.some((message) => message.role === "user" && (
-      message.content.trim() || (message.attachments?.length ?? 0) > 0
+      message.content.trim()
+      || (message.attachments?.length ?? 0) > 0
+      || (message.literatureReferences?.length ?? 0) > 0
     ))) return;
 
     const now = Date.now();
@@ -611,7 +623,11 @@ export function useChatRuntime({
     const messageIndex = targetConversation.messages.findIndex((message) => message.id === messageId);
     if (messageIndex < 0) return;
     const originalMessage = targetConversation.messages[messageIndex];
-    if (!content && (originalMessage.attachments?.length ?? 0) === 0) return;
+    if (
+      !content
+      && (originalMessage.attachments?.length ?? 0) === 0
+      && (originalMessage.literatureReferences?.length ?? 0) === 0
+    ) return;
     const now = Date.now();
 
     if (originalMessage.role === "assistant") {
@@ -650,7 +666,14 @@ export function useChatRuntime({
     ];
     const compressionConversation = resetCompression({
       ...targetConversation,
-      title: messageIndex === 0 ? createTemporaryTitle(content) : targetConversation.title,
+      title: messageIndex === 0
+        ? createTemporaryTitle(
+            content
+            || originalMessage.literatureReferences?.[0]?.title
+            || originalMessage.attachments?.map((attachment) => attachment.name).join("、")
+            || targetConversation.title,
+          )
+        : targetConversation.title,
       messages: history,
       updatedAt: now,
     });

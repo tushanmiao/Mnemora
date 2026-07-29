@@ -1,5 +1,7 @@
 .message-list {
+  min-width: 0;
   min-height: 0;
+  overflow-x: hidden;
   overflow-y: auto;
   scrollbar-color: var(--color-border) transparent;
   scrollbar-width: thin;
@@ -7,8 +9,16 @@
 
 .message-thread {
   width: min(var(--chat-content-max-width), calc(100% - var(--chat-content-gutter)));
+  max-width: 100%;
+  min-width: 0;
   min-height: 100%;
   margin: 0 auto;
+}
+
+.chat-workspace-panel .message-thread,
+.chat-workspace-panel .empty-chat-state {
+  width: calc(100% - 24px);
+  max-width: 100%;
 }
 
 .message-list-item {
@@ -181,5 +191,20 @@
     align-items: center;
     align-content: center;
     gap: 10px;
+  }
+}
+
+@container work-chat (max-width: 420px) {
+  .chat-workspace-panel .message-thread,
+  .chat-workspace-panel .empty-chat-state {
+    width: calc(100% - 20px);
+  }
+
+  .chat-workspace-panel .message-list-item {
+    padding-bottom: 18px;
+  }
+
+  .chat-workspace-panel .message-list-item-first {
+    padding-top: 20px;
   }
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ChatMessage } from "../../../types/chat";
-import { toModelMessages } from "./contextCompression";
+import { compressionTranscript, toModelMessages } from "./contextCompression";
 
 describe("toModelMessages", () => {
   it("keeps attachment-only user messages", () => {
@@ -27,5 +27,31 @@ describe("toModelMessages", () => {
       content: "",
       attachments: message.attachments,
     }]);
+  });
+
+  it("adds structured literature references to model context and compression", () => {
+    const message: ChatMessage = {
+      id: "message-2",
+      conversationId: "conversation-1",
+      role: "user",
+      content: "这个结论可靠吗？",
+      literatureReferences: [{
+        id: "reference-1",
+        libraryItemId: "item-1",
+        title: "Reliable Paper",
+        pageIndex: 2,
+        kind: "selection",
+        text: "The reported improvement is statistically significant.",
+      }],
+      status: "completed",
+      createdAt: 1,
+      updatedAt: 1,
+    };
+
+    const modelMessage = toModelMessages([message])[0];
+    expect(modelMessage.content).toContain("Reliable Paper");
+    expect(modelMessage.content).toContain("第 3 页");
+    expect(modelMessage.content).toContain("用户问题：\n这个结论可靠吗？");
+    expect(compressionTranscript("", [message])).toContain("Reliable Paper，第 3 页");
   });
 });

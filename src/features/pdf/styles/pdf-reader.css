@@ -270,11 +270,60 @@
 }
 
 .mnemora-pdf-selection-color {
+  display: block;
   width: 12px;
   height: 12px;
-  margin: 0 3px;
   border-radius: 50%;
   background: var(--pdf-annotation-color);
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 16%);
+}
+
+.mnemora-pdf-selection-color-picker {
+  position: relative;
+  display: flex;
+}
+
+.mnemora-pdf-selection-toolbar .mnemora-pdf-selection-color-button {
+  width: 27px;
+  height: 27px;
+}
+
+.mnemora-pdf-selection-color-button[aria-expanded="true"] {
+  background: var(--color-hover);
+}
+
+.mnemora-pdf-selection-color-menu {
+  position: absolute;
+  bottom: calc(100% + 7px);
+  left: 50%;
+  display: flex;
+  padding: 5px;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-surface-raised);
+  box-shadow: var(--shadow-menu);
+  transform: translateX(-50%);
+}
+
+.mnemora-pdf-selection-toolbar .mnemora-pdf-selection-color-option {
+  width: 20px;
+  height: 20px;
+  border: 2px solid transparent;
+  border-radius: 50%;
+  background: var(--pdf-annotation-color);
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 16%);
+}
+
+.mnemora-pdf-selection-toolbar .mnemora-pdf-selection-color-option:hover {
+  background: var(--pdf-annotation-color);
+  box-shadow: 0 0 0 2px var(--color-text-secondary);
+}
+
+.mnemora-pdf-selection-toolbar .mnemora-pdf-selection-color-option.is-active {
+  border-color: var(--color-surface-raised);
+  box-shadow: 0 0 0 2px var(--color-text);
 }
 
 .mnemora-pdf-reader-scroll {

@@ -72,6 +72,22 @@ export interface ToolTrace {
   approvalId?: string;
 }
 
+/** 用户明确从 Work 文献中加入本轮问题的结构化引用。 */
+export interface LiteratureReference {
+  /** 引用唯一标识，用于时间线渲染和待发送列表管理。 */
+  id: string;
+  /** 文献库中的稳定文献 ID。 */
+  libraryItemId: string;
+  /** 发送引用时的文献标题快照，避免后续改名影响历史记录。 */
+  title: string;
+  /** PDF 页索引，使用 0-based，与 PDF.js 和文献库批注保持一致。 */
+  pageIndex: number;
+  /** selection 表示用户选区，page 表示用户手动引用整页文本。 */
+  kind: "selection" | "page";
+  /** 用户明确加入上下文的有界文本，不包含整篇 PDF。 */
+  text: string;
+}
+
 /** 用户在聊天时间线中看到的一条消息。 */
 export interface ChatMessage {
   id: string;
@@ -80,6 +96,8 @@ export interface ChatMessage {
   content: string;
   /** 用户随本轮消息添加的图片或本地文件安全副本。 */
   attachments?: ChatAttachment[];
+  /** 用户明确加入本轮问题的 PDF 选区或单页引用。 */
+  literatureReferences?: LiteratureReference[];
   /** 模型返回的独立思考内容，不与最终回答混在一起。 */
   reasoning?: string;
   status: MessageStatus;

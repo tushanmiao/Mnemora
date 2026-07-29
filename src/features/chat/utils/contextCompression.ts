@@ -1,5 +1,9 @@
 import type { ChatMessage, MessageRole } from "../../../types/chat";
 import type { Conversation } from "../../../types/conversation";
+import {
+  formatLiteratureReferencesForCompression,
+  formatLiteratureReferencesForModel,
+} from "./literatureReferences";
 
 export const AUTO_COMPRESSION_RATIO = 0.9;
 const RECENT_MESSAGES_TO_KEEP = 4;
@@ -23,7 +27,9 @@ export function contextSummaryPrompt(conversation: Conversation) {
 export function compressionCandidates(conversation: Conversation) {
   const active = activeContextMessages(conversation)
     .filter((message) => message.status === "completed" && (
-      message.content.trim() || (message.attachments?.length ?? 0) > 0
+      message.content.trim()
+      || (message.attachments?.length ?? 0) > 0
+      || (message.literatureReferences?.length ?? 0) > 0
     ));
   if (active.length <= RECENT_MESSAGES_TO_KEEP + 1) return [];
   return active.slice(0, -RECENT_MESSAGES_TO_KEEP);
@@ -44,6 +50,7 @@ export function compressionTranscript(
     return [
       `### ${role}`,
       message.content.trim(),
+      formatLiteratureReferencesForCompression(message.literatureReferences ?? []),
       imageNames.length > 0 ? `图片附件（正文已省略）：${imageNames.join("、")}` : "",
       fileNames.length > 0 ? `文件附件（正文未解析）：${fileNames.join("、")}` : "",
     ].filter(Boolean).join("\n");
@@ -59,11 +66,22 @@ export function compressionTranscript(
 export function toModelMessages(messages: ChatMessage[]) {
   return messages
     .filter((message) => message.status === "completed" && (
-      message.content.trim() || (message.attachments?.length ?? 0) > 0
+      message.content.trim()
+      || (message.attachments?.length ?? 0) > 0
+      || (message.literatureReferences?.length ?? 0) > 0
     ))
-    .map((message) => ({
-      role: message.role as MessageRole,
-      content: message.content,
-      attachments: message.attachments ?? [],
-    }));
+    .map((message) => {
+      const literatureContext = formatLiteratureReferencesForModel(
+        message.literatureReferences ?? [],
+      );
+      return {
+        role: message.role as MessageRole,
+        content: literatureContext
+          ? [literatureContext, message.content.trim() ? `用户问题：\n${message.content}` : ""]
+              .filter(Boolean)
+              .join("\n\n")
+          : message.content,
+        attachments: message.attachments ?? [],
+      };
+    });
 }
