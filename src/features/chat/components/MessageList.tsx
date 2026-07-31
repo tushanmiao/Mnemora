@@ -159,7 +159,14 @@ export function MessageList({
     if (scrollFrameRef.current !== null) return;
     scrollFrameRef.current = requestAnimationFrame(() => {
       scrollFrameRef.current = null;
-      if (isPinnedToBottomRef.current) scrollToBottom(smooth);
+      if (!isPinnedToBottomRef.current) return;
+      scrollToBottom(smooth);
+      // virtua 会在内容提交后继续测量动态高度。下一帧再校正一次，
+      // 避免长 Markdown 或流式尾部扩高时停在旧的底部位置。
+      scrollFrameRef.current = requestAnimationFrame(() => {
+        scrollFrameRef.current = null;
+        if (isPinnedToBottomRef.current) scrollToBottom(false);
+      });
     });
   }, [scrollToBottom]);
 

@@ -132,7 +132,9 @@ button {
   grid-template-rows: 64px minmax(0, 1fr) auto;
   flex: 1;
   min-width: 0;
+  min-height: 0;
   height: 100%;
+  overflow: hidden;
   background: var(--color-surface-layer);
 }
 
@@ -140,6 +142,7 @@ button {
   position: relative;
   display: grid;
   min-width: 0;
+  min-height: 0;
   height: 100%;
   flex: 1;
   overflow: hidden;

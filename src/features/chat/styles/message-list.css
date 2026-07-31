@@ -4,7 +4,29 @@
   overflow-x: hidden;
   overflow-y: auto;
   scrollbar-color: var(--color-border) transparent;
+  scrollbar-gutter: stable;
   scrollbar-width: thin;
+  overscroll-behavior: contain;
+}
+
+.message-list::-webkit-scrollbar {
+  width: 8px;
+}
+
+.message-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.message-list::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: var(--color-border);
+  background-clip: padding-box;
+}
+
+.message-list::-webkit-scrollbar-thumb:hover {
+  background: var(--color-muted);
+  background-clip: padding-box;
 }
 
 .message-thread {
