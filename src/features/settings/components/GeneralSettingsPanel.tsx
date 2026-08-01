@@ -21,6 +21,9 @@ import type {
   ThemeColor,
   ThemeMode,
   ThemePreset,
+  FontPreset,
+  ChineseFontFamily,
+  LatinFontFamily,
 } from "../../../types/appSettings";
 import type { ModelSettings } from "../../../types/modelSettings";
 import {
@@ -30,6 +33,8 @@ import {
   validateThemeBackgroundCss,
 } from "../utils/themeBackground";
 import "../styles/general-settings.css";
+import { FONT_PRESET_VALUES } from "../utils/fontSettings";
+import { useI18n } from "../../../i18n/I18nProvider";
 
 type Feedback = { kind: "success" | "error"; message: string } | null;
 
@@ -46,23 +51,8 @@ type GeneralSettingsPanelProps = {
 const TOKEN_OPTIONS = [4_096, 8_192, 16_384, 32_768, 65_536, 131_072];
 const MAX_AVATAR_BYTES = 2 * 1024 * 1024;
 const ACCEPTED_AVATAR_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
-const THEME_PRESET_OPTIONS: Array<{ value: ThemePreset; label: string }> = [
-  { value: "mnemora", label: "Mnemora" },
-  { value: "forest", label: "森林" },
-  { value: "ocean", label: "海洋" },
-  { value: "rose", label: "玫瑰" },
-  { value: "paper", label: "纸张" },
-  { value: "graphite", label: "石墨" },
-  { value: "highContrast", label: "高对比" },
-];
-const THEME_COLOR_OPTIONS: Array<{ value: ThemeColor; label: string }> = [
-  { value: "neutral", label: "松绿" },
-  { value: "warm", label: "陶土" },
-  { value: "cool", label: "湖蓝" },
-  { value: "rose", label: "玫瑰" },
-  { value: "amber", label: "琥珀" },
-  { value: "violet", label: "紫罗兰" },
-];
+const THEME_PRESETS: ThemePreset[] = ["mnemora", "forest", "ocean", "rose", "paper", "graphite", "highContrast"];
+const THEME_COLORS: ThemeColor[] = ["neutral", "warm", "cool", "rose", "amber", "violet"];
 
 export function GeneralSettingsPanel({
   settings,
@@ -73,6 +63,7 @@ export function GeneralSettingsPanel({
   onImported,
   onDefaultModelChange,
 }: GeneralSettingsPanelProps) {
+  const { t } = useI18n();
   const [draft, setDraft] = useState(settings);
   const [saving, setSaving] = useState(false);
   const [backupBusy, setBackupBusy] = useState(false);
@@ -106,7 +97,17 @@ export function GeneralSettingsPanel({
   const updateDraft = <Key extends keyof AppSettings>(key: Key, value: AppSettings[Key]) => {
     setDraft((current) => {
       const next = { ...current, [key]: value };
-      if (key === "theme" || key === "themePreset" || key === "themeColor" || key === "fontSize") onPreview(next);
+      if (
+        key === "theme"
+        || key === "interfaceLanguage"
+        || key === "themePreset"
+        || key === "themeColor"
+        || key === "fontSize"
+        || key === "letterSpacing"
+        || key === "fontPreset"
+        || key === "chineseFontFamily"
+        || key === "latinFontFamily"
+      ) onPreview(next);
       return next;
     });
     setFeedback(null);
@@ -127,7 +128,7 @@ export function GeneralSettingsPanel({
   const backgroundError = draft.themeBackground.enabled
     ? draft.themeBackground.css.trim()
       ? validateThemeBackgroundCss(draft.themeBackground.css)
-      : "请输入颜色或渐变形式的 CSS background 值。"
+      : t("general.backgroundRequired")
     : null;
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
@@ -141,7 +142,7 @@ export function GeneralSettingsPanel({
     try {
       const saved = await onSave(draft);
       setDraft(saved);
-      setFeedback({ kind: "success", message: "基础设置已保存。" });
+      setFeedback({ kind: "success", message: t("general.saved") });
     } catch (error) {
       setFeedback({
         kind: "error",
@@ -153,15 +154,13 @@ export function GeneralSettingsPanel({
   };
 
   const handleExport = async () => {
-    const memoryNotice = includeMemoryInBackup
-      ? "，以及 L1/L2 跨会话记忆"
-      : "";
-    if (!window.confirm(`导出文件将包含 API Key${memoryNotice}。请确认保存位置安全，并避免上传到公开仓库。`)) return;
+    const memoryNotice = includeMemoryInBackup ? t("general.exportMemoryNotice") : "";
+    if (!window.confirm(t("general.exportConfirm", { memory: memoryNotice }))) return;
     setBackupBusy(true);
     setFeedback(null);
     try {
       const exported = await exportSettingsBundle(includeMemoryInBackup);
-      if (exported) setFeedback({ kind: "success", message: "完整设置已导出，请妥善保管备份文件。" });
+      if (exported) setFeedback({ kind: "success", message: t("general.exported") });
     } catch (error) {
       setFeedback({ kind: "error", message: error instanceof Error ? error.message : String(error) });
     } finally {
@@ -180,8 +179,8 @@ export function GeneralSettingsPanel({
         setFeedback({
           kind: "success",
           message: bundle.memoryImported
-            ? "基础设置、模型供应商、API Key 和跨会话记忆已恢复。"
-            : "基础设置、模型供应商和 API Key 已恢复；当前记忆保持不变。",
+            ? t("general.importedWithMemory")
+            : t("general.importedWithoutMemory"),
         });
       }
     } catch (error) {
@@ -194,18 +193,18 @@ export function GeneralSettingsPanel({
   const handleAvatarFile = (file: File | undefined) => {
     if (!file) return;
     if (!ACCEPTED_AVATAR_TYPES.has(file.type)) {
-      setFeedback({ kind: "error", message: "头像仅支持 PNG、JPEG、WebP 或 GIF 图片。" });
+      setFeedback({ kind: "error", message: t("general.avatarTypeError") });
       return;
     }
     if (file.size > MAX_AVATAR_BYTES) {
-      setFeedback({ kind: "error", message: "头像图片不能超过 2 MB。" });
+      setFeedback({ kind: "error", message: t("general.avatarSizeError") });
       return;
     }
     const reader = new FileReader();
     reader.onload = () => {
       if (typeof reader.result === "string") updateDraft("userAvatar", reader.result);
     };
-    reader.onerror = () => setFeedback({ kind: "error", message: "无法读取头像图片。" });
+    reader.onerror = () => setFeedback({ kind: "error", message: t("general.avatarReadError") });
     reader.readAsDataURL(file);
   };
 
@@ -213,77 +212,77 @@ export function GeneralSettingsPanel({
     <form className="settings-content general-settings-content" onSubmit={handleSubmit} noValidate>
       <div className="settings-content-heading">
         <div>
-          <h2>基础</h2>
-          <span>外观、行为和 AI 客户端</span>
+          <h2>{t("settings.general")}</h2>
+          <span>{t("general.subtitle")}</span>
         </div>
         <button className="settings-button settings-button-primary" type="submit" disabled={saving}>
           <Save size={16} />
-          <span>{saving ? "保存中" : "保存"}</span>
+          <span>{saving ? t("common.saving") : t("common.save")}</span>
         </button>
       </div>
 
       <div className="general-settings-scroll">
         <section className="general-settings-section">
-          <h3>外观</h3>
-          <SettingRow label="界面语言">
+          <h3>{t("general.appearance")}</h3>
+          <SettingRow label={t("general.interfaceLanguage")}>
             <select
               className="settings-input settings-select general-control"
               value={draft.interfaceLanguage}
               onChange={(event) => updateDraft("interfaceLanguage", event.target.value as AppSettings["interfaceLanguage"])}
             >
               <option value="zh">中文</option>
-              <option value="en" disabled>English（后续）</option>
+              <option value="en">English</option>
             </select>
           </SettingRow>
-          <SettingRow label="主题">
+          <SettingRow label={t("general.theme")}>
             <SegmentedControl
               value={draft.theme}
               options={[
-                { value: "system", label: "跟随系统" },
-                { value: "light", label: "浅色" },
-                { value: "dark", label: "深色" },
+                { value: "system", label: t("general.system") },
+                { value: "light", label: t("general.light") },
+                { value: "dark", label: t("general.dark") },
               ]}
               onChange={(value) => updateDraft("theme", value as ThemeMode)}
             />
           </SettingRow>
-          <SettingRow label="主题方案" stack>
-            <div className="theme-preset-options" role="radiogroup" aria-label="主题方案">
-              {THEME_PRESET_OPTIONS.map((option) => (
+          <SettingRow label={t("general.themePreset")} stack>
+            <div className="theme-preset-options" role="radiogroup" aria-label={t("general.themePreset")}>
+              {THEME_PRESETS.map((value) => (
                 <button
-                  className={`theme-preset-option${draft.themePreset === option.value ? " theme-preset-option-active" : ""}`}
-                  data-theme-preset-preview={option.value}
+                  className={`theme-preset-option${draft.themePreset === value ? " theme-preset-option-active" : ""}`}
+                  data-theme-preset-preview={value}
                   type="button"
                   role="radio"
-                  aria-checked={draft.themePreset === option.value}
-                  key={option.value}
-                  onClick={() => updateDraft("themePreset", option.value)}
+                  aria-checked={draft.themePreset === value}
+                  key={value}
+                  onClick={() => updateDraft("themePreset", value)}
                 >
                   <span className="theme-preset-swatch" aria-hidden="true">
                     <i /><i /><i />
                   </span>
-                  <span>{option.label}</span>
+                  <span>{themePresetLabel(value, t)}</span>
                 </button>
               ))}
             </div>
           </SettingRow>
-          <SettingRow label="强调色">
-            <div className="theme-color-options" role="radiogroup" aria-label="主题颜色">
-              {THEME_COLOR_OPTIONS.map((option) => (
+          <SettingRow label={t("general.accent")}>
+            <div className="theme-color-options" role="radiogroup" aria-label={t("general.themeColors")}>
+              {THEME_COLORS.map((value) => (
                 <button
-                  className={`theme-color-option theme-color-${option.value}${draft.themeColor === option.value ? " theme-color-option-active" : ""}`}
+                  className={`theme-color-option theme-color-${value}${draft.themeColor === value ? " theme-color-option-active" : ""}`}
                   type="button"
                   role="radio"
-                  aria-checked={draft.themeColor === option.value}
-                  key={option.value}
-                  onClick={() => updateDraft("themeColor", option.value)}
+                  aria-checked={draft.themeColor === value}
+                  key={value}
+                  onClick={() => updateDraft("themeColor", value)}
                 >
                   <span className="theme-color-swatch" aria-hidden="true" />
-                  <span>{option.label}</span>
+                  <span>{themeColorLabel(value, t)}</span>
                 </button>
               ))}
             </div>
           </SettingRow>
-          <SettingRow label="自定义背景" description="使用受限的 CSS background 值；不允许 URL、脚本或完整样式表。">
+          <SettingRow label={t("general.customBackground")} description={t("general.backgroundDescription")}>
             <Toggle
               checked={draft.themeBackground.enabled}
               onChange={(enabled) => updateThemeBackground({ enabled })}
@@ -291,7 +290,7 @@ export function GeneralSettingsPanel({
           </SettingRow>
           {draft.themeBackground.enabled ? (
             <>
-              <SettingRow label="背景 CSS" stack>
+              <SettingRow label={t("general.backgroundCss")} stack>
                 <div className="theme-background-editor">
                   <textarea
                     className={`theme-background-input${backgroundError ? " theme-background-input-error" : ""}`}
@@ -307,12 +306,12 @@ export function GeneralSettingsPanel({
                     style={{ background: backgroundError || !draft.themeBackground.css.trim()
                       ? "var(--color-app)"
                       : draft.themeBackground.css.trim() }}
-                    aria-label="自定义背景预览"
+                    aria-label={t("general.backgroundPreview")}
                   />
                   {backgroundError ? <span className="theme-background-error">{backgroundError}</span> : null}
                 </div>
               </SettingRow>
-              <SettingRow label="表面透明度">
+              <SettingRow label={t("general.surfaceOpacity")}>
                 <div className="font-size-control theme-opacity-control">
                   <input
                     type="range"
@@ -320,7 +319,7 @@ export function GeneralSettingsPanel({
                     max={MAX_SURFACE_OPACITY}
                     step={1}
                     value={draft.themeBackground.surfaceOpacity}
-                    aria-label="主题表面透明度"
+                    aria-label={t("general.surfaceOpacity")}
                     onChange={(event) => updateThemeBackground({ surfaceOpacity: Number(event.target.value) })}
                   />
                   <output>{draft.themeBackground.surfaceOpacity}%</output>
@@ -328,20 +327,87 @@ export function GeneralSettingsPanel({
               </SettingRow>
             </>
           ) : null}
-          <SettingRow label="显示字体大小" description="调整对话正文、输入框和界面基础文字大小。">
+          <SettingRow label={t("general.fontSize")} description={t("general.fontSizeDescription")}>
             <div className="font-size-control">
               <input
                 type="range"
                 min={12}
-                max={20}
+                max={28}
                 step={1}
                 value={draft.fontSize}
-                aria-label="显示字体大小"
+                aria-label={t("general.fontSize")}
                 onChange={(event) => updateDraft("fontSize", Number(event.target.value))}
               />
               <output>{draft.fontSize} px</output>
             </div>
           </SettingRow>
+          <SettingRow label={t("general.fontPreset")} description={t("general.fontPresetDescription")}>
+            <SegmentedControl
+              value={draft.fontPreset}
+              options={[
+                { value: "system", label: t("general.systemUi") },
+                { value: "academic", label: t("general.academic") },
+                { value: "custom", label: t("general.custom") },
+              ]}
+              onChange={(value) => {
+                const preset = value as FontPreset;
+                if (preset === "custom") {
+                  updateDraft("fontPreset", preset);
+                  return;
+                }
+                setDraft((current) => {
+                  const next = { ...current, fontPreset: preset, ...FONT_PRESET_VALUES[preset] };
+                  onPreview(next);
+                  return next;
+                });
+                setFeedback(null);
+              }}
+            />
+          </SettingRow>
+          <SettingRow label={t("general.letterSpacing")} description={t("general.letterSpacingDescription")}>
+            <div className="font-size-control">
+              <input
+                type="range"
+                min={0}
+                max={1.5}
+                step={0.1}
+                value={draft.letterSpacing}
+                aria-label={t("general.letterSpacing")}
+                onChange={(event) => updateDraft("letterSpacing", Number(event.target.value))}
+              />
+              <output>{draft.letterSpacing.toFixed(1)} px</output>
+            </div>
+          </SettingRow>
+          {draft.fontPreset === "custom" ? (
+            <>
+              <SettingRow label={t("general.chineseFont")}>
+                <select
+                  className="settings-input settings-select general-control"
+                  value={draft.chineseFontFamily}
+                  onChange={(event) => updateDraft("chineseFontFamily", event.target.value as ChineseFontFamily)}
+                >
+                  <option value="system">{t("general.systemChinese")}</option>
+                  <option value="microsoftYaHei">微软雅黑</option>
+                  <option value="simsun">宋体</option>
+                  <option value="notoSansCjk">Noto Sans CJK</option>
+                  <option value="notoSerifCjk">Noto Serif CJK</option>
+                </select>
+              </SettingRow>
+              <SettingRow label={t("general.latinFont")}>
+                <select
+                  className="settings-input settings-select general-control"
+                  value={draft.latinFontFamily}
+                  onChange={(event) => updateDraft("latinFontFamily", event.target.value as LatinFontFamily)}
+                >
+                  <option value="system">{t("general.systemLatin")}</option>
+                  <option value="segoeUi">Segoe UI</option>
+                  <option value="inter">Inter</option>
+                  <option value="timesNewRoman">Times New Roman</option>
+                  <option value="georgia">Georgia</option>
+                </select>
+              </SettingRow>
+            </>
+          ) : null}
           <div className="appearance-reset-row">
             <button
               className="settings-button settings-button-secondary"
@@ -358,6 +424,10 @@ export function GeneralSettingsPanel({
                     surfaceOpacity: DEFAULT_SURFACE_OPACITY,
                   },
                   fontSize: 14,
+                  letterSpacing: 0,
+                  fontPreset: "system" as const,
+                  chineseFontFamily: "system" as const,
+                  latinFontFamily: "system" as const,
                 };
                 setDraft(next);
                 onPreview(next);
@@ -365,21 +435,21 @@ export function GeneralSettingsPanel({
               }}
             >
               <RefreshCw size={15} />
-              <span>恢复默认外观</span>
+              <span>{t("general.resetAppearance")}</span>
             </button>
           </div>
         </section>
 
         <section className="general-settings-section">
-          <h3>行为</h3>
-          <SettingRow label="开机启动">
+          <h3>{t("general.behavior")}</h3>
+          <SettingRow label={t("general.launchStartup")}>
             <Toggle checked={draft.launchAtStartup} onChange={(value) => updateDraft("launchAtStartup", value)} />
           </SettingRow>
-          <SettingRow label="Chat 自动重试" description="只允许在尚未产生回复文本前重试；手动连接测试永不重试。">
+          <SettingRow label={t("general.retry")} description={t("general.retryDescription")}>
             <Toggle checked={draft.retryEnabled} onChange={(value) => updateDraft("retryEnabled", value)} />
           </SettingRow>
           {draft.retryEnabled ? (
-            <SettingRow label="最大重试次数">
+            <SettingRow label={t("general.maxRetries")}>
               <input
                 className="settings-input general-number-input"
                 type="number"
@@ -393,27 +463,27 @@ export function GeneralSettingsPanel({
         </section>
 
         <section className="general-settings-section">
-          <h3>个人资料</h3>
-          <SettingRow label="用户名">
+          <h3>{t("general.profile")}</h3>
+          <SettingRow label={t("general.username")}>
             <input
               className="settings-input general-control"
               value={draft.userDisplayName}
-              placeholder="选填"
+              placeholder={t("common.optional")}
               onChange={(event) => updateDraft("userDisplayName", event.target.value)}
             />
           </SettingRow>
-          <SettingRow label="头像" description="图片保存在本地设置中，不会发送给模型。" stack>
+          <SettingRow label={t("general.avatar")} description={t("general.avatarDescription")} stack>
             <div className="profile-avatar-row">
               <div className="profile-avatar-preview" aria-hidden="true">
                 {draft.userAvatar ? <img src={draft.userAvatar} alt="" /> : (draft.userDisplayName.trim()[0] ?? "M").toUpperCase()}
               </div>
               <div className="profile-avatar-actions">
                 <button className="settings-button settings-button-secondary" type="button" onClick={() => avatarInputRef.current?.click()}>
-                  <ImageUp size={15} /><span>选择图片</span>
+                  <ImageUp size={15} /><span>{t("general.chooseImage")}</span>
                 </button>
                 {draft.userAvatar ? (
                   <button className="settings-button settings-button-secondary" type="button" onClick={() => updateDraft("userAvatar", "")}>
-                    <Trash2 size={15} /><span>移除</span>
+                    <Trash2 size={15} /><span>{t("general.remove")}</span>
                   </button>
                 ) : null}
                 <input
@@ -432,8 +502,8 @@ export function GeneralSettingsPanel({
         </section>
 
         <section className="general-settings-section">
-          <h3>对话默认值</h3>
-          <SettingRow label="默认聊天模型">
+          <h3>{t("general.chatDefaults")}</h3>
+          <SettingRow label={t("general.defaultModel")}>
             <select
               className="settings-input settings-select general-control"
               value={defaultModelValue}
@@ -445,7 +515,7 @@ export function GeneralSettingsPanel({
                 });
               }}
             >
-              <option value="">未设置</option>
+              <option value="">{t("general.notSet")}</option>
               {modelOptions.map((option) => (
                 <option value={option.value} key={`${option.providerId}:${option.modelId}`}>
                   {option.label}
@@ -453,12 +523,12 @@ export function GeneralSettingsPanel({
               ))}
             </select>
           </SettingRow>
-          <SettingRow label="普通对话工作目录" description="基础 Chat 不会主动访问此目录；未来启用文件工具后使用。" stack>
+          <SettingRow label={t("general.workingDirectory")} description={t("general.workingDirectoryDescription")} stack>
             <div className="working-directory-row">
               <input
                 className="settings-input"
                 value={draft.workingDirectory}
-                placeholder="默认：用户目录/Mnemora/workspace"
+                placeholder={t("general.workingDirectoryPlaceholder")}
                 onChange={(event) => updateDraft("workingDirectory", event.target.value)}
               />
               <button
@@ -469,7 +539,7 @@ export function GeneralSettingsPanel({
                 })}
               >
                 <FolderOpen size={15} />
-                <span>选择</span>
+                <span>{t("general.choose")}</span>
               </button>
               <button
                 className="settings-button settings-button-secondary"
@@ -477,11 +547,11 @@ export function GeneralSettingsPanel({
                 onClick={() => updateDraft("workingDirectory", "")}
               >
                 <RefreshCw size={15} />
-                <span>恢复默认</span>
+                <span>{t("general.restoreDefault")}</span>
               </button>
             </div>
           </SettingRow>
-          <SettingRow label="全局 System Prompt" description="会放在对话级 System Prompt 之前。" stack>
+          <SettingRow label={t("general.systemPrompt")} description={t("general.systemPromptDescription")} stack>
             <textarea
               className="settings-textarea"
               rows={5}
@@ -492,14 +562,14 @@ export function GeneralSettingsPanel({
         </section>
 
         <section className="general-settings-section">
-          <h3>响应</h3>
-          <SettingRow label="流式输出">
+          <h3>{t("general.response")}</h3>
+          <SettingRow label={t("general.streaming")}>
             <Toggle checked={draft.streamEnabled} onChange={(value) => updateDraft("streamEnabled", value)} />
           </SettingRow>
-          <SettingRow label="思考模式" description="仅在当前协议和模型支持时发送对应参数。">
+          <SettingRow label={t("general.thinking")} description={t("general.thinkingDescription")}>
             <Toggle checked={draft.thinkingEnabled} onChange={(value) => updateDraft("thinkingEnabled", value)} />
           </SettingRow>
-          <SettingRow label="最大输出 Token">
+          <SettingRow label={t("general.maxTokens")}>
             <select
               className="settings-input settings-select general-control"
               value={draft.maxOutputTokens}
@@ -508,13 +578,13 @@ export function GeneralSettingsPanel({
               {TOKEN_OPTIONS.map((tokens) => <option value={tokens} key={tokens}>{tokens.toLocaleString()} tokens</option>)}
             </select>
           </SettingRow>
-          <SettingRow label="回复语言">
+          <SettingRow label={t("general.responseLanguage")}>
             <select
               className="settings-input settings-select general-control"
               value={draft.responseLanguage}
               onChange={(event) => updateDraft("responseLanguage", event.target.value as AppSettings["responseLanguage"])}
             >
-              <option value="followInput">跟随输入</option>
+              <option value="followInput">{t("general.followInput")}</option>
               <option value="zh">中文</option>
               <option value="zhHant">繁体中文</option>
               <option value="en">English</option>
@@ -523,7 +593,7 @@ export function GeneralSettingsPanel({
         </section>
 
         <section className="general-settings-section">
-          <h3>备份与恢复</h3>
+          <h3>{t("general.backup")}</h3>
           <label className="backup-memory-option">
             <input
               type="checkbox"
@@ -532,21 +602,21 @@ export function GeneralSettingsPanel({
               onChange={(event) => setIncludeMemoryInBackup(event.target.checked)}
             />
             <span>
-              <strong>包含跨会话记忆</strong>
-              <small>默认不包含。勾选后会把 L1/L2 正文写入备份文件。</small>
+              <strong>{t("general.includeMemory")}</strong>
+              <small>{t("general.includeMemoryDescription")}</small>
             </span>
           </label>
           <div className="backup-settings-row">
             <div>
-              <strong>完整设置备份</strong>
-              <span>包含基础设置、模型供应商和 API Key；导出文件应妥善保管。</span>
+              <strong>{t("general.fullBackup")}</strong>
+              <span>{t("general.fullBackupDescription")}</span>
             </div>
             <div>
               <button className="settings-button settings-button-secondary" type="button" disabled={backupBusy} onClick={() => void handleExport()}>
-                <Download size={15} /><span>导出设置</span>
+                <Download size={15} /><span>{t("general.exportSettings")}</span>
               </button>
               <button className="settings-button settings-button-secondary" type="button" disabled={backupBusy} onClick={() => void handleImport()}>
-                <Upload size={15} /><span>导入设置</span>
+                <Upload size={15} /><span>{t("general.importSettings")}</span>
               </button>
             </div>
           </div>
@@ -561,6 +631,25 @@ export function GeneralSettingsPanel({
       ) : null}
     </form>
   );
+}
+
+function themePresetLabel(value: ThemePreset, t: ReturnType<typeof useI18n>["t"]) {
+  if (value === "forest") return t("general.themeForest");
+  if (value === "ocean") return t("general.themeOcean");
+  if (value === "rose") return t("general.themeRose");
+  if (value === "paper") return t("general.themePaper");
+  if (value === "graphite") return t("general.themeGraphite");
+  if (value === "highContrast") return t("general.themeHighContrast");
+  return "Mnemora";
+}
+
+function themeColorLabel(value: ThemeColor, t: ReturnType<typeof useI18n>["t"]) {
+  if (value === "warm") return t("general.colorWarm");
+  if (value === "cool") return t("general.colorCool");
+  if (value === "rose") return t("general.colorRose");
+  if (value === "amber") return t("general.colorAmber");
+  if (value === "violet") return t("general.colorViolet");
+  return t("general.colorNeutral");
 }
 
 function SettingRow({

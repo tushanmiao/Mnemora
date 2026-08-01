@@ -30,6 +30,7 @@ const SAFE_HTML_TAGS = [
   "ul",
 ] as const;
 
+
 /**
  * 聊天正文只允许静态排版标签。原始 HTML 的 class、style、id、事件属性和媒体元素均会被移除。
  * code 的 language-* 类名由 Markdown 围栏生成，仅用于识别代码语言和提供 HTML 预览入口。

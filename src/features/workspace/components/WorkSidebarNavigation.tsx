@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import type { LibraryCollection } from "../../library/types";
 import type { WorkLibraryView } from "../types";
+import { useI18n } from "../../../i18n/I18nProvider";
 import "../styles/work-sidebar-navigation.css";
 
 type WorkSidebarNavigationProps = {
@@ -40,18 +41,6 @@ type WorkSidebarNavigationProps = {
   onDeleteCollection: (collectionId: string) => Promise<boolean>;
 };
 
-const primaryViews = [
-  { id: "all", label: "全部文献", icon: BookOpenText },
-  { id: "recent", label: "最近阅读", icon: Clock3 },
-  { id: "favorites", label: "收藏", icon: Star },
-  { id: "unfiled", label: "未分类", icon: Inbox },
-] satisfies Array<{ id: WorkLibraryView; label: string; icon: typeof BookOpenText }>;
-
-const outcomeViews = [
-  { id: "notes", label: "笔记", icon: NotebookPen },
-  { id: "mind-maps", label: "思维导图", icon: Network },
-] satisfies Array<{ id: WorkLibraryView; label: string; icon: typeof BookOpenText }>;
-
 export function WorkSidebarNavigation({
   collapsed,
   activeView,
@@ -68,6 +57,17 @@ export function WorkSidebarNavigation({
   onRenameCollection,
   onDeleteCollection,
 }: WorkSidebarNavigationProps) {
+  const { t } = useI18n();
+  const primaryViews = [
+    { id: "all" as const, label: t("work.all"), icon: BookOpenText },
+    { id: "recent" as const, label: t("work.recent"), icon: Clock3 },
+    { id: "favorites" as const, label: t("work.favorites"), icon: Star },
+    { id: "unfiled" as const, label: t("work.unfiled"), icon: Inbox },
+  ];
+  const outcomeViews = [
+    { id: "notes" as const, label: t("work.notes"), icon: NotebookPen },
+    { id: "mind-maps" as const, label: t("work.mindMaps"), icon: Network },
+  ];
   const [collectionsOpen, setCollectionsOpen] = useState(true);
   const [outcomesOpen, setOutcomesOpen] = useState(true);
   const [creatingCollection, setCreatingCollection] = useState(false);
@@ -118,22 +118,22 @@ export function WorkSidebarNavigation({
   return (
     <section
       className={`work-sidebar-navigation${collapsed ? " work-sidebar-navigation-collapsed" : ""}`}
-      aria-label="Work 文献库导航"
+      aria-label={t("work.navigation")}
       ref={menuRef}
     >
       <div className="work-library-actions">
         <button
           type="button"
-          title={runtimeAvailable ? "导入 PDF 文献" : "请在桌面应用中导入 PDF"}
+          title={runtimeAvailable ? t("work.importPdf") : t("work.desktopImport")}
           disabled={busy || !runtimeAvailable}
           onClick={() => void onImport().catch(() => undefined)}
         >
           <FilePlus2 size={17} />
-          <span>导入</span>
+          <span>{t("work.import")}</span>
         </button>
         <button
           type="button"
-          title="新建分类"
+          title={t("work.newCollection")}
           disabled={busy || !runtimeAvailable}
           onClick={() => {
             setCreatingCollection(true);
@@ -143,7 +143,7 @@ export function WorkSidebarNavigation({
           }}
         >
           <FolderPlus size={17} />
-          <span>分类</span>
+          <span>{t("work.collection")}</span>
         </button>
       </div>
 
@@ -152,17 +152,17 @@ export function WorkSidebarNavigation({
         <input
           type="search"
           value={searchQuery}
-          placeholder="查询文献"
-          aria-label="查询文献"
+          placeholder={t("work.searchPlaceholder")}
+          aria-label={t("work.searchPlaceholder")}
           onChange={(event) => onSearchQueryChange(event.target.value)}
         />
       </label>
 
       <div className="work-library-tree">
-        <section className="work-tree-group" aria-label="我的文库">
+        <section className="work-tree-group" aria-label={t("work.myLibrary")}>
           <div className="work-tree-heading">
             <BookOpenText size={15} />
-            <strong>我的文库</strong>
+            <strong>{t("work.myLibrary")}</strong>
           </div>
           <nav className="work-tree-items">
             {primaryViews.map(({ id, label, icon: Icon }) => {
@@ -184,7 +184,7 @@ export function WorkSidebarNavigation({
           </nav>
         </section>
 
-        <section className="work-tree-group" aria-label="分类">
+        <section className="work-tree-group" aria-label={t("work.collectionSection")}>
           <button
             className="work-tree-heading work-tree-heading-button"
             type="button"
@@ -193,7 +193,7 @@ export function WorkSidebarNavigation({
           >
             {collectionsOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
             <FolderTree size={15} />
-            <strong>分类</strong>
+            <strong>{t("work.collectionSection")}</strong>
           </button>
           {collectionsOpen && !collapsed ? (
             <div className="work-collection-list">
@@ -204,8 +204,8 @@ export function WorkSidebarNavigation({
                     autoFocus
                     value={collectionName}
                     maxLength={120}
-                    aria-label={renamingCollectionId ? "新的分类名称" : "分类名称"}
-                    placeholder="分类名称"
+                    aria-label={renamingCollectionId ? t("work.newCollectionName") : t("work.collectionName")}
+                    placeholder={t("work.collectionName")}
                     onChange={(event) => setCollectionName(event.target.value)}
                     onKeyDown={(event) => {
                       if (event.key === "Enter") void submitCollection();
@@ -214,13 +214,13 @@ export function WorkSidebarNavigation({
                   />
                   <button
                     type="button"
-                    title="保存分类"
+                    title={t("work.saveCollection")}
                     disabled={busy || !collectionName.trim()}
                     onClick={() => void submitCollection()}
                   >
                     <Check size={14} />
                   </button>
-                  <button type="button" title="取消" onClick={cancelCollectionEditor}>
+                  <button type="button" title={t("common.cancel")} onClick={cancelCollectionEditor}>
                     <X size={14} />
                   </button>
                 </div>
@@ -244,7 +244,7 @@ export function WorkSidebarNavigation({
                     <button
                       className="work-collection-more"
                       type="button"
-                      title="分类操作"
+                      title={t("work.collectionActions")}
                       aria-expanded={collectionMenuId === collection.id}
                       onClick={() => setCollectionMenuId((current) => (
                         current === collection.id ? null : collection.id
@@ -265,7 +265,7 @@ export function WorkSidebarNavigation({
                           }}
                         >
                           <Pencil size={14} />
-                          <span>重命名</span>
+                          <span>{t("common.rename")}</span>
                         </button>
                         <button
                           className="work-collection-menu-danger"
@@ -273,12 +273,12 @@ export function WorkSidebarNavigation({
                           role="menuitem"
                           onClick={() => {
                             setCollectionMenuId(null);
-                            if (!window.confirm(`删除分类“${collection.name}”吗？文献本身不会被删除。`)) return;
+                            if (!window.confirm(t("work.deleteCollectionConfirm", { name: collection.name }))) return;
                             void onDeleteCollection(collection.id).catch(() => false);
                           }}
                         >
                           <Trash2 size={14} />
-                          <span>删除分类</span>
+                          <span>{t("work.deleteCollection")}</span>
                         </button>
                       </div>
                     ) : null}
@@ -286,13 +286,13 @@ export function WorkSidebarNavigation({
                 );
               })}
               {collections.length === 0 && !creatingCollection ? (
-                <div className="work-tree-empty">暂无分类</div>
+                <div className="work-tree-empty">{t("work.noCollections")}</div>
               ) : null}
             </div>
           ) : null}
         </section>
 
-        <section className="work-tree-group" aria-label="学习成果">
+        <section className="work-tree-group" aria-label={t("work.learningOutcomes")}>
           <button
             className="work-tree-heading work-tree-heading-button"
             type="button"
@@ -301,7 +301,7 @@ export function WorkSidebarNavigation({
           >
             {outcomesOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
             <NotebookPen size={15} />
-            <strong>学习成果</strong>
+            <strong>{t("work.learningOutcomes")}</strong>
           </button>
           {outcomesOpen ? (
             <nav className="work-tree-items">
@@ -325,12 +325,12 @@ export function WorkSidebarNavigation({
         <button
           className={`work-tree-item work-tree-trash${activeView === "trash" && !selectedCollectionId ? " work-tree-item-active" : ""}`}
           type="button"
-          title={collapsed ? "回收站" : undefined}
+          title={collapsed ? t("work.trash") : undefined}
           aria-current={activeView === "trash" && !selectedCollectionId ? "page" : undefined}
           onClick={() => onViewChange("trash")}
         >
           <Trash2 size={16} />
-          <span>回收站</span>
+          <span>{t("work.trash")}</span>
         </button>
       </div>
     </section>

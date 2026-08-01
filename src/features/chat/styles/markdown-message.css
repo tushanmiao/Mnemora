@@ -1,6 +1,8 @@
 .markdown-content {
   min-width: 0;
   overflow-wrap: anywhere;
+  font-family: var(--reading-font-family);
+  letter-spacing: var(--reading-letter-spacing);
 }
 
 .markdown-content > :first-child {
@@ -86,6 +88,18 @@
   color: var(--color-text);
 }
 
+.markdown-content .katex-display {
+  margin: 14px 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-color: var(--color-border) transparent;
+  scrollbar-width: thin;
+}
+
+.markdown-math-loading {
+  white-space: pre-wrap;
+}
+
 .markdown-content hr {
   height: 1px;
   margin: 18px 0;
@@ -99,6 +113,7 @@
   border-radius: 4px;
   background: var(--color-hover);
   font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  letter-spacing: 0;
   font-size: 0.9em;
 }
 

@@ -55,6 +55,8 @@ import type { PdfOutlineEntry } from "../context/PdfReaderContext";
 import { usePdfReaderBridge } from "../context/PdfReaderContext";
 import { PDF_ANNOTATION_COLORS, type PdfTextSelection } from "../types";
 import type { LiteratureReference } from "../../../types/chat";
+import { useI18n } from "../../../i18n/I18nProvider";
+import type { TranslationKey } from "../../../i18n/translations";
 import {
   createLiteratureReference,
   MAX_LITERATURE_REFERENCE_TEXT_BYTES,
@@ -121,6 +123,7 @@ class TauriPdfRangeTransport extends PDFDataRangeTransport {
 }
 
 export function PdfReader({ item, onOpenExternal, onOpenNote, onAskSelection }: PdfReaderProps) {
+  const { t } = useI18n();
   const { register, unregister } = usePdfReaderBridge();
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const pageRefs = useRef(new Map<number, HTMLDivElement>());
@@ -304,10 +307,10 @@ export function PdfReader({ item, onOpenExternal, onOpenNote, onAskSelection }: 
 
     const load = async () => {
       if (!isLibraryRuntime()) {
-        throw new Error("PDF 阅读器只能在桌面应用中使用。");
+        throw new Error(t("pdf.desktopOnly"));
       }
       if (!Number.isSafeInteger(item.file.fileSize) || item.file.fileSize <= 0) {
-        throw new Error("PDF 文件大小无效。");
+        throw new Error(t("pdf.invalidSize"));
       }
       const initialEnd = Math.min(item.file.fileSize, RANGE_CHUNK_SIZE);
       const [initialData, savedState] = await Promise.all([
@@ -337,7 +340,7 @@ export function PdfReader({ item, onOpenExternal, onOpenNote, onAskSelection }: 
         initialData,
         () => {
           if (disposed) return;
-          terminalError = "PDF 数据读取失败，请检查文献文件是否仍然可用。";
+          terminalError = t("pdf.readFailed");
           setError(terminalError);
           setLoading(false);
           void destroyLoadingTask();
@@ -358,7 +361,7 @@ export function PdfReader({ item, onOpenExternal, onOpenNote, onAskSelection }: 
         maxImageSize: 25_000_000,
       });
       loadingTask.onPassword = () => {
-        terminalError = "当前 PDF 需要密码，请先使用系统阅读器打开。";
+        terminalError = t("pdf.passwordRequired");
         setError(terminalError);
         void destroyLoadingTask();
       };
@@ -371,13 +374,13 @@ export function PdfReader({ item, onOpenExternal, onOpenNote, onAskSelection }: 
       setPageCount(loadedPdf.numPages);
       setCurrentPage(Math.min(loadedPdf.numPages, position.pageIndex + 1));
       const rawOutline = await loadedPdf.getOutline().catch(() => null);
-      if (!disposed) setOutline(normalizeOutline(rawOutline ?? []));
+      if (!disposed) setOutline(normalizeOutline(rawOutline ?? [], t));
     };
 
     void load()
       .catch((loadError) => {
         if (!disposed) {
-          setError(terminalError || (loadError instanceof Error ? loadError.message : "PDF 加载失败。"));
+          setError(terminalError || (loadError instanceof Error ? loadError.message : t("pdf.loadFailed")));
         }
       })
       .finally(() => {
@@ -390,7 +393,7 @@ export function PdfReader({ item, onOpenExternal, onOpenNote, onAskSelection }: 
       transport?.dispose();
       void destroyLoadingTask();
     };
-  }, [item.file.fileSize, item.id]);
+  }, [item.file.fileSize, item.id, t]);
 
   useEffect(() => {
     const position = pendingRestoreRef.current;
@@ -513,7 +516,7 @@ export function PdfReader({ item, onOpenExternal, onOpenNote, onAskSelection }: 
 
   const readPageText = useCallback(async (pageIndex: number) => {
     if (!pdf || pageIndex < 0 || pageIndex >= pdf.numPages) {
-      throw new Error("目标 PDF 页面不可用。");
+      throw new Error(t("pdf.pageUnavailable"));
     }
     const page = await pdf.getPage(pageIndex + 1);
     const content = await page.getTextContent();
@@ -531,7 +534,7 @@ export function PdfReader({ item, onOpenExternal, onOpenNote, onAskSelection }: 
     }
     if (pageIndex !== currentPage - 1) page.cleanup();
     const text = normalizeLiteratureText(parts.join(""));
-    if (!text) throw new Error("当前页面没有可引用的文字内容。扫描版 PDF 需要后续 OCR 支持。");
+    if (!text) throw new Error(t("pdf.noText"));
     return text;
   }, [currentPage, pdf]);
 
@@ -545,11 +548,11 @@ export function PdfReader({ item, onOpenExternal, onOpenNote, onAskSelection }: 
       text: textSelection.text,
     });
     if (!reference) {
-      setAnnotationError("当前 PDF 选区无法加入文献引用，请重新选择文字后重试。");
+      setAnnotationError(t("pdf.referenceSelectionFailed"));
       return;
     }
     if (typeof onAskSelection !== "function") {
-      setAnnotationError("文献 Chat 尚未准备好，请重新打开 Work 后重试。");
+      setAnnotationError(t("pdf.chatUnavailable"));
       return;
     }
     onAskSelection(reference);
@@ -830,23 +833,23 @@ export function PdfReader({ item, onOpenExternal, onOpenNote, onAskSelection }: 
   ]);
 
   const status = loading
-    ? "正在加载 PDF"
+    ? t("pdf.loading")
     : error
       ? error
-      : `${pageCount} 页`;
+      : t("pdf.pages", { count: pageCount });
 
   return (
     <section
       className={`mnemora-pdf-reader mnemora-pdf-color-${annotationColor}`}
-      aria-label={`${item.title} PDF 阅读器`}
+      aria-label={t("pdf.reader", { title: item.title })}
     >
       <header className="mnemora-pdf-toolbar">
         <div className="mnemora-pdf-toolbar-group">
           <button
             className="icon-button"
             type="button"
-            title="上一页"
-            aria-label="上一页"
+            title={t("common.previous")}
+            aria-label={t("common.previous")}
             disabled={!pdf || currentPage <= 1}
             onClick={() => submitPage(String(currentPage - 1))}
           >
@@ -859,7 +862,7 @@ export function PdfReader({ item, onOpenExternal, onOpenNote, onAskSelection }: 
               min={1}
               max={Math.max(1, pageCount)}
               defaultValue={currentPage}
-              aria-label="当前页码"
+              aria-label={t("pdf.currentPage")}
               disabled={!pdf}
               onKeyDown={(event) => {
                 if (event.key === "Enter") submitPage(event.currentTarget.value);
@@ -870,8 +873,8 @@ export function PdfReader({ item, onOpenExternal, onOpenNote, onAskSelection }: 
           <button
             className="icon-button"
             type="button"
-            title="下一页"
-            aria-label="下一页"
+            title={t("common.next")}
+            aria-label={t("common.next")}
             disabled={!pdf || currentPage >= pageCount}
             onClick={() => submitPage(String(currentPage + 1))}
           >
@@ -885,13 +888,13 @@ export function PdfReader({ item, onOpenExternal, onOpenNote, onAskSelection }: 
         </div>
 
         <div className="mnemora-pdf-toolbar-group">
-          <div className="mnemora-pdf-annotation-colors" aria-label="批注颜色">
+          <div className="mnemora-pdf-annotation-colors" aria-label={t("pdf.annotationColor")}>
             {PDF_ANNOTATION_COLORS.map((color) => (
               <button
                 className={`mnemora-pdf-color-swatch mnemora-pdf-color-${color.id}${annotationColor === color.id ? " is-active" : ""}`}
                 type="button"
                 title={color.label}
-                aria-label={`${color.label}批注`}
+                aria-label={t("pdf.annotationColorLabel", { color: color.label })}
                 aria-pressed={annotationColor === color.id}
                 disabled={!pdf}
                 key={color.id}
@@ -902,29 +905,29 @@ export function PdfReader({ item, onOpenExternal, onOpenNote, onAskSelection }: 
           <button
             className={`icon-button${annotationMode === "area" ? " is-active" : ""}`}
             type="button"
-            title={annotationMode === "area" ? "退出区域批注" : "区域批注"}
-            aria-label={annotationMode === "area" ? "退出区域批注" : "区域批注"}
+            title={annotationMode === "area" ? t("pdf.exitArea") : t("pdf.areaAnnotation")}
+            aria-label={annotationMode === "area" ? t("pdf.exitArea") : t("pdf.areaAnnotation")}
             aria-pressed={annotationMode === "area"}
             disabled={!pdf}
             onClick={() => setReaderAnnotationMode(annotationMode === "area" ? "text" : "area")}
           >
             <ScanLine size={16} />
           </button>
-          <button className="icon-button" type="button" title="缩小" aria-label="缩小" disabled={!pdf} onClick={() => updateZoom(zoom - 0.1)}>
+          <button className="icon-button" type="button" title={t("pdf.zoomOut")} aria-label={t("pdf.zoomOut")} disabled={!pdf} onClick={() => updateZoom(zoom - 0.1)}>
             <Minus size={16} />
           </button>
           <span className="mnemora-pdf-zoom-label">{Math.round(zoom * 100)}%</span>
-          <button className="icon-button" type="button" title="放大" aria-label="放大" disabled={!pdf} onClick={() => updateZoom(zoom + 0.1)}>
+          <button className="icon-button" type="button" title={t("pdf.zoomIn")} aria-label={t("pdf.zoomIn")} disabled={!pdf} onClick={() => updateZoom(zoom + 0.1)}>
             <Plus size={16} />
           </button>
-          <button className="icon-button" type="button" title="适合宽度" aria-label="适合宽度" disabled={!pdf} onClick={() => updateZoom(1)}>
+          <button className="icon-button" type="button" title={t("pdf.fitWidth")} aria-label={t("pdf.fitWidth")} disabled={!pdf} onClick={() => updateZoom(1)}>
             <MoveHorizontal size={16} />
           </button>
           <button
             className="icon-button"
             type="button"
-            title="在系统阅读器中打开"
-            aria-label="在系统阅读器中打开"
+            title={t("work.openSystem")}
+            aria-label={t("work.openSystem")}
             onClick={() => void onOpenExternal(item.id).catch(() => undefined)}
           >
             <ExternalLink size={16} />
@@ -932,8 +935,8 @@ export function PdfReader({ item, onOpenExternal, onOpenNote, onAskSelection }: 
           <button
             className={`icon-button${searchOpen ? " is-active" : ""}`}
             type="button"
-            title="搜索 PDF"
-            aria-label="搜索 PDF"
+            title={t("pdf.search")}
+            aria-label={t("pdf.search")}
             aria-pressed={searchOpen}
             disabled={!pdf}
             onClick={() => setSearchOpen((open) => !open)}
@@ -948,24 +951,24 @@ export function PdfReader({ item, onOpenExternal, onOpenNote, onAskSelection }: 
           <Search size={15} aria-hidden="true" />
           <input
             value={searchQuery}
-            placeholder="搜索当前 PDF"
-            aria-label="搜索当前 PDF"
+            placeholder={t("pdf.searchPlaceholder")}
+            aria-label={t("pdf.searchPlaceholder")}
             onChange={(event) => setSearchQuery(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "Enter") void runSearch();
             }}
           />
           <button type="button" disabled={searching || !searchQuery.trim()} onClick={() => void runSearch()}>
-            {searching ? "搜索中" : "搜索"}
+            {searching ? t("pdf.searching") : t("common.search")}
           </button>
-          <button className="icon-button" type="button" title="关闭搜索" aria-label="关闭搜索" onClick={() => setSearchOpen(false)}>
+          <button className="icon-button" type="button" title={t("pdf.closeSearch")} aria-label={t("pdf.closeSearch")} onClick={() => setSearchOpen(false)}>
             <X size={15} />
           </button>
         </div>
       ) : null}
 
       {searchOpen && searchResults.length > 0 ? (
-        <div className="mnemora-pdf-search-results" role="listbox" aria-label="PDF 搜索结果">
+        <div className="mnemora-pdf-search-results" role="listbox" aria-label={t("pdf.searchResults")}>
           {searchResults.map((result) => (
             <button
               type="button"
@@ -973,7 +976,7 @@ export function PdfReader({ item, onOpenExternal, onOpenNote, onAskSelection }: 
               key={`${result.pageIndex}-${result.snippet}`}
               onClick={() => submitPage(String(result.pageIndex + 1))}
             >
-              <strong>第 {result.pageIndex + 1} 页</strong>
+              <strong>{t("pdf.page", { page: result.pageIndex + 1 })}</strong>
               <span>{result.snippet}</span>
             </button>
           ))}
@@ -983,7 +986,7 @@ export function PdfReader({ item, onOpenExternal, onOpenNote, onAskSelection }: 
       {annotationError ? (
         <div className="mnemora-pdf-annotation-error" role="alert">
           <span>{annotationError}</span>
-          <button type="button" aria-label="关闭批注错误" onClick={() => setAnnotationError("")}>
+          <button type="button" aria-label={t("pdf.closeAnnotationError")} onClick={() => setAnnotationError("")}>
             <X size={14} />
           </button>
         </div>
@@ -993,25 +996,25 @@ export function PdfReader({ item, onOpenExternal, onOpenNote, onAskSelection }: 
         <div
           className="mnemora-pdf-selection-toolbar"
           role="toolbar"
-          aria-label="PDF 文字批注"
+          aria-label={t("pdf.textAnnotation")}
           style={{ left: textSelection.clientX, top: textSelection.clientY }}
           onPointerDown={preserveSelectionToolbarPointer}
         >
-          <button type="button" title="高亮" aria-label="高亮" onClick={() => void createTextAnnotation("highlight")}>
+          <button type="button" title={t("pdf.highlight")} aria-label={t("pdf.highlight")} onClick={() => void createTextAnnotation("highlight")}>
             <Highlighter size={15} />
           </button>
-          <button type="button" title="下划线" aria-label="下划线" onClick={() => void createTextAnnotation("underline")}>
+          <button type="button" title={t("pdf.underline")} aria-label={t("pdf.underline")} onClick={() => void createTextAnnotation("underline")}>
             <Underline size={15} />
           </button>
-          <button type="button" title="问 AI" aria-label="使用此选区询问 AI" onClick={askSelectedText}>
+          <button type="button" title={t("pdf.askAi")} aria-label={t("pdf.askAiSelection")} onClick={askSelectedText}>
             <MessageCircleQuestion size={15} />
           </button>
           <div className="mnemora-pdf-selection-color-picker" ref={selectionColorMenuRef}>
             <button
               className="mnemora-pdf-selection-color-button"
               type="button"
-              title="切换高亮颜色"
-              aria-label="切换高亮颜色"
+              title={t("pdf.changeHighlightColor")}
+              aria-label={t("pdf.changeHighlightColor")}
               aria-haspopup="menu"
               aria-expanded={selectionColorMenuOpen}
               onClick={() => setSelectionColorMenuOpen((open) => !open)}
@@ -1019,7 +1022,7 @@ export function PdfReader({ item, onOpenExternal, onOpenNote, onAskSelection }: 
               <span className={`mnemora-pdf-selection-color mnemora-pdf-color-${annotationColor}`} aria-hidden="true" />
             </button>
             {selectionColorMenuOpen ? (
-              <div className="mnemora-pdf-selection-color-menu" role="menu" aria-label="选择高亮颜色">
+              <div className="mnemora-pdf-selection-color-menu" role="menu" aria-label={t("pdf.selectHighlightColor")}>
                 {PDF_ANNOTATION_COLORS.map((color) => (
                   <button
                     className={`mnemora-pdf-selection-color-option mnemora-pdf-color-${color.id}${annotationColor === color.id ? " is-active" : ""}`}
@@ -1038,7 +1041,7 @@ export function PdfReader({ item, onOpenExternal, onOpenNote, onAskSelection }: 
               </div>
             ) : null}
           </div>
-          <button type="button" title="取消" aria-label="取消批注" onClick={() => {
+          <button type="button" title={t("common.cancel")} aria-label={t("pdf.cancelAnnotation")} onClick={() => {
             setTextSelection(null);
             window.getSelection()?.removeAllRanges();
           }}>
@@ -1056,7 +1059,7 @@ export function PdfReader({ item, onOpenExternal, onOpenNote, onAskSelection }: 
       >
         {error ? (
           <div className="mnemora-pdf-reader-state mnemora-pdf-reader-error" role="alert">
-            <strong>PDF 无法加载</strong>
+            <strong>{t("pdf.unableToLoad")}</strong>
             <span>{error}</span>
           </div>
         ) : pdf ? (
@@ -1095,14 +1098,14 @@ function normalizeOutline(items: Array<{
   title: string;
   dest: string | unknown[] | null;
   items: Array<unknown>;
-}>): PdfOutlineEntry[] {
+}>, t: (key: TranslationKey, values?: Record<string, string | number>) => string): PdfOutlineEntry[] {
   const visit = (entries: Array<{
     title: string;
     dest: string | unknown[] | null;
     items: Array<unknown>;
   }>, level: number, prefix: string): PdfOutlineEntry[] => entries.map((entry, index) => ({
     id: `${prefix}-${index}`,
-    title: entry.title.trim() || "未命名章节",
+    title: entry.title.trim() || t("pdf.unnamedSection"),
     level,
     dest: entry.dest,
     children: visit(

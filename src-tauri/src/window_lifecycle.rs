@@ -48,15 +48,17 @@ pub fn cleanup_before_main_window_close(app: &AppHandle) {
     let state = app.state::<AppState>();
     let cancelled_chat_runs = tauri::async_runtime::block_on(state.cancel_all_chat_runs());
     let cancelled_approvals = tauri::async_runtime::block_on(state.cancel_all_tool_approvals());
+    let cancelled_sync = tauri::async_runtime::block_on(state.cancel_sync_run());
     let cancelled_attachment_tasks = state.cancel_all_attachment_tasks();
     let removed_staged_attachments = state.cleanup_current_staged_attachments();
     if cancelled_chat_runs > 0
         || cancelled_approvals > 0
         || cancelled_attachment_tasks > 0
         || removed_staged_attachments > 0
+        || cancelled_sync
     {
         eprintln!(
-            "Background cleanup cancelled {cancelled_chat_runs} chat run(s), {cancelled_approvals} tool approval(s), {cancelled_attachment_tasks} attachment task(s), and removed {removed_staged_attachments} staged attachment(s)."
+            "Background cleanup cancelled {cancelled_chat_runs} chat run(s), {cancelled_approvals} tool approval(s), {cancelled_attachment_tasks} attachment task(s), sync={cancelled_sync}, and removed {removed_staged_attachments} staged attachment(s)."
         );
     }
 }

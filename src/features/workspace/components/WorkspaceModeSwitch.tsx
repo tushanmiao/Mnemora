@@ -1,5 +1,6 @@
 import { BriefcaseBusiness, MessageCircle } from "lucide-react";
 import type { WorkspaceMode } from "../types";
+import { useI18n } from "../../../i18n/I18nProvider";
 import "../styles/workspace-mode-switch.css";
 
 type WorkspaceModeSwitchProps = {
@@ -18,10 +19,11 @@ export function WorkspaceModeSwitch({
   collapsed,
   onChange,
 }: WorkspaceModeSwitchProps) {
+  const { t } = useI18n();
   return (
     <nav
       className={`workspace-mode-switch${collapsed ? " workspace-mode-switch-collapsed" : ""}`}
-      aria-label="工作模式"
+      aria-label={t("mode.label")}
     >
       {modes.map(({ id, label, icon: Icon }) => (
         <button

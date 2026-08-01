@@ -2,11 +2,13 @@ import { useEffect, useRef, useState, type RefObject } from "react";
 import { BookOpenText, ChevronRight, Files } from "lucide-react";
 import type { PDFDocumentProxy, PDFPageProxy, RenderTask } from "pdfjs-dist";
 import { usePdfReaderBridge, type PdfOutlineEntry } from "../context/PdfReaderContext";
+import { useI18n } from "../../../i18n/I18nProvider";
 import "../styles/pdf-navigator.css";
 
 type NavigatorMode = "outline" | "thumbnails";
 
 export function PdfNavigatorPanel() {
+  const { t } = useI18n();
   const { controller } = usePdfReaderBridge();
   const [mode, setMode] = useState<NavigatorMode>("outline");
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -15,8 +17,8 @@ export function PdfNavigatorPanel() {
     return (
       <section className="pdf-navigator-empty" role="status">
         <BookOpenText size={26} />
-        <h2>暂无活动 PDF</h2>
-        <p>打开文献页签后显示目录和缩略图</p>
+        <h2>{t("pdf.noActive")}</h2>
+        <p>{t("pdf.noActiveDescription")}</p>
       </section>
     );
   }
@@ -27,8 +29,8 @@ export function PdfNavigatorPanel() {
   };
 
   return (
-    <section className="pdf-navigator" aria-label="PDF 导航">
-      <div className="pdf-navigator-tabs" role="tablist" aria-label="PDF 导航模式">
+    <section className="pdf-navigator" aria-label={t("pdf.navigation")}>
+      <div className="pdf-navigator-tabs" role="tablist" aria-label={t("pdf.navigationMode")}>
         <button
           className={mode === "outline" ? "is-active" : ""}
           type="button"
@@ -37,7 +39,7 @@ export function PdfNavigatorPanel() {
           onClick={() => setMode("outline")}
         >
           <BookOpenText size={15} />
-          <span>目录</span>
+          <span>{t("pdf.outline")}</span>
         </button>
         <button
           className={mode === "thumbnails" ? "is-active" : ""}
@@ -47,7 +49,7 @@ export function PdfNavigatorPanel() {
           onClick={() => setMode("thumbnails")}
         >
           <Files size={15} />
-          <span>缩略图</span>
+          <span>{t("pdf.thumbnails")}</span>
         </button>
       </div>
 
@@ -62,8 +64,8 @@ export function PdfNavigatorPanel() {
           ) : (
             <div className="pdf-navigator-empty" role="status">
               <BookOpenText size={24} />
-              <h2>没有文档目录</h2>
-              <p>可以切换到缩略图按页导航</p>
+              <h2>{t("pdf.noOutline")}</h2>
+              <p>{t("pdf.noOutlineDescription")}</p>
             </div>
           )
         ) : (
@@ -92,6 +94,7 @@ function OutlineEntry({
   entry: PdfOutlineEntry;
   onOpen: (entry: PdfOutlineEntry) => Promise<void>;
 }) {
+  const { t } = useI18n();
   const [expanded, setExpanded] = useState(entry.level < 1);
   const hasChildren = entry.children.length > 0;
   return (
@@ -101,8 +104,8 @@ function OutlineEntry({
           <button
             className={`pdf-outline-expand${expanded ? " is-expanded" : ""}`}
             type="button"
-            title={expanded ? "收起章节" : "展开章节"}
-            aria-label={expanded ? "收起章节" : "展开章节"}
+            title={expanded ? t("pdf.collapseSection") : t("pdf.expandSection")}
+            aria-label={expanded ? t("pdf.collapseSection") : t("pdf.expandSection")}
             aria-expanded={expanded}
             onClick={() => setExpanded((value) => !value)}
           >
@@ -133,6 +136,7 @@ function PdfThumbnail({
   scrollRootRef: RefObject<HTMLDivElement | null>;
   onOpen: () => void;
 }) {
+  const { t } = useI18n();
   const wrapperRef = useRef<HTMLButtonElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [visible, setVisible] = useState(false);
@@ -205,12 +209,12 @@ function PdfThumbnail({
       className={`pdf-thumbnail${active ? " is-active" : ""}`}
       type="button"
       ref={wrapperRef}
-      title={`跳转到第 ${pageIndex + 1} 页`}
+      title={t("pdf.goPage", { page: pageIndex + 1 })}
       aria-current={active ? "page" : undefined}
       onClick={onOpen}
     >
       <span className="pdf-thumbnail-canvas-wrap"><canvas ref={canvasRef} /></span>
-      <span>第 {pageIndex + 1} 页</span>
+      <span>{t("pdf.page", { page: pageIndex + 1 })}</span>
     </button>
   );
 }

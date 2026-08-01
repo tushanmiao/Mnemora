@@ -7,6 +7,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Download,
+  FileJson,
   FileText,
   Folder,
   FolderInput,
@@ -31,14 +32,8 @@ import {
 import { WorkspaceModeSwitch } from "../../workspace/components/WorkspaceModeSwitch";
 import { WorkSidebarNavigation } from "../../workspace/components/WorkSidebarNavigation";
 import type { WorkLibraryView, WorkspaceMode } from "../../workspace/types";
+import { useI18n } from "../../../i18n/I18nProvider";
 import "../styles/sidebar.css";
-
-const extensionItems = [
-  { id: "assistants", label: "助手", icon: Bot },
-  { id: "skills", label: "技能", icon: Sparkles },
-  { id: "knowledge", label: "知识库", icon: BookOpenText },
-  { id: "plugins", label: "插件", icon: Plug },
-];
 
 type SidebarProps = {
   mode: WorkspaceMode;
@@ -61,6 +56,7 @@ type SidebarProps = {
   onCreateConversation: () => void;
   onSelectConversation: (conversationId: string) => void;
   onDeleteConversation: (conversationId: string) => void;
+  onExportConversation: (conversationId: string, format: "markdown" | "json") => void;
   onClearConversations: () => void;
   onLoadMoreConversations: () => void;
   onOpenSettings: () => void;
@@ -98,6 +94,7 @@ export function Sidebar({
   onCreateConversation,
   onSelectConversation,
   onDeleteConversation,
+  onExportConversation,
   onClearConversations,
   onLoadMoreConversations,
   onOpenSettings,
@@ -113,9 +110,17 @@ export function Sidebar({
   onToggleCollapse,
   resize,
 }: SidebarProps) {
-  const normalizedDisplayName = userDisplayName.trim() || "Mnemora 用户";
+  const { t } = useI18n();
+  const extensionItems = [
+    { id: "assistants", label: t("sidebar.assistants"), icon: Bot },
+    { id: "skills", label: t("sidebar.skills"), icon: Sparkles },
+    { id: "knowledge", label: t("sidebar.knowledge"), icon: BookOpenText },
+    { id: "plugins", label: t("sidebar.plugins"), icon: Plug },
+  ];
+  const normalizedDisplayName = userDisplayName.trim() || t("common.user");
   const avatarInitial = (Array.from(normalizedDisplayName)[0] ?? "M").toUpperCase();
-  const [extensionsOpen, setExtensionsOpen] = useState(true);
+  // 扩展是可选工具，不在打开 Chat 时主动展开，避免占用对话列表空间。
+  const [extensionsOpen, setExtensionsOpen] = useState(false);
   const [activeSection, setActiveSection] = useState<"recent" | "collections" | "projects">("recent");
   const [listMenuOpen, setListMenuOpen] = useState(false);
   const [conversationMenu, setConversationMenu] = useState<string | null>(null);
@@ -169,7 +174,7 @@ export function Sidebar({
   return (
     <aside
       className={`sidebar${collapsed ? " sidebar-collapsed" : ""}`}
-      aria-label="应用导航"
+      aria-label={t("sidebar.primary")}
       ref={menuAreaRef}
     >
       <div className="sidebar-brand">
@@ -180,8 +185,8 @@ export function Sidebar({
         <button
           className="icon-button sidebar-collapse"
           type="button"
-          title={collapsed ? "展开侧边栏" : "收起侧边栏"}
-          aria-label={collapsed ? "展开侧边栏" : "收起侧边栏"}
+          title={collapsed ? t("sidebar.expand") : t("sidebar.collapse")}
+          aria-label={collapsed ? t("sidebar.expand") : t("sidebar.collapse")}
           aria-expanded={!collapsed}
           onClick={onToggleCollapse}
         >
@@ -193,24 +198,24 @@ export function Sidebar({
 
       {mode === "chat" ? (
         <>
-          <nav className="sidebar-actions" aria-label="主要功能">
+          <nav className="sidebar-actions" aria-label={t("sidebar.primary")}>
         <button
           className="sidebar-action sidebar-action-primary"
           type="button"
-          title={collapsed ? "新建聊天" : undefined}
+          title={collapsed ? t("sidebar.newChat") : undefined}
           onClick={onCreateConversation}
         >
           <MessageSquarePlus size={18} />
-          <span>新建聊天</span>
+          <span>{t("sidebar.newChat")}</span>
         </button>
-        <button className="sidebar-action" type="button" title={collapsed ? "搜索" : undefined}>
+        <button className="sidebar-action" type="button" title={collapsed ? t("sidebar.search") : undefined}>
           <Search size={18} />
-          <span>搜索</span>
+          <span>{t("sidebar.search")}</span>
         </button>
         <button
           className="sidebar-action"
           type="button"
-          title={collapsed ? "扩展" : undefined}
+          title={collapsed ? t("sidebar.extensions") : undefined}
           aria-expanded={extensionsOpen}
           onClick={() => {
             if (collapsed) {
@@ -222,7 +227,7 @@ export function Sidebar({
           }}
         >
           <Boxes size={18} />
-          <span>扩展</span>
+          <span>{t("sidebar.extensions")}</span>
           <ChevronDown className={`sidebar-chevron${extensionsOpen ? " sidebar-chevron-open" : ""}`} size={16} />
         </button>
 
@@ -246,35 +251,35 @@ export function Sidebar({
 
           <div className="sidebar-divider" />
 
-          <section className="conversation-section" aria-label="对话分类">
+          <section className="conversation-section" aria-label={t("sidebar.conversationCategories")}>
         <div className="conversation-tabs">
           <button
             className={activeSection === "recent" ? "conversation-tab conversation-tab-active" : "conversation-tab"}
             type="button"
             onClick={() => setActiveSection("recent")}
           >
-            最近
+            {t("sidebar.recent")}
           </button>
           <button
             className={activeSection === "collections" ? "conversation-tab conversation-tab-active" : "conversation-tab"}
             type="button"
             onClick={() => setActiveSection("collections")}
           >
-            集合
+            {t("sidebar.collections")}
           </button>
           <button
             className={activeSection === "projects" ? "conversation-tab conversation-tab-active" : "conversation-tab"}
             type="button"
             onClick={() => setActiveSection("projects")}
           >
-            项目
+            {t("sidebar.projects")}
           </button>
 
           <div className="conversation-list-actions">
             <button
               className="icon-button"
               type="button"
-              title="列表操作"
+              title={t("sidebar.listActions")}
               aria-expanded={listMenuOpen}
               onClick={() => {
                 setListMenuOpen((open) => !open);
@@ -286,7 +291,7 @@ export function Sidebar({
             <button
               className="icon-button"
               type="button"
-              title="新建聊天"
+              title={t("sidebar.newChat")}
               onClick={onCreateConversation}
             >
               <MessageSquarePlus size={16} />
@@ -305,7 +310,7 @@ export function Sidebar({
                   }}
                 >
                   <Trash2 size={16} />
-                  <span>清空全部对话</span>
+                  <span>{t("sidebar.clearAll")}</span>
                 </button>
               </div>
             ) : null}
@@ -335,7 +340,7 @@ export function Sidebar({
                   <button
                     className="conversation-more"
                     type="button"
-                    title="对话操作"
+                    title={t("sidebar.conversationActions")}
                     aria-expanded={conversationMenu === conversation.id}
                     onClick={() => {
                       setConversationMenu((current) =>
@@ -348,7 +353,11 @@ export function Sidebar({
                   </button>
 
                   {conversationMenu === conversation.id ? (
-                    <ConversationMenu
+                    <ConversationMenu t={t}
+                      onExport={(format) => {
+                        setConversationMenu(null);
+                        onExportConversation(conversation.id, format);
+                      }}
                       onDelete={() => {
                         setConversationMenu(null);
                         onDeleteConversation(conversation.id);
@@ -360,20 +369,20 @@ export function Sidebar({
               {conversations.length === 0 && !conversationListLoading ? (
                 <button className="empty-section-action" type="button" onClick={onCreateConversation}>
                   <MessageSquarePlus size={17} />
-                  <span>新建第一个对话</span>
+                  <span>{t("sidebar.firstConversation")}</span>
                 </button>
               ) : null}
               {conversationListLoading || conversationListHasMore || conversationListError ? (
                 <div className="conversation-load-more" ref={loadMoreRef}>
                   {conversationListError ? (
-                    <button type="button" onClick={onLoadMoreConversations}>重试加载</button>
+                    <button type="button" onClick={onLoadMoreConversations}>{t("sidebar.retryLoad")}</button>
                   ) : conversationListLoading ? (
                     <span role="status">
                       <LoaderCircle size={15} />
-                      正在加载
+                      {t("common.loading")}
                     </span>
                   ) : (
-                    <button type="button" onClick={onLoadMoreConversations}>加载更多</button>
+                    <button type="button" onClick={onLoadMoreConversations}>{t("sidebar.loadMore")}</button>
                   )}
                 </div>
               ) : null}
@@ -381,12 +390,12 @@ export function Sidebar({
           ) : activeSection === "projects" ? (
             <button className="empty-section-action" type="button">
               <Folder size={17} />
-              <span>创建第一个项目</span>
+              <span>{t("sidebar.firstProject")}</span>
             </button>
           ) : (
             <button className="empty-section-action" type="button">
               <Layers3 size={17} />
-              <span>创建第一个集合</span>
+              <span>{t("sidebar.firstCollection")}</span>
             </button>
           )}
         </div>
@@ -418,13 +427,13 @@ export function Sidebar({
           </div>
           <div className="user-meta">
             <strong title={normalizedDisplayName}>{normalizedDisplayName}</strong>
-            <span>本地工作区</span>
+            <span>{t("sidebar.localWorkspace")}</span>
           </div>
         </div>
         <button
           className={`icon-button${settingsOpen ? " sidebar-settings-active" : ""}`}
           type="button"
-          title="设置"
+          title={t("sidebar.settings")}
           aria-current={settingsOpen ? "page" : undefined}
           onClick={onOpenSettings}
         >
@@ -436,7 +445,7 @@ export function Sidebar({
         <PanelResizeHandle
           {...resize}
           edge="right"
-          label={mode === "chat" ? "调整 Chat 侧边栏宽度" : "调整 Work 侧边栏宽度"}
+          label={mode === "chat" ? t("common.resizeChatSidebar") : t("common.resizeWorkSidebar")}
         />
       ) : null}
     </aside>
@@ -444,31 +453,37 @@ export function Sidebar({
 }
 
 type ConversationMenuProps = {
+  t: ReturnType<typeof useI18n>["t"];
+  onExport: (format: "markdown" | "json") => void;
   onDelete: () => void;
 };
 
-function ConversationMenu({ onDelete }: ConversationMenuProps) {
+function ConversationMenu({ t, onExport, onDelete }: ConversationMenuProps) {
   return (
     <div className="sidebar-menu conversation-menu" role="menu">
       <button className="sidebar-menu-item" type="button" role="menuitem">
         <Pencil size={16} />
-        <span>重命名</span>
+        <span>{t("sidebar.rename")}</span>
       </button>
       <button className="sidebar-menu-item" type="button" role="menuitem">
         <Pin size={16} />
-        <span>置顶</span>
+        <span>{t("sidebar.pin")}</span>
       </button>
       <button className="sidebar-menu-item" type="button" role="menuitem">
         <FolderInput size={16} />
-        <span>添加到项目</span>
+        <span>{t("sidebar.addProject")}</span>
       </button>
       <button className="sidebar-menu-item" type="button" role="menuitem">
         <Layers3 size={16} />
-        <span>移动到集合</span>
+        <span>{t("sidebar.moveCollection")}</span>
       </button>
-      <button className="sidebar-menu-item" type="button" role="menuitem">
+      <button className="sidebar-menu-item" type="button" role="menuitem" onClick={() => onExport("markdown")}>
         <Download size={16} />
-        <span>导出</span>
+        <span>{t("sidebar.exportMarkdown")}</span>
+      </button>
+      <button className="sidebar-menu-item" type="button" role="menuitem" onClick={() => onExport("json")}>
+        <FileJson size={16} />
+        <span>{t("sidebar.exportJson")}</span>
       </button>
       <div className="sidebar-menu-separator" />
       <button
@@ -478,7 +493,7 @@ function ConversationMenu({ onDelete }: ConversationMenuProps) {
         onClick={onDelete}
       >
         <Trash2 size={16} />
-        <span>删除</span>
+        <span>{t("sidebar.delete")}</span>
       </button>
     </div>
   );

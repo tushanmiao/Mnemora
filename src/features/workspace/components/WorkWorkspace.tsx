@@ -10,6 +10,7 @@ import {
   FilePlus2,
   FileText,
   Inbox,
+  FolderInput,
   LoaderCircle,
   MoreHorizontal,
   Network,
@@ -19,7 +20,12 @@ import {
   Star,
   Trash2,
 } from "lucide-react";
-import type { LibraryItem, LibrarySort } from "../../library/types";
+import type {
+  LibraryCollection,
+  LibraryItem,
+  LibraryItemUpdate,
+  LibrarySort,
+} from "../../library/types";
 import type { LiteratureReference } from "../../../types/chat";
 import { usePdfReaderBridge } from "../../pdf/context/PdfReaderContext";
 import type {
@@ -29,6 +35,8 @@ import type {
 } from "../types";
 import { useWorkSession } from "../hooks/useWorkSession";
 import { WorkTabStrip } from "./WorkTabStrip";
+import { useI18n } from "../../../i18n/I18nProvider";
+import type { TranslationKey } from "../../../i18n/translations";
 import "../styles/work-workspace.css";
 
 const PdfReader = lazy(() => import("../../pdf/components/PdfReader"));
@@ -40,6 +48,7 @@ type WorkWorkspaceProps = {
   searchQuery: string;
   collectionName: string | null;
   items: LibraryItem[];
+  collections: LibraryCollection[];
   total: number;
   loading: boolean;
   error: string;
@@ -64,33 +73,18 @@ type WorkWorkspaceProps = {
   onMarkOpened: (itemId: string) => Promise<LibraryItem | null>;
   onOpenExternal: (itemId: string) => Promise<LibraryItem>;
   onSetFavorite: (itemId: string, favorite: boolean) => Promise<LibraryItem>;
+  onSaveItem: (update: LibraryItemUpdate) => Promise<LibraryItem>;
   onMoveToTrash: (itemId: string) => Promise<LibraryItem>;
   onRestoreItem: (itemId: string) => Promise<LibraryItem>;
   onDeletePermanently: (itemId: string) => Promise<boolean>;
 };
-
-const viewDetails = {
-  all: { title: "全部文献", empty: "文库中暂无文献", icon: BookOpenText },
-  recent: { title: "最近阅读", empty: "暂无最近阅读记录", icon: Clock3 },
-  favorites: { title: "收藏", empty: "暂无收藏文献", icon: Star },
-  unfiled: { title: "未分类", empty: "暂无未分类文献", icon: Inbox },
-  notes: { title: "笔记", empty: "暂无学习笔记", icon: NotebookPen },
-  "mind-maps": { title: "思维导图", empty: "暂无思维导图", icon: Network },
-  trash: { title: "回收站", empty: "回收站为空", icon: Trash2 },
-} satisfies Record<WorkLibraryView, { title: string; empty: string; icon: typeof BookOpenText }>;
-
-const sortOptions = [
-  { id: "updated", label: "最近更新", icon: Clock3 },
-  { id: "title", label: "标题", icon: ArrowDownAZ },
-  { id: "year", label: "出版年份", icon: ArrowDownWideNarrow },
-  { id: "imported", label: "导入时间", icon: FilePlus2 },
-] satisfies Array<{ id: LibrarySort; label: string; icon: typeof Clock3 }>;
 
 export function WorkWorkspace({
   libraryView,
   searchQuery,
   collectionName,
   items,
+  collections,
   total,
   loading,
   error,
@@ -115,10 +109,12 @@ export function WorkWorkspace({
   onMarkOpened,
   onOpenExternal,
   onSetFavorite,
+  onSaveItem,
   onMoveToTrash,
   onRestoreItem,
   onDeletePermanently,
 }: WorkWorkspaceProps) {
+  const { language, t } = useI18n();
   const session = useWorkSession();
   const { controller: pdfController } = usePdfReaderBridge();
   const [sortMenuOpen, setSortMenuOpen] = useState(false);
@@ -201,13 +197,28 @@ export function WorkWorkspace({
     return () => document.removeEventListener("mousedown", closeMenus);
   }, []);
 
+  const viewDetails = {
+    all: { title: t("work.all"), empty: t("work.emptyAll"), icon: BookOpenText },
+    recent: { title: t("work.recent"), empty: t("work.emptyRecent"), icon: Clock3 },
+    favorites: { title: t("work.favorites"), empty: t("work.emptyFavorites"), icon: Star },
+    unfiled: { title: t("work.unfiled"), empty: t("work.emptyUnfiled"), icon: Inbox },
+    notes: { title: t("work.notes"), empty: t("work.emptyNotes"), icon: NotebookPen },
+    "mind-maps": { title: t("work.mindMaps"), empty: t("work.emptyMindMaps"), icon: Network },
+    trash: { title: t("work.trash"), empty: t("work.emptyTrash"), icon: Trash2 },
+  } satisfies Record<WorkLibraryView, { title: string; empty: string; icon: typeof BookOpenText }>;
+  const sortOptions = [
+    { id: "updated" as const, label: t("work.updated"), icon: Clock3 },
+    { id: "title" as const, label: t("work.title"), icon: ArrowDownAZ },
+    { id: "year" as const, label: t("work.year"), icon: ArrowDownWideNarrow },
+    { id: "imported" as const, label: t("work.imported"), icon: FilePlus2 },
+  ];
   const view = viewDetails[libraryView];
   const title = collectionName ?? view.title;
   const EmptyIcon = searchQuery.trim() ? SearchX : view.icon;
   const emptyTitle = searchQuery.trim()
-    ? `没有找到“${searchQuery.trim()}”`
+    ? t("work.noSearchResult", { query: searchQuery.trim() })
     : collectionName
-      ? `“${collectionName}”中暂无文献`
+      ? t("work.emptyCollection", { name: collectionName })
       : view.empty;
   const isLearningOutcome = libraryView === "notes" || libraryView === "mind-maps";
   const activePdfItem = session.activeTab.kind === "pdf"
@@ -226,7 +237,7 @@ export function WorkWorkspace({
   };
 
   return (
-    <section className="work-workspace" aria-label="Work 文献学习工作区" ref={menuAreaRef}>
+    <section className="work-workspace" aria-label={t("work.workspace")} ref={menuAreaRef}>
       <WorkTabStrip
         tabs={session.tabs}
         activeTabId={session.activeTab.id}
@@ -239,7 +250,7 @@ export function WorkWorkspace({
 
       {session.activeTab.kind === "pdf" ? (
         activePdfItem ? (
-          <Suspense fallback={<div className="work-library-state" role="status"><LoaderCircle className="work-library-spinner" size={24} /><span>正在准备 PDF 阅读器</span></div>}>
+          <Suspense fallback={<div className="work-library-state" role="status"><LoaderCircle className="work-library-spinner" size={24} /><span>{t("work.preparingPdf")}</span></div>}>
             <PdfReader
               key={activePdfItem.id}
               item={activePdfItem}
@@ -259,7 +270,7 @@ export function WorkWorkspace({
           />
         )
       ) : session.activeTab.kind === "note" && session.activeTab.resourceId ? (
-        <Suspense fallback={<div className="work-library-state" role="status"><LoaderCircle className="work-library-spinner" size={24} /><span>正在准备笔记</span></div>}>
+        <Suspense fallback={<div className="work-library-state" role="status"><LoaderCircle className="work-library-spinner" size={24} /><span>{t("work.preparingNotes")}</span></div>}>
           <NoteWorkspace
             noteId={session.activeTab.resourceId}
             onUpdated={session.updateNoteTab}
@@ -271,7 +282,7 @@ export function WorkWorkspace({
           <header className="work-library-header">
             <div className="work-library-heading">
               <h1>{title}</h1>
-              <span>{libraryView === "notes" ? noteTotal : total} 项</span>
+              <span>{t("common.items", { count: libraryView === "notes" ? noteTotal : total })}</span>
             </div>
             {!isLearningOutcome ? (
               <div className="work-library-header-actions">
@@ -279,7 +290,7 @@ export function WorkWorkspace({
                   <button
                     className="icon-button"
                     type="button"
-                    title="排序"
+                    title={t("work.sort")}
                     aria-expanded={sortMenuOpen}
                     onClick={() => setSortMenuOpen((open) => !open)}
                   >
@@ -307,7 +318,7 @@ export function WorkWorkspace({
                     </div>
                   ) : null}
                 </div>
-                <button className="icon-button" type="button" title="列表列设置" disabled>
+                <button className="icon-button" type="button" title={t("work.columns")} disabled>
                   <Columns3 size={17} />
                 </button>
               </div>
@@ -317,7 +328,7 @@ export function WorkWorkspace({
           {notice ? (
             <div className="work-library-notice" role="status">
               <span>{notice}</span>
-              <button type="button" aria-label="关闭提示" onClick={onDismissNotice}>×</button>
+              <button type="button" aria-label={t("work.closeNotice")} onClick={onDismissNotice}>×</button>
             </div>
           ) : null}
 
@@ -328,17 +339,17 @@ export function WorkWorkspace({
             >
               {isLearningOutcome ? (
                 <>
-                  <span>名称</span>
-                  <span>关联文献</span>
-                  <span>更新时间</span>
+                  <span>{t("work.name")}</span>
+                  <span>{t("work.linkedLiterature")}</span>
+                  <span>{t("work.updatedAt")}</span>
                 </>
               ) : (
                 <>
-                  <span>标题</span>
-                  <span>作者</span>
-                  <span>年份</span>
-                  <span>分类</span>
-                  <span>最近阅读</span>
+                  <span>{t("work.title")}</span>
+                  <span>{t("work.author")}</span>
+                  <span>{t("work.year")}</span>
+                  <span>{t("work.collectionColumn")}</span>
+                  <span>{t("work.lastRead")}</span>
                   <span />
                 </>
               )}
@@ -347,16 +358,16 @@ export function WorkWorkspace({
             {loading ? (
               <div className="work-library-state" role="status">
                 <LoaderCircle className="work-library-spinner" size={24} />
-                <span>正在读取文献库</span>
+                <span>{t("work.loadingLibrary")}</span>
               </div>
             ) : error ? (
               <div className="work-library-state work-library-error" role="alert">
-                <strong>文献库暂时不可用</strong>
+                <strong>{t("work.libraryUnavailable")}</strong>
                 <span>{error}</span>
-                <button type="button" onClick={onRefresh}>重新加载</button>
+                <button type="button" onClick={onRefresh}>{t("work.reload")}</button>
               </div>
             ) : libraryView === "notes" ? (
-              <Suspense fallback={<div className="work-library-state" role="status"><LoaderCircle className="work-library-spinner" size={24} /><span>正在准备笔记列表</span></div>}>
+              <Suspense fallback={<div className="work-library-state" role="status"><LoaderCircle className="work-library-spinner" size={24} /><span>{t("work.preparingNoteList")}</span></div>}>
                 <NoteListView
                   searchQuery={searchQuery}
                   onOpenNote={session.openNote}
@@ -370,26 +381,43 @@ export function WorkWorkspace({
                 {libraryView === "all" && !searchQuery.trim() && !collectionName ? (
                   <button type="button" onClick={() => void onImport().catch(() => undefined)}>
                     <FilePlus2 size={16} />
-                    <span>导入 PDF</span>
+                    <span>{t("work.importPdfButton")}</span>
                   </button>
                 ) : (
-                  <p>{searchQuery.trim() ? "请调整查询条件" : "0 项"}</p>
+                  <p>{searchQuery.trim() ? t("work.adjustSearch") : t("common.items", { count: 0 })}</p>
                 )}
               </div>
             ) : (
-              <div className="work-library-list" role="table" aria-label={`${title}文献列表`}>
+              <div className="work-library-list" role="table" aria-label={t("work.libraryList", { title })}>
                 {items.map((item) => (
                   <LibraryRow
                     item={item}
+                    collections={collections}
                     selected={selectedItem?.id === item.id}
                     trashView={libraryView === "trash"}
                     busy={actionPending}
                     menuOpen={itemMenuId === item.id}
+                    language={language}
+                    t={t}
                     key={item.id}
                     onSelect={() => void onSelectItem(item.id)}
                     onOpen={() => void openItem(item)}
                     onToggleMenu={() => setItemMenuId((current) => current === item.id ? null : item.id)}
                     onFavorite={() => void onSetFavorite(item.id, !item.favorite).catch(() => undefined)}
+                    onCollectionsChange={(collectionIds) => {
+                      void onSaveItem({
+                        itemId: item.id,
+                        title: item.title,
+                        authors: item.authors,
+                        publicationYear: item.publicationYear,
+                        publicationTitle: item.publicationTitle,
+                        doi: item.doi,
+                        abstractText: item.abstractText,
+                        favorite: item.favorite,
+                        tags: item.tags,
+                        collectionIds,
+                      }).catch(() => undefined);
+                    }}
                     onMoveToTrash={() => {
                       setItemMenuId(null);
                       void onMoveToTrash(item.id)
@@ -402,7 +430,7 @@ export function WorkWorkspace({
                     }}
                     onDeletePermanently={() => {
                       setItemMenuId(null);
-                      if (!window.confirm(`永久删除“${item.title}”及其应用内 PDF 快照吗？此操作无法撤销。`)) return;
+                      if (!window.confirm(t("work.deletePermanentConfirm", { title: item.title }))) return;
                       void onDeletePermanently(item.id)
                         .then((removed) => {
                           if (removed) session.closeResource(item.id);
@@ -422,14 +450,18 @@ export function WorkWorkspace({
 
 type LibraryRowProps = {
   item: LibraryItem;
+  collections: LibraryCollection[];
   selected: boolean;
   trashView: boolean;
   busy: boolean;
   menuOpen: boolean;
+  language: "zh" | "en";
+  t: (key: TranslationKey, values?: Record<string, string | number>) => string;
   onSelect: () => void;
   onOpen: () => void;
   onToggleMenu: () => void;
   onFavorite: () => void;
+  onCollectionsChange: (collectionIds: string[]) => void;
   onMoveToTrash: () => void;
   onRestore: () => void;
   onDeletePermanently: () => void;
@@ -437,14 +469,18 @@ type LibraryRowProps = {
 
 function LibraryRow({
   item,
+  collections,
   selected,
   trashView,
   busy,
   menuOpen,
+  language,
+  t,
   onSelect,
   onOpen,
   onToggleMenu,
   onFavorite,
+  onCollectionsChange,
   onMoveToTrash,
   onRestore,
   onDeletePermanently,
@@ -468,22 +504,22 @@ function LibraryRow({
       <span className="work-library-title-cell" role="cell" title={item.title}>
         <FileText size={15} />
         <strong>{item.title}</strong>
-        {!item.file.available ? <small>文件缺失</small> : null}
+        {!item.file.available ? <small>{t("work.fileMissing")}</small> : null}
       </span>
       <span role="cell" title={item.authors.join("、")}>
         {item.authors.length > 0 ? item.authors.join("、") : "-"}
       </span>
       <span role="cell">{item.publicationYear ?? "-"}</span>
       <span role="cell" title={item.collectionNames.join("、")}>
-        {item.collectionNames.length > 0 ? item.collectionNames.join("、") : "未分类"}
+        {item.collectionNames.length > 0 ? item.collectionNames.join(language === "en" ? ", " : "、") : t("work.unfiled")}
       </span>
-      <span role="cell">{formatTimestamp(item.lastOpenedAt)}</span>
+      <span role="cell">{formatTimestamp(item.lastOpenedAt, language)}</span>
       <div className="work-library-row-actions" role="cell" onClick={(event) => event.stopPropagation()}>
         {!trashView ? (
           <button
             className={item.favorite ? "work-library-favorite-active" : ""}
             type="button"
-            title={item.favorite ? "取消收藏" : "收藏"}
+            title={item.favorite ? t("work.unfavorite") : t("work.favorite")}
             disabled={busy}
             onClick={onFavorite}
           >
@@ -492,7 +528,7 @@ function LibraryRow({
         ) : null}
         <button
           type="button"
-          title="文献操作"
+          title={t("work.itemActions")}
           disabled={busy}
           aria-expanded={menuOpen}
           onClick={onToggleMenu}
@@ -505,7 +541,7 @@ function LibraryRow({
               <>
                 <button type="button" role="menuitem" onClick={onRestore}>
                   <RotateCcw size={14} />
-                  <span>恢复</span>
+                  <span>{t("common.restore")}</span>
                 </button>
                 <button
                   className="work-library-menu-danger"
@@ -514,19 +550,41 @@ function LibraryRow({
                   onClick={onDeletePermanently}
                 >
                   <Trash2 size={14} />
-                  <span>永久删除</span>
+                  <span>{t("work.deletePermanent")}</span>
                 </button>
               </>
             ) : (
-              <button
-                className="work-library-menu-danger"
-                type="button"
-                role="menuitem"
-                onClick={onMoveToTrash}
-              >
-                <Trash2 size={14} />
-                <span>移入回收站</span>
-              </button>
+              <>
+                <div className="work-library-collection-menu" aria-label={t("work.collectionColumn")}>
+                  <span><FolderInput size={14} />{t("work.addCollection")}</span>
+                  {collections.length > 0 ? collections.map((collection) => {
+                    const checked = item.collectionIds.includes(collection.id);
+                    return (
+                      <label key={collection.id}>
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          disabled={busy}
+                          onChange={() => onCollectionsChange(checked
+                            ? item.collectionIds.filter((id) => id !== collection.id)
+                            : [...item.collectionIds, collection.id])}
+                        />
+                        <span>{collection.name}</span>
+                      </label>
+                    );
+                  }) : <small>{t("work.createCollectionFirst")}</small>}
+                </div>
+                <div className="work-library-menu-separator" />
+                <button
+                  className="work-library-menu-danger"
+                  type="button"
+                  role="menuitem"
+                  onClick={onMoveToTrash}
+                >
+                  <Trash2 size={14} />
+                  <span>{t("work.moveTrash")}</span>
+                </button>
+              </>
             )}
           </div>
         ) : null}
@@ -552,6 +610,7 @@ function WorkPdfResource({
   busy,
   onOpenExternal,
 }: WorkPdfResourceProps) {
+  const { language, t } = useI18n();
   if (!item) {
     return (
       <div
@@ -559,8 +618,8 @@ function WorkPdfResource({
         role={loading ? "status" : "alert"}
       >
         {loading ? <LoaderCircle className="work-library-spinner" size={24} /> : <SearchX size={28} />}
-        <strong>{loading ? `正在读取 ${fallbackTitle}` : "无法读取该文献"}</strong>
-        {!loading ? <span>{error || "文献可能已被删除，请关闭这个页签后重新打开。"}</span> : null}
+        <strong>{loading ? t("work.loadingDocument", { title: fallbackTitle }) : t("work.documentUnavailable")}</strong>
+        {!loading ? <span>{error || t("work.documentUnavailableDescription")}</span> : null}
       </div>
     );
   }
@@ -569,10 +628,10 @@ function WorkPdfResource({
       <div className="work-pdf-resource-icon"><FileText size={30} /></div>
       <h1>{item.title}</h1>
       <dl>
-        <div><dt>文件</dt><dd>{item.file.originalName}</dd></div>
-        <div><dt>大小</dt><dd>{formatFileSize(item.file.fileSize)}</dd></div>
-        <div><dt>作者</dt><dd>{item.authors.join("、") || "未填写"}</dd></div>
-        <div><dt>分类</dt><dd>{item.collectionNames.join("、") || "未分类"}</dd></div>
+        <div><dt>{t("work.file")}</dt><dd>{item.file.originalName}</dd></div>
+        <div><dt>{t("work.size")}</dt><dd>{formatFileSize(item.file.fileSize)}</dd></div>
+        <div><dt>{t("work.author")}</dt><dd>{item.authors.join(language === "en" ? ", " : "、") || t("work.notProvided")}</dd></div>
+        <div><dt>{t("work.collectionColumn")}</dt><dd>{item.collectionNames.join(language === "en" ? ", " : "、") || t("work.unfiled")}</dd></div>
       </dl>
       <button
         type="button"
@@ -580,15 +639,15 @@ function WorkPdfResource({
         onClick={() => void onOpenExternal(item.id).catch(() => undefined)}
       >
         <ExternalLink size={16} />
-        <span>在系统阅读器中打开</span>
+        <span>{t("work.openSystem")}</span>
       </button>
     </article>
   );
 }
 
-function formatTimestamp(value: number | null): string {
+function formatTimestamp(value: number | null, language: "zh" | "en"): string {
   if (!value) return "-";
-  return new Intl.DateTimeFormat("zh-CN", {
+  return new Intl.DateTimeFormat(language === "en" ? "en-US" : "zh-CN", {
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",

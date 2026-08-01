@@ -19,6 +19,9 @@ use crate::settings::{
 };
 use crate::skills::SkillRepository;
 use crate::startup_log::StartupErrorLog;
+use crate::sync::{
+    mapping::SyncMappingRepository, SyncSecretStore, SyncSettings, SyncSettingsRepository,
+};
 
 /** Tauri 全局共享状态。HTTP Client、设置快照和仓库在整个应用生命周期内复用。 */
 pub struct AppState {
@@ -37,6 +40,12 @@ pub struct AppState {
     pub conversation_writes: Mutex<()>,
     pub library_repository: LibraryRepository,
     pub library_operations: Mutex<()>,
+    pub sync_settings: RwLock<SyncSettings>,
+    pub sync_settings_repository: SyncSettingsRepository,
+    pub sync_secrets: SyncSecretStore,
+    pub sync_mapping_repository: SyncMappingRepository,
+    pub sync_operations: Mutex<()>,
+    pub active_sync_run: Mutex<Option<CancellationToken>>,
     pub skill_repository: SkillRepository,
     pub memory_repository: MemoryRepository,
     pub skill_operations: Mutex<()>,
@@ -75,6 +84,16 @@ impl AppState {
                 AppSettings::default()
             }
         };
+        let sync_settings_repository = SyncSettingsRepository::new(config_dir.clone());
+        let sync_secrets = SyncSecretStore;
+        let sync_settings = match sync_settings_repository.load() {
+            Ok(settings) => settings,
+            Err(error) => {
+                eprintln!("{error}; using default sync settings");
+                SyncSettings::default()
+            }
+        };
+        let sync_mapping_repository = SyncMappingRepository::new(app_data_dir.clone());
         let model_settings_repository = ModelSettingsRepository::new(config_dir);
         let usage_dir = crate::usage::usage_dir(&app_data_dir);
         let skill_repository =
@@ -118,6 +137,12 @@ impl AppState {
             conversation_writes: Mutex::new(()),
             library_repository,
             library_operations: Mutex::new(()),
+            sync_settings: RwLock::new(sync_settings),
+            sync_settings_repository,
+            sync_secrets,
+            sync_mapping_repository,
+            sync_operations: Mutex::new(()),
+            active_sync_run: Mutex::new(None),
             skill_repository,
             memory_repository,
             skill_operations: Mutex::new(()),
@@ -208,6 +233,25 @@ impl AppState {
             }
         }
         removed
+    }
+
+    pub async fn start_sync_run(&self) -> CancellationToken {
+        let token = CancellationToken::new();
+        *self.active_sync_run.lock().await = Some(token.clone());
+        token
+    }
+
+    pub async fn finish_sync_run(&self) {
+        self.active_sync_run.lock().await.take();
+    }
+
+    pub async fn cancel_sync_run(&self) -> bool {
+        let run = self.active_sync_run.lock().await;
+        let Some(token) = run.as_ref() else {
+            return false;
+        };
+        token.cancel();
+        true
     }
 }
 

@@ -9,6 +9,7 @@ import { TextLayer, type PDFDocumentProxy, type PDFPageProxy, type RenderTask } 
 import type { LibraryAnnotation, LibraryAnnotationRect } from "../../library/types";
 import type { PdfTextSelection } from "../types";
 import { resolvePdfCanvasScale, resolvePdfPageDisplaySize } from "../utils/pdfViewport";
+import { useI18n } from "../../../i18n/I18nProvider";
 
 type PdfPageProps = {
   pdf: PDFDocumentProxy;
@@ -40,6 +41,7 @@ export function PdfPage({
   onTextSelection,
   onAreaSelection,
 }: PdfPageProps) {
+  const { t } = useI18n();
   const shellRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const textLayerRef = useRef<HTMLDivElement>(null);
@@ -275,7 +277,7 @@ export function PdfPage({
         minWidth: displaySize.width + 32,
         minHeight: displaySize.height + 32,
       }}
-      aria-label={`第 ${pageIndex + 1} 页`}
+      aria-label={t("pdf.page", { page: pageIndex + 1 })}
     >
       <div
         className="mnemora-pdf-page-surface"
@@ -326,8 +328,8 @@ export function PdfPage({
             ) : null}
           </div>
         ) : null}
-        {status === "loading" ? <span className="mnemora-pdf-page-status">正在渲染</span> : null}
-        {status === "error" ? <span className="mnemora-pdf-page-status mnemora-pdf-page-error">本页渲染失败</span> : null}
+        {status === "loading" ? <span className="mnemora-pdf-page-status">{t("pdf.rendering")}</span> : null}
+        {status === "error" ? <span className="mnemora-pdf-page-status mnemora-pdf-page-error">{t("pdf.renderFailed")}</span> : null}
       </div>
     </div>
   );

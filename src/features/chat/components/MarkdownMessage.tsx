@@ -1,7 +1,9 @@
 import {
   Children,
   isValidElement,
+  lazy,
   memo,
+  Suspense,
   useEffect,
   useMemo,
   useRef,
@@ -33,6 +35,8 @@ type MarkdownMessageProps = {
 
 type CopyState = "idle" | "copied" | "error";
 type PreviewState = "idle" | "loading" | "error";
+
+const MathMarkdownContent = lazy(() => import("./MathMarkdownContent"));
 
 async function openMarkdownLink(event: ReactMouseEvent<HTMLAnchorElement>) {
   if (!isTauri()) return;
@@ -180,11 +184,15 @@ const streamingTailComponents: Components = {
   },
 };
 
-const remarkPlugins = [remarkGfm];
-const rehypePlugins: PluggableList = [
+const plainRemarkPlugins = [remarkGfm];
+const plainRehypePlugins: PluggableList = [
   rehypeRaw,
   [rehypeSanitize, SAFE_CHAT_HTML_SCHEMA],
 ];
+
+function containsMath(content: string) {
+  return /(?:^|[^\\])\$\$[\s\S]+?\$\$|(?:^|[^\\])\$(?!\s)[^\n$]+?\$(?!\$)/m.test(content);
+}
 
 type MarkdownBlockProps = {
   block: StreamingMarkdownBlock;
@@ -196,10 +204,19 @@ const MarkdownBlock = memo(function MarkdownBlock({
   isStreamingTail,
 }: MarkdownBlockProps) {
   const content = renderableStreamingBlock(block);
+  // KaTeX 只为已完成且真正含公式的块按需加载，普通消息不承担其运行时开销。
+  const mathEnabled = containsMath(content);
+  if (mathEnabled && !isStreamingTail) {
+    return (
+      <Suspense fallback={<span className="markdown-math-loading">{content}</span>}>
+        <MathMarkdownContent content={content} components={markdownComponents} />
+      </Suspense>
+    );
+  }
   return (
     <ReactMarkdown
-      remarkPlugins={remarkPlugins}
-      rehypePlugins={rehypePlugins}
+      remarkPlugins={plainRemarkPlugins}
+      rehypePlugins={plainRehypePlugins}
       components={isStreamingTail ? streamingTailComponents : markdownComponents}
       disallowedElements={["img"]}
       urlTransform={safeMarkdownUrlTransform}

@@ -9,3 +9,4 @@ pub mod providers;
 pub mod settings;
 pub mod skills;
 pub mod startup;
+pub mod sync;

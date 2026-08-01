@@ -1,4 +1,5 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
+import { save } from "@tauri-apps/plugin-dialog";
 import type {
   Conversation,
   ConversationListItem,
@@ -34,4 +35,22 @@ export function removeStoredConversation(conversationId: string) {
 export function clearStoredConversations() {
   if (!isTauri()) return Promise.resolve();
   return invoke<void>("clear_conversations");
+}
+
+export async function exportStoredConversation(
+  conversationId: string,
+  title: string,
+  format: "markdown" | "json",
+) {
+  if (!isTauri()) throw new Error("会话导出需要在 Tauri 应用中运行。");
+  const extension = format === "markdown" ? "md" : "json";
+  const safeTitle = title.trim().replace(/[<>:"/\\|?*\u0000-\u001f]/g, "-").slice(0, 80) || "mnemora-conversation";
+  const path = await save({
+    title: format === "markdown" ? "导出会话为 Markdown" : "导出会话为 JSON",
+    defaultPath: `${safeTitle}.${extension}`,
+    filters: [{ name: format === "markdown" ? "Markdown" : "JSON", extensions: [extension] }],
+  });
+  if (!path) return false;
+  await invoke("export_conversation", { conversationId, path, format });
+  return true;
 }

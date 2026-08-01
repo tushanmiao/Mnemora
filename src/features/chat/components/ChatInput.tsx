@@ -29,6 +29,7 @@ import { resolveSkillActivation } from "../utils/skillActivation";
 import { ChatAttachments } from "./ChatAttachments";
 import { ContextUsageIndicator } from "./ContextUsageIndicator";
 import { ActiveSkillTags, SkillPicker } from "./SkillPicker";
+import { useI18n } from "../../../i18n/I18nProvider";
 import "../styles/chat-input.css";
 
 const MAX_ATTACHMENTS = 8;
@@ -45,6 +46,8 @@ type ChatInputProps = {
   contextWindowTokens: number | null;
   /** 当前模型是否支持图片输入；false 时禁止添加图片附件，null 表示未知（放行）。 */
   supportsVision?: boolean | null;
+  /** Work 模式才显示文献入口；普通 Chat 不展示未实现的文献选择控件。 */
+  showLiteraturePicker?: boolean;
   /** 从助手回答中选中的引用片段；发送时作为引用上下文并入消息。 */
   quote?: string | null;
   /** 用户移除引用条或发送完成后调用。 */
@@ -113,11 +116,12 @@ export function ChatInput({
   disabled = false,
   busy = false,
   stopDisabled = false,
-  placeholder = "向 Mnemora 提问...",
+  placeholder,
   focusRequest = 0,
   contextUsage,
   contextWindowTokens,
   supportsVision = null,
+  showLiteraturePicker = false,
   quote = null,
   onQuoteClear,
   literatureReferences = [],
@@ -135,6 +139,8 @@ export function ChatInput({
   onStop,
   onSlashCommand,
 }: ChatInputProps) {
+  const { t } = useI18n();
+  const resolvedPlaceholder = placeholder ?? t("chat.placeholder");
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<PendingChatAttachment[]>([]);
   const [attachmentError, setAttachmentError] = useState("");
@@ -206,7 +212,7 @@ export function ChatInput({
       const rejectedImages = incoming.filter((attachment) => attachment.kind === "image");
       if (rejectedImages.length > 0) {
         accepted = incoming.filter((attachment) => attachment.kind !== "image");
-        visionError = "当前模型不支持图片输入。请切换到支持视觉的模型，或在设置的模型能力中手动开启。";
+        visionError = t("chat.visionUnsupportedDetail");
         discardPendingAttachments(rejectedImages);
       }
     }
@@ -224,7 +230,7 @@ export function ChatInput({
     discardPendingAttachments(duplicates);
     const available = Math.max(0, MAX_ATTACHMENTS - current.length);
     if (unique.length > available) {
-      setAttachmentError(`每条消息最多添加 ${MAX_ATTACHMENTS} 个附件。`);
+      setAttachmentError(t("chat.attachmentLimit", { count: MAX_ATTACHMENTS }));
       for (const attachment of unique.slice(available)) {
         void discardStagedChatAttachment(attachment.path);
       }
@@ -251,7 +257,7 @@ export function ChatInput({
       addAttachments(inspected);
     } catch (error) {
       if (session === attachmentSessionRef.current) {
-        setAttachmentError(errorMessage(error, "添加附件失败。"));
+        setAttachmentError(errorMessage(error, t("chat.addAttachmentFailed")));
       }
     }
   };
@@ -270,12 +276,12 @@ export function ChatInput({
     if (parsedCommand?.kind === "unknown") {
       if (unknownSlashConfirmation !== draft) {
         setUnknownSlashConfirmation(draft);
-        setCommandFeedback(`未知命令：${parsedCommand.trigger}。再次按 Enter 可将它作为普通文本发送。`);
+        setCommandFeedback(t("chat.unknownCommand", { command: parsedCommand.trigger }));
         return;
       }
     }
     if (parsedCommand?.kind === "conflict") {
-      setCommandFeedback(`命令 ${parsedCommand.trigger} 被多个技能重复声明，请先在技能设置中解决冲突。`);
+      setCommandFeedback(t("chat.commandConflict", { command: parsedCommand.trigger }));
       return;
     }
     if (parsedCommand?.kind === "local") {
@@ -291,7 +297,7 @@ export function ChatInput({
       try {
         const result = await onSlashCommand(parsedCommand.command, parsedCommand.arguments);
         if (!result.executed) {
-          setCommandFeedback(result.message ?? "命令没有执行。");
+          setCommandFeedback(result.message ?? t("chat.commandNotExecuted"));
           return;
         }
         setDraft(parsedCommand.command === "help" ? "/" : "");
@@ -304,7 +310,7 @@ export function ChatInput({
           discardPendingAttachments(pending);
         }
       } catch (error) {
-        setCommandFeedback(errorMessage(error, "命令执行失败。"));
+        setCommandFeedback(errorMessage(error, t("chat.commandFailed")));
       } finally {
         setCommandRunning(false);
       }
@@ -356,7 +362,7 @@ export function ChatInput({
       setAttachments([]);
     } catch (error) {
       if (session === attachmentSessionRef.current) {
-        setAttachmentError(errorMessage(error, "保存附件失败。"));
+        setAttachmentError(errorMessage(error, t("chat.saveAttachmentFailed")));
       }
     } finally {
       if (activeAttachmentTaskRef.current === requestId) {
@@ -430,7 +436,7 @@ export function ChatInput({
         void discardStagedChatAttachment(attachment.path);
       }
       if (session === attachmentSessionRef.current) {
-        setAttachmentError(errorMessage(error, "粘贴附件失败。"));
+        setAttachmentError(errorMessage(error, t("chat.pasteAttachmentFailed")));
       }
     }
   };
@@ -440,14 +446,14 @@ export function ChatInput({
       <div className="composer-inner">
         <form className="composer-box" onSubmit={handleSubmit}>
           {quote ? (
-            <div className="composer-quote-bar" aria-label="引用的回答片段">
+            <div className="composer-quote-bar" aria-label={t("chat.quoteLabel")}>
               <Quote size={14} />
               <span className="composer-quote-text">{quote}</span>
               <button
                 className="composer-quote-clear"
                 type="button"
-                title="移除引用"
-                aria-label="移除引用"
+                title={t("chat.removeQuote")}
+                aria-label={t("chat.removeQuote")}
                 onClick={() => onQuoteClear?.()}
               >
                 <X size={14} />
@@ -455,21 +461,24 @@ export function ChatInput({
             </div>
           ) : null}
           {literatureReferences.length > 0 ? (
-            <div className="composer-literature-references" aria-label="本轮文献引用">
+            <div className="composer-literature-references" aria-label={t("chat.literatureLabel")}>
               {literatureReferences.map((reference) => (
                 <div className="composer-literature-reference" key={reference.id}>
                   <BookOpenText size={14} />
                   <span>
                     <strong title={reference.title}>{reference.title}</strong>
                     <small>
-                      第 {reference.pageIndex + 1} 页 · {reference.kind === "selection" ? "文字选区" : "当前页"}
+                      {t("chat.pageReference", {
+                        page: reference.pageIndex + 1,
+                        kind: t(reference.kind === "selection" ? "chat.selection" : "chat.currentPage"),
+                      })}
                     </small>
                     <em title={reference.text}>{reference.text}</em>
                   </span>
                   <button
                     type="button"
-                    title="移除文献引用"
-                    aria-label={`移除 ${reference.title} 第 ${reference.pageIndex + 1} 页引用`}
+                    title={t("chat.removeLiterature")}
+                    aria-label={t("chat.removeLiteratureDetail", { title: reference.title, page: reference.pageIndex + 1 })}
                     onClick={() => onLiteratureReferenceRemove?.(reference.id)}
                   >
                     <X size={14} />
@@ -492,7 +501,7 @@ export function ChatInput({
           {attachmentError ? <p className="composer-attachment-error" role="alert">{attachmentError}</p> : null}
           {commandFeedback ? <p className="composer-command-feedback" role="status">{commandFeedback}</p> : null}
           {slashMenuOpen ? (
-            <div className="slash-command-menu" role="listbox" aria-label="Slash 命令">
+            <div className="slash-command-menu" role="listbox" aria-label={t("chat.slashCommands")}>
               {slashSuggestions.map((item, index) => (
                 <button
                   type="button"
@@ -518,8 +527,8 @@ export function ChatInput({
             className="composer-textarea"
             ref={textareaRef}
             rows={2}
-            placeholder={placeholder}
-            aria-label="消息输入框"
+            placeholder={resolvedPlaceholder}
+            aria-label={t("chat.inputLabel")}
             disabled={inputDisabled}
             value={draft}
             onChange={(event) => {
@@ -537,29 +546,31 @@ export function ChatInput({
                 className={supportsVision === false ? "icon-button icon-button-document-only" : "icon-button"}
                 type="button"
                 title={supportsVision === false
-                  ? "当前模型不支持图片，仅可添加文档附件"
-                  : "添加附件"}
+                  ? t("chat.visionUnsupported")
+                  : t("chat.addAttachment")}
                 aria-label={supportsVision === false
-                  ? "添加附件（当前模型不支持图片，仅可添加文档）"
-                  : "添加附件"}
+                  ? `${t("chat.addAttachment")} (${t("chat.visionUnsupported")})`
+                  : t("chat.addAttachment")}
                 disabled={inputDisabled}
                 onClick={() => void openAttachmentPicker()}
               >
                 <Paperclip size={18} />
                 {supportsVision === false ? (
-                  <span className="document-only-badge" aria-hidden="true">仅文档</span>
+                  <span className="document-only-badge" aria-hidden="true">{t("chat.documentOnly")}</span>
                 ) : null}
               </button>
-              <button className="icon-button" type="button" title="选择文献" disabled={inputDisabled}>
-                <BookOpenText size={18} />
-              </button>
+              {showLiteraturePicker ? (
+                <button className="icon-button" type="button" title={t("chat.selectLiterature")} disabled={inputDisabled}>
+                  <BookOpenText size={18} />
+                </button>
+              ) : null}
               <SkillPicker
                 skills={skills}
                 selectedSkillIds={selectedSkillIds}
                 disabled={inputDisabled}
                 onChange={onSelectedSkillsChange}
               />
-              <button className="icon-button" type="button" title="对话选项" disabled={inputDisabled}>
+              <button className="icon-button" type="button" title={t("chat.options")} disabled={inputDisabled}>
                 <SlidersHorizontal size={18} />
               </button>
             </div>
@@ -579,8 +590,8 @@ export function ChatInput({
               <button
                 className={`send-button${busy && onStop ? " stop-button" : ""}`}
                 type={busy && onStop ? "button" : "submit"}
-                title={busy && onStop ? "停止生成" : "发送消息"}
-                aria-label={busy && onStop ? "停止生成" : "发送消息"}
+                title={busy && onStop ? t("chat.stop") : t("chat.send")}
+                aria-label={busy && onStop ? t("chat.stop") : t("chat.send")}
                 disabled={busy && onStop ? stopDisabled : !canSend}
                 onClick={busy && onStop ? onStop : undefined}
               >
@@ -594,7 +605,7 @@ export function ChatInput({
           </div>
         </form>
 
-        <p className="composer-note">图片会发送给支持视觉的模型；其他文件目前只保存附件，不会解析正文。</p>
+        <p className="composer-note">{t("chat.attachmentsNote")}</p>
       </div>
     </footer>
   );

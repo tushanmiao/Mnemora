@@ -77,6 +77,8 @@
   color: var(--color-text);
   background: transparent;
   font-size: var(--app-font-size, 14px);
+  font-family: var(--reading-font-family);
+  letter-spacing: var(--reading-letter-spacing);
   line-height: 1.5;
 }
 

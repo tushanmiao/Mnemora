@@ -15,39 +15,35 @@ import type {
 } from "../../library/types";
 import { PDF_ANNOTATION_COLORS } from "../types";
 import { usePdfReaderBridge } from "../context/PdfReaderContext";
+import { useI18n } from "../../../i18n/I18nProvider";
 import "../styles/pdf-annotations.css";
 
-const annotationLabels = {
-  highlight: { label: "高亮", icon: Highlighter },
-  underline: { label: "下划线", icon: Underline },
-  area: { label: "区域", icon: ScanLine },
-} as const;
-
 export function PdfAnnotationsPanel() {
+  const { t } = useI18n();
   const { controller } = usePdfReaderBridge();
   if (!controller) {
     return (
-      <section className="work-context-empty" aria-label="暂无 PDF 批注">
+      <section className="work-context-empty" aria-label={t("pdf.noAnnotationLabel")}>
         <Highlighter size={28} aria-hidden="true" />
-        <h2>暂无批注</h2>
-        <p>当前没有打开 PDF</p>
+        <h2>{t("pdf.noAnnotations")}</h2>
+        <p>{t("pdf.noOpen")}</p>
       </section>
     );
   }
 
   return (
-    <section className="pdf-annotations-panel" aria-label="PDF 批注">
+    <section className="pdf-annotations-panel" aria-label={t("pdf.annotationPanel")}>
       <header>
         <div>
           <Highlighter size={17} />
-          <strong>批注</strong>
+          <strong>{t("pdf.annotations")}</strong>
           <span>{controller.annotations.length}</span>
         </div>
         <button
           className={controller.annotationMode === "area" ? "is-active" : ""}
           type="button"
-          title={controller.annotationMode === "area" ? "退出区域批注" : "区域批注"}
-          aria-label={controller.annotationMode === "area" ? "退出区域批注" : "区域批注"}
+          title={controller.annotationMode === "area" ? t("pdf.exitArea") : t("pdf.areaAnnotation")}
+          aria-label={controller.annotationMode === "area" ? t("pdf.exitArea") : t("pdf.areaAnnotation")}
           aria-pressed={controller.annotationMode === "area"}
           onClick={() => controller.setAnnotationMode(
             controller.annotationMode === "area" ? "text" : "area",
@@ -57,13 +53,13 @@ export function PdfAnnotationsPanel() {
         </button>
       </header>
 
-      <div className="pdf-annotation-panel-colors" aria-label="新批注颜色">
+      <div className="pdf-annotation-panel-colors" aria-label={t("pdf.newAnnotationColor")}>
         {PDF_ANNOTATION_COLORS.map((color) => (
           <button
             className={`mnemora-pdf-color-swatch mnemora-pdf-color-${color.id}${controller.annotationColor === color.id ? " is-active" : ""}`}
             type="button"
             title={color.label}
-            aria-label={`${color.label}批注`}
+            aria-label={t("pdf.annotationColorLabel", { color: color.label })}
             aria-pressed={controller.annotationColor === color.id}
             key={color.id}
             onClick={() => controller.setAnnotationColor(color.id)}
@@ -79,12 +75,12 @@ export function PdfAnnotationsPanel() {
         {controller.annotationsLoading ? (
           <div className="pdf-panel-loading" role="status">
             <LoaderCircle size={18} />
-            <span>正在读取批注</span>
+            <span>{t("pdf.loadingAnnotations")}</span>
           </div>
         ) : controller.annotations.length === 0 ? (
           <div className="pdf-panel-empty" role="status">
             <Highlighter size={24} />
-            <span>暂无批注</span>
+            <span>{t("pdf.noAnnotations")}</span>
           </div>
         ) : controller.annotations.map((annotation) => (
           <AnnotationItem annotation={annotation} key={annotation.id} />
@@ -95,6 +91,7 @@ export function PdfAnnotationsPanel() {
 }
 
 function AnnotationItem({ annotation }: { annotation: LibraryAnnotation }) {
+  const { t } = useI18n();
   const { controller } = usePdfReaderBridge();
   const [comment, setComment] = useState(annotation.comment);
   const [color, setColor] = useState<LibraryAnnotationColor>(annotation.color);
@@ -107,8 +104,8 @@ function AnnotationItem({ annotation }: { annotation: LibraryAnnotation }) {
   }, [annotation.color, annotation.comment]);
 
   if (!controller) return null;
-  const details = annotationLabels[annotation.kind];
-  const Icon = details.icon;
+  const Icon = annotation.kind === "highlight" ? Highlighter : annotation.kind === "underline" ? Underline : ScanLine;
+  const label = t(annotation.kind === "highlight" ? "pdf.highlight" : annotation.kind === "underline" ? "pdf.underline" : "pdf.area");
   const dirty = comment !== annotation.comment || color !== annotation.color;
 
   const save = async () => {
@@ -128,10 +125,10 @@ function AnnotationItem({ annotation }: { annotation: LibraryAnnotation }) {
     setCreatingNote(true);
     const quote = annotation.text
       ? `> ${annotation.text.replace(/\n/g, "\n> ")}\n\n`
-      : `区域批注，第 ${annotation.pageIndex + 1} 页。\n\n`;
+      : t("pdf.areaQuote", { page: annotation.pageIndex + 1 });
     try {
       const note = await controller.createNote(
-        `第 ${annotation.pageIndex + 1} 页批注`,
+        t("pdf.annotationNoteTitle", { page: annotation.pageIndex + 1 }),
         `${quote}${annotation.comment}`.trim(),
       );
       controller.openNote(note);
@@ -147,19 +144,19 @@ function AnnotationItem({ annotation }: { annotation: LibraryAnnotation }) {
       <header>
         <button
           type="button"
-          title={`定位到第 ${annotation.pageIndex + 1} 页`}
+          title={t("pdf.locatePage", { page: annotation.pageIndex + 1 })}
           onClick={() => controller.goToAnnotation(annotation)}
         >
           <Icon size={14} />
-          <span>{details.label}</span>
-          <strong>第 {annotation.pageIndex + 1} 页</strong>
+          <span>{label}</span>
+          <strong>{t("pdf.page", { page: annotation.pageIndex + 1 })}</strong>
           <MapPin size={13} />
         </button>
       </header>
 
       {annotation.text ? <blockquote>{annotation.text}</blockquote> : null}
 
-      <div className="pdf-annotation-item-colors" aria-label="批注颜色">
+      <div className="pdf-annotation-item-colors" aria-label={t("pdf.annotationColor")}>
         {PDF_ANNOTATION_COLORS.map((option) => (
           <button
             className={`mnemora-pdf-color-swatch mnemora-pdf-color-${option.id}${color === option.id ? " is-active" : ""}`}
@@ -177,31 +174,31 @@ function AnnotationItem({ annotation }: { annotation: LibraryAnnotation }) {
         value={comment}
         rows={3}
         maxLength={20_000}
-        placeholder="添加评论"
-        aria-label="批注评论"
+        placeholder={t("pdf.commentPlaceholder")}
+        aria-label={t("pdf.annotationComment")}
         onChange={(event) => setComment(event.target.value)}
       />
 
       <footer>
-        <button type="button" title="保存评论" disabled={!dirty || saving} onClick={() => void save()}>
+        <button type="button" title={t("pdf.saveComment")} disabled={!dirty || saving} onClick={() => void save()}>
           {saving ? <LoaderCircle size={14} className="is-spinning" /> : <Save size={14} />}
-          <span>保存</span>
+          <span>{t("common.save")}</span>
         </button>
-        <button type="button" title="转为笔记" disabled={creatingNote} onClick={() => void createNote()}>
+        <button type="button" title={t("pdf.toNote")} disabled={creatingNote} onClick={() => void createNote()}>
           <NotebookPen size={14} />
-          <span>笔记</span>
+          <span>{t("pdf.note")}</span>
         </button>
         <button
           className="is-danger"
           type="button"
-          title="删除批注"
+          title={t("pdf.deleteAnnotation")}
           onClick={() => {
-            if (!window.confirm("删除这条批注吗？")) return;
+            if (!window.confirm(t("pdf.deleteAnnotationConfirm"))) return;
             void controller.deleteAnnotation(annotation.id).catch(() => undefined);
           }}
         >
           <Trash2 size={14} />
-          <span>删除</span>
+          <span>{t("common.delete")}</span>
         </button>
       </footer>
     </article>

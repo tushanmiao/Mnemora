@@ -22,25 +22,8 @@ import {
 } from "../utils/messageNavigator";
 import { MessageBubble, type MessageBubbleUiState } from "./MessageBubble";
 import { MessageNavigator } from "./MessageNavigator";
+import { useI18n } from "../../../i18n/I18nProvider";
 import "../styles/message-list.css";
-
-const suggestions = [
-  {
-    icon: Lightbulb,
-    title: "梳理一个想法",
-    description: "把零散思路整理成清晰结构",
-  },
-  {
-    icon: BookOpenText,
-    title: "阅读一篇文献",
-    description: "后续可以从文献库选择 PDF",
-  },
-  {
-    icon: ListTodo,
-    title: "制定学习计划",
-    description: "将目标拆分为可以执行的步骤",
-  },
-];
 
 const BOTTOM_LEAVE_THRESHOLD_PX = 32;
 const BOTTOM_REENTER_THRESHOLD_PX = 16;
@@ -90,6 +73,7 @@ export function MessageList({
   onQuoteMessage,
   onLiteratureReferenceOpen,
 }: MessageListProps) {
+  const { t } = useI18n();
   const listRef = useRef<HTMLElement>(null);
   const threadRef = useRef<HTMLDivElement>(null);
   const virtualizerRef = useRef<VirtualizerHandle>(null);
@@ -106,6 +90,11 @@ export function MessageList({
   const [activeNavigatorNodeId, setActiveNavigatorNodeId] = useState<string | null>(null);
   const [messageUiState, setMessageUiState] = useState<Record<string, MessageBubbleUiState>>({});
   const navigatorNodes = useMemo(() => buildMessageNavigatorNodes(messages), [messages]);
+  const suggestions = useMemo(() => [
+    { icon: Lightbulb, title: t("chat.suggestionIdea"), description: t("chat.suggestionIdeaDescription") },
+    { icon: BookOpenText, title: t("chat.suggestionLiterature"), description: t("chat.suggestionLiteratureDescription") },
+    { icon: ListTodo, title: t("chat.suggestionPlan"), description: t("chat.suggestionPlanDescription") },
+  ], [t]);
   navigatorNodesRef.current = navigatorNodes;
   const showNavigator = navigatorNodes.length >= 4;
 
@@ -311,7 +300,7 @@ export function MessageList({
     <div className={`message-list-shell${showNavigator ? " message-list-shell-has-navigator" : ""}`}>
       <section
         className="message-list"
-        aria-label="消息列表"
+        aria-label={t("chat.messageList")}
         ref={listRef}
         onWheel={(event) => {
           if (event.deltaY < 0) isPinnedToBottomRef.current = false;
@@ -323,12 +312,12 @@ export function MessageList({
               <MessageCircleQuestion size={28} />
             </div>
             <div className="empty-chat-copy">
-              <span className="conversation-label">对话</span>
-              <h2>还没有对话</h2>
+              <span className="conversation-label">{t("chat.conversation")}</span>
+              <h2>{t("chat.emptyNoConversation")}</h2>
             </div>
             <button className="empty-chat-action" type="button" onClick={onCreateConversation}>
               <MessageSquarePlus size={17} />
-              <span>新建聊天</span>
+              <span>{t("sidebar.newChat")}</span>
             </button>
           </div>
         ) : messages.length === 0 ? (
@@ -337,12 +326,12 @@ export function MessageList({
               <MessageCircleQuestion size={28} />
             </div>
             <div className="empty-chat-copy">
-              <span className="conversation-label">新对话</span>
-              <h2>今天想研究什么？</h2>
-              <p>提出一个问题，或者从下面的建议开始。</p>
+              <span className="conversation-label">{t("chat.newConversation")}</span>
+              <h2>{t("chat.emptyQuestion")}</h2>
+              <p>{t("chat.emptyQuestionDescription")}</p>
             </div>
 
-            <div className="suggestion-grid" aria-label="提问建议">
+            <div className="suggestion-grid" aria-label={t("chat.suggestions")}>
               {suggestions.map(({ icon: Icon, title, description }) => (
                 <button
                   className="suggestion-item"

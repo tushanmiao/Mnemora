@@ -2,6 +2,9 @@ import type { ModelSettings } from "./modelSettings";
 
 export type InterfaceLanguage = "zh" | "en";
 export type ThemeMode = "system" | "light" | "dark";
+export type FontPreset = "system" | "academic" | "custom";
+export type ChineseFontFamily = "system" | "microsoftYaHei" | "simsun" | "notoSansCjk" | "notoSerifCjk";
+export type LatinFontFamily = "system" | "segoeUi" | "inter" | "timesNewRoman" | "georgia";
 /** 完整主题方案，决定应用表面、文字和边框的整体色调。 */
 export type ThemePreset = "mnemora" | "forest" | "ocean" | "rose" | "paper" | "graphite" | "highContrast";
 /** 强调色只影响按钮、选中状态和交互反馈，不覆盖主题表面。 */
@@ -31,6 +34,10 @@ export interface AppSettings {
   themeColor: ThemeColor;
   themeBackground: ThemeBackgroundSettings;
   fontSize: number;
+  letterSpacing: number;
+  fontPreset: FontPreset;
+  chineseFontFamily: ChineseFontFamily;
+  latinFontFamily: LatinFontFamily;
   launchAtStartup: boolean;
   retryEnabled: boolean;
   retryAttempts: number;
@@ -59,7 +66,7 @@ export interface SettingsBundleInspection {
   memoryBytes: number;
 }
 
-export const CURRENT_APP_SETTINGS_VERSION = 6;
+export const CURRENT_APP_SETTINGS_VERSION = 7;
 
 export function createInitialAppSettings(): AppSettings {
   return {
@@ -74,6 +81,10 @@ export function createInitialAppSettings(): AppSettings {
       surfaceOpacity: 92,
     },
     fontSize: 14,
+    letterSpacing: 0,
+    fontPreset: "system",
+    chineseFontFamily: "system",
+    latinFontFamily: "system",
     launchAtStartup: false,
     retryEnabled: true,
     retryAttempts: 5,

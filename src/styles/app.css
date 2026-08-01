@@ -36,6 +36,9 @@ button {
 }
 
 .app-shell {
+  --ui-font-family: Inter, "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
+  --reading-font-family: var(--ui-font-family);
+  --reading-letter-spacing: 0px;
   --color-app: #f7f8f6;
   --color-surface: #fbfcfa;
   --color-surface-raised: #ffffff;
@@ -68,6 +71,7 @@ button {
   overflow: hidden;
   color: var(--color-text);
   background: var(--app-custom-background, var(--color-app));
+  font-family: var(--ui-font-family);
   font-size: var(--app-font-size, 14px);
 }
 

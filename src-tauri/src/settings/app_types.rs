@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::memory::MemorySettings;
 
-pub const CURRENT_APP_SETTINGS_VERSION: u32 = 6;
+pub const CURRENT_APP_SETTINGS_VERSION: u32 = 7;
 const MAX_AVATAR_DATA_URL_BYTES: usize = 3 * 1024 * 1024;
 const MAX_THEME_BACKGROUND_CSS_BYTES: usize = 2_048;
 const MIN_SURFACE_OPACITY: u8 = 72;
@@ -56,7 +56,38 @@ pub enum ThemeColor {
     Violet,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum FontPreset {
+    #[default]
+    System,
+    Academic,
+    Custom,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ChineseFontFamily {
+    #[default]
+    System,
+    MicrosoftYaHei,
+    Simsun,
+    NotoSansCjk,
+    NotoSerifCjk,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LatinFontFamily {
+    #[default]
+    System,
+    SegoeUi,
+    Inter,
+    TimesNewRoman,
+    Georgia,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThemeBackgroundSettings {
     #[serde(default)]
@@ -87,7 +118,7 @@ pub enum ResponseLanguage {
     En,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
     #[serde(default = "current_version")]
@@ -104,6 +135,14 @@ pub struct AppSettings {
     pub theme_background: ThemeBackgroundSettings,
     #[serde(default = "default_font_size")]
     pub font_size: u8,
+    #[serde(default)]
+    pub letter_spacing: f32,
+    #[serde(default)]
+    pub font_preset: FontPreset,
+    #[serde(default)]
+    pub chinese_font_family: ChineseFontFamily,
+    #[serde(default)]
+    pub latin_font_family: LatinFontFamily,
     #[serde(default)]
     pub launch_at_startup: bool,
     #[serde(default = "default_true")]
@@ -166,6 +205,10 @@ impl Default for AppSettings {
             theme_color: ThemeColor::Neutral,
             theme_background: ThemeBackgroundSettings::default(),
             font_size: 14,
+            letter_spacing: 0.0,
+            font_preset: FontPreset::System,
+            chinese_font_family: ChineseFontFamily::System,
+            latin_font_family: LatinFontFamily::System,
             launch_at_startup: false,
             retry_enabled: true,
             retry_attempts: 5,
@@ -229,8 +272,11 @@ impl AppSettings {
         if self.working_directory.len() > 32_768 {
             return Err("Working directory is too long".to_string());
         }
-        if !(12..=20).contains(&self.font_size) {
-            return Err("Font size must be between 12 and 20".to_string());
+        if !(12..=28).contains(&self.font_size) {
+            return Err("Font size must be between 12 and 28".to_string());
+        }
+        if !self.letter_spacing.is_finite() || !(0.0..=1.5).contains(&self.letter_spacing) {
+            return Err("Text letter spacing must be between 0 and 1.5 px".to_string());
         }
         if !(MIN_SURFACE_OPACITY..=MAX_SURFACE_OPACITY)
             .contains(&self.theme_background.surface_opacity)
@@ -364,6 +410,8 @@ mod tests {
         assert!(!settings.request_debug_enabled);
         assert_eq!(settings.retry_attempts, 5);
         assert_eq!(settings.font_size, 14);
+        assert_eq!(settings.letter_spacing, 0.0);
+        assert_eq!(settings.font_preset, super::FontPreset::System);
         assert_eq!(settings.theme_background.surface_opacity, 92);
         assert!(!settings.memory.enabled);
         assert!(!settings.memory.allow_model_write);
@@ -429,5 +477,29 @@ mod tests {
         assert_eq!(settings.theme_preset, ThemePreset::Mnemora);
         assert!(!settings.theme_background.enabled);
         assert_eq!(settings.theme_background.surface_opacity, 92);
+    }
+
+    #[test]
+    fn version_six_settings_without_typography_fields_use_new_defaults() {
+        let value = serde_json::json!({
+            "version": 6,
+            "interfaceLanguage": "zh",
+            "theme": "system",
+            "themePreset": "mnemora",
+            "themeColor": "neutral",
+            "fontSize": 16,
+            "retryEnabled": true,
+            "retryAttempts": 5,
+            "maxOutputTokens": 32768
+        });
+        let settings: AppSettings = serde_json::from_value(value).unwrap();
+        assert_eq!(settings.font_size, 16);
+        assert_eq!(settings.letter_spacing, 0.0);
+        assert_eq!(settings.font_preset, super::FontPreset::System);
+        assert_eq!(
+            settings.chinese_font_family,
+            super::ChineseFontFamily::System
+        );
+        assert_eq!(settings.latin_font_family, super::LatinFontFamily::System);
     }
 }

@@ -574,6 +574,28 @@ impl LibraryRepository {
         Ok(notes)
     }
 
+    /// 同步等批处理只读取 ID，避免为每篇笔记预取正文预览。
+    pub fn list_note_ids(&self) -> Result<Vec<String>, String> {
+        let connection = self.open_connection()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT n.id
+                 FROM library_notes n
+                 JOIN library_items i ON i.id = n.item_id
+                 WHERE i.deleted_at IS NULL
+                 ORDER BY n.updated_at DESC",
+            )
+            .map_err(|error| format!("准备笔记 ID 查询失败：{error}"))?;
+        let rows = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|error| format!("查询笔记 ID 失败：{error}"))?;
+        let mut note_ids = Vec::new();
+        for row in rows {
+            note_ids.push(row.map_err(|error| format!("读取笔记 ID 失败：{error}"))?);
+        }
+        Ok(note_ids)
+    }
+
     pub fn get_note(&self, note_id: &str) -> Result<LibraryNote, String> {
         let note_id = normalize_identifier("笔记 ID", note_id)?;
         let connection = self.open_connection()?;

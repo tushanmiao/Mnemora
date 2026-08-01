@@ -19,9 +19,11 @@ import { estimateConversationContext } from "./features/chat/utils/contextUsage"
 import { activeContextMessages, contextSummaryPrompt } from "./features/chat/utils/contextCompression";
 import { Sidebar } from "./features/conversations/components/Sidebar";
 import { useConversations } from "./features/conversations/hooks/useConversations";
+import { exportStoredConversation } from "./features/conversations/api/conversations";
 import { SettingsPage, type SettingsCategory } from "./features/settings/components/SettingsPage";
 import { useAppSettings } from "./features/settings/hooks/useAppSettings";
 import { resolveThemeBackgroundCss } from "./features/settings/utils/themeBackground";
+import { resolveReadingFontFamily } from "./features/settings/utils/fontSettings";
 import { useSkills } from "./features/skills/hooks/useSkills";
 import { PdfReaderBridgeProvider } from "./features/pdf/context/PdfReaderContext";
 import { useLibrary } from "./features/library/hooks/useLibrary";
@@ -45,6 +47,7 @@ import type {
   WorkPdfDocument,
   WorkspaceMode,
 } from "./features/workspace/types";
+import { I18nProvider } from "./i18n/I18nProvider";
 
 const WorkWorkspace = lazy(() => import("./features/workspace/components/WorkWorkspace"));
 const WorkContextPanel = lazy(() => import("./features/workspace/components/WorkContextPanel").then(
@@ -420,6 +423,8 @@ function App() {
   const customBackground = resolveThemeBackgroundCss(settings.appSettings.themeBackground);
   const appThemeStyle = {
     "--app-font-size": `${settings.appSettings.fontSize}px`,
+    "--reading-letter-spacing": `${settings.appSettings.letterSpacing}px`,
+    "--reading-font-family": resolveReadingFontFamily(settings.appSettings),
     "--app-custom-background": customBackground ?? "var(--color-app)",
     "--app-surface-opacity": `${customBackground
       ? settings.appSettings.themeBackground.surfaceOpacity
@@ -509,6 +514,7 @@ function App() {
               currentModel.model.capabilities?.vision,
             ) ?? null
           : null}
+        showLiteraturePicker={workspaceMode === "work"}
         quote={quotedText}
         onQuoteClear={() => setQuotedText(null)}
         literatureReferences={pendingLiteratureReferences}
@@ -530,6 +536,7 @@ function App() {
   );
 
   return (
+    <I18nProvider language={settings.appSettings.interfaceLanguage}>
     <main
       ref={appShellRef}
       className="app-shell"
@@ -561,6 +568,14 @@ function App() {
         onCreateConversation={conversations.createNewConversation}
         onSelectConversation={conversations.selectConversation}
         onDeleteConversation={conversations.deleteConversation}
+        onExportConversation={(conversationId, format) => {
+          const item = conversations.conversationListItems.find((conversation) => conversation.id === conversationId);
+          void exportStoredConversation(conversationId, item?.title ?? "Mnemora 会话", format)
+            .catch((error) => {
+              const message = error instanceof Error ? error.message : String(error);
+              window.alert(`导出失败：${message}`);
+            });
+        }}
         onClearConversations={conversations.clearConversations}
         onLoadMoreConversations={conversations.loadMoreConversations}
         onOpenSettings={() => openSettings("general")}
@@ -620,6 +635,7 @@ function App() {
                   searchQuery={workSearchQuery}
                   collectionName={selectedWorkCollection?.name ?? null}
                   items={library.items}
+                  collections={library.collections}
                   total={library.total}
                   loading={library.loading}
                   error={library.error}
@@ -644,6 +660,7 @@ function App() {
                   onMarkOpened={library.markOpened}
                   onOpenExternal={library.openExternal}
                   onSetFavorite={library.setFavorite}
+                  onSaveItem={library.saveItem}
                   onMoveToTrash={library.moveToTrash}
                   onRestoreItem={library.restoreItem}
                   onDeletePermanently={library.deletePermanently}
@@ -688,6 +705,7 @@ function App() {
         </section>
       )}
     </main>
+    </I18nProvider>
   );
 }
 

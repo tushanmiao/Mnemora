@@ -23,19 +23,17 @@ import { MarkdownMessage } from "./MarkdownMessage";
 import { ChatAttachments } from "./ChatAttachments";
 import { useStreamingMessage } from "../stores/streamingStore";
 import { resolveToolApproval } from "../api/chat";
+import { useI18n } from "../../../i18n/I18nProvider";
 import "../styles/message-bubble.css";
 
 const LONG_USER_MESSAGE_CHARACTERS = 420;
 const LONG_USER_MESSAGE_LINES = 8;
 /** 引用片段的长度上限；超长选区截断，避免把整篇回答塞回上下文。 */
 const MAX_QUOTE_CHARACTERS = 2_000;
-const MESSAGE_TIME_FORMATTER = new Intl.DateTimeFormat("zh-CN", {
-  year: "numeric",
-  month: "short",
-  day: "numeric",
-  hour: "2-digit",
-  minute: "2-digit",
-});
+const MESSAGE_TIME_FORMATTERS = {
+  zh: new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }),
+  en: new Intl.DateTimeFormat("en-US", { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }),
+} as const;
 
 type MessageBubbleProps = {
   message: ChatMessage;
@@ -58,8 +56,24 @@ export type MessageBubbleUiState = {
   editDraft: string;
 };
 
-function formatMessageTime(timestamp: number) {
-  return MESSAGE_TIME_FORMATTER.format(timestamp);
+function formatMessageTime(timestamp: number, language: "zh" | "en") {
+  return MESSAGE_TIME_FORMATTERS[language].format(timestamp);
+}
+
+async function copySelectedText(text: string) {
+  if (navigator.clipboard) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  const copied = document.execCommand("copy");
+  textarea.remove();
+  if (!copied) throw new Error("复制失败");
 }
 
 export const MessageBubble = memo(function MessageBubble({
@@ -74,6 +88,7 @@ export const MessageBubble = memo(function MessageBubble({
   onQuote,
   onLiteratureReferenceOpen,
 }: MessageBubbleProps) {
+  const { language, t } = useI18n();
   const isAssistant = message.role === "assistant";
   const canStream = isAssistant && (
     message.status === "pending" || message.status === "streaming"
@@ -114,7 +129,7 @@ export const MessageBubble = memo(function MessageBubble({
     text: string;
   } | null>(null);
 
-  // 选中助手回答的部分文本 → 在选区下方浮出"引用提问"按钮。
+  // 选中助手回答的部分文本后，在选区附近显示轻量操作条。
   const handleQuoteMouseUp = () => {
     if (!onQuote) return;
     const host = quoteHostRef.current;
@@ -138,7 +153,7 @@ export const MessageBubble = memo(function MessageBubble({
     setQuoteAnchor({
       left: Math.max(24, Math.min(range.left - hostRect.left + range.width / 2, hostRect.width - 24)),
       top: range.bottom - hostRect.top + 6,
-      text: text.length > MAX_QUOTE_CHARACTERS ? `${text.slice(0, MAX_QUOTE_CHARACTERS)}…` : text,
+      text,
     });
   };
 
@@ -163,8 +178,8 @@ export const MessageBubble = memo(function MessageBubble({
     if (copyResetTimerRef.current !== null) window.clearTimeout(copyResetTimerRef.current);
   }, []);
 
-  const usageParts = compactUsageParts(message.usage);
-  const usageTitle = detailedUsageTitle(message.usage);
+  const usageParts = compactUsageParts(message.usage, language);
+  const usageTitle = detailedUsageTitle(message.usage, language);
 
   const copyContent = async () => {
     if (!hasContent || !navigator.clipboard) return;
@@ -215,7 +230,7 @@ export const MessageBubble = memo(function MessageBubble({
             <form className="message-edit-form" onSubmit={submitEdit}>
               <textarea
                 className="message-edit-textarea"
-                aria-label="编辑消息"
+                aria-label={t("chat.edit")}
                 autoFocus
                 rows={Math.min(10, Math.max(4, editDraft.split(/\r?\n/).length))}
                 value={editDraft}
@@ -225,8 +240,8 @@ export const MessageBubble = memo(function MessageBubble({
                 <button
                   className="icon-button"
                   type="button"
-                  title="取消修改"
-                  aria-label="取消修改"
+                  title={t("chat.cancelEdit")}
+                  aria-label={t("chat.cancelEdit")}
                   onClick={() => onUiStateChange(message.id, {
                     editing: false,
                     editDraft: message.content,
@@ -237,8 +252,8 @@ export const MessageBubble = memo(function MessageBubble({
                 <button
                   className="icon-button message-edit-save"
                   type="submit"
-                  title="保存修改"
-                  aria-label="保存修改"
+                  title={t("chat.saveEdit")}
+                  aria-label={t("chat.saveEdit")}
                   disabled={(!editDraft.trim() && !hasAttachments && !hasLiteratureReferences) || actionsDisabled}
                 >
                   <Check size={16} />
@@ -248,12 +263,12 @@ export const MessageBubble = memo(function MessageBubble({
           ) : isWaiting ? (
             <p className="message-status" role="status">
               <LoaderCircle className="message-spin" size={16} />
-              <span>等待模型响应</span>
+              <span>{t("chat.waiting")}</span>
             </p>
           ) : (
             <>
               {isAssistant && activatedSkills.length > 0 ? (
-                <div className="message-skills" aria-label="本轮启用的技能">
+                <div className="message-skills" aria-label={t("chat.enabledSkills")}>
                   {activatedSkills.map((skill) => (
                     <span
                       key={skill.id}
@@ -266,13 +281,13 @@ export const MessageBubble = memo(function MessageBubble({
                 </div>
               ) : null}
               {isAssistant && toolTraces.length > 0 ? (
-                <div className="message-tools" aria-label="工具调用轨迹">
+                <div className="message-tools" aria-label={t("chat.toolTrace")}>
                   {toolTraces.map((trace) => (
                     <details className={`message-tool message-tool-${trace.status}`} key={trace.callId} open={trace.status === "awaitingApproval"}>
                       <summary>
                         <Wrench size={13} />
-                        <strong>{toolNameLabel(trace.name)}</strong>
-                        <span>{toolStatusLabel(trace.status)}</span>
+                        <strong>{toolNameLabel(trace.name, language)}</strong>
+                        <span>{toolStatusLabel(trace.status, language)}</span>
                         {trace.durationMs !== undefined ? <small>{formatCompactDuration(trace.durationMs)}</small> : null}
                       </summary>
                       <div className="message-tool-detail">
@@ -285,7 +300,7 @@ export const MessageBubble = memo(function MessageBubble({
                               disabled={resolvingApprovalId !== null}
                               onClick={() => void resolveApproval(trace.approvalId!, false)}
                             >
-                              拒绝
+                              {t("chat.reject")}
                             </button>
                             <button
                               className="message-tool-approve"
@@ -293,7 +308,7 @@ export const MessageBubble = memo(function MessageBubble({
                               disabled={resolvingApprovalId !== null}
                               onClick={() => void resolveApproval(trace.approvalId!, true)}
                             >
-                              允许本次
+                              {t("chat.allowOnce")}
                             </button>
                           </div>
                         ) : null}
@@ -311,7 +326,7 @@ export const MessageBubble = memo(function MessageBubble({
                     onClick={() => onUiStateChange(message.id, { reasoningOpen: !reasoningOpen })}
                   >
                     <BrainCircuit size={15} />
-                    <span>{isStreaming && !hasContent ? "思考中" : "思考过程"}</span>
+                    <span>{isStreaming && !hasContent ? t("chat.thinking") : t("chat.reasoning")}</span>
                     <ChevronDown className="message-reasoning-chevron" size={15} />
                   </button>
                   {reasoningOpen ? (
@@ -327,18 +342,18 @@ export const MessageBubble = memo(function MessageBubble({
                 />
               ) : null}
               {hasLiteratureReferences ? (
-                <div className="message-literature-references" aria-label="消息引用的文献">
+                <div className="message-literature-references" aria-label={t("chat.literatureReferences")}>
                   {literatureReferences.map((reference) => (
                     <button
                       type="button"
-                      title={`打开 ${reference.title} 第 ${reference.pageIndex + 1} 页`}
+                      title={t("chat.openLiteraturePage", { title: reference.title, page: reference.pageIndex + 1 })}
                       disabled={!onLiteratureReferenceOpen}
                       key={reference.id}
                       onClick={() => onLiteratureReferenceOpen?.(reference)}
                     >
                       <BookOpenText size={13} />
                       <span>{reference.title}</span>
-                      <small>第 {reference.pageIndex + 1} 页</small>
+                      <small>{t("chat.pageNumber", { page: reference.pageIndex + 1 })}</small>
                     </button>
                   ))}
                 </div>
@@ -352,23 +367,41 @@ export const MessageBubble = memo(function MessageBubble({
                   >
                     <MarkdownMessage content={displayedContent} streaming={isStreaming} />
                     {quoteAnchor ? (
-                      <button
+                      <div
                         className="message-quote-fab"
-                        type="button"
                         style={{ left: quoteAnchor.left, top: quoteAnchor.top }}
                         onMouseDown={(event) => {
                           event.preventDefault();
                           event.stopPropagation();
                         }}
-                        onClick={() => {
-                          onQuote?.(quoteAnchor.text);
-                          setQuoteAnchor(null);
-                          window.getSelection()?.removeAllRanges();
-                        }}
                       >
-                        <Quote size={13} />
-                        <span>引用提问</span>
-                      </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            void copySelectedText(quoteAnchor.text).then(() => {
+                              setQuoteAnchor(null);
+                              window.getSelection()?.removeAllRanges();
+                            });
+                          }}
+                        >
+                          <Copy size={13} />
+                          <span>{t("common.copy")}</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const text = quoteAnchor.text.length > MAX_QUOTE_CHARACTERS
+                              ? `${quoteAnchor.text.slice(0, MAX_QUOTE_CHARACTERS)}…`
+                              : quoteAnchor.text;
+                            onQuote?.(text);
+                            setQuoteAnchor(null);
+                            window.getSelection()?.removeAllRanges();
+                          }}
+                        >
+                          <Quote size={13} />
+                          <span>{t("chat.quote")}</span>
+                        </button>
+                      </div>
                     ) : null}
                   </div>
                 ) : (
@@ -385,7 +418,7 @@ export const MessageBubble = memo(function MessageBubble({
                         aria-expanded={userExpanded}
                         onClick={() => onUiStateChange(message.id, { userExpanded: !userExpanded })}
                       >
-                        <span>{userExpanded ? "收起内容" : "展开全部"}</span>
+                        <span>{userExpanded ? t("chat.collapseContent") : t("chat.expandAll")}</span>
                         {userExpanded ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
                       </button>
                     ) : null}
@@ -395,14 +428,14 @@ export const MessageBubble = memo(function MessageBubble({
               {isStreaming ? (
                 <p className="message-streaming" role="status">
                   <LoaderCircle className="message-spin" size={14} />
-                  <span>{hasContent ? "正在回答" : hasReasoning ? "正在思考" : "等待模型响应"}</span>
+                  <span>{hasContent ? t("chat.responding") : hasReasoning ? t("chat.thinking") : t("chat.waiting")}</span>
                 </p>
               ) : null}
-              {isStopped ? <p className="message-stopped">已停止生成</p> : null}
+              {isStopped ? <p className="message-stopped">{t("chat.stopped")}</p> : null}
               {isError ? (
                 <p className="message-error" role="alert">
                   <AlertCircle size={16} />
-                  <span>{message.errorMessage ?? "模型请求失败，请稍后重试。"}</span>
+                  <span>{message.errorMessage ?? t("chat.error")}</span>
                 </p>
               ) : null}
             </>
@@ -412,14 +445,14 @@ export const MessageBubble = memo(function MessageBubble({
         {showFooter && !editing ? (
           <footer className={`message-footer message-footer-${message.role}`}>
             <time dateTime={new Date(message.updatedAt).toISOString()}>
-              {formatMessageTime(message.updatedAt)}
+              {formatMessageTime(message.updatedAt, language)}
             </time>
-            <div className="message-actions" aria-label="消息操作">
+            <div className="message-actions" aria-label={t("chat.messageActions")}>
               <button
                 className="message-action"
                 type="button"
-                title={copied ? "已复制" : "复制"}
-                aria-label={copied ? "已复制" : "复制消息"}
+                title={copied ? t("chat.copied") : t("common.copy")}
+                aria-label={copied ? t("chat.copied") : t("chat.copyMessage")}
                 disabled={!hasContent}
                 onClick={() => void copyContent()}
               >
@@ -428,8 +461,8 @@ export const MessageBubble = memo(function MessageBubble({
               <button
                 className="message-action"
                 type="button"
-                title={isAssistant ? "修改回答" : "修改并重新发送"}
-                aria-label={isAssistant ? "修改回答" : "修改并重新发送"}
+                title={isAssistant ? t("chat.editAnswer") : t("chat.editAndResend")}
+                aria-label={isAssistant ? t("chat.editAnswer") : t("chat.editAndResend")}
                 disabled={actionsDisabled || (!message.content.trim() && !hasAttachments && !hasLiteratureReferences)}
                 onClick={beginEditing}
               >
@@ -439,8 +472,8 @@ export const MessageBubble = memo(function MessageBubble({
                 <button
                   className="message-action"
                   type="button"
-                  title="重新生成"
-                  aria-label="重新生成回答"
+                  title={t("chat.regenerate")}
+                  aria-label={t("chat.regenerate")}
                   disabled={actionsDisabled || !canRegenerate}
                   onClick={() => onRegenerate(message.id)}
                 >
@@ -450,8 +483,8 @@ export const MessageBubble = memo(function MessageBubble({
               <button
                 className="message-action message-action-danger"
                 type="button"
-                title="删除"
-                aria-label="删除消息"
+                title={t("common.delete")}
+                aria-label={t("chat.deleteMessage")}
                 disabled={actionsDisabled}
                 onClick={() => onDelete(message.id)}
               >
@@ -470,44 +503,57 @@ export const MessageBubble = memo(function MessageBubble({
   );
 });
 
-function toolNameLabel(name: string) {
-  if (name === "skill") return "加载技能";
-  if (name === "read_attachment_text") return "读取文本附件";
-  if (name === "read_pdf_pages") return "读取 PDF 页面";
+function toolNameLabel(name: string, language: "zh" | "en") {
+  if (name === "skill") return language === "en" ? "Load skill" : "加载技能";
+  if (name === "read_attachment_text") return language === "en" ? "Read text attachment" : "读取文本附件";
+  if (name === "read_pdf_pages") return language === "en" ? "Read PDF pages" : "读取 PDF 页面";
   return name;
 }
 
-function toolStatusLabel(status: string) {
-  if (status === "awaitingApproval") return "等待确认";
-  if (status === "running") return "执行中";
-  if (status === "completed") return "已完成";
-  if (status === "rejected") return "已拒绝";
-  return "失败";
+function toolStatusLabel(status: string, language: "zh" | "en") {
+  if (status === "awaitingApproval") return language === "en" ? "Awaiting approval" : "等待确认";
+  if (status === "running") return language === "en" ? "Running" : "执行中";
+  if (status === "completed") return language === "en" ? "Completed" : "已完成";
+  if (status === "rejected") return language === "en" ? "Rejected" : "已拒绝";
+  return language === "en" ? "Failed" : "失败";
 }
 
 function formatCompactDuration(value: number) {
   return value < 1_000 ? `${Math.round(value)} ms` : `${(value / 1_000).toFixed(1)} s`;
 }
 
-function compactUsageParts(usage?: ChatMessage["usage"]) {
+function compactUsageParts(usage: ChatMessage["usage"] | undefined, language: "zh" | "en") {
   if (!usage) return [];
   const cacheRate = usage.inputTokens
     ? (usage.cacheReadTokens ?? 0) / usage.inputTokens
     : null;
   return [
-    usage.totalTokens !== undefined ? formatCompactNumber(usage.totalTokens) : null,
-    usage.inputTokens !== undefined ? `↑ ${formatCompactNumber(usage.inputTokens)}` : null,
-    usage.outputTokens !== undefined ? `↓ ${formatCompactNumber(usage.outputTokens)}` : null,
-    cacheRate !== null && usage.cacheReadTokens ? `缓存 ${(cacheRate * 100).toFixed(0)}%` : null,
+    usage.totalTokens !== undefined ? formatCompactNumber(usage.totalTokens, language) : null,
+    usage.inputTokens !== undefined ? `↑ ${formatCompactNumber(usage.inputTokens, language)}` : null,
+    usage.outputTokens !== undefined ? `↓ ${formatCompactNumber(usage.outputTokens, language)}` : null,
+    cacheRate !== null && usage.cacheReadTokens ? `${language === "en" ? "Cache" : "缓存"} ${(cacheRate * 100).toFixed(0)}%` : null,
     usage.costUsd !== undefined ? `$${usage.costUsd.toFixed(usage.costUsd < 0.01 ? 4 : 3)}` : null,
-    usage.timeToFirstTokenMs !== undefined ? `首字 ${formatCompactDuration(usage.timeToFirstTokenMs)}` : null,
+    usage.timeToFirstTokenMs !== undefined ? `${language === "en" ? "TTFT" : "首字"} ${formatCompactDuration(usage.timeToFirstTokenMs)}` : null,
     usage.outputTokensPerSecond !== undefined ? `${usage.outputTokensPerSecond.toFixed(1)} tok/s` : null,
-    (usage.callCount ?? 1) > 1 ? `${usage.callCount} 轮` : null,
+    (usage.callCount ?? 1) > 1 ? `${usage.callCount} ${language === "en" ? "calls" : "轮"}` : null,
   ].filter((part): part is string => Boolean(part));
 }
 
-function detailedUsageTitle(usage?: ChatMessage["usage"]) {
+function detailedUsageTitle(usage: ChatMessage["usage"] | undefined, language: "zh" | "en") {
   if (!usage) return "";
+  if (language === "en") {
+    return [
+      `Non-cached input: ${usage.nonCachedInputTokens ?? "-"}`,
+      `Cache read: ${usage.cacheReadTokens ?? "-"}`,
+      `Cache write: ${usage.cacheWriteTokens ?? "-"}`,
+      `Output: ${usage.outputTokens ?? "-"}`,
+      `Reasoning: ${usage.reasoningTokens ?? "-"}`,
+      `Model calls: ${usage.callCount ?? 1}`,
+      `Total duration: ${usage.totalDurationMs !== undefined ? formatCompactDuration(usage.totalDurationMs) : "-"}`,
+      `Usage source: ${usage.usageSource ?? "missing"}`,
+      `Cost source: ${usage.costSource ?? "missing"}`,
+    ].join("\n");
+  }
   return [
     `普通输入：${usage.nonCachedInputTokens ?? "-"}`,
     `缓存读取：${usage.cacheReadTokens ?? "-"}`,
@@ -521,8 +567,8 @@ function detailedUsageTitle(usage?: ChatMessage["usage"]) {
   ].join("\n");
 }
 
-function formatCompactNumber(value: number) {
-  return new Intl.NumberFormat("zh-CN", {
+function formatCompactNumber(value: number, language: "zh" | "en") {
+  return new Intl.NumberFormat(language === "en" ? "en-US" : "zh-CN", {
     notation: value >= 10_000 ? "compact" : "standard",
     maximumFractionDigits: 1,
   }).format(value);

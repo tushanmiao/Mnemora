@@ -1,6 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { MarkdownMessage } from "./MarkdownMessage";
+import { MathMarkdownContent } from "./MathMarkdownContent";
 
 describe("MarkdownMessage safe HTML", () => {
   it("renders allowed layout tags and strips active or app-spoofing HTML", () => {
@@ -29,5 +30,17 @@ describe("MarkdownMessage safe HTML", () => {
     expect(output).toContain('class="language-html"');
     expect(output).toContain('aria-label="预览 HTML"');
   });
-});
 
+  it("renders inline and block LaTeX with KaTeX", () => {
+    const output = renderToStaticMarkup(
+      <MathMarkdownContent
+        content={'行内公式 $E=mc^2$\n\n$$\n\\int_0^1 x^2 dx\n$$'}
+        components={{}}
+      />,
+    );
+
+    expect(output).toContain('class="katex"');
+    expect(output).toContain('class="katex-display"');
+    expect(output).toContain('<math');
+  });
+});

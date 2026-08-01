@@ -288,12 +288,63 @@
   top: 31px;
   right: 0;
   z-index: 80;
-  width: 150px;
+  width: 210px;
   padding: 5px;
   border: 1px solid var(--color-border);
   border-radius: 7px;
   background: var(--color-surface-raised);
   box-shadow: var(--shadow-menu);
+}
+
+.work-library-collection-menu {
+  display: grid;
+  gap: 2px;
+}
+
+.work-library-collection-menu > span {
+  display: flex;
+  min-height: 28px;
+  padding: 0 7px;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-muted);
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.work-library-collection-menu label {
+  display: grid;
+  min-width: 0;
+  min-height: 30px;
+  padding: 0 7px;
+  grid-template-columns: 16px minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+  border-radius: 5px;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.work-library-collection-menu label:hover {
+  background: var(--color-hover);
+}
+
+.work-library-collection-menu label span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.work-library-collection-menu small {
+  padding: 5px 7px 8px;
+  color: var(--color-muted);
+}
+
+.work-library-menu-separator {
+  height: 1px;
+  margin: 5px 3px;
+  background: var(--color-border-soft);
 }
 
 .work-library-row-menu button {

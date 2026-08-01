@@ -35,6 +35,8 @@
 
 .pdf-notes-panel input,
 .pdf-notes-panel textarea {
+  font-family: var(--reading-font-family);
+  letter-spacing: var(--reading-letter-spacing);
   width: 100%;
   min-width: 0;
   padding: 7px 8px;
@@ -324,6 +326,8 @@
 
 .note-workspace-title,
 .note-workspace-content {
+  font-family: var(--reading-font-family);
+  letter-spacing: var(--reading-letter-spacing);
   width: min(980px, calc(100% - 48px));
   justify-self: center;
   border: 0;

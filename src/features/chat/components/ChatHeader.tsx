@@ -11,6 +11,7 @@ import {
   Sun,
 } from "lucide-react";
 import { AI_PERMISSION_LABELS, type AiPermissionMode } from "../../../types/chat";
+import { useI18n } from "../../../i18n/I18nProvider";
 import "../styles/chat-header.css";
 
 const permissionOptions = Object.keys(AI_PERMISSION_LABELS) as AiPermissionMode[];
@@ -67,6 +68,12 @@ export function ChatHeader({
   onToggleTheme,
   onClosePanel,
 }: ChatHeaderProps) {
+  const { t } = useI18n();
+  const permissionLabels: Record<AiPermissionMode, string> = {
+    askEveryTime: t("chat.permissionAskEveryTime"),
+    askSensitive: t("chat.permissionAskSensitive"),
+    fullAccess: t("chat.permissionFullAccess"),
+  };
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [permissionMenuOpen, setPermissionMenuOpen] = useState(false);
   const modelMenuRef = useRef<HTMLDivElement>(null);
@@ -101,7 +108,7 @@ export function ChatHeader({
     <header className="chat-header">
       <div className="chat-heading">
         <h1>{title}</h1>
-        <span>今天</span>
+        <span>{t("common.today")}</span>
       </div>
 
       <div className="chat-header-actions">
@@ -127,9 +134,9 @@ export function ChatHeader({
           </button>
 
           {modelMenuOpen ? (
-            <div className="model-menu" role="listbox" aria-label="选择模型">
+            <div className="model-menu" role="listbox" aria-label={t("chat.selectModel")}>
               {modelGroups.length === 0 ? (
-                <div className="model-menu-empty">暂无可用模型</div>
+                <div className="model-menu-empty">{t("chat.noModels")}</div>
               ) : modelGroups.map((group) => (
                 <section className="model-menu-group" key={group.providerId}>
                   <div className="model-menu-group-heading">
@@ -172,18 +179,18 @@ export function ChatHeader({
           <button
             className="permission-button"
             type="button"
-            title="AI 权限"
+            title={t("chat.permission")}
             aria-expanded={permissionMenuOpen}
             disabled={permissionDisabled}
             onClick={() => setPermissionMenuOpen((open) => !open)}
           >
             <ShieldCheck size={17} />
-            <span>{AI_PERMISSION_LABELS[permission]}</span>
+            <span>{permissionLabels[permission]}</span>
             <ChevronDown size={14} />
           </button>
 
           {permissionMenuOpen ? (
-            <div className="permission-menu" role="menu" aria-label="AI 权限">
+            <div className="permission-menu" role="menu" aria-label={t("chat.permission")}>
               {permissionOptions.map((option) => (
                 <button
                   className="permission-option"
@@ -196,7 +203,7 @@ export function ChatHeader({
                     setPermissionMenuOpen(false);
                   }}
                 >
-                  <span>{AI_PERMISSION_LABELS[option]}</span>
+                  <span>{permissionLabels[option]}</span>
                   {permission === option ? <Check size={16} /> : null}
                 </button>
               ))}
@@ -207,8 +214,8 @@ export function ChatHeader({
           <button
             className="icon-button"
             type="button"
-            title="收起 AI 对话"
-            aria-label="收起 AI 对话"
+            title={t("chat.closePanel")}
+            aria-label={t("chat.closePanel")}
             onClick={onClosePanel}
           >
             <PanelRightClose size={18} />
@@ -218,15 +225,15 @@ export function ChatHeader({
             <button
               className="icon-button"
               type="button"
-              title={theme === "light" ? "切换到深色模式" : "切换到浅色模式"}
+              title={theme === "light" ? t("chat.darkMode") : t("chat.lightMode")}
               onClick={onToggleTheme}
             >
               {theme === "light" ? <Moon size={18} /> : <Sun size={18} />}
             </button>
-            <button className="icon-button" type="button" title="打开详情面板">
+            <button className="icon-button" type="button" title={t("chat.details")} aria-label={t("chat.details")}>
               <PanelRight size={18} />
             </button>
-            <button className="icon-button" type="button" title="更多操作">
+            <button className="icon-button" type="button" title={t("chat.more")} aria-label={t("chat.more")}>
               <MoreHorizontal size={19} />
             </button>
           </>

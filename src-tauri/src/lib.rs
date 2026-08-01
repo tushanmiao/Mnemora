@@ -9,6 +9,7 @@ mod settings;
 mod skills;
 mod startup_log;
 mod state;
+mod sync;
 mod usage;
 mod window_lifecycle;
 
@@ -87,6 +88,7 @@ pub fn run() {
             commands::conversations::save_conversation,
             commands::conversations::delete_conversation,
             commands::conversations::clear_conversations,
+            commands::conversations::export_conversation,
             commands::html_preview::html_preview_open,
             commands::html_preview::html_preview_get,
             commands::library::library_list_items,
@@ -133,6 +135,11 @@ pub fn run() {
             commands::skills::skills_uninstall,
             commands::skills::skills_restore_builtin,
             commands::startup::record_startup_error,
+            commands::sync::sync_load_settings,
+            commands::sync::sync_save_settings,
+            commands::sync::sync_set_notion_token,
+            commands::sync::sync_delete_notion_token,
+            commands::sync::sync_run,
             usage::usage_get_summary,
             usage::usage_get_records,
             usage::usage_get_stats,
@@ -152,11 +159,15 @@ pub fn run() {
                 let cancelled = tauri::async_runtime::block_on(state.cancel_all_chat_runs());
                 let approvals =
                     tauri::async_runtime::block_on(state.cancel_all_tool_approvals());
+                let cancelled_sync = tauri::async_runtime::block_on(state.cancel_sync_run());
                 if cancelled > 0 {
                     eprintln!("Cancelled {cancelled} active chat run(s) on application exit.");
                 }
                 if approvals > 0 {
                     eprintln!("Cancelled {approvals} pending tool approval(s) on application exit.");
+                }
+                if cancelled_sync {
+                    eprintln!("Cancelled the active note sync on application exit.");
                 }
                 let attachment_tasks = state.cancel_all_attachment_tasks();
                 let staged_attachments = state.cleanup_current_staged_attachments();
