@@ -187,7 +187,7 @@ export function UsageSettingsPanel() {
 
   return (
     <section className="settings-content usage-settings-content">
-      <div className="settings-content-heading">
+      <div className="settings-content-heading usage-settings-heading">
         <div><h2>用量</h2><span>按模型调用记录 Token、成本和性能；请求正文仍只进入调试页</span></div>
         <div className="settings-heading-actions">
           <div className="settings-segmented" aria-label="统计时间范围">
@@ -246,7 +246,7 @@ export function UsageSettingsPanel() {
           </div>
         </section>
 
-        <section className="usage-section">
+        <section className="usage-section usage-records-section">
           <div className="usage-section-heading"><h3>请求明细</h3><span>已加载 {page.records.length} / {page.totalMatching} 条</span></div>
           <div className="usage-filters">
             <select className="settings-input" aria-label="供应商筛选" value={providerId} onChange={(event) => { setProviderId(event.target.value); setModelKey(""); }}>

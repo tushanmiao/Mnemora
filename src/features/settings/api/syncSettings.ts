@@ -31,6 +31,16 @@ export function deleteNotionToken() {
   return invoke<boolean>("sync_delete_notion_token");
 }
 
+export function setFeishuAppSecret(secret: string) {
+  if (!isTauri()) return Promise.resolve(true);
+  return invoke<boolean>("sync_set_feishu_app_secret", { secret });
+}
+
+export function deleteFeishuAppSecret() {
+  if (!isTauri()) return Promise.resolve(false);
+  return invoke<boolean>("sync_delete_feishu_app_secret");
+}
+
 export async function chooseObsidianVault() {
   if (!isTauri()) return null;
   const path = await open({

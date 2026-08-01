@@ -1,4 +1,4 @@
-export type SyncTarget = "obsidian" | "notion";
+export type SyncTarget = "feishu" | "obsidian" | "notion";
 
 export type SyncSettings = {
   version: number;
@@ -14,6 +14,11 @@ export type SyncSettings = {
   notion: {
     parentPageId: string;
     hasToken: boolean;
+  };
+  feishu: {
+    appId: string;
+    folderToken: string;
+    hasAppSecret: boolean;
   };
 };
 
@@ -36,7 +41,7 @@ export type SyncResult = {
 export const DEFAULT_SYNC_SETTINGS: SyncSettings = {
   version: 1,
   enabled: false,
-  target: "obsidian",
+  target: "feishu",
   autoSync: false,
   includeAnnotations: true,
   includeMetadata: true,
@@ -47,5 +52,10 @@ export const DEFAULT_SYNC_SETTINGS: SyncSettings = {
   notion: {
     parentPageId: "",
     hasToken: false,
+  },
+  feishu: {
+    appId: "",
+    folderToken: "",
+    hasAppSecret: false,
   },
 };

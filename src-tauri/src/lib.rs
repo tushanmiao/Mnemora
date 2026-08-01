@@ -145,6 +145,8 @@ pub fn run() {
             commands::sync::sync_save_settings,
             commands::sync::sync_set_notion_token,
             commands::sync::sync_delete_notion_token,
+            commands::sync::sync_set_feishu_app_secret,
+            commands::sync::sync_delete_feishu_app_secret,
             commands::sync::sync_run,
             usage::usage_get_summary,
             usage::usage_get_records,

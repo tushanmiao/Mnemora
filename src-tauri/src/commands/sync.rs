@@ -22,6 +22,11 @@ pub async fn sync_load_settings(state: State<'_, AppState>) -> Result<SyncSettin
         tokio::task::spawn_blocking(move || secret_store.has_notion_token())
             .await
             .map_err(join_error)??;
+    let secret_store = state.sync_secrets;
+    settings.feishu.has_app_secret =
+        tokio::task::spawn_blocking(move || secret_store.has_feishu_app_secret())
+            .await
+            .map_err(join_error)??;
     Ok(settings)
 }
 
@@ -36,6 +41,11 @@ pub async fn sync_save_settings(
     let secret_store = state.sync_secrets;
     settings.notion.has_token =
         tokio::task::spawn_blocking(move || secret_store.has_notion_token())
+            .await
+            .map_err(join_error)??;
+    let secret_store = state.sync_secrets;
+    settings.feishu.has_app_secret =
+        tokio::task::spawn_blocking(move || secret_store.has_feishu_app_secret())
             .await
             .map_err(join_error)??;
     let repository = state.sync_settings_repository.clone();
@@ -76,6 +86,31 @@ pub async fn sync_delete_notion_token(state: State<'_, AppState>) -> Result<bool
 }
 
 #[tauri::command]
+pub async fn sync_set_feishu_app_secret(
+    state: State<'_, AppState>,
+    secret: String,
+) -> Result<bool, String> {
+    let secret_store = state.sync_secrets;
+    tokio::task::spawn_blocking(move || secret_store.set_feishu_app_secret(&secret))
+        .await
+        .map_err(join_error)??;
+    refresh_feishu_secret_status(&state, true)?;
+    persist_sync_settings(&state).await?;
+    Ok(true)
+}
+
+#[tauri::command]
+pub async fn sync_delete_feishu_app_secret(state: State<'_, AppState>) -> Result<bool, String> {
+    let secret_store = state.sync_secrets;
+    let deleted = tokio::task::spawn_blocking(move || secret_store.delete_feishu_app_secret())
+        .await
+        .map_err(join_error)??;
+    refresh_feishu_secret_status(&state, false)?;
+    persist_sync_settings(&state).await?;
+    Ok(deleted)
+}
+
+#[tauri::command]
 pub async fn sync_run(
     state: State<'_, AppState>,
     request: SyncRequest,
@@ -110,6 +145,16 @@ fn refresh_token_status(state: &AppState, has_token: bool) -> Result<(), String>
         .map_err(|_| "同步设置暂时不可用。".to_string())?
         .notion
         .has_token = has_token;
+    Ok(())
+}
+
+fn refresh_feishu_secret_status(state: &AppState, has_secret: bool) -> Result<(), String> {
+    state
+        .sync_settings
+        .write()
+        .map_err(|_| "同步设置暂时不可用。".to_string())?
+        .feishu
+        .has_app_secret = has_secret;
     Ok(())
 }
 

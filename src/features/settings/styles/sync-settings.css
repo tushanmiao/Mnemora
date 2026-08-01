@@ -64,6 +64,47 @@
   gap: 12px 28px;
 }
 
+.sync-coming-soon {
+  display: grid;
+  max-width: 680px;
+  padding: 14px;
+  gap: 5px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 6px;
+  background: var(--color-surface-raised);
+}
+
+.sync-coming-soon strong {
+  color: var(--color-text);
+  font-size: 12px;
+}
+
+.sync-coming-soon span {
+  color: var(--color-muted);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.sync-on-demand-note {
+  display: grid;
+  max-width: 680px;
+  gap: 5px;
+  padding: 12px 14px;
+  border-left: 2px solid var(--color-accent);
+  background: var(--color-surface-raised);
+}
+
+.sync-on-demand-note strong {
+  color: var(--color-text);
+  font-size: 12px;
+}
+
+.sync-on-demand-note span {
+  color: var(--color-muted);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
 .sync-path-row,
 .sync-secret-row {
   display: grid;

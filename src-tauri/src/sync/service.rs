@@ -9,6 +9,7 @@ use zeroize::Zeroizing;
 use crate::library::LibraryRepository;
 
 use super::{
+    feishu::FeishuSession,
     mapping::{content_hash, now_millis, SyncMapping, SyncMappingRepository},
     markdown::render_document,
     notion, obsidian,
@@ -40,6 +41,31 @@ pub async fn run(
                 .map_err(join_error)??
                 .ok_or_else(|| "请先保存 Notion Integration Token。".to_string())?,
         ))
+    } else {
+        None
+    };
+    let feishu_app_secret = if target == SyncTarget::Feishu {
+        let store = secret_store;
+        Some(Zeroizing::new(
+            tokio::task::spawn_blocking(move || store.get_feishu_app_secret())
+                .await
+                .map_err(join_error)??
+                .ok_or_else(|| "请先保存飞书 App Secret。".to_string())?,
+        ))
+    } else {
+        None
+    };
+    let feishu_session = if target == SyncTarget::Feishu {
+        Some(
+            FeishuSession::connect(
+                &http,
+                &settings.feishu,
+                feishu_app_secret
+                    .as_deref()
+                    .ok_or_else(|| "飞书 App Secret 不可用。".to_string())?,
+            )
+            .await?,
+        )
     } else {
         None
     };
@@ -127,6 +153,17 @@ pub async fn run(
         }
 
         let remote_id = match target {
+            SyncTarget::Feishu => {
+                feishu_session
+                    .as_ref()
+                    .ok_or_else(|| "飞书同步会话不可用。".to_string())?
+                    .sync_document(
+                        &settings.feishu,
+                        &document,
+                        existing.as_ref().map(|mapping| mapping.remote_id.as_str()),
+                    )
+                    .await
+            }
             SyncTarget::Obsidian => {
                 let obsidian_settings = settings.obsidian.clone();
                 let mapped_path = existing.map(|mapping| mapping.remote_id);
@@ -197,6 +234,9 @@ pub async fn run(
 
 fn validate_target_settings(settings: &SyncSettings) -> Result<(), String> {
     match settings.target {
+        SyncTarget::Feishu if settings.feishu.app_id.trim().is_empty() => {
+            Err("请先填写飞书 App ID。".to_string())
+        }
         SyncTarget::Obsidian if settings.obsidian.vault_path.trim().is_empty() => {
             Err("请先选择 Obsidian Vault。".to_string())
         }

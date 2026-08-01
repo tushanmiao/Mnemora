@@ -4,11 +4,14 @@ pub const CURRENT_SYNC_SETTINGS_VERSION: u32 = 1;
 const MAX_VAULT_PATH_BYTES: usize = 32_768;
 const MAX_RELATIVE_DIRECTORY_CHARS: usize = 240;
 const MAX_NOTION_PAGE_ID_CHARS: usize = 100;
+const MAX_FEISHU_APP_ID_CHARS: usize = 128;
+const MAX_FEISHU_FOLDER_TOKEN_CHARS: usize = 256;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum SyncTarget {
     #[default]
+    Feishu,
     Obsidian,
     Notion,
 }
@@ -44,6 +47,28 @@ pub struct NotionSettings {
     pub has_token: bool,
 }
 
+/// 飞书自建应用配置。App Secret 只保存在系统凭据库，不进入此结构。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FeishuSettings {
+    #[serde(default)]
+    pub app_id: String,
+    #[serde(default)]
+    pub folder_token: String,
+    #[serde(default)]
+    pub has_app_secret: bool,
+}
+
+impl Default for FeishuSettings {
+    fn default() -> Self {
+        Self {
+            app_id: String::new(),
+            folder_token: String::new(),
+            has_app_secret: false,
+        }
+    }
+}
+
 impl Default for NotionSettings {
     fn default() -> Self {
         Self {
@@ -72,6 +97,8 @@ pub struct SyncSettings {
     pub obsidian: ObsidianSettings,
     #[serde(default)]
     pub notion: NotionSettings,
+    #[serde(default)]
+    pub feishu: FeishuSettings,
 }
 
 fn current_version() -> u32 {
@@ -87,12 +114,13 @@ impl Default for SyncSettings {
         Self {
             version: CURRENT_SYNC_SETTINGS_VERSION,
             enabled: false,
-            target: SyncTarget::Obsidian,
+            target: SyncTarget::Feishu,
             auto_sync: false,
             include_annotations: true,
             include_metadata: true,
             obsidian: ObsidianSettings::default(),
             notion: NotionSettings::default(),
+            feishu: FeishuSettings::default(),
         }
     }
 }
@@ -106,11 +134,32 @@ impl SyncSettings {
         self.obsidian.vault_path = self.obsidian.vault_path.trim().to_string();
         self.obsidian.directory = normalize_relative_directory(&self.obsidian.directory)?;
         self.notion.parent_page_id = self.notion.parent_page_id.trim().to_string();
+        self.feishu.app_id = self.feishu.app_id.trim().to_string();
+        self.feishu.folder_token = self.feishu.folder_token.trim().to_string();
         if self.obsidian.vault_path.len() > MAX_VAULT_PATH_BYTES {
             return Err("Obsidian Vault 路径过长。".to_string());
         }
         if self.notion.parent_page_id.chars().count() > MAX_NOTION_PAGE_ID_CHARS {
             return Err("Notion 父页面 ID 过长。".to_string());
+        }
+        if self.feishu.app_id.chars().count() > MAX_FEISHU_APP_ID_CHARS {
+            return Err("飞书 App ID 过长。".to_string());
+        }
+        if self.feishu.folder_token.chars().count() > MAX_FEISHU_FOLDER_TOKEN_CHARS {
+            return Err("飞书文件夹 Token 过长。".to_string());
+        }
+        if self
+            .feishu
+            .app_id
+            .chars()
+            .any(|character| character.is_control())
+            || self
+                .feishu
+                .folder_token
+                .chars()
+                .any(|character| character.is_control())
+        {
+            return Err("飞书配置包含不允许的控制字符。".to_string());
         }
         if self
             .notion
@@ -176,7 +225,7 @@ pub struct SyncRequest {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_relative_directory, SyncSettings};
+    use super::{normalize_relative_directory, FeishuSettings, SyncSettings};
 
     #[test]
     fn normalizes_safe_relative_directories() {
@@ -189,7 +238,7 @@ mod tests {
     }
 
     #[test]
-    fn old_settings_receive_defaults() {
+    fn old_settings_keep_their_selected_target_and_receive_field_defaults() {
         let settings: SyncSettings = serde_json::from_value(serde_json::json!({
             "version": 1,
             "enabled": true,
@@ -197,6 +246,33 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(settings.obsidian.directory, "Mnemora");
+        assert_eq!(settings.target, super::SyncTarget::Obsidian);
         assert!(settings.include_annotations);
+
+        let notion_settings: SyncSettings = serde_json::from_value(serde_json::json!({
+            "version": 1,
+            "target": "notion"
+        }))
+        .unwrap();
+        assert_eq!(notion_settings.target, super::SyncTarget::Notion);
+        assert_eq!(notion_settings.feishu, FeishuSettings::default());
+    }
+
+    #[test]
+    fn settings_without_a_target_use_feishu() {
+        let settings: SyncSettings = serde_json::from_value(serde_json::json!({
+            "version": 1,
+            "enabled": false
+        }))
+        .unwrap();
+        assert_eq!(settings.target, super::SyncTarget::Feishu);
+    }
+
+    #[test]
+    fn new_settings_prefer_feishu_without_enabling_background_sync() {
+        let settings = SyncSettings::default();
+        assert_eq!(settings.target, super::SyncTarget::Feishu);
+        assert!(!settings.enabled);
+        assert!(!settings.auto_sync);
     }
 }

@@ -20,10 +20,12 @@ import {
 } from "../../../types/syncSettings";
 import {
   chooseObsidianVault,
+  deleteFeishuAppSecret,
   deleteNotionToken,
   loadSyncSettings,
   runNoteSync,
   saveSyncSettings,
+  setFeishuAppSecret,
   setNotionToken,
 } from "../api/syncSettings";
 import "../styles/sync-settings.css";
@@ -34,6 +36,7 @@ export function SyncSettingsPanel() {
   const { t } = useI18n();
   const [settings, setSettings] = useState<SyncSettings>(DEFAULT_SYNC_SETTINGS);
   const [token, setToken] = useState("");
+  const [feishuSecret, setFeishuSecret] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [syncing, setSyncing] = useState(false);
@@ -130,7 +133,55 @@ export function SyncSettingsPanel() {
     }
   };
 
+  const saveFeishuSecret = async () => {
+    if (!feishuSecret.trim()) {
+      setFeedback({ type: "error", message: t("sync.feishuSecretRequired") });
+      return;
+    }
+    setSaving(true);
+    setFeedback(null);
+    try {
+      await setFeishuAppSecret(feishuSecret);
+      setFeishuSecret("");
+      setSettings((current) => ({
+        ...current,
+        feishu: { ...current.feishu, hasAppSecret: true },
+      }));
+      setFeedback({ type: "success", message: t("sync.feishuSecretSaved") });
+    } catch (reason) {
+      setFeedback({ type: "error", message: errorMessage(reason) });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const removeFeishuSecret = async () => {
+    if (!window.confirm(t("sync.deleteFeishuSecretConfirm"))) return;
+    setSaving(true);
+    setFeedback(null);
+    try {
+      await deleteFeishuAppSecret();
+      setSettings((current) => ({
+        ...current,
+        feishu: { ...current.feishu, hasAppSecret: false },
+      }));
+      setFeedback({ type: "success", message: t("sync.feishuSecretDeleted") });
+    } catch (reason) {
+      setFeedback({ type: "error", message: errorMessage(reason) });
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const runSync = async () => {
+    if (settings.target === "feishu" && !settings.feishu.appId.trim()) {
+      setFeedback({ type: "error", message: t("sync.feishuAppIdRequired") });
+      return;
+    }
+    if (settings.target === "feishu" && !settings.feishu.hasAppSecret) {
+      setFeedback({ type: "error", message: t("sync.feishuSecretRequired") });
+      return;
+    }
     setSyncing(true);
     setFeedback(null);
     setResult(null);
@@ -179,6 +230,7 @@ export function SyncSettingsPanel() {
             <span>{t("sync.enabled")}</span>
           </label>
           <div className="settings-segmented sync-targets" aria-label={t("sync.target")}>
+            <button className={settings.target === "feishu" ? "settings-segmented-active" : ""} type="button" onClick={() => selectTarget("feishu")}>{t("sync.feishu")}</button>
             <button className={settings.target === "obsidian" ? "settings-segmented-active" : ""} type="button" onClick={() => selectTarget("obsidian")}>Obsidian</button>
             <button className={settings.target === "notion" ? "settings-segmented-active" : ""} type="button" onClick={() => selectTarget("notion")}>Notion</button>
           </div>
@@ -188,7 +240,52 @@ export function SyncSettingsPanel() {
           </div>
         </section>
 
-        {settings.target === "obsidian" ? (
+        {settings.target === "feishu" ? (
+          <section className="sync-section">
+            <div className="sync-section-heading"><div><Cloud size={17} /><h3>{t("sync.feishu")}</h3></div><span>{t("sync.preferred")}</span></div>
+            <div className="settings-field">
+              <label htmlFor="sync-feishu-app-id">{t("sync.feishuAppId")}</label>
+              <input
+                id="sync-feishu-app-id"
+                className="settings-input"
+                value={settings.feishu.appId}
+                placeholder="cli_..."
+                onChange={(event) => setSettings((current) => ({
+                  ...current,
+                  feishu: { ...current.feishu, appId: event.target.value },
+                }))}
+              />
+              <span className="sync-field-help">{t("sync.feishuAppIdDescription")}</span>
+            </div>
+            <div className="settings-field">
+              <label htmlFor="sync-feishu-folder-token">{t("sync.feishuFolderToken")}</label>
+              <input
+                id="sync-feishu-folder-token"
+                className="settings-input"
+                value={settings.feishu.folderToken}
+                placeholder="fldcn..."
+                onChange={(event) => setSettings((current) => ({
+                  ...current,
+                  feishu: { ...current.feishu, folderToken: event.target.value },
+                }))}
+              />
+              <span className="sync-field-help">{t("sync.feishuFolderTokenDescription")}</span>
+            </div>
+            <div className="settings-field">
+              <div className="settings-label-row"><label htmlFor="sync-feishu-secret">App Secret</label><span className={settings.feishu.hasAppSecret ? "sync-token-ready" : ""}>{settings.feishu.hasAppSecret ? t("sync.configured") : t("sync.notConfigured")}</span></div>
+              <div className="sync-secret-row">
+                <input id="sync-feishu-secret" className="settings-input" type="password" autoComplete="off" value={feishuSecret} placeholder={settings.feishu.hasAppSecret ? t("sync.replaceFeishuSecret") : "App Secret"} onChange={(event) => setFeishuSecret(event.target.value)} />
+                <button className="settings-button settings-button-secondary" type="button" disabled={saving} onClick={() => void saveFeishuSecret()}><KeyRound size={15} /><span>{t("sync.saveFeishuSecret")}</span></button>
+                {settings.feishu.hasAppSecret ? <button className="settings-icon-danger" type="button" title={t("sync.deleteFeishuSecret")} aria-label={t("sync.deleteFeishuSecret")} onClick={() => void removeFeishuSecret()}><Trash2 size={15} /></button> : null}
+              </div>
+              <span className="sync-field-help">{t("sync.feishuSecretDescription")}</span>
+            </div>
+            <div className="sync-on-demand-note">
+              <strong>{t("sync.feishuOnDemandTitle")}</strong>
+              <span>{t("sync.feishuOnDemandDescription")}</span>
+            </div>
+          </section>
+        ) : settings.target === "obsidian" ? (
           <section className="sync-section">
             <div className="sync-section-heading"><div><FolderOpen size={17} /><h3>Obsidian</h3></div><span>{t("sync.obsidianDescription")}</span></div>
             <div className="settings-field">

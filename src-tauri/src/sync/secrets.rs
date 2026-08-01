@@ -5,6 +5,7 @@ use zeroize::Zeroizing;
 
 const SERVICE_NAME: &str = "com.mnemora.app.sync";
 const NOTION_TOKEN_KEY: &str = "notion-integration-token";
+const FEISHU_APP_SECRET_KEY: &str = "feishu-app-secret";
 
 #[derive(Clone, Copy, Default)]
 pub struct SyncSecretStore;
@@ -49,5 +50,58 @@ impl SyncSecretStore {
             Err(KeyringError::NoEntry) => Ok(false),
             Err(error) => Err(format!("删除 Notion 凭据失败：{error}")),
         }
+    }
+
+    pub fn get_feishu_app_secret(&self) -> Result<Option<String>, String> {
+        get_secret(FEISHU_APP_SECRET_KEY, "飞书 App Secret")
+    }
+
+    pub fn has_feishu_app_secret(&self) -> Result<bool, String> {
+        let secret = self.get_feishu_app_secret()?.map(Zeroizing::new);
+        Ok(secret
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty()))
+    }
+
+    pub fn set_feishu_app_secret(&self, secret: &str) -> Result<(), String> {
+        set_secret(FEISHU_APP_SECRET_KEY, "飞书 App Secret", secret)
+    }
+
+    pub fn delete_feishu_app_secret(&self) -> Result<bool, String> {
+        delete_secret(FEISHU_APP_SECRET_KEY, "飞书 App Secret")
+    }
+}
+
+fn get_secret(key: &str, label: &str) -> Result<Option<String>, String> {
+    match Entry::new(SERVICE_NAME, key)
+        .map_err(|error| format!("打开{label}凭据失败：{error}"))?
+        .get_password()
+    {
+        Ok(secret) if !secret.trim().is_empty() => Ok(Some(secret)),
+        Ok(_) => Ok(None),
+        Err(KeyringError::NoEntry) => Ok(None),
+        Err(error) => Err(format!("读取{label}凭据失败：{error}")),
+    }
+}
+
+fn set_secret(key: &str, label: &str, value: &str) -> Result<(), String> {
+    let value = value.trim();
+    if value.is_empty() || value.len() > 16_384 {
+        return Err(format!("{label}无效。"));
+    }
+    Entry::new(SERVICE_NAME, key)
+        .map_err(|error| format!("打开{label}凭据失败：{error}"))?
+        .set_password(value)
+        .map_err(|error| format!("保存{label}凭据失败：{error}"))
+}
+
+fn delete_secret(key: &str, label: &str) -> Result<bool, String> {
+    match Entry::new(SERVICE_NAME, key)
+        .map_err(|error| format!("打开{label}凭据失败：{error}"))?
+        .delete_credential()
+    {
+        Ok(()) => Ok(true),
+        Err(KeyringError::NoEntry) => Ok(false),
+        Err(error) => Err(format!("删除{label}凭据失败：{error}")),
     }
 }

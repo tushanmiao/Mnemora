@@ -139,6 +139,7 @@ fn mapping_key(target: SyncTarget, note_id: &str) -> String {
     format!(
         "{}:{note_id}",
         match target {
+            SyncTarget::Feishu => "feishu",
             SyncTarget::Obsidian => "obsidian",
             SyncTarget::Notion => "notion",
         }

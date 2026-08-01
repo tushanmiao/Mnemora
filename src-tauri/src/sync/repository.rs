@@ -41,6 +41,7 @@ impl SyncSettingsRepository {
         let mut persisted = settings.clone();
         // `has_token` 是运行时脱敏状态，凭据本体及其状态都不写入普通 JSON。
         persisted.notion.has_token = false;
+        persisted.feishu.has_app_secret = false;
         let json = serde_json::to_vec_pretty(&persisted)
             .map_err(|error| format!("序列化同步设置失败：{error}"))?;
         fs::write(&temporary, json).map_err(|error| format!("写入同步设置失败：{error}"))?;
