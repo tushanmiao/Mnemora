@@ -1,6 +1,4 @@
 import {
-  Children,
-  isValidElement,
   lazy,
   memo,
   Suspense,
@@ -10,40 +8,61 @@ import {
   useState,
   type ComponentPropsWithoutRef,
   type MouseEvent as ReactMouseEvent,
-  type ReactNode,
 } from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { Check, Copy, Eye, LoaderCircle, X } from "lucide-react";
 import ReactMarkdown, { type Components } from "react-markdown";
-import rehypeRaw from "rehype-raw";
-import rehypeSanitize from "rehype-sanitize";
-import remarkGfm from "remark-gfm";
-import type { PluggableList } from "unified";
-import { SAFE_CHAT_HTML_SCHEMA, safeMarkdownUrlTransform } from "../utils/htmlSecurity";
+import type { LiteratureReference } from "../../../types/chat";
+import { safeMarkdownContentUrlTransform, safeMarkdownUrlTransform } from "../utils/htmlSecurity";
 import {
   renderableStreamingBlock,
   splitStreamingMarkdownBlocks,
   type StreamingMarkdownBlock,
 } from "../utils/streamingMarkdown";
+import { extractCodeLanguage, extractCodeText, isMermaidLanguage, normalizeCodeLanguage } from "../markdown/utils/codeBlock";
+import { createMarkdownRehypePlugins, createMarkdownRemarkPlugins } from "../markdown/plugins/markdownPlugins";
+import { extractMarkdownOutline } from "../markdown/utils/outline";
+import { MARKDOWN_RENDER_LIMITS } from "../markdown/utils/renderLimits";
+import { MermaidBlock } from "../markdown/components/MermaidBlock";
+import { HighlightedCodeBlock } from "../markdown/components/HighlightedCodeBlock";
+import { SafeMarkdownImage } from "../markdown/components/SafeMarkdownImage";
+import { LearningCallout } from "../markdown/components/LearningCallout";
+import { MessageOutline } from "../markdown/components/MessageOutline";
+import { RenderFallback } from "../markdown/components/RenderFallback";
 import "../styles/markdown-message.css";
+import "../markdown/styles/enhanced-markdown.css";
 
 type MarkdownMessageProps = {
   content: string;
   streaming?: boolean;
+  messageId?: string;
+  literatureReferences?: readonly LiteratureReference[];
+  onLiteratureReferenceOpen?: (reference: LiteratureReference) => void;
 };
 
 type CopyState = "idle" | "copied" | "error";
 type PreviewState = "idle" | "loading" | "error";
+type MarkdownPreProps = ComponentPropsWithoutRef<"pre"> & {
+  "data-mermaid-disabled"?: "true";
+};
 
 const MathMarkdownContent = lazy(() => import("./MathMarkdownContent"));
 
 async function openMarkdownLink(event: ReactMouseEvent<HTMLAnchorElement>) {
+  const href = event.currentTarget.getAttribute("href") ?? "";
+  if (href.startsWith("#")) {
+    event.preventDefault();
+    document.getElementById(href.slice(1))?.scrollIntoView({ behavior: "smooth", block: "center" });
+    return;
+  }
+  if (href.startsWith("mnemora-citation:")) {
+    event.preventDefault();
+    return;
+  }
   if (!isTauri()) return;
   event.preventDefault();
-  const href = event.currentTarget.getAttribute("href");
   if (!href) return;
-
   try {
     await openUrl(href);
   } catch (error) {
@@ -51,28 +70,13 @@ async function openMarkdownLink(event: ReactMouseEvent<HTMLAnchorElement>) {
   }
 }
 
-function extractText(node: ReactNode): string {
-  if (typeof node === "string" || typeof node === "number") return String(node);
-  if (Array.isArray(node)) return node.map(extractText).join("");
-  if (isValidElement<{ children?: ReactNode }>(node)) return extractText(node.props.children);
-  return "";
-}
-
-function extractLanguage(children: ReactNode) {
-  const codeElement = Children.toArray(children).find((child) => (
-    isValidElement<{ className?: string }>(child)
-  ));
-  if (!isValidElement<{ className?: string }>(codeElement)) return null;
-  return codeElement.props.className?.match(/language-([^\s]+)/)?.[1] ?? null;
-}
-
-function MarkdownCodeBlock({ children, ...props }: ComponentPropsWithoutRef<"pre">) {
+function MarkdownCodeBlock({ children, ...props }: MarkdownPreProps) {
   const [copyState, setCopyState] = useState<CopyState>("idle");
   const [previewState, setPreviewState] = useState<PreviewState>("idle");
   const resetTimerRef = useRef<number | null>(null);
-  const code = extractText(children).replace(/\n$/, "");
-  const language = extractLanguage(children);
-  const normalizedLanguage = language?.toLowerCase();
+  const code = extractCodeText(children).replace(/\n$/, "");
+  const language = extractCodeLanguage(children);
+  const normalizedLanguage = normalizeCodeLanguage(language);
   const canPreview = normalizedLanguage === "html" || normalizedLanguage === "htm";
 
   useEffect(() => () => {
@@ -87,16 +91,9 @@ function MarkdownCodeBlock({ children, ...props }: ComponentPropsWithoutRef<"pre
     } catch {
       setCopyState("error");
     }
-
     if (resetTimerRef.current !== null) window.clearTimeout(resetTimerRef.current);
     resetTimerRef.current = window.setTimeout(() => setCopyState("idle"), 1600);
   };
-
-  const copyLabel = copyState === "copied"
-    ? "已复制"
-    : copyState === "error"
-      ? "复制失败"
-      : "复制代码";
 
   const handlePreview = async () => {
     if (!canPreview || !code || previewState === "loading") return;
@@ -111,6 +108,11 @@ function MarkdownCodeBlock({ children, ...props }: ComponentPropsWithoutRef<"pre
     }
   };
 
+  if (isMermaidLanguage(language) && props["data-mermaid-disabled"] !== "true") return <MermaidBlock code={code} />;
+  if (normalizedLanguage && normalizedLanguage !== "html" && normalizedLanguage !== "htm") {
+    return <HighlightedCodeBlock code={code} language={language} />;
+  }
+
   return (
     <div className="markdown-code-block">
       <div className="markdown-code-toolbar">
@@ -120,14 +122,12 @@ function MarkdownCodeBlock({ children, ...props }: ComponentPropsWithoutRef<"pre
             <button
               className={`markdown-copy-button markdown-preview-button-${previewState}`}
               type="button"
-              title={previewState === "error" ? "HTML 预览打开失败，点击重试" : "预览 HTML"}
+              title={previewState === "error" ? "HTML 预览失败，点击重试" : "预览 HTML"}
               aria-label={previewState === "error" ? "重试 HTML 预览" : "预览 HTML"}
               disabled={previewState === "loading"}
               onClick={() => void handlePreview()}
             >
-              {previewState === "loading" ? (
-                <LoaderCircle className="message-spin" size={15} />
-              ) : null}
+              {previewState === "loading" ? <LoaderCircle className="message-spin" size={15} /> : null}
               {previewState === "error" ? <X size={15} /> : null}
               {previewState === "idle" ? <Eye size={15} /> : null}
             </button>
@@ -135,9 +135,9 @@ function MarkdownCodeBlock({ children, ...props }: ComponentPropsWithoutRef<"pre
           <button
             className={`markdown-copy-button markdown-copy-button-${copyState}`}
             type="button"
-            title={copyLabel}
-            aria-label={copyLabel}
-            onClick={handleCopy}
+            title={copyState === "copied" ? "已复制" : copyState === "error" ? "复制失败" : "复制代码"}
+            aria-label={copyState === "copied" ? "已复制" : copyState === "error" ? "复制失败" : "复制代码"}
+            onClick={() => void handleCopy()}
           >
             {copyState === "copied" ? <Check size={15} /> : null}
             {copyState === "error" ? <X size={15} /> : null}
@@ -150,45 +150,85 @@ function MarkdownCodeBlock({ children, ...props }: ComponentPropsWithoutRef<"pre
   );
 }
 
-const markdownComponents: Components = {
+function createMarkdownComponents(
+  literatureReferences: readonly LiteratureReference[],
+  onLiteratureReferenceOpen?: (reference: LiteratureReference) => void,
+  allowedMermaidOffsets: ReadonlySet<number> = new Set(),
+): Components {
+  return {
+    a({ node, ...props }) {
+      void node;
+      const href = props.href ?? "";
+      const citationId = href.startsWith("mnemora-citation:")
+        ? decodeURIComponent(href.slice("mnemora-citation:".length))
+        : null;
+      const citation = citationId
+        ? literatureReferences.find((reference) => reference.id === citationId)
+        : null;
+      return (
+        <a
+          {...props}
+          className={citation ? "markdown-literature-citation" : props.className}
+          target={href.startsWith("#") || citation ? undefined : "_blank"}
+          rel={href.startsWith("#") || citation ? undefined : "noreferrer noopener"}
+          onClick={(event) => {
+            if (citation) {
+              event.preventDefault();
+              onLiteratureReferenceOpen?.(citation);
+              return;
+            }
+            void openMarkdownLink(event);
+          }}
+        />
+      );
+    },
+    aside({ node, ...props }) {
+      void node;
+      return <LearningCallout {...props} />;
+    },
+    img({ node, ...props }) {
+      void node;
+      return <SafeMarkdownImage {...props} />;
+    },
+    pre({ node, ...props }) {
+      const language = extractCodeLanguage(props.children);
+      const isMermaid = isMermaidLanguage(language);
+      const offset = node?.position?.start.offset;
+      const allowMermaid = !isMermaid || (typeof offset === "number" && allowedMermaidOffsets.has(offset));
+      return <MarkdownCodeBlock {...props} data-mermaid-disabled={allowMermaid ? undefined : "true"} />;
+    },
+    table({ node, ...props }) {
+      void node;
+      return <div className="markdown-table-scroll"><table {...props} /></div>;
+    },
+  };
+}
+
+function findAllowedMermaidOffsets(content: string, budget: number) {
+  const offsets = new Set<number>();
+  if (budget <= 0) return offsets;
+  const fencePattern = /^ {0,3}```+\s*mermaid(?:\s+[^\n]*)?\s*$/gim;
+  for (const match of content.matchAll(fencePattern)) {
+    if (offsets.size >= budget) break;
+    if (typeof match.index === "number") offsets.add(match.index);
+  }
+  return offsets;
+}
+
+function countMermaidBlocks(content: string) {
+  return findAllowedMermaidOffsets(content, Number.MAX_SAFE_INTEGER).size;
+}
+
+const streamingComponents: Components = {
   a({ node, ...props }) {
     void node;
-    return (
-      <a
-        {...props}
-        target="_blank"
-        rel="noreferrer noopener"
-        onClick={openMarkdownLink}
-      />
-    );
+    return <a {...props} />;
   },
-  pre({ node, ...props }) {
-    void node;
-    return <MarkdownCodeBlock {...props} />;
-  },
-  table({ node, ...props }) {
-    void node;
-    return (
-      <div className="markdown-table-scroll">
-        <table {...props} />
-      </div>
-    );
-  },
-};
-
-const streamingTailComponents: Components = {
-  ...markdownComponents,
   pre({ node, ...props }) {
     void node;
     return <pre className="markdown-streaming-code" {...props} />;
   },
 };
-
-const plainRemarkPlugins = [remarkGfm];
-const plainRehypePlugins: PluggableList = [
-  rehypeRaw,
-  [rehypeSanitize, SAFE_CHAT_HTML_SCHEMA],
-];
 
 function containsMath(content: string) {
   return /(?:^|[^\\])\$\$[\s\S]+?\$\$|(?:^|[^\\])\$(?!\s)[^\n$]+?\$(?!\$)/m.test(content);
@@ -197,29 +237,48 @@ function containsMath(content: string) {
 type MarkdownBlockProps = {
   block: StreamingMarkdownBlock;
   isStreamingTail: boolean;
+  messageId: string;
+  literatureReferences: readonly LiteratureReference[];
+  mermaidBudget: number;
+  onLiteratureReferenceOpen?: (reference: LiteratureReference) => void;
 };
 
 const MarkdownBlock = memo(function MarkdownBlock({
   block,
   isStreamingTail,
+  messageId,
+  literatureReferences,
+  mermaidBudget,
+  onLiteratureReferenceOpen,
 }: MarkdownBlockProps) {
   const content = renderableStreamingBlock(block);
-  // KaTeX 只为已完成且真正含公式的块按需加载，普通消息不承担其运行时开销。
+  const allowedMermaidOffsets = useMemo(
+    () => findAllowedMermaidOffsets(content, mermaidBudget),
+    [content, mermaidBudget],
+  );
+  const components = useMemo(
+    () => createMarkdownComponents(literatureReferences, onLiteratureReferenceOpen, allowedMermaidOffsets),
+    [allowedMermaidOffsets, literatureReferences, onLiteratureReferenceOpen],
+  );
   const mathEnabled = containsMath(content);
   if (mathEnabled && !isStreamingTail) {
     return (
       <Suspense fallback={<span className="markdown-math-loading">{content}</span>}>
-        <MathMarkdownContent content={content} components={markdownComponents} />
+        <MathMarkdownContent
+          content={content}
+          components={components}
+          messageId={messageId}
+          literatureReferences={literatureReferences}
+        />
       </Suspense>
     );
   }
   return (
     <ReactMarkdown
-      remarkPlugins={plainRemarkPlugins}
-      rehypePlugins={plainRehypePlugins}
-      components={isStreamingTail ? streamingTailComponents : markdownComponents}
-      disallowedElements={["img"]}
-      urlTransform={safeMarkdownUrlTransform}
+      remarkPlugins={isStreamingTail ? [] : createMarkdownRemarkPlugins(literatureReferences)}
+      rehypePlugins={isStreamingTail ? [] : createMarkdownRehypePlugins(messageId)}
+      components={isStreamingTail ? streamingComponents : components}
+      urlTransform={isStreamingTail ? safeMarkdownUrlTransform : safeMarkdownContentUrlTransform}
     >
       {content}
     </ReactMarkdown>
@@ -229,24 +288,48 @@ const MarkdownBlock = memo(function MarkdownBlock({
 export const MarkdownMessage = memo(function MarkdownMessage({
   content,
   streaming = false,
+  messageId = "message",
+  literatureReferences = [],
+  onLiteratureReferenceOpen,
 }: MarkdownMessageProps) {
   const blocks = useMemo(
-    () => (streaming
-      ? splitStreamingMarkdownBlocks(content)
-      : [{ content, htmlComplete: true }]),
+    () => (streaming ? splitStreamingMarkdownBlocks(content) : [{ content, htmlComplete: true, settled: true }]),
     [content, streaming],
   );
+  const outline = useMemo(
+    () => (streaming ? [] : extractMarkdownOutline(content, messageId)),
+    [content, messageId, streaming],
+  );
+  const mermaidBudgets = useMemo(() => {
+    let used = 0;
+    return blocks.map((block) => {
+      const budget = Math.max(0, MARKDOWN_RENDER_LIMITS.maxMermaidBlocksPerMessage - used);
+      used += countMermaidBlocks(renderableStreamingBlock(block));
+      return budget;
+    });
+  }, [blocks]);
 
   return (
     <div className="markdown-content" data-streaming={streaming || undefined}>
+      <MessageOutline items={outline} />
       {streaming ? blocks.map((block, index) => (
-        <MarkdownBlock
-          block={block}
-          isStreamingTail={index === blocks.length - 1}
-          key={index}
-        />
+        <RenderFallback
+          key={`${messageId}-${index}`}
+          fallback={<pre className="markdown-streaming-code">{renderableStreamingBlock(block)}</pre>}
+        >
+          <MarkdownBlock
+            block={block}
+            isStreamingTail={index === blocks.length - 1 && block.settled !== true}
+            messageId={messageId}
+            literatureReferences={literatureReferences}
+            mermaidBudget={mermaidBudgets[index] ?? 0}
+            onLiteratureReferenceOpen={onLiteratureReferenceOpen}
+          />
+        </RenderFallback>
       )) : (
-        <MarkdownBlock block={blocks[0]} isStreamingTail={false} />
+        <RenderFallback fallback={<pre className="markdown-streaming-code">{content}</pre>}>
+          <MarkdownBlock block={blocks[0]} isStreamingTail={false} messageId={messageId} literatureReferences={literatureReferences} mermaidBudget={mermaidBudgets[0] ?? 0} onLiteratureReferenceOpen={onLiteratureReferenceOpen} />
+        </RenderFallback>
       )}
     </div>
   );

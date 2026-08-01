@@ -47,6 +47,7 @@ type MessageBubbleProps = {
   /** 选中助手回答的部分文本后点击"引用提问"时回调；不传则不显示引用入口。 */
   onQuote?: (text: string) => void;
   onLiteratureReferenceOpen?: (reference: LiteratureReference) => void;
+  citationReferences?: readonly LiteratureReference[];
 };
 
 export type MessageBubbleUiState = {
@@ -87,6 +88,7 @@ export const MessageBubble = memo(function MessageBubble({
   onDelete,
   onQuote,
   onLiteratureReferenceOpen,
+  citationReferences = [],
 }: MessageBubbleProps) {
   const { language, t } = useI18n();
   const isAssistant = message.role === "assistant";
@@ -128,6 +130,7 @@ export const MessageBubble = memo(function MessageBubble({
     top: number;
     text: string;
   } | null>(null);
+  const [referencesOpen, setReferencesOpen] = useState(false);
 
   // 选中助手回答的部分文本后，在选区附近显示轻量操作条。
   const handleQuoteMouseUp = () => {
@@ -342,9 +345,15 @@ export const MessageBubble = memo(function MessageBubble({
                 />
               ) : null}
               {hasLiteratureReferences ? (
-                <div className="message-literature-references" aria-label={t("chat.literatureReferences")}>
-                  {literatureReferences.map((reference) => (
+                <section className={`message-literature-references${referencesOpen ? " message-literature-references-open" : ""}`} aria-label={t("chat.literatureReferences")}>
+                  <button className="message-literature-references-toggle" type="button" aria-expanded={referencesOpen} onClick={() => setReferencesOpen((value) => !value)}>
+                    <BookOpenText size={13} />
+                    <span>{t("chat.literatureReferences")}</span>
+                    <small>{literatureReferences.length}</small>
+                  </button>
+                  {referencesOpen ? literatureReferences.map((reference) => (
                     <button
+                      className="message-literature-reference-item"
                       type="button"
                       title={t("chat.openLiteraturePage", { title: reference.title, page: reference.pageIndex + 1 })}
                       disabled={!onLiteratureReferenceOpen}
@@ -355,8 +364,8 @@ export const MessageBubble = memo(function MessageBubble({
                       <span>{reference.title}</span>
                       <small>{t("chat.pageNumber", { page: reference.pageIndex + 1 })}</small>
                     </button>
-                  ))}
-                </div>
+                  )) : null}
+                </section>
               ) : null}
               {hasContent ? (
                 isAssistant ? (
@@ -365,7 +374,13 @@ export const MessageBubble = memo(function MessageBubble({
                     ref={quoteHostRef}
                     onMouseUp={handleQuoteMouseUp}
                   >
-                    <MarkdownMessage content={displayedContent} streaming={isStreaming} />
+                    <MarkdownMessage
+                      content={displayedContent}
+                      streaming={isStreaming}
+                      messageId={message.id}
+                      literatureReferences={isAssistant ? citationReferences : literatureReferences}
+                      onLiteratureReferenceOpen={onLiteratureReferenceOpen}
+                    />
                     {quoteAnchor ? (
                       <div
                         className="message-quote-fab"

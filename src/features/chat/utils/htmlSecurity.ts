@@ -2,6 +2,7 @@ import type { Options as SanitizeSchema } from "rehype-sanitize";
 
 const SAFE_HTML_TAGS = [
   "a",
+  "aside",
   "blockquote",
   "br",
   "code",
@@ -15,12 +16,17 @@ const SAFE_HTML_TAGS = [
   "h5",
   "h6",
   "hr",
+  "img",
   "li",
   "ol",
   "p",
   "pre",
   "span",
   "strong",
+  "sup",
+  "section",
+  "summary",
+  "details",
   "table",
   "tbody",
   "td",
@@ -40,16 +46,23 @@ export const SAFE_CHAT_HTML_SCHEMA: SanitizeSchema = {
   allowDoctypes: false,
   tagNames: [...SAFE_HTML_TAGS],
   attributes: {
-    a: ["href", "title"],
+    "*": [
+      ["id", /^(?:mnemora-heading|mnemora-doc)-[a-zA-Z0-9_-]+$/],
+    ],
+    a: ["href", "title", "ariaLabel", "ariaDescribedBy", "dataFootnoteRef", "dataFootnoteBackref"],
     code: [["className", /^language-[a-z0-9_-]+$/i]],
+    details: ["open"],
+    img: ["alt", "height", "loading", "src", "title", "width"],
+    section: ["dataFootnotes"],
+    aside: [["dataCallout", /^(note|tip|important|warning|definition|example|evidence|question)$/]],
     td: ["colSpan", "rowSpan"],
     th: ["colSpan", "rowSpan"],
   },
   protocols: {
-    href: ["http", "https", "mailto"],
+    href: ["http", "https", "mailto", "mnemora-citation"],
+    src: ["https", "asset", "blob"],
   },
-  clobber: ["id", "name"],
-  clobberPrefix: "mnemora-user-content-",
+  clobber: [],
   strip: [
     "audio",
     "base",
@@ -58,7 +71,6 @@ export const SAFE_CHAT_HTML_SCHEMA: SanitizeSchema = {
     "embed",
     "form",
     "iframe",
-    "img",
     "input",
     "link",
     "meta",
@@ -74,10 +86,26 @@ export const SAFE_CHAT_HTML_SCHEMA: SanitizeSchema = {
 
 /** 聊天链接只允许交给系统浏览器处理的绝对外部地址。 */
 export function safeMarkdownUrlTransform(value: string) {
+  if (value.startsWith("#")) return value;
+  if (value.startsWith("mnemora-citation:")) return value;
   try {
     const url = new URL(value);
-    return ["http:", "https:", "mailto:"].includes(url.protocol) ? value : "";
+    return ["http:", "https:", "mailto:", "asset:", "blob:", "mnemora-citation:"].includes(url.protocol) ? value : "";
   } catch {
     return "";
   }
+}
+
+/** 图片比普通链接更严格，不允许 data URL 和本地 file URL 进入消息 DOM。 */
+export function safeMarkdownImageUrlTransform(value: string) {
+  try {
+    const url = new URL(value);
+    return ["https:", "asset:", "blob:"].includes(url.protocol) ? value : "";
+  } catch {
+    return "";
+  }
+}
+
+export function safeMarkdownContentUrlTransform(value: string, key: string) {
+  return key === "src" ? safeMarkdownImageUrlTransform(value) : safeMarkdownUrlTransform(value);
 }

@@ -43,4 +43,64 @@ describe("MarkdownMessage safe HTML", () => {
     expect(output).toContain('class="katex-display"');
     expect(output).toContain('<math');
   });
+
+  it("renders Mermaid as an enhanced block with a source fallback", () => {
+    const output = renderToStaticMarkup(
+      <MarkdownMessage
+        messageId="assistant-1"
+        content={'```mermaid\nflowchart TD\nA[开始] --> B[结束]\n```'}
+      />,
+    );
+
+    expect(output).toContain("mermaid");
+    expect(output).toContain("flowchart TD");
+    expect(output).toContain("显示 Mermaid 图表");
+  });
+
+  it("limits Mermaid rendering without leaking the count across renders", () => {
+    const content = Array.from({ length: 11 }, (_, index) => (
+      `\`\`\`mermaid\nflowchart TD\nA${index}-->B${index}\n\`\`\``
+    )).join("\n\n");
+
+    const first = renderToStaticMarkup(<MarkdownMessage content={content} />);
+    const second = renderToStaticMarkup(<MarkdownMessage content={content} />);
+
+    expect(first.match(/class="markdown-mermaid-block"/g)).toHaveLength(10);
+    expect(second.match(/class="markdown-mermaid-block"/g)).toHaveLength(10);
+  });
+
+  it("renders callouts, footnotes, scoped headings, and safe images", () => {
+    const output = renderToStaticMarkup(
+      <MarkdownMessage
+        messageId="assistant-2"
+        content={'# 结论\n\n> [!NOTE]\n> 重要补充[^1]\n\n![图表](https://example.com/figure.png)\n\n[^1]: 补充说明'}
+      />,
+    );
+
+    expect(output).toContain('data-callout="note"');
+    expect(output).toContain('src="https://example.com/figure.png"');
+    expect(output).toContain("data-footnotes");
+    expect(output).toContain("mnemora-doc-assistant-2-footnote-label");
+    expect(output).toContain("mnemora-heading-assistant-2-0");
+  });
+
+  it("links a verified literature citation to its PDF callback", () => {
+    const output = renderToStaticMarkup(
+      <MarkdownMessage
+        messageId="assistant-3"
+        literatureReferences={[{
+          id: "ref-1",
+          libraryItemId: "paper-1",
+          title: "Paper",
+          pageIndex: 2,
+          kind: "page",
+          text: "excerpt",
+        }]}
+        content="结论见【Paper，第 3 页】。"
+      />,
+    );
+
+    expect(output).toContain('href="mnemora-citation:ref-1"');
+    expect(output).toContain("markdown-literature-citation");
+  });
 });

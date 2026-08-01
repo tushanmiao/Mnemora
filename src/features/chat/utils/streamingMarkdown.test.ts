@@ -13,6 +13,7 @@ describe("streaming Markdown HTML blocks", () => {
     expect(blocks[0]).toEqual({
       content: "<div>\n\nfirst\n\n<span>second</span>\n\n</div>\n\n",
       htmlComplete: true,
+      settled: true,
     });
   });
 
@@ -29,5 +30,18 @@ describe("streaming Markdown HTML blocks", () => {
 
     expect(blocks[0].htmlComplete).toBe(true);
     expect(blocks).toHaveLength(2);
+  });
+
+  it("marks a closed fenced block as settled so it can render before the stream ends", () => {
+    const blocks = splitStreamingMarkdownBlocks("```mermaid\nflowchart TD\nA-->B\n```\n");
+
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].settled).toBe(true);
+  });
+
+  it("keeps an unfinished fenced block as the lightweight streaming tail", () => {
+    const blocks = splitStreamingMarkdownBlocks("```mermaid\nflowchart TD\nA-->");
+
+    expect(blocks[0].settled).toBe(false);
   });
 });

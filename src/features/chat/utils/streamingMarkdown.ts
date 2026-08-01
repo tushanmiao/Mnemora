@@ -10,6 +10,8 @@ const TRACKED_HTML_TAGS = new Set([
 export type StreamingMarkdownBlock = {
   content: string;
   htmlComplete: boolean;
+  /** 已由空行或闭合围栏结束，不再随下一批 token 继续增长。 */
+  settled?: boolean;
 };
 
 function updateOpenHtmlTags(line: string, openTags: string[]) {
@@ -82,14 +84,14 @@ export function splitStreamingMarkdownBlocks(content: string): StreamingMarkdown
       closedFence
       || (!fenceMarker && openHtmlTags.length === 0 && line.trim() === "" && currentBlock.trim())
     )) {
-      blocks.push({ content: currentBlock, htmlComplete: true });
+      blocks.push({ content: currentBlock, htmlComplete: true, settled: true });
       currentBlock = "";
       openHtmlTags = [];
     }
   }
 
   if (currentBlock) {
-    blocks.push({ content: currentBlock, htmlComplete: openHtmlTags.length === 0 });
+    blocks.push({ content: currentBlock, htmlComplete: openHtmlTags.length === 0, settled: false });
   }
   return blocks;
 }

@@ -382,7 +382,27 @@
   gap: 5px;
 }
 
-.message-literature-references button {
+.message-literature-references-toggle {
+  display: flex;
+  min-height: 28px;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  color: var(--color-muted);
+  background: transparent;
+  cursor: pointer;
+}
+
+.message-literature-references-toggle small {
+  color: var(--color-muted);
+}
+
+.message-literature-references-toggle:hover {
+  color: var(--color-text);
+  background: var(--color-hover);
+}
+
+.message-literature-reference-item {
   display: grid;
   min-width: 0;
   max-width: min(100%, 340px);
@@ -399,30 +419,30 @@
   font-size: 10px;
 }
 
-.message-row-user .message-literature-references button {
+.message-row-user .message-literature-reference-item {
   background: var(--color-surface);
 }
 
-.message-literature-references button:hover:not(:disabled) {
+.message-literature-reference-item:hover:not(:disabled) {
   border-color: var(--color-accent);
   color: var(--color-accent);
 }
 
-.message-literature-references button:disabled {
+.message-literature-reference-item:disabled {
   cursor: default;
 }
 
-.message-literature-references button > svg {
+.message-literature-reference-item > svg {
   color: var(--color-accent);
 }
 
-.message-literature-references button > span {
+.message-literature-reference-item > span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.message-literature-references button > small {
+.message-literature-reference-item > small {
   color: var(--color-muted);
   white-space: nowrap;
 }

@@ -231,6 +231,9 @@ export function MessageList({
         onDelete={onDeleteMessage}
         onQuote={onQuoteMessage}
         onLiteratureReferenceOpen={onLiteratureReferenceOpen}
+        citationReferences={message.role === "assistant"
+          ? [...messages.slice(0, index)].reverse().find((item) => item.role === "user")?.literatureReferences ?? []
+          : []}
       />
     </div>
   ), [
@@ -238,6 +241,7 @@ export function MessageList({
     canRegenerate,
     messageUiState,
     messages.length,
+    messages,
     onDeleteMessage,
     onEditMessage,
     onRegenerateMessage,
