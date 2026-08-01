@@ -1,6 +1,6 @@
 [package]
 name = "mnemora"
-version = "0.1.4"
+version = "0.1.5"
 description = "Mnemora desktop application"
 authors = ["tushanmiao"]
 edition = "2021"
@@ -42,3 +42,4 @@ lopdf = { version = "0.36", default-features = false }
 # Office 附件只在工具调用期间解析；DOCX 采用 XML 流式读取，XLSX 使用纯 Rust 读取器。
 quick-xml = "0.41"
 calamine = "0.36"
+tauri-plugin-updater = "2"

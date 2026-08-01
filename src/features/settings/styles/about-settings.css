@@ -206,6 +206,111 @@
   line-height: 1.65;
 }
 
+.about-update-heading-row,
+.about-update-result-heading {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.about-update-result,
+.about-update-error {
+  display: grid;
+  margin-top: 12px;
+  padding: 14px;
+  gap: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 7px;
+  background: var(--color-surface-raised);
+}
+
+.about-update-signature-warning {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.about-update-signature-warning > span {
+  color: var(--color-warning, #a97518);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.about-update-progress {
+  position: relative;
+  width: min(420px, 100%);
+  height: 24px;
+  overflow: hidden;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 5px;
+  background: var(--color-surface);
+}
+
+.about-update-progress > span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: color-mix(in srgb, var(--color-accent) 28%, transparent);
+  transition: width 120ms linear;
+}
+
+.about-update-progress > small {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  height: 100%;
+  place-items: center;
+  color: var(--color-text-secondary);
+  font-size: 10px;
+}
+
+.about-update-available {
+  border-color: color-mix(in srgb, var(--color-accent) 45%, var(--color-border));
+  background: var(--color-accent-soft);
+}
+
+.about-update-result-heading > div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.about-update-result-heading strong {
+  font-size: 13px;
+}
+
+.about-update-result-heading span,
+.about-update-result-heading time,
+.about-update-error > span {
+  color: var(--color-muted);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.about-release-notes {
+  max-height: 180px;
+  margin: 0;
+  padding: 11px;
+  overflow: auto;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 6px;
+  color: var(--color-text-secondary);
+  background: var(--color-surface);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.about-update-result > .settings-button,
+.about-update-error > .settings-button {
+  justify-self: start;
+}
+
 .about-link-row {
   display: flex;
   flex-wrap: wrap;
@@ -232,6 +337,11 @@
 }
 
 @media (max-width: 560px) {
+  .about-update-heading-row,
+  .about-update-result-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
   .about-hero {
     gap: 11px;
   }

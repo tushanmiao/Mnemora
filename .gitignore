@@ -12,6 +12,11 @@ dist
 dist-ssr
 *.local
 
+# Tauri Updater private keys and locally generated release manifests
+*.key
+*.key.pub
+latest.json
+
 # Local development and learning documents
 md/**/*.md
 

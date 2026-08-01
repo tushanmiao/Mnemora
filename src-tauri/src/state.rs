@@ -46,6 +46,9 @@ pub struct AppState {
     pub sync_mapping_repository: SyncMappingRepository,
     pub sync_operations: Mutex<()>,
     pub active_sync_run: Mutex<Option<CancellationToken>>,
+    pub update_operations: Mutex<()>,
+    pub active_update_check: Mutex<Option<CancellationToken>>,
+    pub pending_signed_update: Mutex<Option<tauri_plugin_updater::Update>>,
     pub skill_repository: SkillRepository,
     pub memory_repository: MemoryRepository,
     pub skill_operations: Mutex<()>,
@@ -143,6 +146,9 @@ impl AppState {
             sync_mapping_repository,
             sync_operations: Mutex::new(()),
             active_sync_run: Mutex::new(None),
+            update_operations: Mutex::new(()),
+            active_update_check: Mutex::new(None),
+            pending_signed_update: Mutex::new(None),
             skill_repository,
             memory_repository,
             skill_operations: Mutex::new(()),
@@ -252,6 +258,29 @@ impl AppState {
         };
         token.cancel();
         true
+    }
+
+    pub async fn start_update_check(&self) -> CancellationToken {
+        let token = CancellationToken::new();
+        *self.active_update_check.lock().await = Some(token.clone());
+        token
+    }
+
+    pub async fn finish_update_check(&self) {
+        self.active_update_check.lock().await.take();
+    }
+
+    pub async fn cancel_update_check(&self) -> bool {
+        let check = self.active_update_check.lock().await;
+        let Some(token) = check.as_ref() else {
+            return false;
+        };
+        token.cancel();
+        true
+    }
+
+    pub async fn discard_pending_signed_update(&self) {
+        self.pending_signed_update.lock().await.take();
     }
 }
 

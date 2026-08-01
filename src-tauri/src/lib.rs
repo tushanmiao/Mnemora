@@ -1,4 +1,5 @@
 mod ai;
+mod app_update;
 mod chat;
 mod commands;
 mod html_preview;
@@ -22,6 +23,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec![AUTOSTART_ARG]),
@@ -71,6 +73,10 @@ pub fn run() {
             commands::app_settings::export_settings_bundle,
             commands::app_settings::inspect_settings_bundle,
             commands::app_settings::import_settings_bundle,
+            commands::app_update::check_application_update,
+            commands::app_update::check_signed_application_update,
+            commands::app_update::download_and_install_application_update,
+            commands::app_update::discard_signed_application_update,
             commands::chat::chat_complete,
             commands::chat::chat_stream_start,
             commands::chat::chat_stream_cancel,
@@ -160,6 +166,9 @@ pub fn run() {
                 let approvals =
                     tauri::async_runtime::block_on(state.cancel_all_tool_approvals());
                 let cancelled_sync = tauri::async_runtime::block_on(state.cancel_sync_run());
+                let cancelled_update =
+                    tauri::async_runtime::block_on(state.cancel_update_check());
+                tauri::async_runtime::block_on(state.discard_pending_signed_update());
                 if cancelled > 0 {
                     eprintln!("Cancelled {cancelled} active chat run(s) on application exit.");
                 }
@@ -168,6 +177,9 @@ pub fn run() {
                 }
                 if cancelled_sync {
                     eprintln!("Cancelled the active note sync on application exit.");
+                }
+                if cancelled_update {
+                    eprintln!("Cancelled the active update check on application exit.");
                 }
                 let attachment_tasks = state.cancel_all_attachment_tasks();
                 let staged_attachments = state.cleanup_current_staged_attachments();

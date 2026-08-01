@@ -8,10 +8,20 @@ import {
   Database,
   ExternalLink,
   FileText,
+  LoaderCircle,
+  RefreshCw,
   ShieldCheck,
   Sparkles,
 } from "lucide-react";
 import { useEffect, useState } from "react";
+import { useI18n } from "../../../i18n/I18nProvider";
+import type { SignedUpdateInfo, UpdateCheckResult } from "../../../types/appUpdate";
+import {
+  checkApplicationUpdate,
+  checkSignedApplicationUpdate,
+  discardSignedApplicationUpdate,
+  downloadAndInstallSignedUpdate,
+} from "../api/appUpdate";
 import "../styles/about-settings.css";
 
 type AppMetadata = {
@@ -31,9 +41,21 @@ const RELEASE_URL = PROJECT_URL + "/releases";
 const ISSUES_URL = PROJECT_URL + "/issues";
 
 export function AboutSettingsPanel() {
+  const { t } = useI18n();
   const [metadata, setMetadata] = useState<AppMetadata>(FALLBACK_METADATA);
   const [metadataLoading, setMetadataLoading] = useState(true);
   const [metadataError, setMetadataError] = useState(false);
+  const [updateStatus, setUpdateStatus] = useState<"idle" | "checking" | "complete" | "downloading" | "installing" | "error">("idle");
+  const [updateInfo, setUpdateInfo] = useState<UpdateCheckResult | null>(null);
+  const [signedUpdate, setSignedUpdate] = useState<SignedUpdateInfo | null>(null);
+  const [updateError, setUpdateError] = useState("");
+  const [downloadProgress, setDownloadProgress] = useState(0);
+  const [downloadedBytes, setDownloadedBytes] = useState(0);
+  const [downloadTotal, setDownloadTotal] = useState<number | null>(null);
+
+  useEffect(() => () => {
+    void discardSignedApplicationUpdate();
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -78,6 +100,63 @@ export function AboutSettingsPanel() {
     ? "Tauri 2"
     : "Tauri " + metadata.tauriVersion;
 
+  const checkUpdate = async () => {
+    setUpdateStatus("checking");
+    setUpdateError("");
+    setSignedUpdate(null);
+    setDownloadProgress(0);
+    setDownloadedBytes(0);
+    setDownloadTotal(null);
+    try {
+      const result = await checkApplicationUpdate();
+      setUpdateInfo(result);
+      if (result.available) {
+        try {
+          setSignedUpdate(await checkSignedApplicationUpdate());
+        } catch (reason) {
+          setUpdateError(reason instanceof Error ? reason.message : String(reason));
+        }
+      } else {
+        await discardSignedApplicationUpdate();
+      }
+      setUpdateStatus("complete");
+    } catch (reason) {
+      setUpdateInfo(null);
+      setUpdateError(reason instanceof Error ? reason.message : String(reason));
+      setUpdateStatus("error");
+    }
+  };
+
+  const installUpdate = async () => {
+    if (!signedUpdate) return;
+    setUpdateStatus("downloading");
+    setUpdateError("");
+    setDownloadProgress(0);
+    setDownloadedBytes(0);
+    setDownloadTotal(null);
+    try {
+      let receivedBytes = 0;
+      let totalBytes: number | null = null;
+      await downloadAndInstallSignedUpdate((progress) => {
+        if (progress.finished) {
+          setDownloadProgress(100);
+          setUpdateStatus("installing");
+          return;
+        }
+        receivedBytes = progress.downloadedBytes;
+        totalBytes = progress.totalBytes;
+        setDownloadedBytes(receivedBytes);
+        setDownloadTotal(totalBytes);
+        if (totalBytes) setDownloadProgress(Math.min(100, Math.round((receivedBytes / totalBytes) * 100)));
+      });
+    } catch (reason) {
+      setUpdateError(reason instanceof Error ? reason.message : String(reason));
+      setUpdateStatus("error");
+    }
+  };
+
+  const updateBusy = updateStatus === "checking" || updateStatus === "downloading" || updateStatus === "installing";
+
   return (
     <section className="settings-content about-settings-content" aria-label="关于 Mnemora">
       <div className="settings-content-heading">
@@ -118,6 +197,63 @@ export function AboutSettingsPanel() {
           </div>
           {metadataError ? (
             <p className="about-inline-warning">部分运行环境信息读取失败，当前显示的是可用的备用信息。</p>
+          ) : null}
+        </section>
+
+        <section className="about-settings-section" aria-labelledby="about-update-heading">
+          <div className="about-update-heading-row">
+            <div className="about-section-heading">
+              <RefreshCw size={16} />
+              <h3 id="about-update-heading">{t("about.updateTitle")}</h3>
+            </div>
+            <button className="settings-button settings-button-secondary" type="button" disabled={updateBusy || !isTauri()} onClick={() => void checkUpdate()}>
+              {updateBusy ? <LoaderCircle className="settings-spin" size={15} /> : <RefreshCw size={15} />}
+              <span>{updateStatus === "checking" ? t("about.checkingUpdate") : t("about.checkUpdate")}</span>
+            </button>
+          </div>
+          <p className="about-section-description">{t("about.updateDescription")}</p>
+          {updateInfo && updateStatus !== "checking" && updateStatus !== "error" ? (
+            <div className={`about-update-result${updateInfo.available ? " about-update-available" : ""}`}>
+              <div className="about-update-result-heading">
+                <div>
+                  <strong>{updateInfo.available ? t("about.updateAvailable") : t("about.upToDate")}</strong>
+                  <span>{t("about.versionComparison", { current: updateInfo.currentVersion, latest: updateInfo.latestVersion })}</span>
+                </div>
+                {updateInfo.publishedAt ? <time dateTime={updateInfo.publishedAt}>{formatReleaseDate(updateInfo.publishedAt)}</time> : null}
+              </div>
+              {updateInfo.releaseNotes ? <pre className="about-release-notes">{updateInfo.releaseNotes}</pre> : null}
+              {updateInfo.available && signedUpdate ? (
+                <>
+                  <button className="settings-button settings-button-primary" type="button" disabled={updateBusy} onClick={() => void installUpdate()}>
+                    {updateBusy ? <LoaderCircle className="settings-spin" size={15} /> : <RefreshCw size={15} />}
+                    <span>{updateStatus === "downloading" ? t("about.downloadingUpdate") : updateStatus === "installing" ? t("about.installingUpdate") : t("about.installUpdate")}</span>
+                  </button>
+                  {updateStatus === "downloading" || updateStatus === "installing" ? (
+                    <div className="about-update-progress" aria-label={t("about.downloadProgress", { progress: downloadProgress })}>
+                      <span style={{ width: `${downloadProgress}%` }} />
+                      <small>{downloadTotal ? `${downloadProgress}% · ${formatFileSize(downloadedBytes)} / ${formatFileSize(downloadTotal)}` : formatFileSize(downloadedBytes)}</small>
+                    </div>
+                  ) : null}
+                </>
+              ) : updateInfo.available ? (
+                <div className="about-update-signature-warning">
+                  <span>{updateError || t("about.signedManifestUnavailable")}</span>
+                  <button className="settings-button settings-button-secondary" type="button" onClick={() => void openExternal(updateInfo.releaseUrl)}>
+                    <ExternalLink size={15} />
+                    <span>{t("about.openRelease")}</span>
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+          {updateStatus === "error" ? (
+            <div className="about-update-error">
+              <span>{updateError || t("about.updateFailed")}</span>
+              <button className="settings-button settings-button-secondary" type="button" onClick={() => void openExternal(RELEASE_URL)}>
+                <ExternalLink size={15} />
+                <span>{t("about.openReleases")}</span>
+              </button>
+            </div>
           ) : null}
         </section>
 
@@ -201,6 +337,16 @@ export function AboutSettingsPanel() {
       </div>
     </section>
   );
+}
+
+function formatReleaseDate(value: string) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString();
+}
+
+function formatFileSize(bytes: number) {
+  if (bytes < 1024 * 1024) return `${Math.max(0, bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
 function MetadataItem({

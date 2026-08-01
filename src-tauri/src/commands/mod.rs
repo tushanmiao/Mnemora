@@ -1,4 +1,5 @@
 pub mod app_settings;
+pub mod app_update;
 pub mod attachments;
 pub mod chat;
 pub mod conversations;
