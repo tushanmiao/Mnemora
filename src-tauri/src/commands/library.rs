@@ -10,7 +10,7 @@ use crate::{
     library::types::{
         LibraryAnnotation, LibraryAnnotationCreate, LibraryAnnotationUpdate, LibraryCollection,
         LibraryImportResult, LibraryItem, LibraryItemUpdate, LibraryListPage, LibraryListRequest,
-        LibraryNote, LibraryNoteCreate, LibraryNoteSummary, LibraryNoteUpdate, LibraryReadingState,
+        LibraryNote, LibraryNoteCreate, LibraryNoteImportResult, LibraryNoteSummary, LibraryNoteUpdate, LibraryReadingState,
         LibraryReadingStateUpdate,
     },
     state::AppState,
@@ -265,6 +265,18 @@ pub async fn library_create_note(
     let _write_guard = state.library_operations.lock().await;
     let repository = state.library_repository.clone();
     tauri::async_runtime::spawn_blocking(move || repository.create_note(create))
+        .await
+        .map_err(join_error)?
+}
+
+#[tauri::command]
+pub async fn library_import_markdown_notes(
+    state: State<'_, AppState>,
+    paths: Vec<String>,
+) -> Result<LibraryNoteImportResult, String> {
+    let _write_guard = state.library_operations.lock().await;
+    let repository = state.library_repository.clone();
+    tauri::async_runtime::spawn_blocking(move || repository.import_markdown_notes(paths))
         .await
         .map_err(join_error)?
 }

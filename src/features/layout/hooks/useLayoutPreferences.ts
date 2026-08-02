@@ -1,7 +1,7 @@
 import { useCallback, useState } from "react";
 
 /** 可调整宽度的界面面板。宽度只影响本地界面布局，不进入模型或对话数据。 */
-export type LayoutPanel = "chatSidebar" | "workSidebar" | "workContext";
+export type LayoutPanel = "chatSidebar" | "workSidebar" | "workContext" | "notesContext";
 
 export interface LayoutPreferences {
   /** Chat 模式左侧会话栏宽度。 */
@@ -10,18 +10,22 @@ export interface LayoutPreferences {
   workSidebarWidth: number;
   /** Work 模式右侧上下文面板宽度。 */
   workContextWidth: number;
+  /** Notes 模式右侧按需 AI 面板宽度。 */
+  notesContextWidth: number;
 }
 
 export const LAYOUT_PANEL_LIMITS = {
   chatSidebar: { min: 220, default: 276, max: 380 },
   workSidebar: { min: 220, default: 276, max: 380 },
   workContext: { min: 340, default: 440, max: 620 },
+  notesContext: { min: 340, default: 440, max: 620 },
 } as const;
 
 export const DEFAULT_LAYOUT_PREFERENCES: LayoutPreferences = {
   chatSidebarWidth: LAYOUT_PANEL_LIMITS.chatSidebar.default,
   workSidebarWidth: LAYOUT_PANEL_LIMITS.workSidebar.default,
   workContextWidth: LAYOUT_PANEL_LIMITS.workContext.default,
+  notesContextWidth: LAYOUT_PANEL_LIMITS.notesContext.default,
 };
 
 const LAYOUT_STORAGE_KEY = "mnemora.layout-preferences.v1";
@@ -30,6 +34,7 @@ const PANEL_KEYS: Record<LayoutPanel, keyof LayoutPreferences> = {
   chatSidebar: "chatSidebarWidth",
   workSidebar: "workSidebarWidth",
   workContext: "workContextWidth",
+  notesContext: "notesContextWidth",
 };
 
 function boundedNumber(value: unknown, fallback: number, min: number, max: number): number {
@@ -59,6 +64,12 @@ export function normalizeLayoutPreferences(value: unknown): LayoutPreferences {
       DEFAULT_LAYOUT_PREFERENCES.workContextWidth,
       LAYOUT_PANEL_LIMITS.workContext.min,
       LAYOUT_PANEL_LIMITS.workContext.max,
+    ),
+    notesContextWidth: boundedNumber(
+      candidate.notesContextWidth,
+      DEFAULT_LAYOUT_PREFERENCES.notesContextWidth,
+      LAYOUT_PANEL_LIMITS.notesContext.min,
+      LAYOUT_PANEL_LIMITS.notesContext.max,
     ),
   };
 }

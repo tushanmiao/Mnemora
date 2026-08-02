@@ -359,11 +359,14 @@ fn sanitize_reference_component(value: &str) -> String {
 }
 
 fn tool_execution(content: String) -> ToolExecution {
+    let output_chars = content.chars().count();
     ToolExecution {
         preview: content.chars().take(MAX_PREVIEW_CHARS).collect(),
         content,
         is_error: false,
         activated_skill_id: None,
+        output_chars,
+        output_truncated: false,
     }
 }
 

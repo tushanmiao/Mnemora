@@ -3,7 +3,6 @@ import {
   BookOpenText,
   ChevronDown,
   FileText,
-  Network,
   NotebookPen,
   PanelRightOpen,
   X,
@@ -25,7 +24,6 @@ const tabIcons = {
   library: BookOpenText,
   pdf: FileText,
   note: NotebookPen,
-  "mind-map": Network,
 } satisfies Record<WorkResourceTab["kind"], typeof BookOpenText>;
 
 export function WorkTabStrip({

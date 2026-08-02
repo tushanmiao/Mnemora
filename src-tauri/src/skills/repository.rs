@@ -98,7 +98,10 @@ impl SkillRepository {
         if record.summary.source != SkillSource::Builtin {
             return Err("只有内置技能可以执行恢复操作。".to_string());
         }
-        self.set_enabled(skill_id, true)
+        let mut state = self.read_state()?;
+        state.skills.remove(skill_id);
+        self.write_state(&state)?;
+        Ok(self.load_record(skill_id)?.summary)
     }
 
     pub fn uninstall(&self, skill_id: &str) -> Result<(), String> {
@@ -231,21 +234,30 @@ impl SkillRepository {
         ] {
             let direct = root.join(skill_id);
             if direct.join("SKILL.md").is_file() {
-                let enabled = state
+                let mut record = parse_skill(&direct, source, true)?;
+                record.summary.enabled = state
                     .skills
                     .get(skill_id)
                     .map(|entry| entry.enabled)
-                    .unwrap_or(true);
-                return parse_skill(&direct, source, enabled);
+                    .unwrap_or(if source == SkillSource::Builtin {
+                        record.summary.default_enabled
+                    } else {
+                        true
+                    });
+                return Ok(record);
             }
             for directory in child_directories(root)? {
-                let enabled = state
-                    .skills
-                    .get(skill_id)
-                    .map(|entry| entry.enabled)
-                    .unwrap_or(true);
-                if let Ok(record) = parse_skill(&directory, source, enabled) {
+                if let Ok(mut record) = parse_skill(&directory, source, true) {
                     if record.summary.id == skill_id {
+                        record.summary.enabled = state
+                            .skills
+                            .get(skill_id)
+                            .map(|entry| entry.enabled)
+                            .unwrap_or(if source == SkillSource::Builtin {
+                                record.summary.default_enabled
+                            } else {
+                                true
+                            });
                         return Ok(record);
                     }
                 }
@@ -268,14 +280,17 @@ impl SkillRepository {
                 .and_then(|name| name.to_str())
                 .unwrap_or("未知目录")
                 .to_string();
-            let default_enabled = true;
-            match parse_skill(&directory, source, default_enabled) {
+            match parse_skill(&directory, source, true) {
                 Ok(mut record) => {
                     record.summary.enabled = state
                         .skills
                         .get(&record.summary.id)
                         .map(|entry| entry.enabled)
-                        .unwrap_or(true);
+                        .unwrap_or(if source == SkillSource::Builtin {
+                            record.summary.default_enabled
+                        } else {
+                            true
+                        });
                     if ids.insert(record.summary.id.clone()) {
                         result.skills.push(record.summary);
                     } else {
@@ -446,6 +461,57 @@ mod tests {
     use std::fs;
 
     use super::SkillRepository;
+
+    #[test]
+    fn builtin_default_enabled_is_applied_until_user_overrides_it() {
+        let root =
+            std::env::temp_dir().join(format!("mnemora-skill-default-{}", uuid::Uuid::new_v4()));
+        let builtin = root.join("builtin");
+        let enabled_skill = builtin.join("study");
+        let optional_skill = builtin.join("debug");
+        fs::create_dir_all(&enabled_skill).unwrap();
+        fs::create_dir_all(&optional_skill).unwrap();
+        fs::write(
+            enabled_skill.join("SKILL.md"),
+            "---\nid: study\nname: 学习\ndescription: 学习技能。\nmetadata:\n  mnemora:\n    default-enabled: true\n---\n学习正文\n",
+        )
+        .unwrap();
+        fs::write(
+            optional_skill.join("SKILL.md"),
+            "---\nid: debug\nname: 调试\ndescription: 调试技能。\nmetadata:\n  mnemora:\n    default-enabled: false\n---\n调试正文\n",
+        )
+        .unwrap();
+
+        let repository = SkillRepository::new(builtin, root.join("skills"));
+        let skills = repository.list().unwrap().skills;
+        assert!(
+            skills
+                .iter()
+                .find(|skill| skill.id == "study")
+                .unwrap()
+                .enabled
+        );
+        assert!(
+            !skills
+                .iter()
+                .find(|skill| skill.id == "debug")
+                .unwrap()
+                .enabled
+        );
+
+        repository.set_enabled("debug", true).unwrap();
+        assert!(
+            repository
+                .list()
+                .unwrap()
+                .skills
+                .iter()
+                .find(|skill| skill.id == "debug")
+                .unwrap()
+                .enabled
+        );
+        let _ = fs::remove_dir_all(root);
+    }
 
     fn repository_with_trigger() -> (std::path::PathBuf, SkillRepository) {
         let root =

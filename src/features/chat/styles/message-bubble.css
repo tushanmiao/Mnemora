@@ -579,3 +579,29 @@
   color: var(--color-text);
   background: var(--color-hover);
 }
+
+.message-note-references {
+  display: grid;
+  margin-bottom: 9px;
+  gap: 5px;
+}
+
+.message-note-reference-item {
+  display: grid;
+  min-width: 0;
+  padding: 7px 9px;
+  grid-template-columns: 16px minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+  border-left: 3px solid var(--color-accent);
+  border-radius: 5px;
+  color: var(--color-text-secondary);
+  background: var(--color-accent-soft);
+}
+
+.message-note-reference-item > svg { color: var(--color-accent); }
+.message-note-reference-item > span { display: grid; min-width: 0; gap: 2px; }
+.message-note-reference-item strong,
+.message-note-reference-item small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.message-note-reference-item strong { font-size: 11px; }
+.message-note-reference-item small { color: var(--color-muted); font-size: 9px; }

@@ -46,6 +46,7 @@ function toConversationListItem(conversation: Conversation): ConversationListIte
       || message.errorMessage
       || (message.attachments?.length ?? 0) > 0
       || (message.literatureReferences?.length ?? 0) > 0
+      || (message.noteReferences?.length ?? 0) > 0
     ));
   const attachmentPreview = lastMessage?.attachments?.length
     ? `附件：${lastMessage.attachments.map((attachment) => attachment.name).join("、")}`
@@ -57,6 +58,7 @@ function toConversationListItem(conversation: Conversation): ConversationListIte
       || lastMessage?.errorMessage
       || attachmentPreview
       || lastMessage?.literatureReferences?.[0]?.title
+      || lastMessage?.noteReferences?.[0]?.noteTitle
       || "暂无消息",
     messageCount: conversation.messages.length,
     assistantId: conversation.assistantId,

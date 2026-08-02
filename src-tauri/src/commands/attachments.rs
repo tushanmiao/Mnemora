@@ -9,8 +9,8 @@ use crate::{
     chat::{
         attachments::{
             discard_staged_attachment, discard_stored_attachments, import_attachments,
-            inspect_attachment_paths, read_attachment_preview, save_pasted_attachment,
-            PendingChatAttachment,
+            inspect_attachment_paths, read_attachment_image, read_attachment_preview,
+            save_pasted_attachment, PendingChatAttachment,
         },
         conversation_types::StoredChatAttachment,
     },
@@ -107,6 +107,31 @@ pub async fn read_chat_attachment_preview(
             preview_path.as_deref(),
             Some(&cancellation),
         )
+    })
+    .await;
+    drop(permit);
+    state.finish_attachment_task(&request_id);
+    joined.map_err(join_error)?
+}
+
+#[tauri::command]
+pub async fn read_chat_attachment_image(
+    state: State<'_, AppState>,
+    request_id: String,
+    conversation_id: String,
+    path: String,
+) -> Result<String, String> {
+    let cancellation = state.register_attachment_task(request_id.clone())?;
+    let permit = match state.attachment_preview_gate.acquire().await {
+        Ok(permit) => permit,
+        Err(_) => {
+            state.finish_attachment_task(&request_id);
+            return Err("图片查看队列已经关闭。".to_string());
+        }
+    };
+    let repository = state.conversation_repository.clone();
+    let joined = tauri::async_runtime::spawn_blocking(move || {
+        read_attachment_image(&repository, &conversation_id, &path, Some(&cancellation))
     })
     .await;
     drop(permit);

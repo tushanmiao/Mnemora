@@ -6,11 +6,12 @@ import {
   startChatStream,
   type ModelStreamEvent,
 } from "../api/chat";
-import type { AppSettings, ResponseLanguage } from "../../../types/appSettings";
+import type { AppSettings } from "../../../types/appSettings";
 import type {
   ActivatedSkillSnapshot,
   ChatMessage,
   LiteratureReference,
+  NoteReference,
 } from "../../../types/chat";
 import type { ChatAttachment } from "../../../types/attachment";
 import type { Conversation } from "../../../types/conversation";
@@ -19,6 +20,7 @@ import type {
   ProviderConfig,
   ProviderModelConfig,
 } from "../../../types/modelSettings";
+import type { WorkspaceMode } from "../../workspace/types";
 import {
   appendStreamingDelta,
   appendStreamingReasoningDelta,
@@ -40,13 +42,9 @@ import {
   refreshActivatedSkillSnapshots,
   resolveSkillActivation,
 } from "../utils/skillActivation";
+import { composeChatSystemPrompt } from "../utils/systemPrompt";
 
 const MAX_TEMPORARY_TITLE_LENGTH = 24;
-const RESPONSE_LANGUAGE_PROMPTS: Partial<Record<ResponseLanguage, string>> = {
-  zh: "请使用简体中文回答。",
-  zhHant: "請使用繁體中文回答。",
-  en: "Please answer in English.",
-};
 
 export type SelectedModel = {
   provider: ProviderConfig;
@@ -72,6 +70,7 @@ type PreparedGeneration = {
 
 type UseChatRuntimeOptions = {
   appSettings: AppSettings;
+  workspaceMode: WorkspaceMode;
   skills: SkillSummary[];
   currentConversation: Conversation | null;
   currentModel: SelectedModel | null;
@@ -90,12 +89,12 @@ function createTemporaryTitle(content: string) {
 }
 
 function composeSystemPrompt(settings: AppSettings, conversation: Conversation) {
-  return [
-    settings.systemPrompt.trim(),
-    conversation.systemPrompt.trim(),
-    contextSummaryPrompt(conversation),
-    RESPONSE_LANGUAGE_PROMPTS[settings.responseLanguage] ?? "",
-  ].filter(Boolean).join("\n\n");
+  return composeChatSystemPrompt({
+    globalPrompt: settings.systemPrompt,
+    conversationPrompt: conversation.systemPrompt,
+    contextSummary: contextSummaryPrompt(conversation),
+    responseLanguage: settings.responseLanguage,
+  });
 }
 
 function createAssistantMessage(
@@ -186,6 +185,7 @@ async function compressConversation(
 
 export function useChatRuntime({
   appSettings,
+  workspaceMode,
   skills,
   currentConversation,
   currentModel,
@@ -392,6 +392,7 @@ export function useChatRuntime({
         activatedSkillIds,
         slashSkillId,
         permissionMode: runningConversation.permissionMode,
+        workspaceMode,
         messages: modelMessages,
         options: {
           maxOutputTokens: appSettings.maxOutputTokens,
@@ -504,6 +505,7 @@ export function useChatRuntime({
     requestInFlightRef,
     saveStableConversation,
     skills,
+    workspaceMode,
   ]);
 
   const sendMessage = useCallback(async (
@@ -511,12 +513,13 @@ export function useChatRuntime({
     attachments: ChatAttachment[] = [],
     skillActivation?: SkillActivationSelection,
     literatureReferences: LiteratureReference[] = [],
+    noteReferences: NoteReference[] = [],
   ) => {
     const content = rawContent.trim();
     const targetConversation = currentConversation;
     const selectedModel = currentModel;
     if (
-      (!content && attachments.length === 0 && literatureReferences.length === 0)
+      (!content && attachments.length === 0 && literatureReferences.length === 0 && noteReferences.length === 0)
       || !targetConversation
       || !selectedModel
       || requestInFlightRef.current
@@ -530,6 +533,7 @@ export function useChatRuntime({
       content,
       attachments,
       literatureReferences,
+      noteReferences,
       status: "completed",
       createdAt: now,
       updatedAt: now,
@@ -550,6 +554,7 @@ export function useChatRuntime({
         ? createTemporaryTitle(
             content
             || literatureReferences[0]?.title
+            || noteReferences[0]?.noteTitle
             || attachments.map((attachment) => attachment.name).join("、"),
           )
         : targetConversation.title,
@@ -580,6 +585,7 @@ export function useChatRuntime({
       message.content.trim()
       || (message.attachments?.length ?? 0) > 0
       || (message.literatureReferences?.length ?? 0) > 0
+      || (message.noteReferences?.length ?? 0) > 0
     ))) return;
 
     const now = Date.now();
@@ -627,6 +633,7 @@ export function useChatRuntime({
       !content
       && (originalMessage.attachments?.length ?? 0) === 0
       && (originalMessage.literatureReferences?.length ?? 0) === 0
+      && (originalMessage.noteReferences?.length ?? 0) === 0
     ) return;
     const now = Date.now();
 
@@ -670,6 +677,7 @@ export function useChatRuntime({
         ? createTemporaryTitle(
             content
             || originalMessage.literatureReferences?.[0]?.title
+            || originalMessage.noteReferences?.[0]?.noteTitle
             || originalMessage.attachments?.map((attachment) => attachment.name).join("、")
             || targetConversation.title,
           )

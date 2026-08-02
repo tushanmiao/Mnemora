@@ -15,6 +15,10 @@ required-tools:
   - read_pdf_pages
 metadata:
   mnemora:
+    default-enabled: true
+    supported-modes: [chat, work]
+    risk: low
+    resource-cost: high
     source-repository: https://github.com/xwmxcz/papers-skill
     source-path: skills/papers-research/SKILL.md
     source-revision: a64c2eda2c9fc182c96e1409cde267b262dbebde

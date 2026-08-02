@@ -10,7 +10,7 @@ pub struct SyncDocument {
 
 pub fn render_document(
     note: &LibraryNote,
-    item: &LibraryItem,
+    item: Option<&LibraryItem>,
     annotations: &[LibraryAnnotation],
     include_metadata: bool,
     include_annotations: bool,
@@ -18,16 +18,23 @@ pub fn render_document(
     let mut markdown = String::new();
     markdown.push_str("---\n");
     markdown.push_str(&format!("mnemora_id: {}\n", yaml_string(&note.id)));
-    markdown.push_str("mnemora_type: literature-note\n");
+    markdown.push_str(if item.is_some() {
+        "mnemora_type: literature-note\n"
+    } else {
+        "mnemora_type: markdown-note\n"
+    });
     markdown.push_str(&format!("title: {}\n", yaml_string(&note.title)));
-    markdown.push_str(&format!("literature: {}\n", yaml_string(&item.title)));
+    if let Some(item) = item {
+        markdown.push_str(&format!("literature: {}\n", yaml_string(&item.title)));
+    }
     markdown.push_str(&format!("updated_at: {}\n", note.updated_at));
     markdown.push_str("---\n\n");
     markdown.push_str("# ");
     markdown.push_str(&note.title);
     markdown.push_str("\n\n");
 
-    if include_metadata {
+    if include_metadata && item.is_some() {
+        let item = item.expect("item checked above");
         markdown.push_str("## 文献信息\n\n");
         markdown.push_str(&format!("- 标题：{}\n", item.title));
         if !item.authors.is_empty() {

@@ -1,5 +1,5 @@
-/** 应用顶层只保留 Chat 与 Work 两种工作模式。 */
-export type WorkspaceMode = "chat" | "work";
+/** Notes 从 Chat 侧栏进入独立工作区；Work 仍保留 PDF 学习流程。 */
+export type WorkspaceMode = "chat" | "notes" | "work";
 
 /** Work 左侧文献库的稳定入口。 */
 export type WorkLibraryView =
@@ -8,11 +8,10 @@ export type WorkLibraryView =
   | "favorites"
   | "unfiled"
   | "notes"
-  | "mind-maps"
   | "trash";
 
 /** 中间工作区未来可以同时打开的资源类型。 */
-export type WorkResourceTabKind = "library" | "pdf" | "note" | "mind-map";
+export type WorkResourceTabKind = "library" | "pdf" | "note";
 
 export type WorkResourceTab = {
   id: string;

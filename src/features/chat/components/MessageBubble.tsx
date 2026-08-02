@@ -8,6 +8,7 @@ import {
   ChevronDown,
   ChevronUp,
   Copy,
+  FileText,
   LoaderCircle,
   Pencil,
   Quote,
@@ -102,10 +103,12 @@ export const MessageBubble = memo(function MessageBubble({
   const hasContent = displayedContent.trim().length > 0;
   const attachments = message.attachments ?? [];
   const literatureReferences = message.literatureReferences ?? [];
+  const noteReferences = message.noteReferences ?? [];
   const activatedSkills = message.activatedSkills ?? [];
   const toolTraces = message.toolTraces ?? [];
   const hasAttachments = attachments.length > 0;
   const hasLiteratureReferences = (message.literatureReferences?.length ?? 0) > 0;
+  const hasNoteReferences = noteReferences.length > 0;
   const hasReasoning = displayedReasoning.trim().length > 0;
   const isWaiting = isAssistant
     && message.status === "pending"
@@ -213,7 +216,7 @@ export const MessageBubble = memo(function MessageBubble({
   const submitEdit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const content = editDraft.trim();
-    if ((!content && !hasAttachments && !hasLiteratureReferences) || actionsDisabled) return;
+    if ((!content && !hasAttachments && !hasLiteratureReferences && !hasNoteReferences) || actionsDisabled) return;
     onUiStateChange(message.id, {
       editing: false,
       editDraft: content,
@@ -257,7 +260,7 @@ export const MessageBubble = memo(function MessageBubble({
                   type="submit"
                   title={t("chat.saveEdit")}
                   aria-label={t("chat.saveEdit")}
-                  disabled={(!editDraft.trim() && !hasAttachments && !hasLiteratureReferences) || actionsDisabled}
+                  disabled={(!editDraft.trim() && !hasAttachments && !hasLiteratureReferences && !hasNoteReferences) || actionsDisabled}
                 >
                   <Check size={16} />
                 </button>
@@ -365,6 +368,19 @@ export const MessageBubble = memo(function MessageBubble({
                       <small>{t("chat.pageNumber", { page: reference.pageIndex + 1 })}</small>
                     </button>
                   )) : null}
+                </section>
+              ) : null}
+              {hasNoteReferences ? (
+                <section className="message-note-references" aria-label="消息引用的笔记">
+                  {noteReferences.map((reference) => (
+                    <div className="message-note-reference-item" key={reference.id}>
+                      <FileText size={13} />
+                      <span>
+                        <strong>{reference.noteTitle}</strong>
+                        <small>{reference.startLine ? `第 ${reference.startLine}${reference.endLine && reference.endLine !== reference.startLine ? `-${reference.endLine}` : ""} 行` : "Markdown 选区"}</small>
+                      </span>
+                    </div>
+                  ))}
                 </section>
               ) : null}
               {hasContent ? (
@@ -478,7 +494,7 @@ export const MessageBubble = memo(function MessageBubble({
                 type="button"
                 title={isAssistant ? t("chat.editAnswer") : t("chat.editAndResend")}
                 aria-label={isAssistant ? t("chat.editAnswer") : t("chat.editAndResend")}
-                disabled={actionsDisabled || (!message.content.trim() && !hasAttachments && !hasLiteratureReferences)}
+                disabled={actionsDisabled || (!message.content.trim() && !hasAttachments && !hasLiteratureReferences && !hasNoteReferences)}
                 onClick={beginEditing}
               >
                 <Pencil size={15} />

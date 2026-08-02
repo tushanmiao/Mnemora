@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { FileText, LoaderCircle, Save, Trash2 } from "lucide-react";
+import { lazy, Suspense, useEffect, useState } from "react";
+import { Eye, FileCode2, FileText, LoaderCircle, Save, Trash2 } from "lucide-react";
 import {
   deleteLibraryNote,
   getLibraryNote,
@@ -7,6 +7,9 @@ import {
 } from "../../library/api/library";
 import type { LibraryNote } from "../../library/types";
 import "../styles/notes.css";
+import "../styles/notes-workspace.css";
+
+const MarkdownNotePreview = lazy(() => import("./MarkdownNotePreview"));
 
 type NoteWorkspaceProps = {
   noteId: string;
@@ -21,6 +24,7 @@ export function NoteWorkspace({ noteId, onUpdated, onDeleted }: NoteWorkspacePro
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [mode, setMode] = useState<"source" | "preview">("source");
 
   useEffect(() => {
     let disposed = false;
@@ -75,9 +79,18 @@ export function NoteWorkspace({ noteId, onUpdated, onDeleted }: NoteWorkspacePro
       <header>
         <div>
           <FileText size={15} />
-          <span title={note.itemTitle}>{note.itemTitle}</span>
+          <span title={note.itemTitle ?? "全局笔记"}>{note.itemTitle ?? "全局笔记"}</span>
         </div>
         <div>
+          <button
+            type="button"
+            title={mode === "source" ? "切换为预览" : "切换为 Markdown 源码"}
+            aria-label={mode === "source" ? "切换为预览" : "切换为 Markdown 源码"}
+            onClick={() => setMode((current) => current === "source" ? "preview" : "source")}
+          >
+            {mode === "source" ? <Eye size={15} /> : <FileCode2 size={15} />}
+            <span>{mode === "source" ? "预览" : "Markdown"}</span>
+          </button>
           <button type="button" disabled={!dirty || saving || !title.trim()} onClick={() => void save()}>
             {saving ? <LoaderCircle className="is-spinning" size={15} /> : <Save size={15} />}
             <span>{saving ? "正在保存" : "保存"}</span>
@@ -107,13 +120,21 @@ export function NoteWorkspace({ noteId, onUpdated, onDeleted }: NoteWorkspacePro
         aria-label="笔记标题"
         onChange={(event) => setTitle(event.target.value)}
       />
-      <textarea
-        className="note-workspace-content"
-        value={content}
-        maxLength={500_000}
-        aria-label="笔记正文"
-        onChange={(event) => setContent(event.target.value)}
-      />
+      {mode === "source" ? (
+        <textarea
+          className="note-workspace-content"
+          value={content}
+          maxLength={500_000}
+          aria-label="Markdown 笔记正文"
+          onChange={(event) => setContent(event.target.value)}
+        />
+      ) : (
+        <div className="note-workspace-preview">
+          <Suspense fallback={<div className="work-library-state" role="status"><LoaderCircle className="work-library-spinner" size={20} /><span>正在加载预览</span></div>}>
+            <MarkdownNotePreview noteId={note.id} content={content} />
+          </Suspense>
+        </div>
+      )}
     </section>
   );
 }

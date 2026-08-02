@@ -33,6 +33,14 @@ pub struct ToolTraceSnapshot {
     pub preview: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_chars: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_chars: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_truncated: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_kind: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,4 +49,6 @@ pub struct ToolExecution {
     pub preview: String,
     pub is_error: bool,
     pub activated_skill_id: Option<String>,
+    pub output_chars: usize,
+    pub output_truncated: bool,
 }

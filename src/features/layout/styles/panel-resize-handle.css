@@ -49,12 +49,14 @@ body.panel-resizing * {
 }
 
 body.panel-resizing .sidebar,
-body.panel-resizing .work-context-panel {
+body.panel-resizing .work-context-panel,
+body.panel-resizing .notes-context-panel {
   transition: none !important;
 }
 
 @media (max-width: 1240px) {
-  .work-context-panel .panel-resize-handle {
+  .work-context-panel .panel-resize-handle,
+  .notes-context-panel .panel-resize-handle {
     display: none;
   }
 }

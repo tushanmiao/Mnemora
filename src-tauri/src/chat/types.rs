@@ -27,6 +27,15 @@ const MAX_MODEL_IMAGES: usize = 4;
 const MAX_MODEL_IMAGE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_ACTIVATED_SKILLS: usize = 3;
 
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ChatWorkspaceMode {
+    #[default]
+    Chat,
+    Work,
+    Notes,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatModelMessage {
@@ -56,6 +65,8 @@ pub struct ChatCompletionRequest {
     pub slash_skill_id: Option<String>,
     #[serde(default)]
     pub permission_mode: AiPermissionMode,
+    #[serde(default)]
+    pub workspace_mode: ChatWorkspaceMode,
     pub messages: Vec<ChatModelMessage>,
     #[serde(default)]
     pub options: ModelOptions,
@@ -395,7 +406,7 @@ impl ChatCompletionRequest {
                 tool_result: None,
             });
         }
-        let mut system_prompt = self.system_prompt.trim().to_string();
+        let mut system_prompt = super::prompt::prepend_core_system_prompt(&self.system_prompt);
         let skill_prompt = skill_repository
             .render_activated_skills(&self.activated_skill_ids, last_user_content.as_deref())
             .map_err(ModelError::invalid_configuration)?;
@@ -432,7 +443,7 @@ mod tests {
         types::{ModelOptions, ModelRole},
     };
 
-    use super::{ChatCompletionRequest, ModelStreamEvent};
+    use super::{ChatCompletionRequest, ChatWorkspaceMode, ModelStreamEvent};
     use crate::chat::{conversation_types::StoredChatAttachment, storage::ConversationRepository};
 
     fn image_attachment(id: &str, path: &str) -> StoredChatAttachment {
@@ -460,6 +471,7 @@ mod tests {
             activated_skill_ids: Vec::new(),
             slash_skill_id: None,
             permission_mode: AiPermissionMode::AskSensitive,
+            workspace_mode: ChatWorkspaceMode::Chat,
             messages: vec![super::ChatModelMessage {
                 role: ModelRole::User,
                 content: content.to_string(),
@@ -604,7 +616,8 @@ mod tests {
 
         assert_eq!(model_request.messages[0].content, "重点保留结论");
         let system_prompt = model_request.system_prompt.unwrap();
-        assert!(system_prompt.starts_with("全局规则"));
+        assert!(!system_prompt.starts_with("<mnemora_core>"));
+        assert!(system_prompt.contains("全局规则"));
         assert!(system_prompt.contains("<mnemora_skill id=\"summarize\""));
         assert!(system_prompt.contains("先提取事实，再生成摘要。"));
         assert!(system_prompt.contains("重点：重点保留结论"));

@@ -146,6 +146,12 @@
   font-weight: 600;
 }
 
+.sidebar-action-active {
+  color: var(--color-text);
+  background: var(--color-active);
+  font-weight: 600;
+}
+
 .sidebar-chevron {
   margin-left: auto;
   transition: transform 160ms ease;

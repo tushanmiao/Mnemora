@@ -16,6 +16,8 @@ export type AttachmentPreviewLoad = {
   release: () => void;
 };
 
+export type AttachmentImageLoad = AttachmentPreviewLoad;
+
 const previewCache = new Map<string, PreviewCacheEntry>();
 const previewRequests = new Map<string, PreviewRequest>();
 let previewCacheBytes = 0;
@@ -136,6 +138,32 @@ export function loadChatAttachmentPreview(
       if (request!.consumers === 0 && previewRequests.get(key) === request) {
         void cancelChatAttachmentTask(request!.requestId).catch(() => undefined);
       }
+    },
+  };
+}
+
+export function loadChatAttachmentImage(
+  conversationId: string,
+  path: string,
+): AttachmentImageLoad {
+  if (!isTauri()) {
+    return {
+      promise: Promise.reject(new Error("图片查看需要在 Tauri 应用中运行。")),
+      release: () => undefined,
+    };
+  }
+  const requestId = crypto.randomUUID();
+  let released = false;
+  return {
+    promise: invoke<string>("read_chat_attachment_image", {
+      requestId,
+      conversationId,
+      path,
+    }),
+    release: () => {
+      if (released) return;
+      released = true;
+      void cancelChatAttachmentTask(requestId).catch(() => undefined);
     },
   };
 }

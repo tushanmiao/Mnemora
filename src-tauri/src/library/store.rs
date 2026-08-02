@@ -20,12 +20,13 @@ use super::{
         LibraryAnnotationCreate, LibraryAnnotationKind, LibraryAnnotationRect,
         LibraryAnnotationUpdate, LibraryCollection, LibraryImportFailure, LibraryImportResult,
         LibraryItem, LibraryItemUpdate, LibraryListPage, LibraryListRequest, LibraryNote,
-        LibraryNoteCreate, LibraryNoteSummary, LibraryNoteUpdate, LibraryReadingState,
-        LibraryReadingStateUpdate, LibrarySort, LibraryView, MAX_PDF_RANGE_BYTES,
+        LibraryNoteCreate, LibraryNoteImportFailure, LibraryNoteImportResult, LibraryNoteSummary,
+        LibraryNoteUpdate, LibraryReadingState, LibraryReadingStateUpdate, LibrarySort, LibraryView,
+        MAX_NOTE_IMPORT_BYTES, MAX_NOTE_IMPORT_FILES, MAX_PDF_RANGE_BYTES,
     },
 };
 
-const LIBRARY_SCHEMA_VERSION: i64 = 2;
+const LIBRARY_SCHEMA_VERSION: i64 = 3;
 const LIBRARY_DIRECTORY_NAME: &str = "library";
 const LIBRARY_DATABASE_NAME: &str = "library.sqlite3";
 const LIBRARY_FILES_DIRECTORY_NAME: &str = "files";
@@ -545,7 +546,7 @@ impl LibraryRepository {
                 "SELECT n.id, n.item_id, i.title, n.title, substr(n.content, 1, 600),
                         length(n.content), n.created_at, n.updated_at
                  FROM library_notes n
-                 JOIN library_items i ON i.id = n.item_id
+                 LEFT JOIN library_items i ON i.id = n.item_id
                  WHERE n.item_id = ? AND i.deleted_at IS NULL
                  ORDER BY n.updated_at DESC",
                 vec![Value::Text(item_id)],
@@ -555,8 +556,8 @@ impl LibraryRepository {
                 "SELECT n.id, n.item_id, i.title, n.title, substr(n.content, 1, 600),
                         length(n.content), n.created_at, n.updated_at
                  FROM library_notes n
-                 JOIN library_items i ON i.id = n.item_id
-                 WHERE i.deleted_at IS NULL
+                 LEFT JOIN library_items i ON i.id = n.item_id
+                 WHERE n.item_id IS NULL OR i.deleted_at IS NULL
                  ORDER BY n.updated_at DESC",
                 Vec::new(),
             )
@@ -581,8 +582,8 @@ impl LibraryRepository {
             .prepare(
                 "SELECT n.id
                  FROM library_notes n
-                 JOIN library_items i ON i.id = n.item_id
-                 WHERE i.deleted_at IS NULL
+                 LEFT JOIN library_items i ON i.id = n.item_id
+                 WHERE n.item_id IS NULL OR i.deleted_at IS NULL
                  ORDER BY n.updated_at DESC",
             )
             .map_err(|error| format!("准备笔记 ID 查询失败：{error}"))?;
@@ -606,7 +607,9 @@ impl LibraryRepository {
     pub fn create_note(&self, create: LibraryNoteCreate) -> Result<LibraryNote, String> {
         let create = create.normalize_and_validate()?;
         let connection = self.open_connection()?;
-        ensure_active_item_exists(&connection, &create.item_id)?;
+        if let Some(item_id) = create.item_id.as_deref() {
+            ensure_active_item_exists(&connection, item_id)?;
+        }
         let id = Uuid::new_v4().to_string();
         let now = now_millis_i64();
         connection
@@ -620,6 +623,44 @@ impl LibraryRepository {
             .ok_or_else(|| "创建后的笔记不存在。".to_string())
     }
 
+    pub fn import_markdown_notes(&self, paths: Vec<String>) -> Result<LibraryNoteImportResult, String> {
+        if paths.is_empty() {
+            return Err("没有选择需要导入的 Markdown 文件。".to_string());
+        }
+        if paths.len() > MAX_NOTE_IMPORT_FILES {
+            return Err(format!("单次最多导入 {MAX_NOTE_IMPORT_FILES} 个 Markdown 文件。"));
+        }
+        let mut result = LibraryNoteImportResult { imported: Vec::new(), failed: Vec::new() };
+        for path in paths {
+            let file_name = Path::new(&path)
+                .file_name()
+                .map(|value| value.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.clone());
+            let import = (|| {
+                let extension = Path::new(&path).extension().and_then(|value| value.to_str()).unwrap_or("");
+                if !extension.eq_ignore_ascii_case("md") && !extension.eq_ignore_ascii_case("markdown") {
+                    return Err("仅支持 .md 或 .markdown 文件。".to_string());
+                }
+                let metadata = fs::metadata(&path).map_err(|error| format!("读取文件信息失败：{error}"))?;
+                if metadata.len() > MAX_NOTE_IMPORT_BYTES {
+                    return Err("单篇 Markdown 笔记不能超过 2 MB。".to_string());
+                }
+                let content = fs::read_to_string(&path).map_err(|error| format!("读取 UTF-8 文件失败：{error}"))?;
+                let content = content.strip_prefix('\u{feff}').unwrap_or(&content).to_string();
+                let title = Path::new(&path)
+                    .file_stem()
+                    .map(|value| value.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "导入笔记".to_string());
+                self.create_note(LibraryNoteCreate { item_id: None, title, content })
+            })();
+            match import {
+                Ok(note) => result.imported.push(note),
+                Err(error) => result.failed.push(LibraryNoteImportFailure { path, file_name, error }),
+            }
+        }
+        Ok(result)
+    }
+
     pub fn update_note(&self, update: LibraryNoteUpdate) -> Result<LibraryNote, String> {
         let update = update.normalize_and_validate()?;
         let connection = self.open_connection()?;
@@ -627,9 +668,11 @@ impl LibraryRepository {
             .execute(
                 "UPDATE library_notes
                  SET title = ?, content = ?, updated_at = ?
-                 WHERE id = ? AND EXISTS (
-                    SELECT 1 FROM library_items i
-                    WHERE i.id = library_notes.item_id AND i.deleted_at IS NULL
+                 WHERE id = ? AND (
+                    item_id IS NULL OR EXISTS (
+                        SELECT 1 FROM library_items i
+                        WHERE i.id = library_notes.item_id AND i.deleted_at IS NULL
+                    )
                  )",
                 params![
                     update.title,
@@ -652,9 +695,11 @@ impl LibraryRepository {
         let changed = connection
             .execute(
                 "DELETE FROM library_notes
-                 WHERE id = ? AND EXISTS (
-                    SELECT 1 FROM library_items i
-                    WHERE i.id = library_notes.item_id AND i.deleted_at IS NULL
+                 WHERE id = ? AND (
+                    item_id IS NULL OR EXISTS (
+                        SELECT 1 FROM library_items i
+                        WHERE i.id = library_notes.item_id AND i.deleted_at IS NULL
+                    )
                  )",
                 params![note_id],
             )
@@ -1027,8 +1072,8 @@ impl LibraryRepository {
             .query_row(
                 "SELECT n.id, n.item_id, i.title, n.title, n.content, n.created_at, n.updated_at
                  FROM library_notes n
-                 JOIN library_items i ON i.id = n.item_id
-                 WHERE n.id = ? AND i.deleted_at IS NULL",
+                 LEFT JOIN library_items i ON i.id = n.item_id
+                 WHERE n.id = ? AND (n.item_id IS NULL OR i.deleted_at IS NULL)",
                 params![note_id],
                 note_from_row,
             )
@@ -1119,7 +1164,7 @@ fn migrate(connection: &Connection) -> Result<(), String> {
                  );
                  CREATE TABLE IF NOT EXISTS library_notes (
                     id TEXT PRIMARY KEY,
-                    item_id TEXT NOT NULL REFERENCES library_items(id) ON DELETE CASCADE,
+                    item_id TEXT REFERENCES library_items(id) ON DELETE CASCADE,
                     title TEXT NOT NULL,
                     content TEXT NOT NULL DEFAULT '',
                     created_at INTEGER NOT NULL,
@@ -1133,7 +1178,7 @@ fn migrate(connection: &Connection) -> Result<(), String> {
                     ON library_annotations(item_id, page_index, created_at);
                  CREATE INDEX IF NOT EXISTS library_notes_item_updated
                     ON library_notes(item_id, updated_at DESC);
-                 PRAGMA user_version = 2;
+                  PRAGMA user_version = 3;
                  COMMIT;",
             )
             .map_err(|error| format!("创建文献库结构失败：{error}"))?;
@@ -1156,7 +1201,7 @@ fn migrate(connection: &Connection) -> Result<(), String> {
                  );
                  CREATE TABLE IF NOT EXISTS library_notes (
                     id TEXT PRIMARY KEY,
-                    item_id TEXT NOT NULL REFERENCES library_items(id) ON DELETE CASCADE,
+                    item_id TEXT REFERENCES library_items(id) ON DELETE CASCADE,
                     title TEXT NOT NULL,
                     content TEXT NOT NULL DEFAULT '',
                     created_at INTEGER NOT NULL,
@@ -1166,10 +1211,33 @@ fn migrate(connection: &Connection) -> Result<(), String> {
                     ON library_annotations(item_id, page_index, created_at);
                  CREATE INDEX IF NOT EXISTS library_notes_item_updated
                     ON library_notes(item_id, updated_at DESC);
-                 PRAGMA user_version = 2;
+                  PRAGMA user_version = 3;
                  COMMIT;",
             )
             .map_err(|error| format!("升级文献库批注与笔记结构失败：{error}"))?;
+    }
+    if version == 2 {
+        connection
+            .execute_batch(
+                "BEGIN IMMEDIATE;
+                 ALTER TABLE library_notes RENAME TO library_notes_v2;
+                 CREATE TABLE library_notes (
+                    id TEXT PRIMARY KEY,
+                    item_id TEXT REFERENCES library_items(id) ON DELETE CASCADE,
+                    title TEXT NOT NULL,
+                    content TEXT NOT NULL DEFAULT '',
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL
+                 );
+                 INSERT INTO library_notes (id, item_id, title, content, created_at, updated_at)
+                    SELECT id, item_id, title, content, created_at, updated_at FROM library_notes_v2;
+                 DROP TABLE library_notes_v2;
+                 CREATE INDEX library_notes_item_updated
+                    ON library_notes(item_id, updated_at DESC);
+                 PRAGMA user_version = 3;
+                 COMMIT;",
+            )
+            .map_err(|error| format!("升级全局 Markdown 笔记结构失败：{error}"))?;
     }
     Ok(())
 }
@@ -1705,7 +1773,7 @@ mod tests {
 
         let note = repository
             .create_note(LibraryNoteCreate {
-                item_id: item.id.clone(),
+                item_id: Some(item.id.clone()),
                 title: "Reading note".to_string(),
                 content: "Initial content".to_string(),
             })
@@ -1713,7 +1781,7 @@ mod tests {
         assert_eq!(repository.list_notes(Some(&item.id)).unwrap().len(), 1);
         assert_eq!(
             repository.list_notes(None).unwrap()[0].item_title,
-            item.title
+            Some(item.title.clone())
         );
         let note = repository
             .update_note(LibraryNoteUpdate {
@@ -1727,8 +1795,23 @@ mod tests {
         assert_eq!(summaries[0].content_preview.chars().count(), 600);
         assert_eq!(summaries[0].content_chars, 700);
 
+        let global_note = repository
+            .create_note(LibraryNoteCreate {
+                item_id: None,
+                title: "Global markdown".to_string(),
+                content: "# Global\n\nIndependent note".to_string(),
+            })
+            .unwrap();
+        assert!(global_note.item_id.is_none());
+        assert!(global_note.item_title.is_none());
+        assert_eq!(
+            repository.get_note(&global_note.id).unwrap().title,
+            "Global markdown"
+        );
+
         assert!(repository.delete_annotation(&annotation.id).unwrap());
         assert!(repository.delete_note(&note.id).unwrap());
+        assert!(repository.delete_note(&global_note.id).unwrap());
         assert!(repository.list_annotations(&item.id).unwrap().is_empty());
         assert!(repository.list_notes(Some(&item.id)).unwrap().is_empty());
 
@@ -1750,7 +1833,7 @@ mod tests {
             .unwrap();
         repository
             .create_note(LibraryNoteCreate {
-                item_id: item.id.clone(),
+                item_id: Some(item.id.clone()),
                 title: "Cascade note".to_string(),
                 content: String::new(),
             })
@@ -1773,6 +1856,26 @@ mod tests {
     }
 
     #[test]
+    fn imports_markdown_files_as_global_notes() {
+        let root = test_directory("import-markdown-notes");
+        let repository = LibraryRepository::new(root.join("app-data"));
+        let source = root.join("research.md");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(&source, "# Research\n\nEvidence").unwrap();
+
+        let result = repository
+            .import_markdown_notes(vec![source.to_string_lossy().into_owned()])
+            .unwrap();
+
+        assert_eq!(result.imported.len(), 1);
+        assert!(result.failed.is_empty());
+        assert_eq!(result.imported[0].title, "research");
+        assert_eq!(result.imported[0].content, "# Research\n\nEvidence");
+        assert!(result.imported[0].item_id.is_none());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn migrates_version_one_databases_to_annotation_and_note_schema() {
         let directory = test_directory("migration-v2");
         let library_directory = directory.join("library");
@@ -1792,7 +1895,7 @@ mod tests {
         let version: i64 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 2);
+        assert_eq!(version, 3);
         let tables: i64 = connection
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master

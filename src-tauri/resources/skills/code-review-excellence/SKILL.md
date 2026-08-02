@@ -13,6 +13,10 @@ recommended-tools:
   - read_attachment_text
 metadata:
   mnemora:
+    default-enabled: false
+    supported-modes: [chat]
+    risk: low
+    resource-cost: low
     source-repository: https://github.com/wshobson/agents
     source-path: plugins/developer-essentials/skills/code-review-excellence/SKILL.md
     source-revision: c4b82b0ad771190355eb8e204b1329732a18449a

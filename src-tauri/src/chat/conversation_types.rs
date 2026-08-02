@@ -25,6 +25,9 @@ const MAX_LITERATURE_REFERENCES_PER_MESSAGE: usize = 8;
 const MAX_LITERATURE_REFERENCE_TEXT_BYTES: usize = 32 * 1024;
 const MAX_LITERATURE_REFERENCE_TOTAL_BYTES: usize = 128 * 1024;
 const MAX_LITERATURE_PAGE_INDEX: u32 = 1_000_000;
+const MAX_NOTE_REFERENCES_PER_MESSAGE: usize = 10;
+const MAX_NOTE_REFERENCE_TEXT_BYTES: usize = 16 * 1024;
+const MAX_NOTE_REFERENCE_TOTAL_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -167,6 +170,50 @@ impl StoredLiteratureReference {
     }
 }
 
+/** 用户明确从 Markdown 笔记加入某条消息的选区引用。 */
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoredNoteReference {
+    pub id: String,
+    pub note_id: String,
+    pub note_title: String,
+    pub revision_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_line: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_line: Option<u32>,
+    pub selected_text: String,
+}
+
+impl StoredNoteReference {
+    fn validate(&self) -> Result<(), String> {
+        validate_stable_id("Note reference ID", &self.id)?;
+        validate_stable_id("Note ID", &self.note_id)?;
+        if self.note_title.trim().is_empty() || self.note_title.chars().count() > MAX_TITLE_CHARS {
+            return Err("Note reference title is empty or too long".to_string());
+        }
+        if self.note_title.contains('\r') || self.note_title.contains('\n') {
+            return Err("Note reference title must be a single line".to_string());
+        }
+        if self.revision_hash.trim().is_empty() || self.revision_hash.len() > 160 {
+            return Err("Note reference revision is invalid".to_string());
+        }
+        if self.selected_text.trim().is_empty()
+            || self.selected_text.len() > MAX_NOTE_REFERENCE_TEXT_BYTES
+        {
+            return Err("Note reference text is empty or too long".to_string());
+        }
+        if self
+            .start_line
+            .zip(self.end_line)
+            .is_some_and(|(start, end)| start == 0 || end < start)
+        {
+            return Err("Note reference line range is invalid".to_string());
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StoredChatMessage {
@@ -178,6 +225,8 @@ pub struct StoredChatMessage {
     pub attachments: Vec<StoredChatAttachment>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub literature_references: Vec<StoredLiteratureReference>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub note_references: Vec<StoredNoteReference>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<String>,
     pub status: MessageStatus,
@@ -356,6 +405,27 @@ impl StoredConversation {
             if reference_text_bytes > MAX_LITERATURE_REFERENCE_TOTAL_BYTES {
                 return Err("Chat message literature references exceed the text budget".to_string());
             }
+            if message.note_references.len() > MAX_NOTE_REFERENCES_PER_MESSAGE {
+                return Err(format!(
+                    "Chat message cannot exceed {MAX_NOTE_REFERENCES_PER_MESSAGE} note references"
+                ));
+            }
+            if !message.note_references.is_empty() && message.role != ModelRole::User {
+                return Err("Only user messages can contain note references".to_string());
+            }
+            let mut note_reference_ids = std::collections::HashSet::new();
+            let mut note_reference_text_bytes = 0usize;
+            for reference in &message.note_references {
+                reference.validate()?;
+                if !note_reference_ids.insert(&reference.id) {
+                    return Err("Chat message contains duplicate note reference IDs".to_string());
+                }
+                note_reference_text_bytes =
+                    note_reference_text_bytes.saturating_add(reference.selected_text.len());
+            }
+            if note_reference_text_bytes > MAX_NOTE_REFERENCE_TOTAL_BYTES {
+                return Err("Chat message note references exceed the text budget".to_string());
+            }
             if message
                 .reasoning
                 .as_ref()
@@ -433,6 +503,8 @@ impl StoredConversation {
                         reference.title,
                         reference.page_index + 1
                     ))
+                } else if let Some(reference) = message.note_references.first() {
+                    Some(format!("笔记：{}", reference.note_title))
                 } else {
                     None
                 }
@@ -479,6 +551,7 @@ mod tests {
                 content: "请解释这段内容".to_string(),
                 attachments: Vec::new(),
                 literature_references: Vec::new(),
+                note_references: Vec::new(),
                 reasoning: None,
                 status: MessageStatus::Completed,
                 created_at: 1,

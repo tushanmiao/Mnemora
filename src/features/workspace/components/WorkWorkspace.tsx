@@ -13,7 +13,6 @@ import {
   FolderInput,
   LoaderCircle,
   MoreHorizontal,
-  Network,
   NotebookPen,
   RotateCcw,
   SearchX,
@@ -203,7 +202,6 @@ export function WorkWorkspace({
     favorites: { title: t("work.favorites"), empty: t("work.emptyFavorites"), icon: Star },
     unfiled: { title: t("work.unfiled"), empty: t("work.emptyUnfiled"), icon: Inbox },
     notes: { title: t("work.notes"), empty: t("work.emptyNotes"), icon: NotebookPen },
-    "mind-maps": { title: t("work.mindMaps"), empty: t("work.emptyMindMaps"), icon: Network },
     trash: { title: t("work.trash"), empty: t("work.emptyTrash"), icon: Trash2 },
   } satisfies Record<WorkLibraryView, { title: string; empty: string; icon: typeof BookOpenText }>;
   const sortOptions = [
@@ -220,7 +218,7 @@ export function WorkWorkspace({
     : collectionName
       ? t("work.emptyCollection", { name: collectionName })
       : view.empty;
-  const isLearningOutcome = libraryView === "notes" || libraryView === "mind-maps";
+  const isLearningOutcome = libraryView === "notes";
   const activePdfItem = session.activeTab.kind === "pdf"
     ? selectedItem?.id === session.activeTab.resourceId
       ? selectedItem
@@ -286,6 +284,9 @@ export function WorkWorkspace({
             </div>
             {!isLearningOutcome ? (
               <div className="work-library-header-actions">
+                <button className="icon-button" type="button" title={t("work.importPdfButton")} onClick={() => void onImport().catch(() => undefined)}>
+                  <FilePlus2 size={17} />
+                </button>
                 <div className="work-sort-menu-wrap">
                   <button
                     className="icon-button"

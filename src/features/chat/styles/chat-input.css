@@ -324,11 +324,59 @@
   text-align: center;
 }
 
-/* 引用回答片段的引用条（选中助手输出 → 引用提问） */
+/* 多条回答引用的轻量列表；内部滚动，避免撑高输入区。 */
+.composer-quotes {
+  max-height: 152px;
+  margin: 8px 10px 0;
+  overflow: hidden;
+}
+
+.composer-quotes-header {
+  display: flex;
+  min-height: 24px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--color-muted);
+  font-size: 11px;
+}
+
+.composer-quotes-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-accent);
+}
+
+.composer-quotes-count svg {
+  flex-shrink: 0;
+}
+
+.composer-quotes-clear {
+  padding: 2px 5px;
+  border: 0;
+  border-radius: 4px;
+  color: var(--color-muted);
+  background: transparent;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.composer-quotes-clear:hover {
+  color: var(--color-text);
+  background: var(--color-hover);
+}
+
+.composer-quotes-list {
+  max-height: 126px;
+  margin-top: 2px;
+  overflow-y: auto;
+}
+
 .composer-quote-bar {
   display: flex;
   min-width: 0;
-  margin: 8px 10px 0;
+  margin: 3px 0 0;
   padding: 6px 10px;
   align-items: flex-start;
   gap: 7px;
@@ -338,12 +386,6 @@
   background: var(--color-surface-raised);
   font-size: 12px;
   line-height: 1.5;
-}
-
-.composer-quote-bar > svg {
-  margin-top: 2px;
-  flex-shrink: 0;
-  color: var(--color-accent);
 }
 
 .composer-quote-text {
@@ -452,3 +494,48 @@
   color: var(--color-danger);
   background: var(--color-danger-soft);
 }
+
+.composer-note-references {
+  display: flex;
+  max-height: 132px;
+  margin: 7px 0 5px;
+  flex-wrap: wrap;
+  gap: 5px;
+  overflow-y: auto;
+}
+
+.composer-note-reference {
+  display: grid;
+  min-width: 0;
+  max-width: min(100%, 320px);
+  min-height: 48px;
+  padding: 5px 5px 5px 7px;
+  grid-template-columns: 16px minmax(0, 1fr) 22px;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--color-border);
+  border-left: 3px solid var(--color-accent);
+  border-radius: 6px;
+  background: var(--color-surface);
+}
+
+.composer-note-reference > svg { color: var(--color-accent); }
+.composer-note-reference > span { display: grid; min-width: 0; gap: 1px; }
+.composer-note-reference strong,
+.composer-note-reference small,
+.composer-note-reference em { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.composer-note-reference strong { font-size: 10px; }
+.composer-note-reference small,
+.composer-note-reference em { color: var(--color-muted); font-size: 9px; font-style: normal; }
+.composer-note-reference button {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: 4px;
+  color: var(--color-muted);
+  background: transparent;
+}
+.composer-note-reference button:hover { color: var(--color-danger); background: var(--color-danger-soft); }

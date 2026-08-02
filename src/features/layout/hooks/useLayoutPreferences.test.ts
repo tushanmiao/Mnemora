@@ -21,6 +21,7 @@ describe("normalizeLayoutPreferences", () => {
       chatSidebarWidth: 380,
       workSidebarWidth: 220,
       workContextWidth: 481,
+      notesContextWidth: DEFAULT_LAYOUT_PREFERENCES.notesContextWidth,
     });
   });
 });

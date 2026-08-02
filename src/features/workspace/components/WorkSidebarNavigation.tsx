@@ -11,7 +11,6 @@ import {
   FolderTree,
   Inbox,
   MoreHorizontal,
-  Network,
   NotebookPen,
   Pencil,
   Search,
@@ -66,7 +65,6 @@ export function WorkSidebarNavigation({
   ];
   const outcomeViews = [
     { id: "notes" as const, label: t("work.notes"), icon: NotebookPen },
-    { id: "mind-maps" as const, label: t("work.mindMaps"), icon: Network },
   ];
   const [collectionsOpen, setCollectionsOpen] = useState(true);
   const [outcomesOpen, setOutcomesOpen] = useState(true);

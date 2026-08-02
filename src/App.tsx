@@ -32,12 +32,13 @@ import {
   appendLiteratureReference,
   normalizeLinkedLibraryItemIds,
 } from "./features/chat/utils/literatureReferences";
+import { addChatQuote, removeChatQuote } from "./features/chat/utils/quotes";
 import {
   DEFAULT_LAYOUT_PREFERENCES,
   LAYOUT_PANEL_LIMITS,
   useLayoutPreferences,
 } from "./features/layout/hooks/useLayoutPreferences";
-import type { AiPermissionMode, LiteratureReference } from "./types/chat";
+import type { AiPermissionMode, ChatQuote, LiteratureReference, NoteReference } from "./types/chat";
 import { resolveDefaultModel } from "./types/modelSettings";
 import { resolveSupportsVision } from "./data/modelMatching";
 import type {
@@ -48,10 +49,18 @@ import type {
   WorkspaceMode,
 } from "./features/workspace/types";
 import { I18nProvider } from "./i18n/I18nProvider";
+import { ImageViewerProvider } from "./features/chat/image-viewer/ImageViewerContext";
+import { appendNoteReference } from "./features/chat/utils/noteReferences";
+import { retryLazy } from "./bootstrap/retryLazy";
+import { NotesErrorBoundary } from "./features/notes/components/NotesErrorBoundary";
 
 const WorkWorkspace = lazy(() => import("./features/workspace/components/WorkWorkspace"));
 const WorkContextPanel = lazy(() => import("./features/workspace/components/WorkContextPanel").then(
   (module) => ({ default: module.WorkContextPanel }),
+));
+const NotesWorkspace = retryLazy(() => import("./features/notes/components/NotesWorkspace"));
+const NotesContextPanel = lazy(() => import("./features/notes/components/NotesContextPanel").then(
+  (module) => ({ default: module.NotesContextPanel }),
 ));
 
 type AppView = "workspace" | "settings";
@@ -70,6 +79,7 @@ function App() {
   // Work 以文献阅读为主，右侧工具栏按需打开；Chat 不默认占用阅读空间。
   const [workContextPanelOpen, setWorkContextPanelOpen] = useState(false);
   const [workContextView, setWorkContextView] = useState<WorkContextView>("info");
+  const [notesContextPanelOpen, setNotesContextPanelOpen] = useState(false);
   const [settingsCategory, setSettingsCategory] = useState<SettingsCategory>("general");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [modelMenuRequest, setModelMenuRequest] = useState(0);
@@ -78,6 +88,9 @@ function App() {
   const pendingLiteratureReferencesRef = useRef<LiteratureReference[]>([]);
   const workScopeInitializedConversationRef = useRef<string | null>(null);
   const [literatureReferenceError, setLiteratureReferenceError] = useState("");
+  const [pendingNoteReferences, setPendingNoteReferences] = useState<NoteReference[]>([]);
+  const pendingNoteReferencesRef = useRef<NoteReference[]>([]);
+  const preservePendingNoteReferencesRef = useRef(false);
   const [workPdfDocuments, setWorkPdfDocuments] = useState<WorkPdfDocument[]>([]);
   const [literatureNavigationRequest, setLiteratureNavigationRequest] = useState<LiteratureNavigationRequest | null>(null);
   const { preferences: layoutPreferences, savePanelWidth } = useLayoutPreferences();
@@ -111,14 +124,29 @@ function App() {
     collectionId: workCollectionId,
     sort: workLibrarySort,
   });
-  // 选中助手回答片段后的引用状态；切换会话即失效。
-  const [quotedText, setQuotedText] = useState<string | null>(null);
+  // 选中助手回答片段后的引用状态；切换会话即失效，最多保留 10 条。
+  const [quotedTexts, setQuotedTexts] = useState<ChatQuote[]>([]);
+  const appendQuote = useCallback((text: string) => {
+    setQuotedTexts((current) => addChatQuote(current, text));
+  }, []);
+  const removeQuote = useCallback((quoteId: string) => {
+    setQuotedTexts((current) => removeChatQuote(current, quoteId));
+  }, []);
+  const clearQuotes = useCallback(() => {
+    setQuotedTexts([]);
+  }, []);
   useEffect(() => {
-    setQuotedText(null);
+    setQuotedTexts([]);
     pendingLiteratureReferencesRef.current = [];
     workScopeInitializedConversationRef.current = null;
     setPendingLiteratureReferences([]);
     setLiteratureReferenceError("");
+    if (preservePendingNoteReferencesRef.current) {
+      preservePendingNoteReferencesRef.current = false;
+    } else {
+      pendingNoteReferencesRef.current = [];
+      setPendingNoteReferences([]);
+    }
   }, [conversations.currentConversationId]);
 
   const updateLinkedLibraryItemIds = useCallback((itemIds: string[]) => {
@@ -190,6 +218,34 @@ function App() {
     pendingLiteratureReferencesRef.current = [];
     setPendingLiteratureReferences([]);
     setLiteratureReferenceError("");
+  }, []);
+
+  const addNoteReference = useCallback((reference: NoteReference) => {
+    if (!conversations.currentConversation) {
+      preservePendingNoteReferencesRef.current = true;
+      conversations.createNewConversation();
+    }
+    if (conversations.requestInFlightRef.current) return;
+    const result = appendNoteReference(pendingNoteReferencesRef.current, reference);
+    if (!result.added) {
+      if (result.error) window.alert(result.error);
+      return;
+    }
+    pendingNoteReferencesRef.current = result.references;
+    setPendingNoteReferences(result.references);
+    setNotesContextPanelOpen(true);
+    setComposerFocusRequest((request) => request + 1);
+  }, [conversations]);
+
+  const removePendingNoteReference = useCallback((referenceId: string) => {
+    const next = pendingNoteReferencesRef.current.filter((reference) => reference.id !== referenceId);
+    pendingNoteReferencesRef.current = next;
+    setPendingNoteReferences(next);
+  }, []);
+
+  const clearPendingNoteReferences = useCallback(() => {
+    pendingNoteReferencesRef.current = [];
+    setPendingNoteReferences([]);
   }, []);
 
   const openLiteratureReference = useCallback((reference: LiteratureReference) => {
@@ -292,6 +348,7 @@ function App() {
 
   const chatRuntime = useChatRuntime({
     appSettings: settings.appSettings,
+    workspaceMode,
     skills: skills.skills,
     currentConversation: conversations.currentConversation,
     currentModel,
@@ -379,10 +436,10 @@ function App() {
     }));
   }, [conversations, skills.skills]);
 
-  const sidebarWidth = workspaceMode === "chat"
+  const sidebarWidth = workspaceMode === "chat" || workspaceMode === "notes"
     ? layoutPreferences.chatSidebarWidth
     : layoutPreferences.workSidebarWidth;
-  const sidebarDefaultWidth = workspaceMode === "chat"
+  const sidebarDefaultWidth = workspaceMode === "chat" || workspaceMode === "notes"
     ? DEFAULT_LAYOUT_PREFERENCES.chatSidebarWidth
     : DEFAULT_LAYOUT_PREFERENCES.workSidebarWidth;
 
@@ -390,7 +447,7 @@ function App() {
     appShellRef.current?.style.setProperty("--sidebar-width", `${Math.round(width)}px`);
   }, []);
   const commitSidebarWidth = useCallback((width: number) => {
-    savePanelWidth(workspaceMode === "chat" ? "chatSidebar" : "workSidebar", width);
+    savePanelWidth(workspaceMode === "work" ? "workSidebar" : "chatSidebar", width);
   }, [savePanelWidth, workspaceMode]);
   const getSidebarMaxWidth = useCallback(() => (
     Math.max(
@@ -419,6 +476,12 @@ function App() {
       ),
     );
   }, []);
+  const previewNotesContextWidth = useCallback((width: number) => {
+    appShellRef.current?.style.setProperty("--notes-context-width", `${Math.round(width)}px`);
+  }, []);
+  const commitNotesContextWidth = useCallback((width: number) => {
+    savePanelWidth("notesContext", width);
+  }, [savePanelWidth]);
 
   const customBackground = resolveThemeBackgroundCss(settings.appSettings.themeBackground);
   const appThemeStyle = {
@@ -431,6 +494,7 @@ function App() {
       : 100}%`,
     "--sidebar-width": `${sidebarWidth}px`,
     "--work-context-width": `${layoutPreferences.workContextWidth}px`,
+    "--notes-context-width": `${layoutPreferences.notesContextWidth}px`,
   } as CSSProperties;
 
   const workResourceLabel = {
@@ -439,7 +503,6 @@ function App() {
     favorites: "收藏",
     unfiled: "未分类",
     notes: "笔记",
-    "mind-maps": "思维导图",
     trash: "回收站",
   } satisfies Record<WorkLibraryView, string>;
   const selectedWorkCollection = library.collections.find(
@@ -451,8 +514,8 @@ function App() {
 
   const chatWorkspace = (
     <section
-      className={`chat-workspace${workspaceMode === "work" ? " chat-workspace-panel" : ""}`}
-      aria-label={workspaceMode === "work" ? "文献 AI 对话" : "当前对话"}
+      className={`chat-workspace${workspaceMode !== "chat" ? " chat-workspace-panel" : ""}`}
+      aria-label={workspaceMode === "work" ? "文献 AI 对话" : workspaceMode === "notes" ? "笔记 AI 对话" : "当前对话"}
       key="shared-chat-workspace"
     >
       <ChatHeader
@@ -472,7 +535,7 @@ function App() {
         permission={conversations.currentConversation?.permissionMode ?? "askSensitive"}
         permissionDisabled={!conversations.currentConversation}
         theme={settings.resolvedTheme}
-        compact={workspaceMode === "work"}
+        compact={workspaceMode !== "chat"}
         onModelChange={handleModelChange}
         onPermissionChange={handlePermissionChange}
         onToggleTheme={settings.toggleTheme}
@@ -489,7 +552,7 @@ function App() {
         onEditMessage={chatRuntime.editMessage}
         onRegenerateMessage={chatRuntime.regenerateMessage}
         onDeleteMessage={chatRuntime.deleteMessage}
-        onQuoteMessage={setQuotedText}
+        onQuoteMessage={appendQuote}
         onLiteratureReferenceOpen={openLiteratureReference}
       />
       <ChatInput
@@ -515,11 +578,15 @@ function App() {
             ) ?? null
           : null}
         showLiteraturePicker={workspaceMode === "work"}
-        quote={quotedText}
-        onQuoteClear={() => setQuotedText(null)}
+        quotes={quotedTexts}
+        onQuoteRemove={removeQuote}
+        onQuotesClear={clearQuotes}
         literatureReferences={pendingLiteratureReferences}
         onLiteratureReferenceRemove={removePendingLiteratureReference}
         onLiteratureReferencesClear={clearPendingLiteratureReferences}
+        noteReferences={pendingNoteReferences}
+        onNoteReferenceRemove={removePendingNoteReference}
+        onNoteReferencesClear={clearPendingNoteReferences}
         contextMessageCount={conversations.currentConversation?.messages.length ?? 0}
         contextCompressionCount={conversations.currentConversation?.contextCompressionCount ?? 0}
         contextDisabled={!conversations.currentConversation || !currentModel}
@@ -547,7 +614,8 @@ function App() {
       style={appThemeStyle}
       aria-label="Mnemora application"
     >
-      <Sidebar
+      <ImageViewerProvider>
+      {workspaceMode !== "notes" ? <Sidebar
         mode={workspaceMode}
         workLibraryView={workLibraryView}
         workSearchQuery={workSearchQuery}
@@ -565,8 +633,14 @@ function App() {
         conversationListError={conversations.conversationListError}
         conversationListHasMore={conversations.conversationListHasMore}
         currentConversationId={conversations.currentConversationId}
-        onCreateConversation={conversations.createNewConversation}
-        onSelectConversation={conversations.selectConversation}
+        onCreateConversation={() => {
+          conversations.createNewConversation();
+          setWorkspaceMode("chat");
+        }}
+        onSelectConversation={(conversationId) => {
+          conversations.selectConversation(conversationId);
+          setWorkspaceMode("chat");
+        }}
         onDeleteConversation={conversations.deleteConversation}
         onExportConversation={(conversationId, format) => {
           const item = conversations.conversationListItems.find((conversation) => conversation.id === conversationId);
@@ -580,6 +654,7 @@ function App() {
         onLoadMoreConversations={conversations.loadMoreConversations}
         onOpenSettings={() => openSettings("general")}
         onOpenSkills={() => openSettings("skills")}
+        onOpenNotes={() => changeWorkspaceMode("notes")}
         onModeChange={changeWorkspaceMode}
         onWorkLibraryViewChange={changeWorkLibraryView}
         onWorkSearchQueryChange={setWorkSearchQuery}
@@ -602,7 +677,7 @@ function App() {
           onPreview: previewSidebarWidth,
           onCommit: commitSidebarWidth,
         }}
-      />
+      /> : null}
 
       {activeView === "settings" ? (
         <SettingsPage
@@ -624,7 +699,7 @@ function App() {
         <section
           className="workspace-stage"
           data-workspace-mode={workspaceMode}
-          data-context-open={workContextPanelOpen ? "true" : "false"}
+          data-context-open={(workspaceMode === "work" ? workContextPanelOpen : workspaceMode === "notes" ? notesContextPanelOpen : false) ? "true" : "false"}
         >
           {/* Work 条件挂载，后续 PDF 阅读器在这里随模式切换卸载并释放资源。 */}
           {workspaceMode === "work" ? (
@@ -701,9 +776,45 @@ function App() {
             </PdfReaderBridgeProvider>
           ) : null}
 
+          {workspaceMode === "notes" ? (
+            <NotesErrorBoundary>
+              <Suspense fallback={<div className="workspace-loading" role="status">正在打开笔记</div>}>
+              <NotesWorkspace
+                chatOpen={notesContextPanelOpen}
+                chatBusy={chatRuntime.requestInFlight}
+                onBack={() => {
+                  setNotesContextPanelOpen(false);
+                  changeWorkspaceMode("chat");
+                }}
+                onToggleChat={() => {
+                  if (!conversations.currentConversation) conversations.createNewConversation();
+                  setNotesContextPanelOpen((open) => !open);
+                }}
+                onAskSelection={addNoteReference}
+              />
+              {notesContextPanelOpen ? (
+                <NotesContextPanel
+                  chatPanel={chatWorkspace}
+                  onClose={() => setNotesContextPanelOpen(false)}
+                  resize={{
+                    value: layoutPreferences.notesContextWidth,
+                    defaultValue: DEFAULT_LAYOUT_PREFERENCES.notesContextWidth,
+                    minValue: LAYOUT_PANEL_LIMITS.notesContext.min,
+                    maxValue: LAYOUT_PANEL_LIMITS.notesContext.max,
+                    getMaxValue: getWorkContextMaxWidth,
+                    onPreview: previewNotesContextWidth,
+                    onCommit: commitNotesContextWidth,
+                  }}
+                />
+              ) : null}
+              </Suspense>
+            </NotesErrorBoundary>
+          ) : null}
+
           {workspaceMode === "chat" ? chatWorkspace : null}
         </section>
       )}
+      </ImageViewerProvider>
     </main>
     </I18nProvider>
   );

@@ -4,6 +4,7 @@ import {
   formatLiteratureReferencesForCompression,
   formatLiteratureReferencesForModel,
 } from "./literatureReferences";
+import { formatNoteReferencesForCompression, formatNoteReferencesForModel } from "./noteReferences";
 
 export const AUTO_COMPRESSION_RATIO = 0.9;
 const RECENT_MESSAGES_TO_KEEP = 4;
@@ -30,6 +31,7 @@ export function compressionCandidates(conversation: Conversation) {
       message.content.trim()
       || (message.attachments?.length ?? 0) > 0
       || (message.literatureReferences?.length ?? 0) > 0
+      || (message.noteReferences?.length ?? 0) > 0
     ));
   if (active.length <= RECENT_MESSAGES_TO_KEEP + 1) return [];
   return active.slice(0, -RECENT_MESSAGES_TO_KEEP);
@@ -51,6 +53,7 @@ export function compressionTranscript(
       `### ${role}`,
       message.content.trim(),
       formatLiteratureReferencesForCompression(message.literatureReferences ?? []),
+      formatNoteReferencesForCompression(message.noteReferences ?? []),
       imageNames.length > 0 ? `图片附件（正文已省略）：${imageNames.join("、")}` : "",
       fileNames.length > 0 ? `文件附件（正文未解析）：${fileNames.join("、")}` : "",
     ].filter(Boolean).join("\n");
@@ -69,15 +72,18 @@ export function toModelMessages(messages: ChatMessage[]) {
       message.content.trim()
       || (message.attachments?.length ?? 0) > 0
       || (message.literatureReferences?.length ?? 0) > 0
+      || (message.noteReferences?.length ?? 0) > 0
     ))
     .map((message) => {
       const literatureContext = formatLiteratureReferencesForModel(
         message.literatureReferences ?? [],
       );
+      const noteContext = formatNoteReferencesForModel(message.noteReferences ?? []);
+      const referenceContext = [literatureContext, noteContext].filter(Boolean).join("\n\n");
       return {
         role: message.role as MessageRole,
-        content: literatureContext
-          ? [literatureContext, message.content.trim() ? `用户问题：\n${message.content}` : ""]
+        content: referenceContext
+          ? [referenceContext, message.content.trim() ? `用户问题：\n${message.content}` : ""]
               .filter(Boolean)
               .join("\n\n")
           : message.content,

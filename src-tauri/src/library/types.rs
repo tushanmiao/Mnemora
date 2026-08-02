@@ -22,6 +22,8 @@ pub const MAX_ANNOTATION_COMMENT_CHARS: usize = 20_000;
 pub const MAX_ANNOTATION_RECTS: usize = 256;
 pub const MAX_NOTE_TITLE_CHARS: usize = 500;
 pub const MAX_NOTE_CONTENT_CHARS: usize = 500_000;
+pub const MAX_NOTE_IMPORT_FILES: usize = 50;
+pub const MAX_NOTE_IMPORT_BYTES: u64 = 2 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -332,8 +334,8 @@ impl LibraryAnnotationUpdate {
 #[serde(rename_all = "camelCase")]
 pub struct LibraryNote {
     pub id: String,
-    pub item_id: String,
-    pub item_title: String,
+    pub item_id: Option<String>,
+    pub item_title: Option<String>,
     pub title: String,
     pub content: String,
     pub created_at: u64,
@@ -345,8 +347,8 @@ pub struct LibraryNote {
 #[serde(rename_all = "camelCase")]
 pub struct LibraryNoteSummary {
     pub id: String,
-    pub item_id: String,
-    pub item_title: String,
+    pub item_id: Option<String>,
+    pub item_title: Option<String>,
     pub title: String,
     pub content_preview: String,
     pub content_chars: usize,
@@ -357,7 +359,8 @@ pub struct LibraryNoteSummary {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LibraryNoteCreate {
-    pub item_id: String,
+    #[serde(default)]
+    pub item_id: Option<String>,
     pub title: String,
     #[serde(default)]
     pub content: String,
@@ -365,7 +368,11 @@ pub struct LibraryNoteCreate {
 
 impl LibraryNoteCreate {
     pub fn normalize_and_validate(mut self) -> Result<Self, String> {
-        self.item_id = normalize_identifier("文献 ID", &self.item_id)?;
+        self.item_id = self
+            .item_id
+            .as_deref()
+            .map(|value| normalize_identifier("文献 ID", value))
+            .transpose()?;
         self.title = normalize_text("笔记标题", &self.title, MAX_NOTE_TITLE_CHARS, false)?;
         self.content = normalize_multiline_text("笔记正文", &self.content, MAX_NOTE_CONTENT_CHARS)?;
         Ok(self)
@@ -379,6 +386,21 @@ pub struct LibraryNoteUpdate {
     pub title: String,
     #[serde(default)]
     pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryNoteImportFailure {
+    pub path: String,
+    pub file_name: String,
+    pub error: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryNoteImportResult {
+    pub imported: Vec<LibraryNote>,
+    pub failed: Vec<LibraryNoteImportFailure>,
 }
 
 impl LibraryNoteUpdate {

@@ -1,5 +1,8 @@
 export type SkillSource = "builtin" | "user";
 export type SkillFileKind = "skillMd" | "reference" | "script" | "asset" | "other";
+export type SkillMode = "chat" | "work" | "notes";
+export type SkillRisk = "low" | "medium" | "high";
+export type SkillResourceCost = "low" | "medium" | "high";
 
 /** 上游来源只用于审计和界面展示，不会进入模型提示词。 */
 export interface SkillProvenance {
@@ -19,6 +22,14 @@ export interface SkillSummary {
   version: string;
   source: SkillSource;
   enabled: boolean;
+  /** 内置技能首次安装时的默认状态；用户可以覆盖。 */
+  defaultEnabled: boolean;
+  /** 只在对应工作模式中把轻量技能目录暴露给模型。 */
+  supportedModes?: SkillMode[];
+  /** 技能本身的风险提示；真正的权限仍由 Tool 层控制。 */
+  risk?: SkillRisk;
+  /** 加载正文和附带资源前的预估成本。 */
+  resourceCost?: SkillResourceCost;
   triggers: string[];
   argumentHint?: string;
   recommendedTools: string[];

@@ -479,6 +479,7 @@ mod tests {
             content: "附件".to_string(),
             attachments: vec![attachment.clone()],
             literature_references: Vec::new(),
+            note_references: Vec::new(),
             reasoning: None,
             status: MessageStatus::Completed,
             created_at: 10,

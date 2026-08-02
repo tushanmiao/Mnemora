@@ -13,29 +13,32 @@ use crate::{
     chat::{
         conversation_types::{AiPermissionMode, StoredChatAttachment},
         storage::ConversationRepository,
-        types::ChatCompletionRequest,
+        types::{ChatCompletionRequest, ChatWorkspaceMode},
     },
     memory::{MemoryLayer, MemoryModification, MemoryRepository, MemorySettings},
-    skills::{types::SkillSummary, SkillRepository},
+    skills::{
+        types::{SkillMode, SkillSummary},
+        SkillRepository,
+    },
 };
 
 use super::{
+    catalog::{
+        assert_valid_registry, find_tool, ToolApprovalPolicy, ToolHandler,
+        DEFAULT_ATTACHMENT_READ_BYTES, DEFAULT_MEMORY_READ_BYTES, MAX_ATTACHMENT_READ_BYTES,
+        MAX_MEMORY_MODIFY_BYTES, MAX_MEMORY_READ_BYTES, MAX_PDF_PAGES_PER_CALL,
+        MAX_SKILL_ARGUMENT_CHARS,
+    },
     documents::{
         read_docx_blocks, read_xlsx_rows, MAX_DOCX_BLOCKS_PER_CALL, MAX_XLSX_ROWS_PER_CALL,
     },
     types::{ToolExecution, ToolRisk},
 };
 
-const MAX_TOOL_RESULT_CHARS: usize = 20_000;
 const MAX_TOOL_PREVIEW_CHARS: usize = 2_000;
 const MAX_TEXT_FILE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_TEXT_LINES: usize = 2_000;
-const MAX_PDF_PAGES_PER_CALL: usize = 12;
 const MAX_ACTIVE_SKILLS_PER_RUN: usize = 3;
-const MAX_SKILL_ARGUMENT_CHARS: usize = 2_000;
-const DEFAULT_MEMORY_READ_BYTES: usize = 8_000;
-const MAX_MEMORY_READ_BYTES: usize = 32_000;
-const MAX_MEMORY_MODIFY_BYTES: usize = 16_000;
 
 #[derive(Clone)]
 pub struct ToolRuntimeContext {
@@ -45,6 +48,20 @@ pub struct ToolRuntimeContext {
     pub model_skills: Vec<SkillSummary>,
     pub max_model_skill_activations: usize,
     pub memory_settings: MemorySettings,
+}
+
+impl ToolRuntimeContext {
+    /** 内部模型任务不扫描 Skill 或附件，也不暴露任何工具。 */
+    pub fn disabled(permission_mode: AiPermissionMode) -> Self {
+        Self {
+            conversation_id: String::new(),
+            permission_mode,
+            attachments: Vec::new(),
+            model_skills: Vec::new(),
+            max_model_skill_activations: 0,
+            memory_settings: MemorySettings::default(),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -113,6 +130,8 @@ pub fn build_runtime_context(
             skill.enabled
                 && !skill.disable_model_invocation
                 && !manual.contains(skill.id.as_str())
+                && skill_supports_workspace(skill, request.workspace_mode)
+                && skill_matches_current_context(skill, &attachments)
                 && skill
                     .required_tools
                     .iter()
@@ -129,11 +148,41 @@ pub fn build_runtime_context(
     })
 }
 
+fn skill_supports_workspace(skill: &SkillSummary, workspace_mode: ChatWorkspaceMode) -> bool {
+    let expected = match workspace_mode {
+        ChatWorkspaceMode::Chat => SkillMode::Chat,
+        ChatWorkspaceMode::Work => SkillMode::Work,
+        ChatWorkspaceMode::Notes => SkillMode::Notes,
+    };
+    skill.supported_modes.contains(&expected)
+}
+
+/**
+ * 模型只看到与当前附件类型直接相关的领域 Skill，避免普通对话携带整套技能目录。
+ * 不依赖附件的通用学习 Skill 仍可由模型按任务加载。
+ */
+fn skill_matches_current_context(
+    skill: &SkillSummary,
+    attachments: &[StoredChatAttachment],
+) -> bool {
+    match skill.id.as_str() {
+        "pdf-reading" | "paper-research" => attachments.iter().any(is_pdf_attachment),
+        "docx-reading" => attachments.iter().any(is_docx_attachment),
+        "spreadsheet-analysis" => attachments.iter().any(is_xlsx_attachment),
+        "visual-evidence-analysis" => attachments.iter().any(is_image_attachment),
+        "code-review-excellence" | "code-explanation" | "systematic-debugging" => {
+            attachments.iter().any(is_text_attachment)
+        }
+        _ => true,
+    }
+}
+
 pub fn configure_model_request(
     request: &mut ModelRequest,
     context: &ToolRuntimeContext,
     l1_memory: Option<&str>,
 ) {
+    assert_valid_registry();
     let mut tools = Vec::new();
     if let Some(memory) = l1_memory.map(str::trim).filter(|value| !value.is_empty()) {
         append_system_prompt(
@@ -144,19 +193,7 @@ pub fn configure_model_request(
         );
     }
     if context.max_model_skill_activations > 0 && !context.model_skills.is_empty() {
-        tools.push(ModelTool {
-            name: "skill".to_string(),
-            description: "按 ID 加载一个可用技能的完整工作说明；同一运行无需重复加载。".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "id": { "type": "string" },
-                    "arguments": { "type": "string", "maxLength": MAX_SKILL_ARGUMENT_CHARS }
-                },
-                "required": ["id"],
-                "additionalProperties": false
-            }),
-        });
+        push_registered_tool(&mut tools, "skill");
         let catalog = context
             .model_skills
             .iter()
@@ -171,125 +208,23 @@ pub fn configure_model_request(
         );
     }
     if context.attachments.iter().any(is_text_attachment) {
-        tools.push(ModelTool {
-            name: "read_attachment_text".to_string(),
-            description: "读取当前会话中文本、Markdown、数据、配置或源代码附件的指定行范围。"
-                .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "attachmentId": { "type": "string" },
-                    "startLine": { "type": "integer", "minimum": 1 },
-                    "endLine": { "type": "integer", "minimum": 1 },
-                    "maxBytes": { "type": "integer", "minimum": 1, "maximum": 32000 }
-                },
-                "required": ["attachmentId"],
-                "additionalProperties": false
-            }),
-        });
+        push_registered_tool(&mut tools, "read_attachment_text");
     }
     if context.attachments.iter().any(is_pdf_attachment) {
-        tools.push(ModelTool {
-            name: "read_pdf_pages".to_string(),
-            description: "读取当前会话 PDF 安全副本的指定页文本，并返回可引用的页码标识。"
-                .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "attachmentId": { "type": "string" },
-                    "pages": {
-                        "type": "array",
-                        "items": { "type": "integer", "minimum": 1 },
-                        "minItems": 1,
-                        "maxItems": 12
-                    }
-                },
-                "required": ["attachmentId", "pages"],
-                "additionalProperties": false
-            }),
-        });
+        push_registered_tool(&mut tools, "read_pdf_pages");
     }
     if context.attachments.iter().any(is_docx_attachment) {
-        tools.push(ModelTool {
-            name: "read_docx_blocks".to_string(),
-            description: "按内容块读取当前会话 DOCX 安全副本的正文和表格文本。".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "attachmentId": { "type": "string" },
-                    "startBlock": { "type": "integer", "minimum": 1 },
-                    "endBlock": { "type": "integer", "minimum": 1 }
-                },
-                "required": ["attachmentId"],
-                "additionalProperties": false
-            }),
-        });
+        push_registered_tool(&mut tools, "read_docx_blocks");
     }
     if context.attachments.iter().any(is_xlsx_attachment) {
-        tools.push(ModelTool {
-            name: "read_xlsx_rows".to_string(),
-            description: "读取当前会话 XLSX 安全副本的工作表目录和指定行范围。".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "attachmentId": { "type": "string" },
-                    "sheetName": { "type": "string", "maxLength": 128 },
-                    "startRow": { "type": "integer", "minimum": 1 },
-                    "endRow": { "type": "integer", "minimum": 1 }
-                },
-                "required": ["attachmentId"],
-                "additionalProperties": false
-            }),
-        });
+        push_registered_tool(&mut tools, "read_xlsx_rows");
     }
     if context.memory_settings.enabled && context.memory_settings.allow_model_read {
-        tools.push(ModelTool {
-            name: "memory_read".to_string(),
-            description:
-                "按行读取用户记忆。L1 是短记忆，L2 是长期记忆；只读取完成任务所需的最小范围。"
-                    .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "layer": { "type": "string", "enum": ["l1", "l2"] },
-                    "startLine": { "type": "integer", "minimum": 1 },
-                    "endLine": { "type": "integer", "minimum": 1 },
-                    "maxBytes": { "type": "integer", "minimum": 1, "maximum": 32000 }
-                },
-                "required": ["layer"],
-                "additionalProperties": false
-            }),
-        });
-        tools.push(ModelTool {
-            name: "memory_search".to_string(),
-            description: "用关键词搜索 L2 长期记忆，返回少量匹配片段。".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "query": { "type": "string", "minLength": 1, "maxLength": 200 },
-                    "limit": { "type": "integer", "minimum": 1, "maximum": 20 }
-                },
-                "required": ["query"],
-                "additionalProperties": false
-            }),
-        });
+        push_registered_tool(&mut tools, "memory_read");
+        push_registered_tool(&mut tools, "memory_search");
     }
     if context.memory_settings.enabled && context.memory_settings.allow_model_write {
-        tools.push(ModelTool {
-            name: "memory_modify".to_string(),
-            description: "在用户允许且会话权限通过时修改记忆。replace/remove 的 target 必须唯一匹配。禁止写入凭据或外部指令。".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "layer": { "type": "string", "enum": ["l1", "l2"] },
-                    "operation": { "type": "string", "enum": ["append", "replace", "remove"] },
-                    "target": { "type": "string" },
-                    "content": { "type": "string", "maxLength": 16000 }
-                },
-                "required": ["layer", "operation"],
-                "additionalProperties": false
-            }),
-        });
+        push_registered_tool(&mut tools, "memory_modify");
     }
     let readable_attachments = context
         .attachments
@@ -318,29 +253,35 @@ pub fn configure_model_request(
             ),
         );
     }
+    debug_assert!(tools.iter().all(|tool| find_tool(&tool.name).is_some()));
     request.tools = tools;
 }
 
+fn push_registered_tool(tools: &mut Vec<ModelTool>, name: &str) {
+    let entry = find_tool(name).expect("内部工具必须先注册");
+    tools.push(entry.model_tool());
+}
+
 pub fn tool_risk(call: &ModelToolCall) -> ToolRisk {
-    match call.name.as_str() {
-        "skill" => ToolRisk::BuiltinRead,
-        "memory_modify" => ToolRisk::MemoryWrite,
-        "memory_read" | "memory_search" => ToolRisk::MemoryRead,
-        _ => ToolRisk::ConversationRead,
-    }
+    find_tool(&call.name)
+        .map(|entry| entry.risk)
+        .unwrap_or(ToolRisk::ConversationRead)
 }
 
 pub fn requires_approval(mode: AiPermissionMode, call: &ModelToolCall) -> bool {
+    let Some(entry) = find_tool(&call.name) else {
+        return true;
+    };
     match mode {
-        AiPermissionMode::AskEveryTime => call.name != "skill",
-        AiPermissionMode::AskSensitive => match call.name.as_str() {
-            "memory_modify" | "memory_search" => true,
-            "memory_read" => call
+        AiPermissionMode::AskEveryTime => entry.approval != ToolApprovalPolicy::Never,
+        AiPermissionMode::AskSensitive => match entry.approval {
+            ToolApprovalPolicy::Never | ToolApprovalPolicy::ReadOnly => false,
+            ToolApprovalPolicy::Sensitive => true,
+            ToolApprovalPolicy::MemoryRead => call
                 .arguments
                 .get("layer")
                 .and_then(Value::as_str)
                 .is_some_and(|layer| layer.eq_ignore_ascii_case("l2")),
-            _ => false,
         },
         AiPermissionMode::FullAccess => false,
     }
@@ -348,7 +289,7 @@ pub fn requires_approval(mode: AiPermissionMode, call: &ModelToolCall) -> bool {
 
 /** 只有有界文本安全副本读取允许并行；PDF 保持串行以限制解析峰值内存。 */
 pub fn parallel_safe(name: &str) -> bool {
-    name == "read_attachment_text"
+    find_tool(name).is_some_and(|entry| entry.parallel_safe)
 }
 
 pub fn argument_summary(call: &ModelToolCall) -> String {
@@ -364,15 +305,18 @@ pub async fn execute_tool(
     skill_cache: &mut SkillRunCache,
     cancellation: &CancellationToken,
 ) -> Result<ToolExecution, ModelError> {
-    validate_tool_arguments(call)?;
-    let result = match call.name.as_str() {
-        "skill" => execute_skill(call, context, skills, skill_cache),
-        "read_attachment_text" => {
+    let entry = find_tool(&call.name).ok_or_else(|| {
+        ModelError::invalid_configuration(format!("模型请求了未注册工具：{}。", call.name))
+    })?;
+    validate_tool_arguments(call, entry.handler)?;
+    let result = match entry.handler {
+        ToolHandler::Skill => execute_skill(call, context, skills, skill_cache),
+        ToolHandler::ReadAttachmentText => {
             let path = resolve_attachment(call, context, repository, is_text_attachment)?;
             let arguments = call.arguments.clone();
             run_blocking(cancellation, move || read_text(&path, &arguments)).await
         }
-        "read_pdf_pages" => {
+        ToolHandler::ReadPdfPages => {
             let attachment_id = required_string(&call.arguments, "attachmentId")?.to_string();
             let path = resolve_attachment(call, context, repository, is_pdf_attachment)?;
             let arguments = call.arguments.clone();
@@ -381,7 +325,7 @@ pub async fn execute_tool(
             })
             .await
         }
-        "read_docx_blocks" => {
+        ToolHandler::ReadDocxBlocks => {
             let attachment_id = required_string(&call.arguments, "attachmentId")?.to_string();
             let path = resolve_attachment(call, context, repository, is_docx_attachment)?;
             let arguments = call.arguments.clone();
@@ -390,7 +334,7 @@ pub async fn execute_tool(
             })
             .await
         }
-        "read_xlsx_rows" => {
+        ToolHandler::ReadXlsxRows => {
             let attachment_id = required_string(&call.arguments, "attachmentId")?.to_string();
             let path = resolve_attachment(call, context, repository, is_xlsx_attachment)?;
             let arguments = call.arguments.clone();
@@ -399,7 +343,7 @@ pub async fn execute_tool(
             })
             .await
         }
-        "memory_read" => {
+        ToolHandler::MemoryRead => {
             if !context.memory_settings.enabled || !context.memory_settings.allow_model_read {
                 return Err(ModelError::invalid_configuration(
                     "当前未允许模型读取记忆。",
@@ -418,16 +362,19 @@ pub async fn execute_tool(
                 let content = memory
                     .read_lines_with_limit(layer, start, end, max_bytes)
                     .map_err(ModelError::invalid_configuration)?;
+                let output_chars = content.chars().count();
                 Ok(ToolExecution {
                     preview: truncate_chars(&content, MAX_TOOL_PREVIEW_CHARS),
                     content,
                     is_error: false,
                     activated_skill_id: None,
+                    output_chars,
+                    output_truncated: false,
                 })
             })
             .await
         }
-        "memory_search" => {
+        ToolHandler::MemorySearch => {
             if !context.memory_settings.enabled || !context.memory_settings.allow_model_read {
                 return Err(ModelError::invalid_configuration(
                     "当前未允许模型搜索记忆。",
@@ -440,16 +387,19 @@ pub async fn execute_tool(
                 let content = memory
                     .search(&query, limit)
                     .map_err(ModelError::invalid_configuration)?;
+                let output_chars = content.chars().count();
                 Ok(ToolExecution {
                     preview: truncate_chars(&content, MAX_TOOL_PREVIEW_CHARS),
                     content,
                     is_error: false,
                     activated_skill_id: None,
+                    output_chars,
+                    output_truncated: false,
                 })
             })
             .await
         }
-        "memory_modify" => {
+        ToolHandler::MemoryModify => {
             if !context.memory_settings.enabled || !context.memory_settings.allow_model_write {
                 return Err(ModelError::invalid_configuration(
                     "当前未允许模型写入记忆。",
@@ -462,27 +412,26 @@ pub async fn execute_tool(
                 let content = memory
                     .modify_for_model(&change)
                     .map_err(ModelError::invalid_configuration)?;
+                let output_chars = content.chars().count();
                 Ok(ToolExecution {
                     preview: content.clone(),
                     content,
                     is_error: false,
                     activated_skill_id: None,
+                    output_chars,
+                    output_truncated: false,
                 })
             })
             .await
         }
-        _ => Err(ModelError::invalid_configuration(format!(
-            "模型请求了未注册工具：{}。",
-            call.name
-        ))),
     }?;
-    Ok(bound_execution(result))
+    Ok(bound_execution(result, entry.max_output_chars))
 }
 
 /** 对固定工具支持的 JSON Schema 子集执行严格校验，不引入常驻 Schema 引擎。 */
-fn validate_tool_arguments(call: &ModelToolCall) -> Result<(), ModelError> {
-    match call.name.as_str() {
-        "skill" => {
+fn validate_tool_arguments(call: &ModelToolCall, handler: ToolHandler) -> Result<(), ModelError> {
+    match handler {
+        ToolHandler::Skill => {
             ensure_object_keys(&call.arguments, &["id", "arguments"])?;
             required_string(&call.arguments, "id")?;
             if let Some(arguments) = call.arguments.get("arguments") {
@@ -496,13 +445,24 @@ fn validate_tool_arguments(call: &ModelToolCall) -> Result<(), ModelError> {
                 }
             }
         }
-        "read_attachment_text" => {
-            ensure_object_keys(&call.arguments, &["attachmentId", "startLine", "endLine"])?;
+        ToolHandler::ReadAttachmentText => {
+            ensure_object_keys(
+                &call.arguments,
+                &["attachmentId", "startLine", "endLine", "maxBytes"],
+            )?;
             required_string(&call.arguments, "attachmentId")?;
             validate_optional_positive_integer(&call.arguments, "startLine")?;
             validate_optional_positive_integer(&call.arguments, "endLine")?;
+            validate_optional_positive_integer(&call.arguments, "maxBytes")?;
+            if optional_u64(&call.arguments, "maxBytes")
+                .is_some_and(|value| value > MAX_ATTACHMENT_READ_BYTES as u64)
+            {
+                return Err(ModelError::invalid_configuration(
+                    "read_attachment_text 的 maxBytes 不能超过 32000。",
+                ));
+            }
         }
-        "read_pdf_pages" => {
+        ToolHandler::ReadPdfPages => {
             ensure_object_keys(&call.arguments, &["attachmentId", "pages"])?;
             required_string(&call.arguments, "attachmentId")?;
             let pages = call
@@ -524,7 +484,7 @@ fn validate_tool_arguments(call: &ModelToolCall) -> Result<(), ModelError> {
                 return Err(ModelError::invalid_configuration("PDF 页码必须是正整数。"));
             }
         }
-        "read_docx_blocks" => {
+        ToolHandler::ReadDocxBlocks => {
             ensure_object_keys(&call.arguments, &["attachmentId", "startBlock", "endBlock"])?;
             required_string(&call.arguments, "attachmentId")?;
             validate_optional_positive_integer(&call.arguments, "startBlock")?;
@@ -537,7 +497,7 @@ fn validate_tool_arguments(call: &ModelToolCall) -> Result<(), ModelError> {
                 "DOCX 内容块",
             )?;
         }
-        "read_xlsx_rows" => {
+        ToolHandler::ReadXlsxRows => {
             ensure_object_keys(
                 &call.arguments,
                 &["attachmentId", "sheetName", "startRow", "endRow"],
@@ -563,7 +523,7 @@ fn validate_tool_arguments(call: &ModelToolCall) -> Result<(), ModelError> {
                 "XLSX 行",
             )?;
         }
-        "memory_read" => {
+        ToolHandler::MemoryRead => {
             ensure_object_keys(
                 &call.arguments,
                 &["layer", "startLine", "endLine", "maxBytes"],
@@ -580,7 +540,7 @@ fn validate_tool_arguments(call: &ModelToolCall) -> Result<(), ModelError> {
                 ));
             }
         }
-        "memory_search" => {
+        ToolHandler::MemorySearch => {
             ensure_object_keys(&call.arguments, &["query", "limit"])?;
             let query = required_string(&call.arguments, "query")?;
             if query.chars().count() > 200 {
@@ -595,7 +555,7 @@ fn validate_tool_arguments(call: &ModelToolCall) -> Result<(), ModelError> {
                 ));
             }
         }
-        "memory_modify" => {
+        ToolHandler::MemoryModify => {
             ensure_object_keys(
                 &call.arguments,
                 &["layer", "operation", "target", "content"],
@@ -621,12 +581,6 @@ fn validate_tool_arguments(call: &ModelToolCall) -> Result<(), ModelError> {
                     "单次记忆写入不能超过 16000 bytes。",
                 ));
             }
-        }
-        _ => {
-            return Err(ModelError::invalid_configuration(format!(
-                "模型请求了未注册工具：{}。",
-                call.name
-            )))
         }
     }
     Ok(())
@@ -677,11 +631,14 @@ fn execute_skill(
         ));
     }
     if cache.contains(id) {
+        let content = format!("技能 `{id}` 已在本次运行中加载，请直接使用已有说明。");
         return Ok(ToolExecution {
-            content: format!("技能 `{id}` 已在本次运行中加载，请直接使用已有说明。"),
+            output_chars: content.chars().count(),
+            content,
             preview: format!("技能 {id} 已加载"),
             is_error: false,
             activated_skill_id: None,
+            output_truncated: false,
         });
     }
     if cache.len() >= context.max_model_skill_activations {
@@ -710,14 +667,17 @@ fn execute_skill(
         .map(|file| format!("- {}（{} bytes）", file.path, file.size_bytes))
         .collect::<Vec<_>>()
         .join("\n");
+    let content = format!(
+        "<mnemora_skill id=\"{}\" version=\"{}\">\n{}\n\n资源清单：\n{}\n</mnemora_skill>",
+        detail.summary.id, detail.summary.version, markdown, files
+    );
     Ok(ToolExecution {
-        content: format!(
-            "<mnemora_skill id=\"{}\" version=\"{}\">\n{}\n\n资源清单：\n{}\n</mnemora_skill>",
-            detail.summary.id, detail.summary.version, markdown, files
-        ),
+        output_chars: content.chars().count(),
+        content,
         preview: format!("已加载技能：{}", detail.summary.name),
         is_error: false,
         activated_skill_id: Some(detail.summary.id),
+        output_truncated: false,
     })
 }
 
@@ -754,7 +714,7 @@ fn resolve_attachment(
         "read_pdf_pages" => &["attachmentId", "pages"],
         "read_docx_blocks" => &["attachmentId", "startBlock", "endBlock"],
         "read_xlsx_rows" => &["attachmentId", "sheetName", "startRow", "endRow"],
-        _ => &["attachmentId", "startLine", "endLine"],
+        _ => &["attachmentId", "startLine", "endLine", "maxBytes"],
     };
     ensure_object_keys(&call.arguments, allowed_keys)?;
     if context.conversation_id.is_empty() {
@@ -803,11 +763,18 @@ fn read_text(path: &Path, arguments: &Value) -> Result<ToolExecution, ModelError
         .map(|(index, line)| format!("{:>6}: {line}", index + 1))
         .collect::<Vec<_>>()
         .join("\n");
+    let output_chars = selected.chars().count();
+    let max_bytes = optional_u64(arguments, "maxBytes")
+        .unwrap_or(DEFAULT_ATTACHMENT_READ_BYTES as u64)
+        .clamp(1, MAX_ATTACHMENT_READ_BYTES as u64) as usize;
+    let (content, output_truncated) = truncate_utf8_bytes(&selected, max_bytes);
     Ok(ToolExecution {
-        preview: truncate_chars(&selected, MAX_TOOL_PREVIEW_CHARS),
-        content: selected,
+        preview: truncate_chars(&content, MAX_TOOL_PREVIEW_CHARS),
+        content,
         is_error: false,
         activated_skill_id: None,
+        output_chars,
+        output_truncated,
     })
 }
 
@@ -861,16 +828,22 @@ fn read_pdf(
         ));
     }
     let content = sections.join("\n\n");
+    let output_chars = content.chars().count();
     Ok(ToolExecution {
         preview: truncate_chars(&content, MAX_TOOL_PREVIEW_CHARS),
         content,
         is_error: false,
         activated_skill_id: None,
+        output_chars,
+        output_truncated: false,
     })
 }
 
-fn bound_execution(mut execution: ToolExecution) -> ToolExecution {
-    execution.content = truncate_head_tail(&execution.content, MAX_TOOL_RESULT_CHARS);
+fn bound_execution(mut execution: ToolExecution, max_output_chars: usize) -> ToolExecution {
+    let content_chars = execution.content.chars().count();
+    execution.output_chars = execution.output_chars.max(content_chars);
+    execution.output_truncated |= content_chars > max_output_chars;
+    execution.content = truncate_head_tail(&execution.content, max_output_chars);
     execution.preview = truncate_chars(&execution.preview, MAX_TOOL_PREVIEW_CHARS);
     execution
 }
@@ -939,6 +912,10 @@ fn is_text_attachment(attachment: &StoredChatAttachment) -> bool {
     )
 }
 
+fn is_image_attachment(attachment: &StoredChatAttachment) -> bool {
+    attachment.kind == "image"
+}
+
 fn is_pdf_attachment(attachment: &StoredChatAttachment) -> bool {
     attachment.mime_type == "application/pdf"
 }
@@ -1002,6 +979,22 @@ fn truncate_chars(value: &str, limit: usize) -> String {
     value.chars().take(limit).collect()
 }
 
+fn truncate_utf8_bytes(value: &str, limit: usize) -> (String, bool) {
+    if value.len() <= limit {
+        return (value.to_string(), false);
+    }
+    const TRUNCATION_NOTICE: &str = "\n\n[文本结果已按 maxBytes 截断]";
+    let content_limit = limit.saturating_sub(TRUNCATION_NOTICE.len());
+    let mut end = content_limit.min(value.len());
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    if limit < TRUNCATION_NOTICE.len() {
+        return (value[..end].to_string(), true);
+    }
+    (format!("{}{}", &value[..end], TRUNCATION_NOTICE), true)
+}
+
 fn truncate_head_tail(value: &str, limit: usize) -> String {
     let length = value.chars().count();
     if length <= limit {
@@ -1032,9 +1025,11 @@ mod tests {
 
     use super::{
         execute_skill, parallel_safe, read_pdf, render_skill_arguments, requires_approval,
-        truncate_head_tail, validate_tool_arguments, SkillRunCache, ToolRuntimeContext,
+        truncate_head_tail, truncate_utf8_bytes, validate_tool_arguments, SkillRunCache,
+        ToolRuntimeContext,
     };
     use crate::ai::types::ModelToolCall;
+    use crate::chat::agent::catalog::find_tool;
     use crate::chat::conversation_types::AiPermissionMode;
     use crate::memory::MemorySettings;
     use crate::skills::SkillRepository;
@@ -1059,11 +1054,31 @@ mod tests {
     }
 
     #[test]
+    fn disabled_runtime_context_never_exposes_request_resources() {
+        let context = ToolRuntimeContext::disabled(AiPermissionMode::AskSensitive);
+        assert!(context.conversation_id.is_empty());
+        assert!(context.attachments.is_empty());
+        assert!(context.model_skills.is_empty());
+        assert_eq!(context.max_model_skill_activations, 0);
+    }
+
+    #[test]
     fn large_tool_results_keep_head_and_tail() {
         let result = truncate_head_tail(&format!("HEAD{}TAIL", "x".repeat(100)), 40);
         assert!(result.starts_with("HEAD"));
         assert!(result.ends_with("TAIL"));
         assert!(result.contains("已截断"));
+    }
+
+    #[test]
+    fn attachment_byte_limit_includes_the_truncation_notice() {
+        let (result, truncated) = truncate_utf8_bytes("中文内容".repeat(20).as_str(), 48);
+        assert!(truncated);
+        assert!(result.len() <= 48);
+
+        let (tiny, truncated) = truncate_utf8_bytes("中文内容".repeat(20).as_str(), 4);
+        assert!(truncated);
+        assert!(tiny.len() <= 4);
     }
 
     #[test]
@@ -1075,23 +1090,36 @@ mod tests {
 
     #[test]
     fn rejects_unknown_tools_and_schema_mismatches() {
-        let unknown = validate_tool_arguments(&ModelToolCall {
+        let unknown = ModelToolCall {
             id: "call-1".to_string(),
             name: "read_file".to_string(),
             arguments: json!({ "path": "C:/secret.txt" }),
             provider_signature: None,
-        })
-        .unwrap_err();
-        assert!(unknown.message.contains("未注册工具"));
+        };
+        assert!(find_tool(&unknown.name).is_none());
 
-        let invalid = validate_tool_arguments(&ModelToolCall {
+        let invalid_call = ModelToolCall {
             id: "call-2".to_string(),
             name: "read_attachment_text".to_string(),
             arguments: json!({ "attachmentId": "attachment-1", "startLine": "1" }),
             provider_signature: None,
-        })
+        };
+        let invalid = validate_tool_arguments(
+            &invalid_call,
+            find_tool(&invalid_call.name).unwrap().handler,
+        )
         .unwrap_err();
         assert!(invalid.message.contains("startLine 必须是正整数"));
+
+        let valid_max_bytes = tool_call(
+            "read_attachment_text",
+            json!({ "attachmentId": "attachment-1", "maxBytes": 8000 }),
+        );
+        validate_tool_arguments(
+            &valid_max_bytes,
+            find_tool(&valid_max_bytes.name).unwrap().handler,
+        )
+        .unwrap();
     }
 
     #[test]

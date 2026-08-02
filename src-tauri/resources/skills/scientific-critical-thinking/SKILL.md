@@ -13,6 +13,10 @@ recommended-tools:
   - read_pdf_pages
 metadata:
   mnemora:
+    default-enabled: false
+    supported-modes: [chat, work]
+    risk: low
+    resource-cost: medium
     source-repository: https://github.com/K-Dense-AI/scientific-agent-skills
     source-path: skills/scientific-critical-thinking/SKILL.md
     source-revision: 831d49eb77eed3c792be2970921b46764012ef00

@@ -152,6 +152,18 @@ fn conversation_to_markdown(conversation: &StoredConversation) -> String {
             }
             output.push('\n');
         }
+        if !message.note_references.is_empty() {
+            output.push_str("笔记引用：\n");
+            for reference in &message.note_references {
+                output.push_str(&format!("- {}\n", reference.note_title));
+                for line in reference.selected_text.lines() {
+                    output.push_str("> ");
+                    output.push_str(line);
+                    output.push('\n');
+                }
+            }
+            output.push('\n');
+        }
         if let Some(reasoning) = message
             .reasoning
             .as_deref()

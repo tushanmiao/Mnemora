@@ -13,6 +13,10 @@ recommended-tools:
   - read_attachment_text
 metadata:
   mnemora:
+    default-enabled: false
+    supported-modes: [chat]
+    risk: low
+    resource-cost: low
     source-repository: https://github.com/obra/superpowers
     source-path: skills/systematic-debugging/SKILL.md
     source-revision: d884ae04edebef577e82ff7c4e143debd0bbec99

@@ -1,0 +1,116 @@
+.image-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  color: var(--color-text);
+  background: var(--color-app);
+}
+
+.image-viewer-header {
+  display: flex;
+  min-height: 54px;
+  padding: 8px 14px;
+  align-items: center;
+  gap: 10px;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface-raised);
+}
+
+.image-viewer-title {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+  overflow: hidden;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.image-viewer-controls {
+  display: flex;
+  margin-left: auto;
+  align-items: center;
+  gap: 3px;
+}
+
+.image-viewer-icon-button {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: 5px;
+  color: var(--color-muted);
+  background: transparent;
+  cursor: pointer;
+}
+
+.image-viewer-icon-button:hover,
+.image-viewer-icon-button:focus-visible {
+  color: var(--color-text);
+  background: var(--color-hover);
+  outline: none;
+}
+
+.image-viewer-zoom {
+  width: 46px;
+  color: var(--color-muted);
+  font-size: 12px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.image-viewer-body {
+  min-height: 0;
+  flex: 1;
+  padding: 22px;
+  overflow: auto;
+  background: color-mix(in srgb, var(--color-app) 92%, #000 8%);
+}
+
+.image-viewer-canvas {
+  display: flex;
+  min-height: 100%;
+  min-width: min-content;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+
+.image-viewer-image {
+  display: block;
+  border: 1px solid var(--color-border);
+  border-radius: 7px;
+  background: var(--color-surface-raised);
+  box-shadow: 0 12px 36px rgb(0 0 0 / 15%);
+  object-fit: contain;
+  transition: width 120ms ease-out;
+}
+
+.image-viewer-notice {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  padding: 7px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 5px;
+  color: var(--color-muted);
+  background: var(--color-surface-raised);
+  font-size: 11px;
+}
+
+@media (max-width: 620px) {
+  .image-viewer-body { padding: 12px; }
+  .image-viewer-header { padding-inline: 8px; }
+  .image-viewer-title { max-width: 36vw; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .image-viewer-image { transition: none; }
+}

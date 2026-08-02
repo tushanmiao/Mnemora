@@ -11,6 +11,10 @@ triggers:
 argument-hint: "<知识类型、受众或使用场景>"
 metadata:
   mnemora:
+    default-enabled: true
+    supported-modes: [chat, notes]
+    risk: low
+    resource-cost: low
     source-repository: https://github.com/openai/skills
     source-path: skills/.curated/notion-knowledge-capture/SKILL.md
     source-revision: 49f948faa9258a0c61caceaf225e179651397431

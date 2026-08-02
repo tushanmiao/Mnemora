@@ -36,6 +36,7 @@
 }
 
 .chat-attachment-image,
+.chat-attachment-image-button,
 .chat-attachment-image-fallback,
 .chat-attachment-file-icon {
   width: 44px;
@@ -46,8 +47,24 @@
 
 .chat-attachment-image {
   display: block;
+  width: 100%;
+  height: 100%;
   object-fit: cover;
   background: var(--color-hover);
+}
+
+.chat-attachment-image-button {
+  display: block;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  background: transparent;
+  cursor: zoom-in;
+}
+
+.chat-attachment-image-button:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
 }
 
 .chat-attachment-image-fallback,

@@ -68,6 +68,10 @@ export interface ToolTrace {
   argumentSummary: string;
   preview?: string;
   durationMs?: number;
+  inputChars?: number;
+  outputChars?: number;
+  outputTruncated?: boolean;
+  errorKind?: string;
   /** 仅当前运行等待审批时存在，Rust 持久化会忽略该临时字段。 */
   approvalId?: string;
 }
@@ -88,6 +92,24 @@ export interface LiteratureReference {
   text: string;
 }
 
+/** 用户从助手回答中选中的一条待发送引用。引用只存在于当前输入会话中。 */
+export interface ChatQuote {
+  id: string;
+  text: string;
+}
+
+/** 用户从 Markdown 笔记中明确选中的结构化引用。 */
+export interface NoteReference {
+  id: string;
+  noteId: string;
+  noteTitle: string;
+  /** 引用时的笔记更新时间快照，用于提示内容可能已经变化。 */
+  revisionHash: string;
+  startLine?: number;
+  endLine?: number;
+  selectedText: string;
+}
+
 /** 用户在聊天时间线中看到的一条消息。 */
 export interface ChatMessage {
   id: string;
@@ -98,6 +120,8 @@ export interface ChatMessage {
   attachments?: ChatAttachment[];
   /** 用户明确加入本轮问题的 PDF 选区或单页引用。 */
   literatureReferences?: LiteratureReference[];
+  /** 用户明确加入本轮问题的 Markdown 笔记选区。 */
+  noteReferences?: NoteReference[];
   /** 模型返回的独立思考内容，不与最终回答混在一起。 */
   reasoning?: string;
   status: MessageStatus;

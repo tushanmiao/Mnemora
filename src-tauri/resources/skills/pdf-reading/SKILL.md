@@ -15,6 +15,10 @@ required-tools:
   - read_pdf_pages
 metadata:
   mnemora:
+    default-enabled: true
+    supported-modes: [chat, work]
+    risk: low
+    resource-cost: high
     source-repository: https://github.com/openai/skills
     source-path: skills/.curated/pdf/SKILL.md
     source-revision: 49f948faa9258a0c61caceaf225e179651397431

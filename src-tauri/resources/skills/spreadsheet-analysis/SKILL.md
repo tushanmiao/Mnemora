@@ -15,6 +15,10 @@ required-tools:
   - read_xlsx_rows
 metadata:
   mnemora:
+    default-enabled: false
+    supported-modes: [chat, work]
+    risk: low
+    resource-cost: medium
     source-repository: https://github.com/github/awesome-copilot
     source-path: skills/convert-excel-to-md/SKILL.md
     source-revision: 786bdcfc65b669faee10803db460a7218858ad21

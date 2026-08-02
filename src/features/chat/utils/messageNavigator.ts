@@ -31,11 +31,14 @@ export function buildMessageNavigatorNodes(messages: ChatMessage[]) {
       const literatureTitle = message.literatureReferences?.[0]
         ? `文献：${message.literatureReferences[0].title}，第 ${message.literatureReferences[0].pageIndex + 1} 页`
         : "";
+      const noteTitle = message.noteReferences?.[0]
+        ? `笔记：${message.noteReferences[0].noteTitle}`
+        : "";
       current = {
         id: `turn-${message.id}`,
         targetMessageId: message.id,
         targetRenderIndex: index,
-        title: preview(message.content) || attachmentTitle || literatureTitle || "空消息",
+        title: preview(message.content) || attachmentTitle || literatureTitle || noteTitle || "空消息",
         answerPreview: "",
         modelLabel: "",
       };

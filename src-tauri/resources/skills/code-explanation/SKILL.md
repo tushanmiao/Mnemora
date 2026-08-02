@@ -13,6 +13,10 @@ recommended-tools:
   - read_attachment_text
 metadata:
   mnemora:
+    default-enabled: false
+    supported-modes: [chat]
+    risk: low
+    resource-cost: low
     source-repository: https://github.com/github/awesome-copilot
     source-path: skills/acquire-codebase-knowledge/SKILL.md
     source-revision: 786bdcfc65b669faee10803db460a7218858ad21

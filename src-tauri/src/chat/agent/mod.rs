@@ -4,6 +4,7 @@
 //! 输出截断；模型协议转换仍由 `ai/providers` 负责。一次 Run 的 Skill 正文缓存由
 //! `SkillRunCache` 持有，Run 结束后随栈帧释放。
 
+pub mod catalog;
 mod documents;
 pub mod registry;
 pub mod types;

@@ -87,7 +87,7 @@ export function SkillManager({ state }: Props) {
       <header className="settings-content-heading skills-header">
         <div>
           <h1>技能</h1>
-          <span>管理模型完成任务时可以采用的工作说明</span>
+          <span>核心学习技能默认启用，其它技能由你按需开启；正文只在实际激活时加载</span>
         </div>
         <div className="skills-header-actions">
           <button type="button" onClick={() => void chooseImport("directory")} disabled={state.busySkillId !== null}>
@@ -136,7 +136,14 @@ export function SkillManager({ state }: Props) {
                 </span>
                 <strong>{skill.name}</strong>
                 <small>{skill.description}</small>
-                <span className="skill-meta">{skill.id} · v{skill.version}{skill.triggers.length ? ` · ${skill.triggers.join(" ")}` : ""}</span>
+                <span className="skill-meta">
+                  {skill.id} · v{skill.version}
+                  {skill.source === "builtin" ? skill.defaultEnabled ? " · 学习核心" : " · 按需启用" : ""}
+                  {skill.disableModelInvocation ? " · 仅手动" : ""}
+                  {skill.supportedModes?.length ? ` · ${skill.supportedModes.map(skillModeLabel).join("/")}` : ""}
+                  {skill.risk && skill.risk !== "low" ? ` · ${skillRiskLabel(skill.risk)}` : ""}
+                  {skill.triggers.length ? ` · ${skill.triggers.join(" ")}` : ""}
+                </span>
               </button>
               <div className="skill-row-actions">
                 <label className="skill-switch" title={skill.enabled ? "禁用技能" : "启用技能"}>
@@ -163,8 +170,8 @@ export function SkillManager({ state }: Props) {
                   >
                     <Trash2 size={16} />
                   </button>
-                ) : !skill.enabled ? (
-                  <button className="skill-restore" type="button" disabled={state.busySkillId !== null} onClick={() => void state.restore(skill.id)}>恢复</button>
+                ) : skill.enabled !== skill.defaultEnabled ? (
+                  <button className="skill-restore" type="button" disabled={state.busySkillId !== null} onClick={() => void state.restore(skill.id)}>恢复默认</button>
                 ) : null}
               </div>
             </article>
@@ -186,6 +193,11 @@ export function SkillManager({ state }: Props) {
                 <dl>
                   <div><dt>ID</dt><dd>{detail.id}</dd></div>
                   <div><dt>版本</dt><dd>{detail.version}</dd></div>
+                  <div><dt>默认状态</dt><dd>{detail.defaultEnabled ? "启用" : "按需启用"}</dd></div>
+                  <div><dt>激活方式</dt><dd>{detail.disableModelInvocation ? "仅手动或命令" : "模型可按需加载"}</dd></div>
+                  <div><dt>适用模式</dt><dd>{detail.supportedModes?.map(skillModeLabel).join("、") || "Chat、Work、Notes"}</dd></div>
+                  <div><dt>风险等级</dt><dd>{skillRiskLabel(detail.risk ?? "low")}</dd></div>
+                  <div><dt>资源成本</dt><dd>{skillCostLabel(detail.resourceCost ?? "low")}</dd></div>
                   <div><dt>许可证</dt><dd>{detail.license || "未声明"}</dd></div>
                   <div><dt>内容哈希</dt><dd title={detail.contentHash}>{detail.contentHash.slice(0, 22)}...</dd></div>
                   <div><dt>建议工具</dt><dd>{detail.recommendedTools.join("、") || "无"}</dd></div>
@@ -250,4 +262,16 @@ function repositoryName(value: string) {
 function shortRevision(value?: string) {
   if (!value) return "未记录";
   return value.length > 12 ? `${value.slice(0, 12)}...` : value;
+}
+
+function skillModeLabel(mode: "chat" | "work" | "notes") {
+  return mode === "chat" ? "Chat" : mode === "work" ? "Work" : "笔记";
+}
+
+function skillRiskLabel(risk: "low" | "medium" | "high") {
+  return risk === "low" ? "低风险" : risk === "medium" ? "中风险" : "高风险";
+}
+
+function skillCostLabel(cost: "low" | "medium" | "high") {
+  return cost === "low" ? "轻量" : cost === "medium" ? "中等" : "较高";
 }

@@ -4,6 +4,7 @@ import {
   ArrowUp,
   BookOpenText,
   Command,
+  FileText,
   LoaderCircle,
   Paperclip,
   Quote,
@@ -22,7 +23,7 @@ import {
   savePastedChatAttachment,
 } from "../api/attachments";
 import type { ContextUsageEstimate } from "../utils/contextUsage";
-import type { ChatMessage, LiteratureReference } from "../../../types/chat";
+import type { ChatMessage, ChatQuote, LiteratureReference, NoteReference } from "../../../types/chat";
 import type { LocalSlashCommand, SlashCommandExecutionResult } from "../commands/slashCommands";
 import { buildSlashSuggestions, parseSlashInput } from "../commands/slashCommands";
 import { resolveSkillActivation } from "../utils/skillActivation";
@@ -30,6 +31,7 @@ import { ChatAttachments } from "./ChatAttachments";
 import { ContextUsageIndicator } from "./ContextUsageIndicator";
 import { ActiveSkillTags, SkillPicker } from "./SkillPicker";
 import { useI18n } from "../../../i18n/I18nProvider";
+import { formatChatQuotes, MAX_CHAT_QUOTES } from "../utils/quotes";
 import "../styles/chat-input.css";
 
 const MAX_ATTACHMENTS = 8;
@@ -49,13 +51,19 @@ type ChatInputProps = {
   /** Work 模式才显示文献入口；普通 Chat 不展示未实现的文献选择控件。 */
   showLiteraturePicker?: boolean;
   /** 从助手回答中选中的引用片段；发送时作为引用上下文并入消息。 */
-  quote?: string | null;
-  /** 用户移除引用条或发送完成后调用。 */
-  onQuoteClear?: () => void;
+  quotes?: ChatQuote[];
+  /** 用户移除单条引用。 */
+  onQuoteRemove?: (quoteId: string) => void;
+  /** 用户清除全部引用或发送完成后调用。 */
+  onQuotesClear?: () => void;
   /** Work 中待随本轮发送的 PDF 选区或单页引用。 */
   literatureReferences?: LiteratureReference[];
   onLiteratureReferenceRemove?: (referenceId: string) => void;
   onLiteratureReferencesClear?: () => void;
+  /** Notes 中待随本轮发送的结构化 Markdown 选区引用。 */
+  noteReferences?: NoteReference[];
+  onNoteReferenceRemove?: (referenceId: string) => void;
+  onNoteReferencesClear?: () => void;
   contextMessageCount: number;
   contextCompressionCount?: number;
   contextDisabled?: boolean;
@@ -69,6 +77,7 @@ type ChatInputProps = {
     attachments?: ChatAttachment[],
     skillActivation?: SkillActivationSelection,
     literatureReferences?: LiteratureReference[],
+    noteReferences?: NoteReference[],
   ) => void;
   onStop?: () => void;
   onSlashCommand: (
@@ -122,11 +131,15 @@ export function ChatInput({
   contextWindowTokens,
   supportsVision = null,
   showLiteraturePicker = false,
-  quote = null,
-  onQuoteClear,
+  quotes = [],
+  onQuoteRemove,
+  onQuotesClear,
   literatureReferences = [],
   onLiteratureReferenceRemove,
   onLiteratureReferencesClear,
+  noteReferences = [],
+  onNoteReferenceRemove,
+  onNoteReferencesClear,
   contextMessageCount,
   contextCompressionCount = 0,
   contextDisabled = false,
@@ -161,6 +174,7 @@ export function ChatInput({
     draft.trim().length > 0
     || attachments.length > 0
     || literatureReferences.length > 0
+    || noteReferences.length > 0
   );
   const slashSuggestions = useMemo(() => buildSlashSuggestions(draft, skills), [draft, skills]);
   const slashMenuOpen = !inputDisabled && draft.trimStart().startsWith("/") && !draft.includes("\n") && slashSuggestions.length > 0;
@@ -308,6 +322,9 @@ export function ChatInput({
           attachmentsRef.current = [];
           setAttachments([]);
           discardPendingAttachments(pending);
+          onQuotesClear?.();
+          onLiteratureReferencesClear?.();
+          onNoteReferencesClear?.();
         }
       } catch (error) {
         setCommandFeedback(errorMessage(error, t("chat.commandFailed")));
@@ -341,20 +358,18 @@ export function ChatInput({
         }
         return;
       }
-      // 引用片段以 Markdown 引用块并入消息开头：模型能天然理解 "> " 语义，
-      // 会话历史里也保留了"针对哪段内容提问"的完整上下文。
-      const quoted = quote?.trim();
-      const contentWithQuote = quoted
-        ? `${quoted.split(/\r?\n/).map((line) => `> ${line}`).join("\n")}\n\n${draft}`
-        : draft;
+      // 每条引用独立成块，避免多条选区在 Markdown 中互相粘连。
+      const contentWithQuote = formatChatQuotes(quotes, draft);
       onSend(
         contentWithQuote,
         storedAttachments,
         resolveSkillActivation(draft, selectedSkillIds, skills),
         literatureReferences,
+        noteReferences,
       );
-      onQuoteClear?.();
+      onQuotesClear?.();
       onLiteratureReferencesClear?.();
+      onNoteReferencesClear?.();
       setDraft("");
       setCommandFeedback("");
       setUnknownSlashConfirmation(null);
@@ -445,19 +460,39 @@ export function ChatInput({
     <footer className="composer-area">
       <div className="composer-inner">
         <form className="composer-box" onSubmit={handleSubmit}>
-          {quote ? (
-            <div className="composer-quote-bar" aria-label={t("chat.quoteLabel")}>
-              <Quote size={14} />
-              <span className="composer-quote-text">{quote}</span>
-              <button
-                className="composer-quote-clear"
-                type="button"
-                title={t("chat.removeQuote")}
-                aria-label={t("chat.removeQuote")}
-                onClick={() => onQuoteClear?.()}
-              >
-                <X size={14} />
-              </button>
+          {quotes.length > 0 ? (
+            <div className="composer-quotes" aria-label={t("chat.quoteLabel")}>
+              <div className="composer-quotes-header">
+                <span className="composer-quotes-count">
+                  <Quote size={14} />
+                  {t("chat.quoteCount", { count: quotes.length, max: MAX_CHAT_QUOTES })}
+                </span>
+                <button
+                  className="composer-quotes-clear"
+                  type="button"
+                  title={t("chat.clearQuotes")}
+                  aria-label={t("chat.clearQuotes")}
+                  onClick={() => onQuotesClear?.()}
+                >
+                  {t("chat.clearQuotes")}
+                </button>
+              </div>
+              <div className="composer-quotes-list">
+                {quotes.map((quote) => (
+                  <div className="composer-quote-bar" key={quote.id}>
+                    <span className="composer-quote-text">{quote.text}</span>
+                    <button
+                      className="composer-quote-clear"
+                      type="button"
+                      title={t("chat.removeQuote")}
+                      aria-label={t("chat.removeQuote")}
+                      onClick={() => onQuoteRemove?.(quote.id)}
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+                ))}
+              </div>
             </div>
           ) : null}
           {literatureReferences.length > 0 ? (
@@ -480,6 +515,28 @@ export function ChatInput({
                     title={t("chat.removeLiterature")}
                     aria-label={t("chat.removeLiteratureDetail", { title: reference.title, page: reference.pageIndex + 1 })}
                     onClick={() => onLiteratureReferenceRemove?.(reference.id)}
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : null}
+          {noteReferences.length > 0 ? (
+            <div className="composer-note-references" aria-label="本轮笔记引用">
+              {noteReferences.map((reference) => (
+                <div className="composer-note-reference" key={reference.id}>
+                  <FileText size={14} />
+                  <span>
+                    <strong title={reference.noteTitle}>{reference.noteTitle}</strong>
+                    <small>{reference.startLine ? `第 ${reference.startLine}${reference.endLine && reference.endLine !== reference.startLine ? `-${reference.endLine}` : ""} 行` : "Markdown 选区"}</small>
+                    <em title={reference.selectedText}>{reference.selectedText}</em>
+                  </span>
+                  <button
+                    type="button"
+                    title="移除笔记引用"
+                    aria-label={`移除笔记引用 ${reference.noteTitle}`}
+                    onClick={() => onNoteReferenceRemove?.(reference.id)}
                   >
                     <X size={14} />
                   </button>

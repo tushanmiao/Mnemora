@@ -20,6 +20,11 @@ export function estimateConversationTextBytes(conversation: Conversation) {
       characters += reference.title.length;
       characters += reference.text.length;
     }
+    for (const reference of message.noteReferences ?? []) {
+      characters += reference.noteTitle.length;
+      characters += reference.revisionHash.length;
+      characters += reference.selectedText.length;
+    }
     for (const attachment of message.attachments ?? []) {
       characters += attachment.name.length;
       characters += attachment.mimeType.length;

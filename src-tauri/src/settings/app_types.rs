@@ -8,7 +8,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::memory::MemorySettings;
 
-pub const CURRENT_APP_SETTINGS_VERSION: u32 = 7;
+pub const CURRENT_APP_SETTINGS_VERSION: u32 = 8;
+pub const DEFAULT_GLOBAL_SYSTEM_PROMPT: &str = concat!(
+    "你是 Mnemora 的学习与研究助手。\n",
+    "优先直接回答问题，并根据复杂度使用清晰的标题、列表、表格或代码块。\n",
+    "严格区分已知事实、用户材料中的证据、合理推断和仍需确认的内容；没有依据时明确说明。\n",
+    "处理 PDF、图片或附件时，只根据实际收到的内容回答，不编造来源、页码、工具结果或已执行操作。\n",
+    "技能只提供工作方法，不扩大应用权限；遵守用户的权限设置和工具结果。"
+);
 const MAX_AVATAR_DATA_URL_BYTES: usize = 3 * 1024 * 1024;
 const MAX_THEME_BACKGROUND_CSS_BYTES: usize = 2_048;
 const MIN_SURFACE_OPACITY: u8 = 72;
@@ -219,7 +226,7 @@ impl Default for AppSettings {
             thinking_enabled: false,
             max_output_tokens: 32_768,
             response_language: ResponseLanguage::FollowInput,
-            system_prompt: String::new(),
+            system_prompt: DEFAULT_GLOBAL_SYSTEM_PROMPT.to_string(),
             request_debug_enabled: false,
             memory: MemorySettings::default(),
         }
@@ -237,6 +244,9 @@ impl AppSettings {
         }
         if source_version < 3 && self.retry_attempts == 1 {
             self.retry_attempts = 5;
+        }
+        if source_version < 8 && self.system_prompt.trim().is_empty() {
+            self.system_prompt = DEFAULT_GLOBAL_SYSTEM_PROMPT.to_string();
         }
         self.version = CURRENT_APP_SETTINGS_VERSION;
         self.user_display_name = self.user_display_name.trim().to_string();

@@ -1,7 +1,9 @@
 import { ExternalLink, FileText, Image as ImageIcon, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { ChatAttachment, PendingChatAttachment } from "../../../types/attachment";
+import { useI18n } from "../../../i18n/I18nProvider";
 import { loadChatAttachmentPreview, openChatAttachment } from "../api/attachments";
+import { useImageViewer } from "../image-viewer/ImageViewerContext";
 import "../styles/chat-attachments.css";
 
 type AttachmentLike = ChatAttachment | PendingChatAttachment;
@@ -22,10 +24,13 @@ function formatFileSize(sizeBytes: number) {
 function AttachmentImage({
   attachment,
   conversationId,
+  onPreview,
 }: {
   attachment: AttachmentLike;
   conversationId?: string | null;
+  onPreview?: (src: string) => void;
 }) {
+  const { t } = useI18n();
   const [preview, setPreview] = useState("");
   const [failed, setFailed] = useState(false);
 
@@ -58,7 +63,17 @@ function AttachmentImage({
       </span>
     );
   }
-  return <img className="chat-attachment-image" src={preview} alt={attachment.name} />;
+  return (
+    <button
+      type="button"
+      className="chat-attachment-image-button"
+      onClick={() => onPreview?.(preview)}
+      title={t("chat.previewImage")}
+      aria-label={t("chat.previewNamedImage", { name: attachment.name })}
+    >
+      <img className="chat-attachment-image" src={preview} alt={attachment.name} />
+    </button>
+  );
 }
 
 export function ChatAttachments({
@@ -67,6 +82,8 @@ export function ChatAttachments({
   variant,
   onRemove,
 }: ChatAttachmentsProps) {
+  const { t } = useI18n();
+  const { openImage } = useImageViewer();
   if (attachments.length === 0) return null;
 
   return (
@@ -78,7 +95,17 @@ export function ChatAttachments({
           title={`${attachment.name} (${formatFileSize(attachment.sizeBytes)})`}
         >
           {attachment.kind === "image" ? (
-            <AttachmentImage attachment={attachment} conversationId={conversationId} />
+            <AttachmentImage
+              attachment={attachment}
+              conversationId={conversationId}
+              onPreview={(src) => openImage({
+                src,
+                alt: attachment.name,
+                title: attachment.name,
+                conversationId,
+                attachmentPath: conversationId ? attachment.path : null,
+              })}
+            />
           ) : (
             <span className="chat-attachment-file-icon" aria-hidden="true">
               <FileText size={18} />
@@ -88,11 +115,11 @@ export function ChatAttachments({
             <strong>{attachment.name}</strong>
             <small>{formatFileSize(attachment.sizeBytes)}</small>
           </span>
-          {variant === "message" && conversationId ? (
+          {variant === "message" && conversationId && attachment.kind !== "image" ? (
             <button
               className="chat-attachment-open"
               type="button"
-              title="使用系统默认应用打开"
+              title={t("chat.openAttachmentExternal")}
               aria-label={`打开附件 ${attachment.name}`}
               onClick={() => void openChatAttachment(conversationId, attachment.path)}
             >

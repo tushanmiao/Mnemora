@@ -11,6 +11,41 @@ pub enum SkillSource {
     User,
 }
 
+/// Skill 可以出现在哪些工作模式中。模式只影响目录暴露，不代表 Skill 已经被加载。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SkillMode {
+    Chat,
+    Work,
+    Notes,
+}
+
+impl SkillMode {
+    pub const fn all() -> [Self; 3] {
+        [Self::Chat, Self::Work, Self::Notes]
+    }
+}
+
+/// Skill 的风险等级，用于决定是否允许模型自动激活以及设置页的提示。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SkillRisk {
+    #[default]
+    Low,
+    Medium,
+    High,
+}
+
+/// Skill 的预估资源成本。它不是运行时内存测量，而是加载前的轻量预算提示。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SkillResourceCost {
+    #[default]
+    Low,
+    Medium,
+    High,
+}
+
 /// Skill 的上游来源信息只用于审计和界面展示，不会注入模型上下文。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -50,6 +85,13 @@ pub struct SkillSummary {
     pub version: String,
     pub source: SkillSource,
     pub enabled: bool,
+    /// 内置 Skill 首次发现时是否默认启用；用户仍可在设置中修改。
+    pub default_enabled: bool,
+    pub supported_modes: Vec<SkillMode>,
+    #[serde(default)]
+    pub risk: SkillRisk,
+    #[serde(default)]
+    pub resource_cost: SkillResourceCost,
     pub triggers: Vec<String>,
     pub argument_hint: Option<String>,
     pub recommended_tools: Vec<String>,

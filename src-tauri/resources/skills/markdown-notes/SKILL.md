@@ -11,6 +11,10 @@ triggers:
 argument-hint: "<笔记用途、结构或目标读者>"
 metadata:
   mnemora:
+    default-enabled: true
+    supported-modes: [chat, notes]
+    risk: low
+    resource-cost: low
     source-repository: https://github.com/kepano/obsidian-skills
     source-path: skills/obsidian-markdown/SKILL.md
     source-revision: a1dc48e68138490d522c04cbf5822214c6eb1202

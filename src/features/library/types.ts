@@ -104,8 +104,8 @@ export interface LibraryAnnotationUpdate {
 
 export interface LibraryNote {
   id: string;
-  itemId: string;
-  itemTitle: string;
+  itemId: string | null;
+  itemTitle: string | null;
   title: string;
   content: string;
   createdAt: number;
@@ -114,8 +114,8 @@ export interface LibraryNote {
 
 export interface LibraryNoteSummary {
   id: string;
-  itemId: string;
-  itemTitle: string;
+  itemId: string | null;
+  itemTitle: string | null;
   title: string;
   contentPreview: string;
   contentChars: number;
@@ -124,7 +124,7 @@ export interface LibraryNoteSummary {
 }
 
 export interface LibraryNoteCreate {
-  itemId: string;
+  itemId?: string | null;
   title: string;
   content: string;
 }
@@ -133,6 +133,17 @@ export interface LibraryNoteUpdate {
   noteId: string;
   title: string;
   content: string;
+}
+
+export interface LibraryNoteImportFailure {
+  path: string;
+  fileName: string;
+  error: string;
+}
+
+export interface LibraryNoteImportResult {
+  imported: LibraryNote[];
+  failed: LibraryNoteImportFailure[];
 }
 
 export interface LibraryCollection {

@@ -1,6 +1,7 @@
 import { useState } from "react";
-import { ImageOff, X } from "lucide-react";
+import { ImageOff } from "lucide-react";
 import { MARKDOWN_RENDER_LIMITS } from "../utils/renderLimits";
+import { useImageViewer } from "../../image-viewer/ImageViewerContext";
 import "../styles/enhanced-markdown.css";
 
 type SafeMarkdownImageProps = {
@@ -19,7 +20,7 @@ function safeDimension(value: string | number | undefined) {
 
 export function SafeMarkdownImage({ src, alt = "图片", title, width, height }: SafeMarkdownImageProps) {
   const [failed, setFailed] = useState(false);
-  const [expanded, setExpanded] = useState(false);
+  const { openImage } = useImageViewer();
   if (!src || failed) {
     return (
       <span className="markdown-image-fallback" role="img" aria-label={`${alt}加载失败`}>
@@ -47,29 +48,13 @@ export function SafeMarkdownImage({ src, alt = "图片", title, width, height }:
         }
       }}
       onError={() => setFailed(true)}
-      onClick={() => setExpanded(true)}
+      onClick={() => openImage({ src, alt, title })}
     />
   );
 
   return (
     <>
       {image}
-      {expanded ? (
-        <div className="markdown-image-viewer" role="dialog" aria-label={alt} onClick={() => setExpanded(false)}>
-          <button type="button" className="markdown-image-viewer-close" aria-label="关闭图片" onClick={() => setExpanded(false)}>
-            <X size={18} />
-          </button>
-          <img
-            src={src}
-            alt={alt}
-            className="markdown-image-viewer-image"
-            loading="eager"
-            decoding="async"
-            style={{ maxWidth: "min(96vw, 1600px)", maxHeight: "90vh" }}
-            onClick={(event) => event.stopPropagation()}
-          />
-        </div>
-      ) : null}
     </>
   );
 }

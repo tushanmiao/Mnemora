@@ -348,10 +348,12 @@ async fn execute_parallel_safe_tools(
     while let Some(joined) = tasks.join_next().await {
         if let Ok((index, result, duration_ms)) = joined {
             let execution = result.unwrap_or_else(|error| agent::ToolExecution {
+                output_chars: error.message.chars().count(),
                 content: error.message.clone(),
                 preview: error.message,
                 is_error: true,
                 activated_skill_id: None,
+                output_truncated: false,
             });
             results[index] = Some(ParallelToolExecution {
                 execution,
@@ -496,6 +498,11 @@ async fn run_agent_complete(
                         preview: "敏感工具需要在流式模式中由用户确认。".to_string(),
                         is_error: true,
                         activated_skill_id: None,
+                        output_chars:
+                            "当前为非流式请求，无法显示工具审批；本次敏感工具调用已拒绝。"
+                                .chars()
+                                .count(),
+                        output_truncated: false,
                     }
                 } else {
                     agent::execute_tool(
@@ -509,10 +516,12 @@ async fn run_agent_complete(
                     )
                     .await
                     .unwrap_or_else(|error| agent::ToolExecution {
+                        output_chars: error.message.chars().count(),
                         content: error.message.clone(),
                         preview: error.message,
                         is_error: true,
                         activated_skill_id: None,
+                        output_truncated: false,
                     })
                 };
                 ParallelToolExecution {
@@ -533,6 +542,10 @@ async fn run_agent_complete(
                 argument_summary: agent::argument_summary(&call),
                 preview: Some(execution.preview.clone()),
                 duration_ms: Some(result.duration_ms),
+                input_chars: Some(call.arguments.to_string().chars().count()),
+                output_chars: Some(execution.output_chars),
+                output_truncated: Some(execution.output_truncated),
+                error_kind: execution.is_error.then_some("toolExecution".to_string()),
             });
             if let Some(skill_id) = execution.activated_skill_id.as_ref() {
                 if !activated_skill_ids.contains(skill_id) {
@@ -690,6 +703,10 @@ async fn run_agent_stream(
                     argument_summary: agent::argument_summary(call),
                     preview: None,
                     duration_ms: None,
+                    input_chars: Some(call.arguments.to_string().chars().count()),
+                    output_chars: None,
+                    output_truncated: None,
+                    error_kind: None,
                 },
             )?;
         }
@@ -714,6 +731,13 @@ async fn run_agent_stream(
                         argument_summary: agent::argument_summary(&call),
                         preview: Some(result.execution.preview.clone()),
                         duration_ms: Some(result.duration_ms),
+                        input_chars: Some(call.arguments.to_string().chars().count()),
+                        output_chars: Some(result.execution.output_chars),
+                        output_truncated: Some(result.execution.output_truncated),
+                        error_kind: result
+                            .execution
+                            .is_error
+                            .then_some("toolExecution".to_string()),
                     },
                 )?;
                 result.execution
@@ -787,6 +811,10 @@ async fn execute_agent_tool(
             argument_summary: argument_summary.clone(),
             preview: None,
             duration_ms: None,
+            input_chars: Some(call.arguments.to_string().chars().count()),
+            output_chars: None,
+            output_truncated: None,
+            error_kind: None,
         };
         let (sender, receiver) = oneshot::channel();
         state
@@ -830,6 +858,10 @@ async fn execute_agent_tool(
                     argument_summary,
                     preview: Some("用户拒绝了本次工具调用。".to_string()),
                     duration_ms: Some(0),
+                    input_chars: Some(call.arguments.to_string().chars().count()),
+                    output_chars: Some("用户拒绝了本次工具调用。".chars().count()),
+                    output_truncated: Some(false),
+                    error_kind: Some("approvalRejected".to_string()),
                 },
             );
             return rejected_tool("用户拒绝了本次工具调用。", call);
@@ -850,6 +882,10 @@ async fn execute_agent_tool(
             argument_summary: argument_summary.clone(),
             preview: None,
             duration_ms: None,
+            input_chars: Some(call.arguments.to_string().chars().count()),
+            output_chars: None,
+            output_truncated: None,
+            error_kind: None,
         },
     );
     match agent::execute_tool(
@@ -877,6 +913,10 @@ async fn execute_agent_tool(
                     argument_summary,
                     preview: Some(result.preview.clone()),
                     duration_ms: Some(elapsed_ms(started)),
+                    input_chars: Some(call.arguments.to_string().chars().count()),
+                    output_chars: Some(result.output_chars),
+                    output_truncated: Some(result.output_truncated),
+                    error_kind: result.is_error.then_some("toolExecution".to_string()),
                 },
             );
             result
@@ -896,6 +936,10 @@ async fn execute_agent_tool(
                     argument_summary,
                     preview: Some(message.clone()),
                     duration_ms: Some(elapsed_ms(started)),
+                    input_chars: Some(call.arguments.to_string().chars().count()),
+                    output_chars: Some(message.chars().count()),
+                    output_truncated: Some(false),
+                    error_kind: Some(format!("{:?}", error.kind)),
                 },
             );
             rejected_tool(&message, call)
@@ -918,10 +962,12 @@ async fn wait_for_tool_approval(
 
 fn rejected_tool(message: &str, _call: &ModelToolCall) -> agent::ToolExecution {
     agent::ToolExecution {
+        output_chars: message.chars().count(),
         content: message.to_string(),
         preview: message.to_string(),
         is_error: true,
         activated_skill_id: None,
+        output_truncated: false,
     }
 }
 
@@ -1073,8 +1119,11 @@ async fn prepare_call(
         .read()
         .map_err(|_| ModelError::provider("应用设置暂时不可用，请重新启动应用后再试。"))?
         .memory;
-    let tool_context =
-        agent::build_runtime_context(&request, &state.skill_repository, memory_settings)?;
+    let tool_context = if use_agent_tools {
+        agent::build_runtime_context(&request, &state.skill_repository, memory_settings)?
+    } else {
+        ToolRuntimeContext::disabled(request.permission_mode)
+    };
     let repository = state.conversation_repository.clone();
     let skill_repository = state.skill_repository.clone();
     let mut model_request = tauri::async_runtime::spawn_blocking(move || {

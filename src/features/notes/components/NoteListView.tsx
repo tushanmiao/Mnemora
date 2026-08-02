@@ -43,7 +43,7 @@ export function NoteListView({ searchQuery, onOpenNote, onCountChange }: NoteLis
     return notes.filter((note) => (
       note.title.toLocaleLowerCase().includes(query)
       || note.contentPreview.toLocaleLowerCase().includes(query)
-      || note.itemTitle.toLocaleLowerCase().includes(query)
+      || note.itemTitle?.toLocaleLowerCase().includes(query)
     ));
   }, [notes, searchQuery]);
 
@@ -74,7 +74,7 @@ export function NoteListView({ searchQuery, onOpenNote, onCountChange }: NoteLis
               <small>{note.contentPreview || "空笔记"}</small>
             </span>
           </button>
-          <span title={note.itemTitle}><FileText size={14} />{note.itemTitle}</span>
+          <span title={note.itemTitle ?? "全局笔记"}><FileText size={14} />{note.itemTitle ?? "全局笔记"}</span>
           <time dateTime={new Date(note.updatedAt).toISOString()}>{formatDate(note.updatedAt)}</time>
           <button
             className="note-library-delete"

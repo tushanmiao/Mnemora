@@ -274,6 +274,35 @@ pub fn read_attachment_preview(
     ))
 }
 
+pub fn read_attachment_image(
+    repository: &ConversationRepository,
+    conversation_id: &str,
+    path: &str,
+    cancellation: Option<&CancellationToken>,
+) -> Result<String, String> {
+    ensure_not_cancelled(cancellation)?;
+    let full_path = repository.resolve_attachment_path(conversation_id, path)?;
+    let inspected = inspect_source(&full_path)?;
+    if inspected.kind != "image" {
+        return Err("只有图片附件可以在应用内查看。".to_string());
+    }
+    let metadata =
+        fs::metadata(&full_path).map_err(|error| format!("读取图片附件信息失败：{error}"))?;
+    if metadata.len() > MAX_IMAGE_BYTES {
+        return Err(format!(
+            "图片附件超过 {} MB，无法在应用内查看。",
+            MAX_IMAGE_BYTES / 1024 / 1024
+        ));
+    }
+    let bytes = fs::read(&full_path).map_err(|error| format!("读取图片附件失败：{error}"))?;
+    ensure_not_cancelled(cancellation)?;
+    Ok(format!(
+        "data:{};base64,{}",
+        inspected.mime_type,
+        general_purpose::STANDARD.encode(bytes)
+    ))
+}
+
 pub fn load_model_image(
     repository: &ConversationRepository,
     conversation_id: &str,
@@ -643,7 +672,8 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        import_attachments, inspect_attachment_paths, load_model_image, save_pasted_attachment,
+        import_attachments, inspect_attachment_paths, load_model_image, read_attachment_image,
+        save_pasted_attachment,
     };
     use crate::chat::storage::ConversationRepository;
 
@@ -717,6 +747,35 @@ mod tests {
         let image = load_model_image(&repository, "conversation-1", &stored[0]).unwrap();
         assert_eq!(image.media_type, "image/png");
         assert!(!image.data_base64.is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reads_original_image_only_from_the_conversation_attachment_directory() {
+        let root = std::env::temp_dir().join(format!("mnemora-attachment-test-{}", Uuid::new_v4()));
+        let source_directory = root.join("source");
+        fs::create_dir_all(&source_directory).unwrap();
+        let source = source_directory.join("capture.png");
+        write_test_png(&source);
+        let repository = ConversationRepository::new(root.clone());
+        let stored = import_attachments(
+            &repository,
+            "conversation-1",
+            vec![source.to_string_lossy().into_owned()],
+            None,
+        )
+        .unwrap();
+
+        let data_url =
+            read_attachment_image(&repository, "conversation-1", &stored[0].path, None).unwrap();
+        assert!(data_url.starts_with("data:image/png;base64,"));
+        assert!(read_attachment_image(
+            &repository,
+            "conversation-1",
+            "../source/capture.png",
+            None
+        )
+        .is_err());
         let _ = fs::remove_dir_all(root);
     }
 }

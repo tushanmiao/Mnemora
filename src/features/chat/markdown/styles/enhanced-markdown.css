@@ -200,37 +200,6 @@
   font-size: 12px;
 }
 
-.markdown-image-viewer {
-  position: fixed;
-  inset: 0;
-  z-index: 1000;
-  display: grid;
-  padding: 40px;
-  place-items: center;
-  background: rgb(0 0 0 / 0.82);
-}
-
-.markdown-image-viewer-close {
-  position: absolute;
-  top: 14px;
-  right: 14px;
-  display: grid;
-  width: 34px;
-  height: 34px;
-  padding: 0;
-  place-items: center;
-  border: 1px solid rgb(255 255 255 / 0.25);
-  border-radius: 5px;
-  color: #fff;
-  background: rgb(0 0 0 / 0.45);
-  cursor: pointer;
-}
-
-.markdown-image-viewer-image {
-  display: block;
-  object-fit: contain;
-}
-
 .markdown-callout {
   margin: 14px 0;
   overflow: hidden;
@@ -362,7 +331,6 @@
 }
 
 @media (max-width: 620px) {
-  .markdown-image-viewer { padding: 48px 12px 20px; }
   .markdown-mermaid-svg { padding: 10px; }
   .markdown-outline { max-width: 100%; }
 }

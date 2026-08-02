@@ -27,11 +27,11 @@ export function WorkspaceModeSwitch({
     >
       {modes.map(({ id, label, icon: Icon }) => (
         <button
-          className={`workspace-mode-option${mode === id ? " workspace-mode-option-active" : ""}`}
+          className={`workspace-mode-option${mode === id || (mode === "notes" && id === "chat") ? " workspace-mode-option-active" : ""}`}
           type="button"
           key={id}
           title={collapsed ? label : undefined}
-          aria-current={mode === id ? "page" : undefined}
+          aria-current={mode === id || (mode === "notes" && id === "chat") ? "page" : undefined}
           onClick={() => onChange(id)}
         >
           <Icon size={16} />

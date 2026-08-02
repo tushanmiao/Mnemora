@@ -6,6 +6,7 @@
 pub mod agent;
 pub mod attachments;
 pub mod conversation_types;
+mod prompt;
 pub mod service;
 pub mod storage;
 pub mod types;

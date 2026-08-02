@@ -99,9 +99,17 @@ pub async fn run(
         let note_id_to_load = note_id.clone();
         let loaded = tokio::task::spawn_blocking(move || {
             let note = repository.get_note(&note_id_to_load)?;
-            let item = repository.get_item(&note.item_id)?;
+            let item = note
+                .item_id
+                .as_deref()
+                .map(|item_id| repository.get_item(item_id))
+                .transpose()?;
             let annotations = if include_annotations {
-                repository.list_annotations(&note.item_id)?
+                note.item_id
+                    .as_deref()
+                    .map(|item_id| repository.list_annotations(item_id))
+                    .transpose()?
+                    .unwrap_or_default()
             } else {
                 Vec::new()
             };
@@ -128,7 +136,7 @@ pub async fn run(
         };
         let document = render_document(
             &note,
-            &item,
+            item.as_ref(),
             &annotations,
             settings.include_metadata,
             settings.include_annotations,

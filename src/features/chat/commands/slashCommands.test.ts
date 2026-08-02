@@ -9,6 +9,7 @@ const skill = (id: string, trigger: string): SkillSummary => ({
   version: "1.0.0",
   source: "user",
   enabled: true,
+  defaultEnabled: true,
   triggers: [trigger],
   recommendedTools: [],
   requiredTools: [],

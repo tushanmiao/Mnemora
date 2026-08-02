@@ -5,7 +5,10 @@ use std::{fs, path::Path};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-use super::types::{SkillProvenance, SkillRecord, SkillSource, SkillSummary};
+use super::types::{
+    SkillMode, SkillProvenance, SkillRecord, SkillResourceCost, SkillRisk, SkillSource,
+    SkillSummary,
+};
 
 pub const MAX_SKILL_MD_BYTES: u64 = 256 * 1024;
 
@@ -84,6 +87,14 @@ struct MnemoraMetadata {
     adapted: bool,
     #[serde(alias = "adaptation_notes", alias = "adaptationNotes")]
     adaptation_notes: Option<String>,
+    #[serde(alias = "default_enabled", alias = "defaultEnabled")]
+    default_enabled: Option<bool>,
+    #[serde(default, alias = "modes", alias = "supportedModes")]
+    supported_modes: Vec<SkillMode>,
+    #[serde(default)]
+    risk: SkillRisk,
+    #[serde(default, alias = "resourceCost")]
+    resource_cost: SkillResourceCost,
 }
 
 pub(crate) fn parse_skill(
@@ -127,6 +138,18 @@ pub(crate) fn parse_skill(
     let mut required_tools = frontmatter.required_tools.into_values();
     required_tools.sort();
     required_tools.dedup();
+    let supported_modes = if frontmatter.metadata.mnemora.supported_modes.is_empty() {
+        SkillMode::all().to_vec()
+    } else {
+        let mut modes = frontmatter.metadata.mnemora.supported_modes.clone();
+        modes.sort_by_key(|mode| match mode {
+            SkillMode::Chat => 0,
+            SkillMode::Work => 1,
+            SkillMode::Notes => 2,
+        });
+        modes.dedup();
+        modes
+    };
 
     let provenance = SkillProvenance {
         repository: frontmatter.metadata.mnemora.source_repository,
@@ -146,6 +169,11 @@ pub(crate) fn parse_skill(
             version,
             source,
             enabled,
+            // 缺少该字段时按旧版本行为默认启用；新内置 Skill 可显式写 false。
+            default_enabled: frontmatter.metadata.mnemora.default_enabled.unwrap_or(true),
+            supported_modes,
+            risk: frontmatter.metadata.mnemora.risk,
+            resource_cost: frontmatter.metadata.mnemora.resource_cost,
             triggers,
             argument_hint: frontmatter.argument_hint,
             recommended_tools,
@@ -402,6 +430,32 @@ mod tests {
         assert_eq!(record.summary.id, "demo-skill");
         assert_eq!(record.summary.triggers, vec!["/demo", "/test"]);
         assert_eq!(record.body, "# 示例");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn parses_mnemora_mode_risk_and_resource_metadata() {
+        let root =
+            std::env::temp_dir().join(format!("mnemora-skill-meta-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("SKILL.md"),
+            "---\nid: work-skill\nname: Work Skill\ndescription: Work mode skill.\nversion: 1.0.0\nmetadata:\n  mnemora:\n    supported-modes: [work, notes, work]\n    risk: medium\n    resource-cost: high\n---\n正文\n",
+        )
+        .unwrap();
+        let record = parse_skill(&root, SkillSource::User, true).unwrap();
+        assert_eq!(
+            record.summary.supported_modes,
+            vec![
+                crate::skills::types::SkillMode::Work,
+                crate::skills::types::SkillMode::Notes,
+            ]
+        );
+        assert_eq!(record.summary.risk, crate::skills::types::SkillRisk::Medium);
+        assert_eq!(
+            record.summary.resource_cost,
+            crate::skills::types::SkillResourceCost::High
+        );
         let _ = fs::remove_dir_all(root);
     }
 

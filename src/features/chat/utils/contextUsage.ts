@@ -1,5 +1,6 @@
 import type { ChatMessage } from "../../../types/chat";
 import { formatLiteratureReferencesForModel } from "./literatureReferences";
+import { formatNoteReferencesForModel } from "./noteReferences";
 
 export type ContextUsageEstimate = {
   tokens: number;
@@ -59,6 +60,10 @@ function estimateLiteratureReferenceTokens(message: ChatMessage) {
   ));
 }
 
+function estimateNoteReferenceTokens(message: ChatMessage) {
+  return estimateTextTokens(formatNoteReferencesForModel(message.noteReferences ?? []));
+}
+
 /**
  * 优先使用最近一次供应商实报输入 Token 作为锚点，再补上该回复和后续消息。
  * 没有实报数据时只执行本地字符估算，不引入 tokenizer 依赖和常驻模型。
@@ -90,6 +95,7 @@ export function estimateConversationContext(
             return total
               + estimateTextTokens(item.content)
               + estimateLiteratureReferenceTokens(item)
+              + estimateNoteReferenceTokens(item)
               + estimateAttachmentTokens(item, absoluteIndex === lastUserIndex);
         },
         0,
@@ -106,6 +112,7 @@ export function estimateConversationContext(
         (total, message, index) => total
           + estimateTextTokens(message.content)
           + estimateLiteratureReferenceTokens(message)
+          + estimateNoteReferenceTokens(message)
           + estimateAttachmentTokens(message, index === lastUserIndex),
         0,
       ),

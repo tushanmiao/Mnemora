@@ -11,6 +11,7 @@ import type {
   LibraryListPage,
   LibraryListRequest,
   LibraryNote,
+  LibraryNoteImportResult,
   LibraryNoteCreate,
   LibraryNoteSummary,
   LibraryNoteUpdate,
@@ -29,6 +30,18 @@ export async function chooseLibraryPdfFiles(): Promise<string[]> {
     multiple: true,
     directory: false,
     filters: [{ name: "PDF 文献", extensions: ["pdf"] }],
+  });
+  if (typeof selected === "string") return [selected];
+  return selected ?? [];
+}
+
+export async function chooseLibraryMarkdownFiles(): Promise<string[]> {
+  if (!isTauri()) return [];
+  const selected = await open({
+    title: "导入 Markdown 笔记",
+    multiple: true,
+    directory: false,
+    filters: [{ name: "Markdown 笔记", extensions: ["md", "markdown"] }],
   });
   if (typeof selected === "string") return [selected];
   return selected ?? [];
@@ -129,6 +142,10 @@ export function getLibraryNote(noteId: string) {
 
 export function createLibraryNote(create: LibraryNoteCreate) {
   return invoke<LibraryNote>("library_create_note", { create });
+}
+
+export function importLibraryMarkdownNotes(paths: string[]) {
+  return invoke<LibraryNoteImportResult>("library_import_markdown_notes", { paths });
 }
 
 export function updateLibraryNote(update: LibraryNoteUpdate) {

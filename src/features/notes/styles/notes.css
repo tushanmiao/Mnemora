@@ -265,6 +265,26 @@
   background: var(--color-surface-layer);
 }
 
+.note-workspace-preview {
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  background: var(--color-surface-layer);
+  scrollbar-width: thin;
+}
+
+.note-workspace-preview .notes-markdown-preview {
+  width: min(100%, 980px);
+  margin: 0 auto;
+  padding: 26px clamp(24px, 5vw, 72px) 60px;
+}
+
+.note-workspace-preview .notes-markdown-preview .markdown-content {
+  font-family: var(--reading-font-family);
+  font-size: var(--app-font-size, 14px);
+  letter-spacing: var(--reading-letter-spacing);
+}
+
 .note-workspace > header {
   display: flex;
   padding: 0 12px 0 16px;

@@ -13,6 +13,7 @@ export type ChatCompletionRequest = {
   activatedSkillIds?: string[];
   slashSkillId?: string;
   permissionMode?: AiPermissionMode;
+  workspaceMode?: "chat" | "work" | "notes";
   messages: Array<{
     role: MessageRole;
     content: string;

@@ -15,6 +15,7 @@ import {
   LoaderCircle,
   MessageSquarePlus,
   MoreHorizontal,
+  NotebookPen,
   Pencil,
   Pin,
   Plug,
@@ -61,6 +62,7 @@ type SidebarProps = {
   onLoadMoreConversations: () => void;
   onOpenSettings: () => void;
   onOpenSkills: () => void;
+  onOpenNotes: () => void;
   onModeChange: (mode: WorkspaceMode) => void;
   onWorkLibraryViewChange: (view: WorkLibraryView) => void;
   onWorkSearchQueryChange: (query: string) => void;
@@ -99,6 +101,7 @@ export function Sidebar({
   onLoadMoreConversations,
   onOpenSettings,
   onOpenSkills,
+  onOpenNotes,
   onModeChange,
   onWorkLibraryViewChange,
   onWorkSearchQueryChange,
@@ -196,7 +199,7 @@ export function Sidebar({
 
       <WorkspaceModeSwitch mode={mode} collapsed={collapsed} onChange={onModeChange} />
 
-      {mode === "chat" ? (
+      {mode === "chat" || mode === "notes" ? (
         <>
           <nav className="sidebar-actions" aria-label={t("sidebar.primary")}>
         <button
@@ -211,6 +214,15 @@ export function Sidebar({
         <button className="sidebar-action" type="button" title={collapsed ? t("sidebar.search") : undefined}>
           <Search size={18} />
           <span>{t("sidebar.search")}</span>
+        </button>
+        <button
+          className={`sidebar-action${mode === "notes" ? " sidebar-action-active" : ""}`}
+          type="button"
+          title={collapsed ? "笔记" : undefined}
+          onClick={onOpenNotes}
+        >
+          <NotebookPen size={18} />
+          <span>笔记</span>
         </button>
         <button
           className="sidebar-action"
