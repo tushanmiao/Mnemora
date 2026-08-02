@@ -177,6 +177,15 @@ pub enum ModelStreamEvent {
 }
 
 impl ChatCompletionRequest {
+    /// 上下文压缩、笔记总结这类内部辅助调用：不进入正常聊天流程，
+    /// 统一禁用技能激活、附件和 Agent 工具。
+    pub fn is_auxiliary_operation(&self) -> bool {
+        matches!(
+            self.operation.as_deref(),
+            Some("contextCompression") | Some("noteSummary")
+        )
+    }
+
     pub fn validate(&self) -> Result<(), ModelError> {
         validate_stable_id("Provider ID", self.provider_id.trim())
             .map_err(ModelError::invalid_configuration)?;
@@ -185,7 +194,9 @@ impl ChatCompletionRequest {
         if self
             .operation
             .as_deref()
-            .is_some_and(|operation| !matches!(operation, "chatComplete" | "contextCompression"))
+            .is_some_and(|operation| {
+                !matches!(operation, "chatComplete" | "contextCompression" | "noteSummary")
+            })
         {
             return Err(ModelError::invalid_configuration(
                 "Chat operation is not supported.",
@@ -231,11 +242,11 @@ impl ChatCompletionRequest {
                 ));
             }
         }
-        if self.operation.as_deref() == Some("contextCompression")
+        if self.is_auxiliary_operation()
             && (!self.activated_skill_ids.is_empty() || self.slash_skill_id.is_some())
         {
             return Err(ModelError::invalid_configuration(
-                "上下文压缩请求不能激活技能。",
+                "内部辅助请求不能激活技能。",
             ));
         }
 
@@ -261,11 +272,9 @@ impl ChatCompletionRequest {
                     "只有用户消息可以包含附件。",
                 ));
             }
-            if self.operation.as_deref() == Some("contextCompression")
-                && !message.attachments.is_empty()
-            {
+            if self.is_auxiliary_operation() && !message.attachments.is_empty() {
                 return Err(ModelError::invalid_configuration(
-                    "上下文压缩请求不能包含附件。",
+                    "内部辅助请求不能包含附件。",
                 ));
             }
             for attachment in &message.attachments {
@@ -634,6 +643,45 @@ mod tests {
             .push(image_attachment("attachment-1", "attachment-1_capture.png"));
         assert_eq!(
             request.validate().unwrap_err().kind,
+            ModelErrorKind::InvalidConfiguration
+        );
+    }
+
+    #[test]
+    fn note_summary_is_a_valid_auxiliary_operation() {
+        let mut value = request("总结这段对话");
+        value.operation = Some("noteSummary".to_string());
+        value.validate().unwrap();
+        assert!(value.is_auxiliary_operation());
+    }
+
+    #[test]
+    fn note_summary_rejects_skills_and_attachments() {
+        let mut with_skills = request("总结");
+        with_skills.operation = Some("noteSummary".to_string());
+        with_skills.activated_skill_ids = vec!["summarize".to_string()];
+        assert_eq!(
+            with_skills.validate().unwrap_err().kind,
+            ModelErrorKind::InvalidConfiguration
+        );
+
+        let mut with_attachment = request("总结");
+        with_attachment.operation = Some("noteSummary".to_string());
+        with_attachment.messages[0]
+            .attachments
+            .push(image_attachment("attachment-1", "attachment-1_capture.png"));
+        assert_eq!(
+            with_attachment.validate().unwrap_err().kind,
+            ModelErrorKind::InvalidConfiguration
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_operation() {
+        let mut value = request("hello");
+        value.operation = Some("noteSummarize".to_string());
+        assert_eq!(
+            value.validate().unwrap_err().kind,
             ModelErrorKind::InvalidConfiguration
         );
     }

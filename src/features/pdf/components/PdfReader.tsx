@@ -1125,6 +1125,7 @@ function noteSummary(note: LibraryNote): LibraryNoteSummary {
     title: note.title,
     contentPreview: note.content.slice(0, 600),
     contentChars: note.content.length,
+    groupName: note.groupName,
     createdAt: note.createdAt,
     updatedAt: note.updatedAt,
   };

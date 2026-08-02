@@ -5,6 +5,7 @@ import type {
   ConversationListItem,
   ConversationListPage,
 } from "../../../types/conversation";
+import type { LibraryNote } from "../../library/types";
 
 export const CONVERSATION_PAGE_SIZE = 50;
 
@@ -53,4 +54,15 @@ export async function exportStoredConversation(
   if (!path) return false;
   await invoke("export_conversation", { conversationId, path, format });
   return true;
+}
+
+/**
+ * 把整个对话原文转存为笔记库中的独立笔记。
+ * Rust 侧按 ID 加载并复用导出 Markdown 的渲染逻辑，完整消息不经过 IPC 往返。
+ */
+export function saveStoredConversationAsNote(conversationId: string) {
+  if (!isTauri()) {
+    return Promise.reject(new Error("保存笔记需要在 Tauri 应用中运行。"));
+  }
+  return invoke<LibraryNote>("save_conversation_as_note", { conversationId });
 }

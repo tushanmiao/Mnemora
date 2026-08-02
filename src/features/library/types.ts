@@ -108,6 +108,8 @@ export interface LibraryNote {
   itemTitle: string | null;
   title: string;
   content: string;
+  /** 所属分组名；null 表示未分类。分组只作用于独立笔记。 */
+  groupName: string | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -119,14 +121,23 @@ export interface LibraryNoteSummary {
   title: string;
   contentPreview: string;
   contentChars: number;
+  groupName: string | null;
   createdAt: number;
   updatedAt: number;
+}
+
+/** 笔记分组（SQLite 持久化；空分组也会保留）。 */
+export interface LibraryNoteGroup {
+  name: string;
+  noteCount: number;
+  createdAt: number;
 }
 
 export interface LibraryNoteCreate {
   itemId?: string | null;
   title: string;
   content: string;
+  groupName?: string | null;
 }
 
 export interface LibraryNoteUpdate {

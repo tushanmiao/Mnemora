@@ -285,3 +285,51 @@ textarea:focus-visible {
     display: none;
   }
 }
+
+/* 生成笔记等后台动作的轻量反馈；不打断输入焦点，进行中常驻、结果自动消失。 */
+.app-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 26px;
+  transform: translateX(-50%);
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(520px, calc(100vw - 48px));
+  padding: 9px 16px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: 13px;
+  box-shadow: 0 10px 30px rgb(20 30 24 / 18%);
+}
+
+.app-toast span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-toast-error {
+  color: var(--color-danger);
+  border-color: var(--color-danger-soft);
+}
+
+.app-toast-spinner {
+  flex-shrink: 0;
+  animation: app-toast-spin 0.9s linear infinite;
+}
+
+@keyframes app-toast-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-toast-spinner {
+    animation: none;
+  }
+}

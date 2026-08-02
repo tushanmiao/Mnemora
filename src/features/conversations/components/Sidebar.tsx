@@ -58,6 +58,8 @@ type SidebarProps = {
   onSelectConversation: (conversationId: string) => void;
   onDeleteConversation: (conversationId: string) => void;
   onExportConversation: (conversationId: string, format: "markdown" | "json") => void;
+  onSaveConversationAsNote: (conversationId: string) => void;
+  onSummarizeConversationToNote: (conversationId: string) => void;
   onClearConversations: () => void;
   onLoadMoreConversations: () => void;
   onOpenSettings: () => void;
@@ -97,6 +99,8 @@ export function Sidebar({
   onSelectConversation,
   onDeleteConversation,
   onExportConversation,
+  onSaveConversationAsNote,
+  onSummarizeConversationToNote,
   onClearConversations,
   onLoadMoreConversations,
   onOpenSettings,
@@ -370,6 +374,14 @@ export function Sidebar({
                         setConversationMenu(null);
                         onExportConversation(conversation.id, format);
                       }}
+                      onSaveAsNote={() => {
+                        setConversationMenu(null);
+                        onSaveConversationAsNote(conversation.id);
+                      }}
+                      onSummarizeToNote={() => {
+                        setConversationMenu(null);
+                        onSummarizeConversationToNote(conversation.id);
+                      }}
                       onDelete={() => {
                         setConversationMenu(null);
                         onDeleteConversation(conversation.id);
@@ -467,10 +479,18 @@ export function Sidebar({
 type ConversationMenuProps = {
   t: ReturnType<typeof useI18n>["t"];
   onExport: (format: "markdown" | "json") => void;
+  onSaveAsNote: () => void;
+  onSummarizeToNote: () => void;
   onDelete: () => void;
 };
 
-function ConversationMenu({ t, onExport, onDelete }: ConversationMenuProps) {
+function ConversationMenu({
+  t,
+  onExport,
+  onSaveAsNote,
+  onSummarizeToNote,
+  onDelete,
+}: ConversationMenuProps) {
   return (
     <div className="sidebar-menu conversation-menu" role="menu">
       <button className="sidebar-menu-item" type="button" role="menuitem">
@@ -488,6 +508,14 @@ function ConversationMenu({ t, onExport, onDelete }: ConversationMenuProps) {
       <button className="sidebar-menu-item" type="button" role="menuitem">
         <Layers3 size={16} />
         <span>{t("sidebar.moveCollection")}</span>
+      </button>
+      <button className="sidebar-menu-item" type="button" role="menuitem" onClick={onSaveAsNote}>
+        <NotebookPen size={16} />
+        <span>{t("sidebar.saveAsNote")}</span>
+      </button>
+      <button className="sidebar-menu-item" type="button" role="menuitem" onClick={onSummarizeToNote}>
+        <Sparkles size={16} />
+        <span>{t("sidebar.summarizeToNote")}</span>
       </button>
       <button className="sidebar-menu-item" type="button" role="menuitem" onClick={() => onExport("markdown")}>
         <Download size={16} />

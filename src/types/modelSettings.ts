@@ -159,3 +159,32 @@ export function resolveDefaultModel(settings: ModelSettings) {
 
   return provider && model ? { provider, model } : null;
 }
+
+/**
+ * 按对话记录的供应商/模型 ID 解析当前可用模型。
+ * 回退顺序与聊天一致：精确匹配 → 仅按模型 ID 跨供应商查找 → 全局默认模型。
+ */
+export function resolveConversationModel(
+  settings: ModelSettings,
+  providerId: string | null,
+  modelId: string | null,
+) {
+  if (providerId && modelId) {
+    const provider = settings.providers.find(
+      (item) => item.enabled && item.id === providerId,
+    );
+    const model = provider?.models.find(
+      (item) => item.enabled && item.id === modelId,
+    );
+    if (provider && model) return { provider, model };
+  } else if (modelId) {
+    for (const provider of settings.providers) {
+      if (!provider.enabled) continue;
+      const model = provider.models.find(
+        (item) => item.enabled && item.id === modelId,
+      );
+      if (model) return { provider, model };
+    }
+  }
+  return resolveDefaultModel(settings);
+}

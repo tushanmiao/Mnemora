@@ -10,6 +10,7 @@ import {
   Copy,
   FileText,
   LoaderCircle,
+  NotebookPen,
   Pencil,
   Quote,
   RefreshCcw,
@@ -47,6 +48,8 @@ type MessageBubbleProps = {
   onDelete: (messageId: string) => void;
   /** 选中助手回答的部分文本后点击"引用提问"时回调；不传则不显示引用入口。 */
   onQuote?: (text: string) => void;
+  /** 把这条助手回答保存为笔记；返回是否成功。不传则不显示保存入口。 */
+  onSaveAsNote?: (messageId: string) => Promise<boolean>;
   onLiteratureReferenceOpen?: (reference: LiteratureReference) => void;
   citationReferences?: readonly LiteratureReference[];
 };
@@ -88,6 +91,7 @@ export const MessageBubble = memo(function MessageBubble({
   onRegenerate,
   onDelete,
   onQuote,
+  onSaveAsNote,
   onLiteratureReferenceOpen,
   citationReferences = [],
 }: MessageBubbleProps) {
@@ -125,8 +129,10 @@ export const MessageBubble = memo(function MessageBubble({
   const { reasoningOpen, userExpanded, editing } = uiState;
   const editDraft = uiState.editDraft;
   const [copied, setCopied] = useState(false);
+  const [noteState, setNoteState] = useState<"idle" | "saving" | "saved">("idle");
   const [resolvingApprovalId, setResolvingApprovalId] = useState<string | null>(null);
   const copyResetTimerRef = useRef<number | null>(null);
+  const noteResetTimerRef = useRef<number | null>(null);
   const quoteHostRef = useRef<HTMLDivElement | null>(null);
   const [quoteAnchor, setQuoteAnchor] = useState<{
     left: number;
@@ -182,6 +188,7 @@ export const MessageBubble = memo(function MessageBubble({
 
   useEffect(() => () => {
     if (copyResetTimerRef.current !== null) window.clearTimeout(copyResetTimerRef.current);
+    if (noteResetTimerRef.current !== null) window.clearTimeout(noteResetTimerRef.current);
   }, []);
 
   const usageParts = compactUsageParts(message.usage, language);
@@ -201,6 +208,20 @@ export const MessageBubble = memo(function MessageBubble({
 
   const beginEditing = () => {
     onUiStateChange(message.id, { editing: true, editDraft: message.content });
+  };
+
+  // 转存瞬间完成，用图标短暂反馈成功；失败提示由 App 层统一处理。
+  const saveAsNote = async () => {
+    if (!onSaveAsNote || noteState === "saving") return;
+    setNoteState("saving");
+    const saved = await onSaveAsNote(message.id);
+    if (!saved) {
+      setNoteState("idle");
+      return;
+    }
+    setNoteState("saved");
+    if (noteResetTimerRef.current !== null) window.clearTimeout(noteResetTimerRef.current);
+    noteResetTimerRef.current = window.setTimeout(() => setNoteState("idle"), 1_500);
   };
 
   const resolveApproval = async (approvalId: string, approved: boolean) => {
@@ -489,6 +510,18 @@ export const MessageBubble = memo(function MessageBubble({
               >
                 {copied ? <Check size={15} /> : <Copy size={15} />}
               </button>
+              {isAssistant && onSaveAsNote ? (
+                <button
+                  className="message-action"
+                  type="button"
+                  title={noteState === "saved" ? t("chat.savedAsNote") : t("chat.saveAsNote")}
+                  aria-label={noteState === "saved" ? t("chat.savedAsNote") : t("chat.saveAsNote")}
+                  disabled={actionsDisabled || !hasContent || noteState === "saving"}
+                  onClick={() => void saveAsNote()}
+                >
+                  {noteState === "saved" ? <Check size={15} /> : <NotebookPen size={15} />}
+                </button>
+              ) : null}
               <button
                 className="message-action"
                 type="button"

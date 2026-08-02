@@ -1113,7 +1113,7 @@ async fn prepare_call(
     }
 
     let api_model = target.api_model.clone();
-    let use_agent_tools = request.operation.as_deref() != Some("contextCompression");
+    let use_agent_tools = !request.is_auxiliary_operation();
     let memory_settings = state
         .app_settings
         .read()

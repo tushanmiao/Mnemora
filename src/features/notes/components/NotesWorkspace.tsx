@@ -2,10 +2,12 @@ import {
   lazy,
   Suspense,
   useCallback,
+  useDeferredValue,
   useEffect,
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type MouseEvent as ReactMouseEvent,
 } from "react";
 import {
@@ -18,7 +20,12 @@ import {
   FilePlus2,
   FileText,
   Folder,
+  FolderPlus,
+  Inbox,
   LoaderCircle,
+  ListTree,
+  MoreHorizontal,
+  NotebookText,
   PanelRightOpen,
   Quote,
   Search,
@@ -26,26 +33,76 @@ import {
 } from "lucide-react";
 import {
   createLibraryNote,
+  createLibraryNoteGroup,
   deleteLibraryNote,
+  deleteLibraryNoteGroup,
   getLibraryNote,
   chooseLibraryMarkdownFiles,
   importLibraryMarkdownNotes,
+  isLibraryRuntime,
+  listLibraryNoteGroups,
   listLibraryNotes,
+  setLibraryNoteGroup,
   updateLibraryNote,
 } from "../../library/api/library";
-import type { LibraryNote, LibraryNoteSummary } from "../../library/types";
+import type { LibraryNote, LibraryNoteGroup, LibraryNoteSummary } from "../../library/types";
 import type { NoteReference } from "../../../types/chat";
+import {
+  extractMarkdownOutline,
+  type MarkdownOutlineItem,
+} from "../../chat/markdown/utils/outline";
+import { PanelResizeHandle } from "../../layout/components/PanelResizeHandle";
 import "../styles/notes-workspace.css";
 
 const MarkdownNotePreview = lazy(() => import("./MarkdownNotePreview"));
 const AUTOSAVE_DELAY_MS = 700;
 const MAX_SELECTION_CHARACTERS = 16_000;
-const NOTE_GROUPS_STORAGE_KEY = "mnemora.notes.groups.v1";
-const CUSTOM_GROUPS_STORAGE_KEY = "mnemora.notes.custom-groups.v1";
+/** v4 之前分组存放在 localStorage；首次进入时一次性迁入 SQLite 后移除。 */
+const LEGACY_NOTE_GROUPS_STORAGE_KEY = "mnemora.notes.groups.v1";
+const LEGACY_CUSTOM_GROUPS_STORAGE_KEY = "mnemora.notes.custom-groups.v1";
+/** 大纲栏宽度与开关的本地持久化。 */
+const NOTES_LAYOUT_STORAGE_KEY = "mnemora.notes.layout.v1";
+const OUTLINE_DEFAULT_WIDTH = 232;
+const OUTLINE_MIN_WIDTH = 168;
+const OUTLINE_MAX_WIDTH = 440;
+
+type NotesLayout = { outlineWidth: number; outlineOpen: boolean };
+
+function loadNotesLayout(): NotesLayout {
+  const fallback: NotesLayout = { outlineWidth: OUTLINE_DEFAULT_WIDTH, outlineOpen: true };
+  try {
+    const parsed: unknown = JSON.parse(
+      window.localStorage.getItem(NOTES_LAYOUT_STORAGE_KEY) ?? "{}",
+    );
+    if (!parsed || typeof parsed !== "object") return fallback;
+    const candidate = parsed as Partial<NotesLayout>;
+    const width = typeof candidate.outlineWidth === "number" && Number.isFinite(candidate.outlineWidth)
+      ? Math.min(Math.max(candidate.outlineWidth, OUTLINE_MIN_WIDTH), OUTLINE_MAX_WIDTH)
+      : OUTLINE_DEFAULT_WIDTH;
+    return { outlineWidth: width, outlineOpen: candidate.outlineOpen !== false };
+  } catch {
+    return fallback;
+  }
+}
+
+function persistNotesLayout(layout: NotesLayout) {
+  try {
+    window.localStorage.setItem(NOTES_LAYOUT_STORAGE_KEY, JSON.stringify(layout));
+  } catch {
+    // 本地存储不可用时布局仅在当前会话内生效。
+  }
+}
+
+/**
+ * 会话内记住最后打开的笔记。组件可能被 Suspense 或路由切换卸载重挂，
+ * 重挂后凭此恢复编辑现场；用户主动返回列表时会同步清空，不会误恢复。
+ */
+let lastOpenNoteId: string | null = null;
 
 type NotesWorkspaceProps = {
   chatOpen: boolean;
   chatBusy: boolean;
+  userDisplayName: string;
   onToggleChat: () => void;
   onAskSelection: (reference: NoteReference) => void;
   onBack: () => void;
@@ -58,6 +115,8 @@ type SelectionMenu = {
   startLine?: number;
   endLine?: number;
 };
+
+type GroupFilter = "all" | "unfiled" | { group: string };
 
 function revisionHash(note: LibraryNote) {
   return `${note.updatedAt.toString(36)}-${note.content.length.toString(36)}`;
@@ -74,9 +133,67 @@ function noteStats(content: string) {
   return { characters, words, readingMinutes };
 }
 
+function formatNoteSize(characters: number) {
+  if (characters >= 10_000) return `${(characters / 10_000).toFixed(1)} 万字`;
+  return `${characters} 字`;
+}
+
+const NOTE_TIME_FORMATTER = new Intl.DateTimeFormat("zh-CN", {
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+});
+
+/** 旧版 localStorage 分组一次性迁入 SQLite；成败都不阻塞页面。 */
+async function migrateLegacyGroups() {
+  let rawGroups: string | null = null;
+  let rawAssignments: string | null = null;
+  try {
+    rawGroups = window.localStorage.getItem(LEGACY_CUSTOM_GROUPS_STORAGE_KEY);
+    rawAssignments = window.localStorage.getItem(LEGACY_NOTE_GROUPS_STORAGE_KEY);
+  } catch {
+    return;
+  }
+  if (!rawGroups && !rawAssignments) return;
+  const names = new Set<string>();
+  const assignments: Array<[string, string]> = [];
+  try {
+    const parsed: unknown = JSON.parse(rawGroups ?? "[]");
+    if (Array.isArray(parsed)) {
+      for (const value of parsed) {
+        if (typeof value === "string" && value.trim()) names.add(value.trim());
+      }
+    }
+  } catch { /* 忽略损坏的旧数据 */ }
+  try {
+    const parsed: unknown = JSON.parse(rawAssignments ?? "{}");
+    if (parsed && typeof parsed === "object") {
+      for (const [noteId, group] of Object.entries(parsed)) {
+        if (typeof group === "string" && group.trim() && group !== "未分类") {
+          names.add(group.trim());
+          assignments.push([noteId, group.trim()]);
+        }
+      }
+    }
+  } catch { /* 忽略损坏的旧数据 */ }
+  for (const name of names) {
+    try { await createLibraryNoteGroup(name); } catch { /* 已存在则跳过 */ }
+  }
+  for (const [noteId, group] of assignments) {
+    try { await setLibraryNoteGroup(noteId, group); } catch { /* 笔记可能已删除 */ }
+  }
+  try {
+    window.localStorage.removeItem(LEGACY_CUSTOM_GROUPS_STORAGE_KEY);
+    window.localStorage.removeItem(LEGACY_NOTE_GROUPS_STORAGE_KEY);
+  } catch { /* 移除失败下次会重试，迁移本身幂等 */ }
+}
+
 export default function NotesWorkspace({
   chatOpen,
   chatBusy,
+  userDisplayName,
   onToggleChat,
   onAskSelection,
   onBack,
@@ -91,6 +208,8 @@ export default function NotesWorkspace({
   const contentRef = useRef("");
   const mountedRef = useRef(true);
   const [notes, setNotes] = useState<LibraryNoteSummary[]>([]);
+  const [groups, setGroups] = useState<LibraryNoteGroup[]>([]);
+  const [groupFilter, setGroupFilter] = useState<GroupFilter>("all");
   const [activeNote, setActiveNote] = useState<LibraryNote | null>(null);
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
@@ -101,56 +220,38 @@ export default function NotesWorkspace({
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState("");
   const [selectionMenu, setSelectionMenu] = useState<SelectionMenu | null>(null);
-  const [noteGroups, setNoteGroups] = useState<Record<string, string>>({});
-  const [customGroups, setCustomGroups] = useState<string[]>([]);
+  /** 列表行三点菜单当前打开的笔记 ID。 */
+  const [rowMenu, setRowMenu] = useState<string | null>(null);
+  const workspaceRef = useRef<HTMLElement>(null);
+  const [notesLayout, setNotesLayout] = useState<NotesLayout>(loadNotesLayout);
   activeNoteRef.current = activeNote;
   titleRef.current = title;
   contentRef.current = content;
 
-  useEffect(() => {
-    try {
-      const parsed = JSON.parse(window.localStorage.getItem(NOTE_GROUPS_STORAGE_KEY) ?? "{}");
-      if (!parsed || typeof parsed !== "object") return;
-      const groups: Record<string, string> = {};
-      for (const [id, value] of Object.entries(parsed)) {
-        if (typeof value === "string") groups[id] = value;
-      }
-      setNoteGroups(groups);
-      setCustomGroups(Array.from(new Set(Object.values(groups).filter((value): value is string => Boolean(value && value !== "未分类")))));
-      const savedGroups = JSON.parse(window.localStorage.getItem(CUSTOM_GROUPS_STORAGE_KEY) ?? "[]");
-      if (Array.isArray(savedGroups)) {
-        setCustomGroups((current) => Array.from(new Set([...current, ...savedGroups.filter((value): value is string => typeof value === "string" && value.trim().length > 0)])));
-      }
-    } catch {
-      // 损坏的本地分组数据不应阻止笔记页面打开。
-    }
+  // 拖动期间只写 CSS 变量，松手才提交 state + 持久化，避免每个 move 都重渲染。
+  const previewOutlineWidth = useCallback((width: number) => {
+    workspaceRef.current?.style.setProperty("--notes-outline-width", `${width}px`);
   }, []);
-
-  const persistNoteGroups = useCallback((next: Record<string, string>) => {
-    setNoteGroups(next);
-    try {
-      window.localStorage.setItem(NOTE_GROUPS_STORAGE_KEY, JSON.stringify(next));
-    } catch {
-      // 本地存储不可用时仍保留当前会话内的分组状态。
-    }
+  const commitOutlineWidth = useCallback((width: number) => {
+    setNotesLayout((current) => {
+      const next = { ...current, outlineWidth: width };
+      persistNotesLayout(next);
+      return next;
+    });
   }, []);
-
-  const createGroup = useCallback(() => {
-    const name = window.prompt("请输入分组名称")?.trim();
-    if (!name) return;
-    setCustomGroups((current) => {
-      const next = current.includes(name) ? current : [...current, name];
-      try { window.localStorage.setItem(CUSTOM_GROUPS_STORAGE_KEY, JSON.stringify(next)); } catch { /* 忽略不可用的本地存储 */ }
+  const toggleOutline = useCallback(() => {
+    setNotesLayout((current) => {
+      const next = { ...current, outlineOpen: !current.outlineOpen };
+      persistNotesLayout(next);
       return next;
     });
   }, []);
 
-  const assignGroup = useCallback((noteId: string, group: string) => {
-    const next = { ...noteGroups };
-    if (!group || group === "未分类") delete next[noteId];
-    else next[noteId] = group;
-    persistNoteGroups(next);
-  }, [noteGroups, persistNoteGroups]);
+  useEffect(() => {
+    lastOpenNoteId = activeNote?.id ?? null;
+  }, [activeNote?.id]);
+
+  const creatorName = userDisplayName.trim() || "Mnemora 用户";
 
   const clearSaveTimer = useCallback(() => {
     if (saveTimerRef.current === null) return;
@@ -213,29 +314,44 @@ export default function NotesWorkspace({
     return queueSave(note, titleRef.current, contentRef.current);
   }, [clearSaveTimer, queueSave]);
 
-  const loadNotes = useCallback(async (preferredId?: string) => {
+  const refreshGroups = useCallback(async () => {
+    const next = await listLibraryNoteGroups();
+    if (mountedRef.current) setGroups(next);
+  }, []);
+
+  const loadNotes = useCallback(async (preferredId?: string, quiet = false) => {
     setLoading(true);
     setError("");
     try {
-      const next = (await listLibraryNotes()).filter((note) => note.itemId === null);
-      setNotes(next);
-      const targetId = preferredId;
-      if (!targetId) {
+      const [nextNotes] = await Promise.all([
+        listLibraryNotes().then((all) => all.filter((note) => note.itemId === null)),
+        refreshGroups(),
+      ]);
+      setNotes(nextNotes);
+      if (!preferredId) {
         setActiveNote(null);
         setTitle("");
         setContent("");
         return;
       }
-      const note = await getLibraryNote(targetId);
-      setActiveNote(note);
-      setTitle(note.title);
-      setContent(note.content);
+      try {
+        const note = await getLibraryNote(preferredId);
+        setActiveNote(note);
+        setTitle(note.title);
+        setContent(note.content);
+      } catch (openError) {
+        // 恢复场景（如笔记刚被删除）静默回到列表；主动打开的失败仍然提示。
+        setActiveNote(null);
+        setTitle("");
+        setContent("");
+        if (!quiet) throw openError;
+      }
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : String(loadError));
     } finally {
       setLoading(false);
     }
-  }, [activeNote?.id]);
+  }, [refreshGroups]);
 
   const importNotes = useCallback(async () => {
     const paths = await chooseLibraryMarkdownFiles();
@@ -258,7 +374,10 @@ export default function NotesWorkspace({
   useEffect(() => {
     // Strict Mode 可能会先执行一次清理，再重新挂载；重新进入页面时恢复保存状态。
     mountedRef.current = true;
-    void loadNotes();
+    void (async () => {
+      if (isLibraryRuntime()) await migrateLegacyGroups();
+      await loadNotes(lastOpenNoteId ?? undefined, true);
+    })();
     return () => {
       mountedRef.current = false;
       clearSaveTimer();
@@ -268,6 +387,8 @@ export default function NotesWorkspace({
         void queueSave(note, titleRef.current, contentRef.current);
       }
     };
+    // 仅挂载时执行一次；loadNotes 的依赖都是稳定引用。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clearSaveTimer, queueSave]);
 
   useEffect(() => {
@@ -289,6 +410,7 @@ export default function NotesWorkspace({
         itemId: null,
         title: "未命名笔记",
         content: "# 未命名笔记\n\n",
+        groupName: typeof groupFilter === "object" ? groupFilter.group : null,
       });
       await loadNotes(note.id);
       setMode("source");
@@ -315,40 +437,126 @@ export default function NotesWorkspace({
     }
   };
 
+  const closeNote = () => {
+    void flushActiveDraft().then(() => {
+      setActiveNote(null);
+      setTitle("");
+      setContent("");
+      setSelectionMenu(null);
+    });
+  };
+
   const removeNote = async () => {
     if (!activeNote || !window.confirm(`删除笔记“${activeNote.title}”吗？`)) return;
     try {
       clearSaveTimer();
       await saveChainRef.current.catch(() => undefined);
       await deleteLibraryNote(activeNote.id);
-      const nextGroups = { ...noteGroups };
-      delete nextGroups[activeNote.id];
-      persistNoteGroups(nextGroups);
       setActiveNote(null);
       setTitle("");
       setContent("");
-      const next = (await listLibraryNotes()).filter((note) => note.itemId === null);
-      setNotes(next);
+      await loadNotes();
     } catch (deleteError) {
       setError(deleteError instanceof Error ? deleteError.message : String(deleteError));
     }
   };
 
+  // 点击行菜单外的任意位置收起；菜单和三点按钮自身通过 stopPropagation 幸免。
+  useEffect(() => {
+    if (!rowMenu) return;
+    const hide = () => setRowMenu(null);
+    document.addEventListener("mousedown", hide);
+    return () => document.removeEventListener("mousedown", hide);
+  }, [rowMenu]);
+
+  /** 列表行内删除：不经过编辑器，删除后刷新列表与分组计数。 */
+  const removeNoteFromList = async (note: LibraryNoteSummary) => {
+    setRowMenu(null);
+    if (!window.confirm(`删除笔记“${note.title}”吗？`)) return;
+    setError("");
+    try {
+      await deleteLibraryNote(note.id);
+      await loadNotes();
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : String(deleteError));
+    }
+  };
+
+  const createGroup = async () => {
+    const name = window.prompt("请输入分组名称")?.trim();
+    if (!name) return;
+    try {
+      await createLibraryNoteGroup(name);
+      await refreshGroups();
+      setGroupFilter({ group: name });
+    } catch (groupError) {
+      setError(groupError instanceof Error ? groupError.message : String(groupError));
+    }
+  };
+
+  const removeGroup = async (name: string) => {
+    if (!window.confirm(`删除分组“${name}”吗？组内笔记会回到未分类。`)) return;
+    try {
+      await deleteLibraryNoteGroup(name);
+      setGroupFilter((current) => (
+        typeof current === "object" && current.group === name ? "all" : current
+      ));
+      await loadNotes();
+    } catch (groupError) {
+      setError(groupError instanceof Error ? groupError.message : String(groupError));
+    }
+  };
+
+  const assignGroup = async (noteId: string, groupName: string | null) => {
+    try {
+      const updated = await setLibraryNoteGroup(noteId, groupName);
+      setNotes((current) => current.map((item) => (
+        item.id === updated.id ? { ...item, groupName: updated.groupName } : item
+      )));
+      await refreshGroups();
+    } catch (groupError) {
+      setError(groupError instanceof Error ? groupError.message : String(groupError));
+    }
+  };
+
   const filteredNotes = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase();
-    if (!normalized) return notes;
-    return notes.filter((note) => [note.title, note.contentPreview]
-      .some((value) => value.toLocaleLowerCase().includes(normalized)));
-  }, [notes, query]);
-  const groupedNotes = useMemo(() => {
-    const groups = new Map<string, LibraryNoteSummary[]>();
-    for (const note of filteredNotes) {
-      const group = noteGroups[note.id] || note.itemTitle?.trim() || "未分类";
-      groups.set(group, [...(groups.get(group) ?? []), note]);
-    }
-    return Array.from(groups.entries());
-  }, [filteredNotes, noteGroups]);
+    return notes.filter((note) => {
+      if (groupFilter === "unfiled" && note.groupName) return false;
+      if (typeof groupFilter === "object" && note.groupName !== groupFilter.group) return false;
+      if (!normalized) return true;
+      return [note.title, note.contentPreview]
+        .some((value) => value.toLocaleLowerCase().includes(normalized));
+    });
+  }, [notes, query, groupFilter]);
+  const unfiledCount = useMemo(
+    () => notes.filter((note) => !note.groupName).length,
+    [notes],
+  );
   const stats = useMemo(() => noteStats(content), [content]);
+
+  // 大纲随输入实时更新；用 deferred 值避免大文档下每次击键都同步重算。
+  const deferredContent = useDeferredValue(content);
+  const outline = useMemo<MarkdownOutlineItem[]>(
+    () => (activeNote ? extractMarkdownOutline(deferredContent, `note-${activeNote.id}`) : []),
+    [activeNote, deferredContent],
+  );
+
+  const jumpToOutlineItem = (item: MarkdownOutlineItem) => {
+    if (mode === "preview") {
+      document.getElementById(item.id)?.scrollIntoView({ behavior: "smooth", block: "start" });
+      return;
+    }
+    const editor = editorRef.current;
+    if (!editor) return;
+    const style = window.getComputedStyle(editor);
+    const lineHeight = Number.parseFloat(style.lineHeight) || 24;
+    const paddingTop = Number.parseFloat(style.paddingTop) || 0;
+    const line = lineAtOffset(content, item.offset);
+    editor.focus({ preventScroll: true });
+    editor.setSelectionRange(item.offset, item.offset);
+    editor.scrollTop = Math.max(0, (line - 1) * lineHeight + paddingTop - 16);
+  };
 
   const showSourceSelection = (event: ReactMouseEvent<HTMLTextAreaElement>) => {
     const editor = event.currentTarget;
@@ -417,54 +625,208 @@ export default function NotesWorkspace({
             <FileText size={15} />
             <span>导入 Markdown</span>
           </button>
-          <button type="button" className="notes-back-button" onClick={createGroup}>
-            <Folder size={15} />
-            <span>新建分组</span>
-          </button>
         </header>
-        <div className="notes-browser-tools">
-          <label className="notes-search">
-            <Search size={14} />
-            <input value={query} placeholder="搜索笔记" onChange={(event) => setQuery(event.target.value)} />
-          </label>
-          <span className="notes-browser-count">{filteredNotes.length} 篇笔记</span>
-        </div>
-        {error ? <div className="notes-error" role="alert">{error}</div> : null}
-        {loading ? (
-          <div className="notes-empty" role="status"><LoaderCircle className="is-spinning" size={24} />正在加载笔记</div>
-        ) : groupedNotes.length === 0 ? (
-          <div className="notes-empty"><FilePlus2 size={32} /><strong>还没有 Markdown 笔记</strong><button type="button" onClick={() => void createNote()}>新建笔记</button></div>
-        ) : (
-          <div className="notes-browser-list" role="list">
-            {groupedNotes.map(([group, groupNotes]) => (
-              <section className="notes-browser-group" key={group}>
-                <header><Folder size={15} /><strong>{group}</strong><span>{groupNotes.length}</span></header>
-                {groupNotes.map((note) => (
-                  <div className="notes-browser-item" role="listitem" key={note.id}>
-                    <button type="button" className="notes-browser-item-open" onClick={() => void openNote(note.id)}>
-                    <FileText size={17} />
-                    <span><strong>{note.title}</strong><small>{note.contentPreview || "空白笔记"}</small></span>
-                    </button>
-                    <select value={noteGroups[note.id] || "未分类"} aria-label={`${note.title} 所属分组`} onChange={(event) => assignGroup(note.id, event.target.value)}>
-                      <option value="未分类">未分类</option>
-                      {customGroups.map((group) => <option value={group} key={group}>{group}</option>)}
-                    </select>
-                    <time>{new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit" }).format(note.updatedAt)}</time>
-                  </div>
-                ))}
-              </section>
-            ))}
+        <div className="notes-browser-body">
+          <aside className="notes-groups-nav" aria-label="笔记分组">
+            <header>
+              <strong>分组</strong>
+              <button type="button" title="新建分组" aria-label="新建分组" onClick={() => void createGroup()}>
+                <FolderPlus size={15} />
+              </button>
+            </header>
+            <nav>
+              <button
+                type="button"
+                className={groupFilter === "all" ? "notes-group-item is-active" : "notes-group-item"}
+                onClick={() => setGroupFilter("all")}
+              >
+                <NotebookText size={15} />
+                <span>全部笔记</span>
+                <small>{notes.length}</small>
+              </button>
+              <button
+                type="button"
+                className={groupFilter === "unfiled" ? "notes-group-item is-active" : "notes-group-item"}
+                onClick={() => setGroupFilter("unfiled")}
+              >
+                <Inbox size={15} />
+                <span>未分类</span>
+                <small>{unfiledCount}</small>
+              </button>
+              {groups.map((group) => (
+                <div
+                  className={typeof groupFilter === "object" && groupFilter.group === group.name
+                    ? "notes-group-row is-active"
+                    : "notes-group-row"}
+                  key={group.name}
+                >
+                  <button
+                    type="button"
+                    className="notes-group-item"
+                    onClick={() => setGroupFilter({ group: group.name })}
+                  >
+                    <Folder size={15} />
+                    <span>{group.name}</span>
+                    <small>{group.noteCount}</small>
+                  </button>
+                  <button
+                    type="button"
+                    className="notes-group-remove"
+                    title={`删除分组 ${group.name}`}
+                    aria-label={`删除分组 ${group.name}`}
+                    onClick={() => void removeGroup(group.name)}
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                </div>
+              ))}
+            </nav>
+          </aside>
+          <div className="notes-browser-main">
+            <div className="notes-browser-tools">
+              <label className="notes-search">
+                <Search size={14} />
+                <input value={query} placeholder="搜索笔记" onChange={(event) => setQuery(event.target.value)} />
+              </label>
+              <span className="notes-browser-count">{filteredNotes.length} 篇笔记</span>
+            </div>
+            {error ? <div className="notes-error" role="alert">{error}</div> : null}
+            {loading ? (
+              <div className="notes-empty" role="status"><LoaderCircle className="is-spinning" size={24} />正在加载笔记</div>
+            ) : filteredNotes.length === 0 ? (
+              <div className="notes-empty">
+                <FilePlus2 size={32} />
+                <strong>{notes.length === 0 ? "还没有 Markdown 笔记" : "该分组下暂无笔记"}</strong>
+                <button type="button" onClick={() => void createNote()}>新建笔记</button>
+              </div>
+            ) : (
+              <div className="notes-table" role="table" aria-label="笔记列表">
+                <div className="notes-table-head" role="row">
+                  <span role="columnheader">标题</span>
+                  <span role="columnheader">创建者</span>
+                  <span role="columnheader">最后修改</span>
+                  <span role="columnheader">分组</span>
+                  <span role="columnheader">大小</span>
+                  <span role="columnheader" aria-label="操作" />
+                </div>
+                <div className="notes-table-body" role="rowgroup">
+                  {filteredNotes.map((note) => (
+                    <div className="notes-table-row" role="row" key={note.id}>
+                      <button
+                        type="button"
+                        className="notes-table-title"
+                        role="cell"
+                        title={note.contentPreview || "空白笔记"}
+                        onClick={() => void openNote(note.id)}
+                      >
+                        <FileText size={16} />
+                        <span>{note.title}</span>
+                      </button>
+                      <span role="cell" className="notes-table-muted" title={creatorName}>{creatorName}</span>
+                      <span role="cell" className="notes-table-muted">
+                        {NOTE_TIME_FORMATTER.format(note.updatedAt)}
+                      </span>
+                      <span role="cell">
+                        <select
+                          value={note.groupName ?? ""}
+                          aria-label={`${note.title} 所属分组`}
+                          onChange={(event) => void assignGroup(note.id, event.target.value || null)}
+                        >
+                          <option value="">未分类</option>
+                          {groups.map((group) => (
+                            <option value={group.name} key={group.name}>{group.name}</option>
+                          ))}
+                        </select>
+                      </span>
+                      <span role="cell" className="notes-table-muted">{formatNoteSize(note.contentChars)}</span>
+                      <span role="cell" className="notes-table-actions">
+                        <button
+                          type="button"
+                          className="notes-table-more"
+                          title="更多操作"
+                          aria-label={`${note.title} 更多操作`}
+                          aria-expanded={rowMenu === note.id}
+                          onMouseDown={(event) => event.stopPropagation()}
+                          onClick={() => setRowMenu((current) => (current === note.id ? null : note.id))}
+                        >
+                          <MoreHorizontal size={15} />
+                        </button>
+                        {rowMenu === note.id ? (
+                          <div
+                            className="notes-row-menu"
+                            role="menu"
+                            onMouseDown={(event) => event.stopPropagation()}
+                          >
+                            <button
+                              type="button"
+                              role="menuitem"
+                              className="notes-row-menu-danger"
+                              onClick={() => void removeNoteFromList(note)}
+                            >
+                              <Trash2 size={14} />
+                              <span>删除笔记</span>
+                            </button>
+                          </div>
+                        ) : null}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
-        )}
+        </div>
       </section>
     );
   }
 
   return (
-    <section className="notes-workspace" aria-label="笔记工作区">
+    <section
+      className="notes-workspace"
+      aria-label="笔记工作区"
+      ref={workspaceRef}
+      data-outline={notesLayout.outlineOpen ? "open" : "closed"}
+      style={{ "--notes-outline-width": `${notesLayout.outlineWidth}px` } as CSSProperties}
+    >
+      {notesLayout.outlineOpen ? (
+        <aside className="notes-outline-pane" aria-label="笔记大纲">
+          <header>
+            <ListTree size={14} />
+            <strong>大纲</strong>
+            <span>{outline.length}</span>
+          </header>
+          <div>
+            {outline.length === 0 ? (
+              <p>没有检测到标题。使用 “#” 开头的标题行会出现在这里。</p>
+            ) : (
+              outline.map((item) => (
+                <button
+                  type="button"
+                  key={item.id}
+                  style={{ paddingLeft: `${10 + (item.level - 1) * 13}px` }}
+                  title={item.title}
+                  onClick={() => jumpToOutlineItem(item)}
+                >
+                  {item.title}
+                </button>
+              ))
+            )}
+          </div>
+          <PanelResizeHandle
+            edge="right"
+            value={notesLayout.outlineWidth}
+            defaultValue={OUTLINE_DEFAULT_WIDTH}
+            minValue={OUTLINE_MIN_WIDTH}
+            maxValue={OUTLINE_MAX_WIDTH}
+            label="调整大纲宽度"
+            onPreview={previewOutlineWidth}
+            onCommit={commitOutlineWidth}
+          />
+        </aside>
+      ) : null}
       <main className="notes-editor-pane">
         <header className="notes-toolbar">
-          <button type="button" className="notes-back-button" title="返回笔记列表" aria-label="返回笔记列表" onClick={() => { void flushActiveDraft().then(() => { setActiveNote(null); setTitle(""); setContent(""); setSelectionMenu(null); }); }}>
+          <button type="button" className="notes-back-button" title="返回笔记列表" aria-label="返回笔记列表" onClick={closeNote}>
             <ArrowLeft size={16} />
             <span>笔记</span>
           </button>
@@ -472,24 +834,44 @@ export default function NotesWorkspace({
             <FileCode2 size={16} />
             <input
               value={title}
-              disabled={!activeNote}
               aria-label="笔记标题"
               onChange={(event) => setTitle(event.target.value)}
             />
           </div>
           <div className="notes-toolbar-actions">
             <button
-              className="notes-mode-toggle"
               type="button"
-              disabled={!activeNote}
-              title={mode === "source" ? "切换为预览" : "切换为 Markdown 源码"}
-              aria-label={mode === "source" ? "切换为预览" : "切换为 Markdown 源码"}
-              onClick={() => { setSelectionMenu(null); setMode((current) => current === "source" ? "preview" : "source"); }}
+              className={notesLayout.outlineOpen ? "is-active" : ""}
+              title={notesLayout.outlineOpen ? "收起大纲" : "展开大纲"}
+              aria-label={notesLayout.outlineOpen ? "收起大纲" : "展开大纲"}
+              aria-pressed={notesLayout.outlineOpen}
+              onClick={toggleOutline}
             >
-              {mode === "source" ? <Eye size={16} /> : <FileCode2 size={16} />}
-              <span>{mode === "source" ? "预览" : "Markdown"}</span>
+              <ListTree size={16} />
             </button>
-            <button type="button" disabled={!activeNote} title="删除笔记" aria-label="删除笔记" onClick={() => void removeNote()}>
+            <div className="notes-mode-tabs" role="tablist" aria-label="编辑模式">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={mode === "source"}
+                className={mode === "source" ? "is-active" : ""}
+                onClick={() => { setSelectionMenu(null); setMode("source"); }}
+              >
+                <FileCode2 size={14} />
+                <span>Markdown</span>
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={mode === "preview"}
+                className={mode === "preview" ? "is-active" : ""}
+                onClick={() => { setSelectionMenu(null); setMode("preview"); }}
+              >
+                <Eye size={14} />
+                <span>预览</span>
+              </button>
+            </div>
+            <button type="button" title="删除笔记" aria-label="删除笔记" onClick={() => void removeNote()}>
               <Trash2 size={16} />
             </button>
             <button

@@ -10,8 +10,8 @@ use crate::{
     library::types::{
         LibraryAnnotation, LibraryAnnotationCreate, LibraryAnnotationUpdate, LibraryCollection,
         LibraryImportResult, LibraryItem, LibraryItemUpdate, LibraryListPage, LibraryListRequest,
-        LibraryNote, LibraryNoteCreate, LibraryNoteImportResult, LibraryNoteSummary, LibraryNoteUpdate, LibraryReadingState,
-        LibraryReadingStateUpdate,
+        LibraryNote, LibraryNoteCreate, LibraryNoteGroup, LibraryNoteImportResult,
+        LibraryNoteSummary, LibraryNoteUpdate, LibraryReadingState, LibraryReadingStateUpdate,
     },
     state::AppState,
 };
@@ -303,6 +303,55 @@ pub async fn library_delete_note(
     tauri::async_runtime::spawn_blocking(move || repository.delete_note(&note_id))
         .await
         .map_err(join_error)?
+}
+
+#[tauri::command]
+pub async fn library_list_note_groups(
+    state: State<'_, AppState>,
+) -> Result<Vec<LibraryNoteGroup>, String> {
+    let repository = state.library_repository.clone();
+    tauri::async_runtime::spawn_blocking(move || repository.list_note_groups())
+        .await
+        .map_err(join_error)?
+}
+
+#[tauri::command]
+pub async fn library_create_note_group(
+    state: State<'_, AppState>,
+    name: String,
+) -> Result<LibraryNoteGroup, String> {
+    let _write_guard = state.library_operations.lock().await;
+    let repository = state.library_repository.clone();
+    tauri::async_runtime::spawn_blocking(move || repository.create_note_group(&name))
+        .await
+        .map_err(join_error)?
+}
+
+#[tauri::command]
+pub async fn library_delete_note_group(
+    state: State<'_, AppState>,
+    name: String,
+) -> Result<bool, String> {
+    let _write_guard = state.library_operations.lock().await;
+    let repository = state.library_repository.clone();
+    tauri::async_runtime::spawn_blocking(move || repository.delete_note_group(&name))
+        .await
+        .map_err(join_error)?
+}
+
+#[tauri::command]
+pub async fn library_set_note_group(
+    state: State<'_, AppState>,
+    note_id: String,
+    group_name: Option<String>,
+) -> Result<LibraryNote, String> {
+    let _write_guard = state.library_operations.lock().await;
+    let repository = state.library_repository.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        repository.set_note_group(&note_id, group_name.as_deref())
+    })
+    .await
+    .map_err(join_error)?
 }
 
 #[tauri::command]

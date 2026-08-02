@@ -338,6 +338,8 @@ pub struct LibraryNote {
     pub item_title: Option<String>,
     pub title: String,
     pub content: String,
+    /// 所属分组名；None 表示未分类。分组只作用于独立笔记（item_id 为空）。
+    pub group_name: Option<String>,
     pub created_at: u64,
     pub updated_at: u64,
 }
@@ -352,8 +354,23 @@ pub struct LibraryNoteSummary {
     pub title: String,
     pub content_preview: String,
     pub content_chars: usize,
+    pub group_name: Option<String>,
     pub created_at: u64,
     pub updated_at: u64,
+}
+
+/// 笔记分组（轻量标签式，按名称关联；空分组也会保留）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryNoteGroup {
+    pub name: String,
+    pub note_count: usize,
+    pub created_at: u64,
+}
+
+/// 分组名与集合名共用同一长度上限，语义一致。
+pub fn normalize_note_group_name(value: &str) -> Result<String, String> {
+    normalize_text("分组名称", value, MAX_COLLECTION_NAME_CHARS, false)
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -364,6 +381,8 @@ pub struct LibraryNoteCreate {
     pub title: String,
     #[serde(default)]
     pub content: String,
+    #[serde(default)]
+    pub group_name: Option<String>,
 }
 
 impl LibraryNoteCreate {
@@ -375,6 +394,12 @@ impl LibraryNoteCreate {
             .transpose()?;
         self.title = normalize_text("笔记标题", &self.title, MAX_NOTE_TITLE_CHARS, false)?;
         self.content = normalize_multiline_text("笔记正文", &self.content, MAX_NOTE_CONTENT_CHARS)?;
+        self.group_name = self
+            .group_name
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .map(normalize_note_group_name)
+            .transpose()?;
         Ok(self)
     }
 }

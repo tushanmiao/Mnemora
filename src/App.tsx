@@ -8,6 +8,7 @@ import {
   useState,
   type CSSProperties,
 } from "react";
+import { LoaderCircle } from "lucide-react";
 import "./styles/app.css";
 import "./styles/themes.css";
 import { ChatHeader, type ModelSelectorGroup } from "./features/chat/components/ChatHeader";
@@ -19,7 +20,15 @@ import { estimateConversationContext } from "./features/chat/utils/contextUsage"
 import { activeContextMessages, contextSummaryPrompt } from "./features/chat/utils/contextCompression";
 import { Sidebar } from "./features/conversations/components/Sidebar";
 import { useConversations } from "./features/conversations/hooks/useConversations";
-import { exportStoredConversation } from "./features/conversations/api/conversations";
+import {
+  exportStoredConversation,
+  loadStoredConversation,
+  saveStoredConversationAsNote,
+} from "./features/conversations/api/conversations";
+import {
+  saveMessageAsNote,
+  summarizeConversationToNote,
+} from "./features/chat/utils/noteGeneration";
 import { SettingsPage, type SettingsCategory } from "./features/settings/components/SettingsPage";
 import { useAppSettings } from "./features/settings/hooks/useAppSettings";
 import { resolveThemeBackgroundCss } from "./features/settings/utils/themeBackground";
@@ -39,7 +48,7 @@ import {
   useLayoutPreferences,
 } from "./features/layout/hooks/useLayoutPreferences";
 import type { AiPermissionMode, ChatQuote, LiteratureReference, NoteReference } from "./types/chat";
-import { resolveDefaultModel } from "./types/modelSettings";
+import { resolveConversationModel } from "./types/modelSettings";
 import { resolveSupportsVision } from "./data/modelMatching";
 import type {
   WorkContextView,
@@ -67,6 +76,16 @@ type AppView = "workspace" | "settings";
 
 const CHAT_WORKSPACE_MIN_WIDTH = 420;
 const WORK_MAIN_MIN_WIDTH = 520;
+
+/** 生成笔记链路的错误既可能是 Error，也可能是 Rust 返回的 ModelError 结构。 */
+function noteErrorText(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "object" && error !== null && "message" in error) {
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === "string" && message.trim()) return message;
+  }
+  return String(error);
+}
 
 function App() {
   const appShellRef = useRef<HTMLElement>(null);
@@ -295,25 +314,102 @@ function App() {
 
   const currentModel = useMemo(() => {
     const conversation = conversations.currentConversation;
-    if (conversation?.providerId && conversation.modelId) {
-      const provider = settings.modelSettings.providers.find(
-        (item) => item.enabled && item.id === conversation.providerId,
-      );
-      const model = provider?.models.find(
-        (item) => item.enabled && item.id === conversation.modelId,
-      );
-      if (provider && model) return { provider, model };
-    } else if (conversation?.modelId) {
-      for (const provider of settings.modelSettings.providers) {
-        if (!provider.enabled) continue;
-        const model = provider.models.find(
-          (item) => item.enabled && item.id === conversation.modelId,
-        );
-        if (model) return { provider, model };
-      }
-    }
-    return resolveDefaultModel(settings.modelSettings);
+    return resolveConversationModel(
+      settings.modelSettings,
+      conversation?.providerId ?? null,
+      conversation?.modelId ?? null,
+    );
   }, [conversations.currentConversation, settings.modelSettings]);
+
+  // 生成笔记的轻量反馈：progress 常驻到被结果替换，结果 4 秒后自动消失。
+  const [noteFeedback, setNoteFeedback] = useState<{
+    kind: "progress" | "success" | "error";
+    text: string;
+  } | null>(null);
+  const noteFeedbackTimerRef = useRef<number | null>(null);
+  const noteSummaryBusyRef = useRef(false);
+
+  const showNoteFeedback = useCallback((
+    kind: "progress" | "success" | "error",
+    text: string,
+  ) => {
+    if (noteFeedbackTimerRef.current !== null) window.clearTimeout(noteFeedbackTimerRef.current);
+    noteFeedbackTimerRef.current = null;
+    setNoteFeedback({ kind, text });
+    if (kind !== "progress") {
+      noteFeedbackTimerRef.current = window.setTimeout(() => setNoteFeedback(null), 4_000);
+    }
+  }, []);
+
+  useEffect(() => () => {
+    if (noteFeedbackTimerRef.current !== null) window.clearTimeout(noteFeedbackTimerRef.current);
+  }, []);
+
+  /** 对话原文转存为笔记；Rust 按 ID 加载，无需前端先打开对话。 */
+  const handleSaveConversationAsNote = useCallback((conversationId: string) => {
+    void saveStoredConversationAsNote(conversationId)
+      .then((note) => showNoteFeedback("success", `已保存为笔记「${note.title}」`))
+      .catch((error) => showNoteFeedback("error", `保存笔记失败：${noteErrorText(error)}`));
+  }, [showNoteFeedback]);
+
+  /** AI 总结为笔记；用对话自己记录的模型（回退全局默认），全程串行防重入。 */
+  const handleSummarizeConversationToNote = useCallback(async (conversationId: string) => {
+    if (noteSummaryBusyRef.current) {
+      showNoteFeedback("error", "已有一个总结任务正在进行，请稍候再试。");
+      return;
+    }
+    noteSummaryBusyRef.current = true;
+    showNoteFeedback("progress", "正在用模型总结对话…");
+    try {
+      const conversation = conversationId === conversations.currentConversationId
+        && conversations.currentConversation
+        ? conversations.currentConversation
+        : await loadStoredConversation(conversationId);
+      const model = resolveConversationModel(
+        settings.modelSettings,
+        conversation.providerId,
+        conversation.modelId,
+      );
+      if (!model) {
+        showNoteFeedback("error", "请先在设置中配置可用的默认模型。");
+        return;
+      }
+      const note = await summarizeConversationToNote(
+        conversation,
+        model,
+        {
+          maxOutputTokens: settings.appSettings.maxOutputTokens,
+          thinkingEnabled: settings.appSettings.thinkingEnabled,
+        },
+      );
+      showNoteFeedback("success", `已生成总结笔记「${note.title}」`);
+    } catch (error) {
+      showNoteFeedback("error", `总结失败：${noteErrorText(error)}`);
+    } finally {
+      noteSummaryBusyRef.current = false;
+    }
+  }, [
+    conversations.currentConversation,
+    conversations.currentConversationId,
+    settings.appSettings.maxOutputTokens,
+    settings.appSettings.thinkingEnabled,
+    settings.modelSettings,
+    showNoteFeedback,
+  ]);
+
+  /** 单条助手回答转存为笔记；返回是否成功，供气泡按钮展示对勾反馈。 */
+  const handleSaveMessageAsNote = useCallback(async (messageId: string) => {
+    const conversation = conversations.currentConversation;
+    if (!conversation) return false;
+    try {
+      const note = await saveMessageAsNote(conversation, messageId);
+      showNoteFeedback("success", `已保存为笔记「${note.title}」`);
+      return true;
+    } catch (error) {
+      showNoteFeedback("error", `保存笔记失败：${noteErrorText(error)}`);
+      return false;
+    }
+  }, [conversations.currentConversation, showNoteFeedback]);
 
   const modelGroups = useMemo<ModelSelectorGroup[]>(() => (
     settings.modelSettings.providers
@@ -553,6 +649,7 @@ function App() {
         onRegenerateMessage={chatRuntime.regenerateMessage}
         onDeleteMessage={chatRuntime.deleteMessage}
         onQuoteMessage={appendQuote}
+        onSaveMessageAsNote={handleSaveMessageAsNote}
         onLiteratureReferenceOpen={openLiteratureReference}
       />
       <ChatInput
@@ -649,6 +746,10 @@ function App() {
               const message = error instanceof Error ? error.message : String(error);
               window.alert(`导出失败：${message}`);
             });
+        }}
+        onSaveConversationAsNote={handleSaveConversationAsNote}
+        onSummarizeConversationToNote={(conversationId) => {
+          void handleSummarizeConversationToNote(conversationId);
         }}
         onClearConversations={conversations.clearConversations}
         onLoadMoreConversations={conversations.loadMoreConversations}
@@ -782,6 +883,7 @@ function App() {
               <NotesWorkspace
                 chatOpen={notesContextPanelOpen}
                 chatBusy={chatRuntime.requestInFlight}
+                userDisplayName={settings.appSettings.userDisplayName}
                 onBack={() => {
                   setNotesContextPanelOpen(false);
                   changeWorkspaceMode("chat");
@@ -793,19 +895,23 @@ function App() {
                 onAskSelection={addNoteReference}
               />
               {notesContextPanelOpen ? (
-                <NotesContextPanel
-                  chatPanel={chatWorkspace}
-                  onClose={() => setNotesContextPanelOpen(false)}
-                  resize={{
-                    value: layoutPreferences.notesContextWidth,
-                    defaultValue: DEFAULT_LAYOUT_PREFERENCES.notesContextWidth,
-                    minValue: LAYOUT_PANEL_LIMITS.notesContext.min,
-                    maxValue: LAYOUT_PANEL_LIMITS.notesContext.max,
-                    getMaxValue: getWorkContextMaxWidth,
-                    onPreview: previewNotesContextWidth,
-                    onCommit: commitNotesContextWidth,
-                  }}
-                />
+                // 独立 Suspense：面板懒加载挂起时不能连累 NotesWorkspace 整体回退卸载，
+                // 否则正在编辑的笔记状态会被清空（首次打开 AI 面板即触发）。
+                <Suspense fallback={<div className="workspace-loading" role="status">正在打开 AI 面板</div>}>
+                  <NotesContextPanel
+                    chatPanel={chatWorkspace}
+                    onClose={() => setNotesContextPanelOpen(false)}
+                    resize={{
+                      value: layoutPreferences.notesContextWidth,
+                      defaultValue: DEFAULT_LAYOUT_PREFERENCES.notesContextWidth,
+                      minValue: LAYOUT_PANEL_LIMITS.notesContext.min,
+                      maxValue: LAYOUT_PANEL_LIMITS.notesContext.max,
+                      getMaxValue: getWorkContextMaxWidth,
+                      onPreview: previewNotesContextWidth,
+                      onCommit: commitNotesContextWidth,
+                    }}
+                  />
+                </Suspense>
               ) : null}
               </Suspense>
             </NotesErrorBoundary>
@@ -815,6 +921,19 @@ function App() {
         </section>
       )}
       </ImageViewerProvider>
+
+      {noteFeedback ? (
+        <div
+          className={`app-toast app-toast-${noteFeedback.kind}`}
+          role="status"
+          aria-live="polite"
+        >
+          {noteFeedback.kind === "progress" ? (
+            <LoaderCircle size={15} className="app-toast-spinner" />
+          ) : null}
+          <span>{noteFeedback.text}</span>
+        </div>
+      ) : null}
     </main>
     </I18nProvider>
   );

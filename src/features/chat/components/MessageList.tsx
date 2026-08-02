@@ -42,6 +42,8 @@ type MessageListProps = {
   onDeleteMessage: (messageId: string) => void;
   /** 选中助手回答部分文本后点击"引用提问"；不传则消息气泡不显示引用入口。 */
   onQuoteMessage?: (text: string) => void;
+  /** 把单条助手回答保存为笔记；不传则消息气泡不显示保存入口。 */
+  onSaveMessageAsNote?: (messageId: string) => Promise<boolean>;
   onLiteratureReferenceOpen?: (reference: LiteratureReference) => void;
 };
 
@@ -71,6 +73,7 @@ export function MessageList({
   onRegenerateMessage,
   onDeleteMessage,
   onQuoteMessage,
+  onSaveMessageAsNote,
   onLiteratureReferenceOpen,
 }: MessageListProps) {
   const { t } = useI18n();
@@ -230,6 +233,7 @@ export function MessageList({
         onRegenerate={onRegenerateMessage}
         onDelete={onDeleteMessage}
         onQuote={onQuoteMessage}
+        onSaveAsNote={onSaveMessageAsNote}
         onLiteratureReferenceOpen={onLiteratureReferenceOpen}
         citationReferences={message.role === "assistant"
           ? [...messages.slice(0, index)].reverse().find((item) => item.role === "user")?.literatureReferences ?? []
@@ -246,6 +250,7 @@ export function MessageList({
     onEditMessage,
     onRegenerateMessage,
     onQuoteMessage,
+    onSaveMessageAsNote,
     onLiteratureReferenceOpen,
     updateMessageUiState,
   ]);

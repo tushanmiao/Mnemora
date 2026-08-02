@@ -16,17 +16,18 @@ use uuid::Uuid;
 use super::{
     import::{import_pdf, ImportOutcome},
     types::{
-        normalize_collection_name, normalize_identifier, LibraryAnnotation, LibraryAnnotationColor,
-        LibraryAnnotationCreate, LibraryAnnotationKind, LibraryAnnotationRect,
-        LibraryAnnotationUpdate, LibraryCollection, LibraryImportFailure, LibraryImportResult,
-        LibraryItem, LibraryItemUpdate, LibraryListPage, LibraryListRequest, LibraryNote,
-        LibraryNoteCreate, LibraryNoteImportFailure, LibraryNoteImportResult, LibraryNoteSummary,
-        LibraryNoteUpdate, LibraryReadingState, LibraryReadingStateUpdate, LibrarySort, LibraryView,
-        MAX_NOTE_IMPORT_BYTES, MAX_NOTE_IMPORT_FILES, MAX_PDF_RANGE_BYTES,
+        normalize_collection_name, normalize_identifier, normalize_note_group_name,
+        LibraryAnnotation, LibraryAnnotationColor, LibraryAnnotationCreate, LibraryAnnotationKind,
+        LibraryAnnotationRect, LibraryAnnotationUpdate, LibraryCollection, LibraryImportFailure,
+        LibraryImportResult, LibraryItem, LibraryItemUpdate, LibraryListPage, LibraryListRequest,
+        LibraryNote, LibraryNoteCreate, LibraryNoteGroup, LibraryNoteImportFailure,
+        LibraryNoteImportResult, LibraryNoteSummary, LibraryNoteUpdate, LibraryReadingState,
+        LibraryReadingStateUpdate, LibrarySort, LibraryView, MAX_NOTE_IMPORT_BYTES,
+        MAX_NOTE_IMPORT_FILES, MAX_PDF_RANGE_BYTES,
     },
 };
 
-const LIBRARY_SCHEMA_VERSION: i64 = 3;
+const LIBRARY_SCHEMA_VERSION: i64 = 4;
 const LIBRARY_DIRECTORY_NAME: &str = "library";
 const LIBRARY_DATABASE_NAME: &str = "library.sqlite3";
 const LIBRARY_FILES_DIRECTORY_NAME: &str = "files";
@@ -544,7 +545,7 @@ impl LibraryRepository {
         let (sql, values) = if let Some(item_id) = item_id {
             (
                 "SELECT n.id, n.item_id, i.title, n.title, substr(n.content, 1, 600),
-                        length(n.content), n.created_at, n.updated_at
+                        length(n.content), n.group_name, n.created_at, n.updated_at
                  FROM library_notes n
                  LEFT JOIN library_items i ON i.id = n.item_id
                  WHERE n.item_id = ? AND i.deleted_at IS NULL
@@ -554,7 +555,7 @@ impl LibraryRepository {
         } else {
             (
                 "SELECT n.id, n.item_id, i.title, n.title, substr(n.content, 1, 600),
-                        length(n.content), n.created_at, n.updated_at
+                        length(n.content), n.group_name, n.created_at, n.updated_at
                  FROM library_notes n
                  LEFT JOIN library_items i ON i.id = n.item_id
                  WHERE n.item_id IS NULL OR i.deleted_at IS NULL
@@ -612,15 +613,128 @@ impl LibraryRepository {
         }
         let id = Uuid::new_v4().to_string();
         let now = now_millis_i64();
+        if let Some(group_name) = create.group_name.as_deref() {
+            register_note_group(&connection, group_name, now)?;
+        }
         connection
             .execute(
-                "INSERT INTO library_notes (id, item_id, title, content, created_at, updated_at)
-                 VALUES (?, ?, ?, ?, ?, ?)",
-                params![id, create.item_id, create.title, create.content, now, now],
+                "INSERT INTO library_notes (id, item_id, title, content, group_name, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)",
+                params![id, create.item_id, create.title, create.content, create.group_name, now, now],
             )
             .map_err(|error| format!("创建文献笔记失败：{error}"))?;
         self.get_note_with_connection(&connection, &id)?
             .ok_or_else(|| "创建后的笔记不存在。".to_string())
+    }
+
+    /// 列出全部笔记分组（含空分组）；计数只统计独立笔记。
+    pub fn list_note_groups(&self) -> Result<Vec<LibraryNoteGroup>, String> {
+        let connection = self.open_connection()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT g.name, g.created_at,
+                        COUNT(CASE WHEN n.item_id IS NULL THEN 1 END) AS note_count
+                 FROM library_note_groups g
+                 LEFT JOIN library_notes n ON n.group_name = g.name COLLATE NOCASE
+                 GROUP BY g.name
+                 ORDER BY g.name COLLATE NOCASE ASC",
+            )
+            .map_err(|error| format!("准备笔记分组查询失败：{error}"))?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok(LibraryNoteGroup {
+                    name: row.get(0)?,
+                    created_at: i64_to_u64(row.get(1)?),
+                    note_count: usize::try_from(row.get::<_, i64>(2)?).unwrap_or(usize::MAX),
+                })
+            })
+            .map_err(|error| format!("查询笔记分组失败：{error}"))?;
+        let mut groups = Vec::new();
+        for row in rows {
+            groups.push(row.map_err(|error| format!("读取笔记分组失败：{error}"))?);
+        }
+        Ok(groups)
+    }
+
+    pub fn create_note_group(&self, name: &str) -> Result<LibraryNoteGroup, String> {
+        let name = normalize_note_group_name(name)?;
+        let connection = self.open_connection()?;
+        let now = now_millis_i64();
+        let inserted = connection
+            .execute(
+                "INSERT OR IGNORE INTO library_note_groups (name, created_at) VALUES (?, ?)",
+                params![name, now],
+            )
+            .map_err(|error| format!("创建笔记分组失败：{error}"))?;
+        if inserted == 0 {
+            return Err(format!("分组“{name}”已存在。"));
+        }
+        Ok(LibraryNoteGroup {
+            name,
+            note_count: 0,
+            created_at: i64_to_u64(now),
+        })
+    }
+
+    /// 删除分组并把其中的笔记恢复为未分类。
+    pub fn delete_note_group(&self, name: &str) -> Result<bool, String> {
+        let name = normalize_note_group_name(name)?;
+        let mut connection = self.open_connection()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| format!("开始删除笔记分组失败：{error}"))?;
+        transaction
+            .execute(
+                "UPDATE library_notes SET group_name = NULL WHERE group_name = ? COLLATE NOCASE",
+                params![name],
+            )
+            .map_err(|error| format!("清空分组内笔记失败：{error}"))?;
+        let removed = transaction
+            .execute(
+                "DELETE FROM library_note_groups WHERE name = ? COLLATE NOCASE",
+                params![name],
+            )
+            .map_err(|error| format!("删除笔记分组失败：{error}"))?;
+        transaction
+            .commit()
+            .map_err(|error| format!("提交删除笔记分组失败：{error}"))?;
+        Ok(removed > 0)
+    }
+
+    /// 调整笔记所属分组；传入 None 恢复未分类。目标分组不存在时自动注册。
+    pub fn set_note_group(
+        &self,
+        note_id: &str,
+        group_name: Option<&str>,
+    ) -> Result<LibraryNote, String> {
+        let note_id = normalize_identifier("笔记 ID", note_id)?;
+        let group_name = group_name
+            .filter(|value| !value.trim().is_empty())
+            .map(normalize_note_group_name)
+            .transpose()?;
+        let connection = self.open_connection()?;
+        if let Some(name) = group_name.as_deref() {
+            register_note_group(&connection, name, now_millis_i64())?;
+        }
+        // 分组调整不修改 updated_at：归档整理不应把笔记顶到最近编辑列表顶部。
+        let changed = connection
+            .execute(
+                "UPDATE library_notes
+                 SET group_name = ?
+                 WHERE id = ? AND (
+                    item_id IS NULL OR EXISTS (
+                        SELECT 1 FROM library_items i
+                        WHERE i.id = library_notes.item_id AND i.deleted_at IS NULL
+                    )
+                 )",
+                params![group_name, note_id],
+            )
+            .map_err(|error| format!("调整笔记分组失败：{error}"))?;
+        if changed == 0 {
+            return Err("笔记不存在或所属文献位于回收站。".to_string());
+        }
+        self.get_note_with_connection(&connection, &note_id)?
+            .ok_or_else(|| "调整分组后的笔记不存在。".to_string())
     }
 
     pub fn import_markdown_notes(&self, paths: Vec<String>) -> Result<LibraryNoteImportResult, String> {
@@ -651,7 +765,7 @@ impl LibraryRepository {
                     .file_stem()
                     .map(|value| value.to_string_lossy().into_owned())
                     .unwrap_or_else(|| "导入笔记".to_string());
-                self.create_note(LibraryNoteCreate { item_id: None, title, content })
+                self.create_note(LibraryNoteCreate { item_id: None, title, content, group_name: None })
             })();
             match import {
                 Ok(note) => result.imported.push(note),
@@ -1070,7 +1184,8 @@ impl LibraryRepository {
     ) -> Result<Option<LibraryNote>, String> {
         connection
             .query_row(
-                "SELECT n.id, n.item_id, i.title, n.title, n.content, n.created_at, n.updated_at
+                "SELECT n.id, n.item_id, i.title, n.title, n.content, n.group_name,
+                        n.created_at, n.updated_at
                  FROM library_notes n
                  LEFT JOIN library_items i ON i.id = n.item_id
                  WHERE n.id = ? AND (n.item_id IS NULL OR i.deleted_at IS NULL)",
@@ -1239,6 +1354,22 @@ fn migrate(connection: &Connection) -> Result<(), String> {
             )
             .map_err(|error| format!("升级全局 Markdown 笔记结构失败：{error}"))?;
     }
+    // v4：笔记分组从前端 localStorage 迁入 SQLite（列 + 分组注册表）。
+    // 前面各分支都把版本推进到 3，因此这里用旧读数 <= 3 统一收口。
+    if version <= 3 {
+        connection
+            .execute_batch(
+                "BEGIN IMMEDIATE;
+                 ALTER TABLE library_notes ADD COLUMN group_name TEXT;
+                 CREATE TABLE IF NOT EXISTS library_note_groups (
+                    name TEXT PRIMARY KEY COLLATE NOCASE,
+                    created_at INTEGER NOT NULL
+                 );
+                 PRAGMA user_version = 4;
+                 COMMIT;",
+            )
+            .map_err(|error| format!("升级笔记分组结构失败：{error}"))?;
+    }
     Ok(())
 }
 
@@ -1295,6 +1426,17 @@ fn annotation_from_row(row: &Row<'_>) -> rusqlite::Result<Result<LibraryAnnotati
     })())
 }
 
+/// 分组注册幂等：INSERT OR IGNORE，同名（不区分大小写）分组直接复用。
+fn register_note_group(connection: &Connection, name: &str, now: i64) -> Result<(), String> {
+    connection
+        .execute(
+            "INSERT OR IGNORE INTO library_note_groups (name, created_at) VALUES (?, ?)",
+            params![name, now],
+        )
+        .map_err(|error| format!("注册笔记分组失败：{error}"))?;
+    Ok(())
+}
+
 fn note_from_row(row: &Row<'_>) -> rusqlite::Result<LibraryNote> {
     Ok(LibraryNote {
         id: row.get(0)?,
@@ -1302,8 +1444,9 @@ fn note_from_row(row: &Row<'_>) -> rusqlite::Result<LibraryNote> {
         item_title: row.get(2)?,
         title: row.get(3)?,
         content: row.get(4)?,
-        created_at: i64_to_u64(row.get(5)?),
-        updated_at: i64_to_u64(row.get(6)?),
+        group_name: row.get(5)?,
+        created_at: i64_to_u64(row.get(6)?),
+        updated_at: i64_to_u64(row.get(7)?),
     })
 }
 
@@ -1315,8 +1458,9 @@ fn note_summary_from_row(row: &Row<'_>) -> rusqlite::Result<LibraryNoteSummary> 
         title: row.get(3)?,
         content_preview: row.get(4)?,
         content_chars: usize::try_from(row.get::<_, i64>(5)?).unwrap_or(usize::MAX),
-        created_at: i64_to_u64(row.get(6)?),
-        updated_at: i64_to_u64(row.get(7)?),
+        group_name: row.get(6)?,
+        created_at: i64_to_u64(row.get(7)?),
+        updated_at: i64_to_u64(row.get(8)?),
     })
 }
 
@@ -1776,6 +1920,7 @@ mod tests {
                 item_id: Some(item.id.clone()),
                 title: "Reading note".to_string(),
                 content: "Initial content".to_string(),
+                group_name: None,
             })
             .unwrap();
         assert_eq!(repository.list_notes(Some(&item.id)).unwrap().len(), 1);
@@ -1800,6 +1945,7 @@ mod tests {
                 item_id: None,
                 title: "Global markdown".to_string(),
                 content: "# Global\n\nIndependent note".to_string(),
+                group_name: None,
             })
             .unwrap();
         assert!(global_note.item_id.is_none());
@@ -1836,6 +1982,7 @@ mod tests {
                 item_id: Some(item.id.clone()),
                 title: "Cascade note".to_string(),
                 content: String::new(),
+                group_name: None,
             })
             .unwrap();
         repository.move_to_trash(&item.id).unwrap();
@@ -1895,16 +2042,60 @@ mod tests {
         let version: i64 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 3);
+        assert_eq!(version, 4);
         let tables: i64 = connection
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master
-                 WHERE type = 'table' AND name IN ('library_annotations', 'library_notes')",
+                 WHERE type = 'table'
+                   AND name IN ('library_annotations', 'library_notes', 'library_note_groups')",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(tables, 2);
+        assert_eq!(tables, 3);
+
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn note_groups_cover_assignment_and_cleanup() {
+        let directory = test_directory("note-groups");
+        let repository = LibraryRepository::new(directory.clone());
+
+        // 空分组可以先创建并保留；重名（含大小写差异）被拒绝。
+        let group = repository.create_note_group("数据库").unwrap();
+        assert_eq!(group.note_count, 0);
+        assert!(repository.create_note_group("数据库").is_err());
+
+        let note = repository
+            .create_note(LibraryNoteCreate {
+                item_id: None,
+                title: "MVCC 笔记".to_string(),
+                content: "# MVCC".to_string(),
+                group_name: Some("数据库".to_string()),
+            })
+            .unwrap();
+        assert_eq!(note.group_name.as_deref(), Some("数据库"));
+        assert_eq!(repository.list_note_groups().unwrap()[0].note_count, 1);
+        assert_eq!(
+            repository.list_notes(None).unwrap()[0].group_name.as_deref(),
+            Some("数据库"),
+        );
+
+        // set_note_group 自动注册新分组；调整分组不改变 updated_at 排序语义。
+        let updated_before = repository.get_note(&note.id).unwrap().updated_at;
+        let moved = repository.set_note_group(&note.id, Some("英语")).unwrap();
+        assert_eq!(moved.group_name.as_deref(), Some("英语"));
+        assert_eq!(moved.updated_at, updated_before);
+        assert_eq!(repository.list_note_groups().unwrap().len(), 2);
+
+        // 传 None 回到未分类；删除分组把残留笔记恢复为未分类。
+        let cleared = repository.set_note_group(&note.id, None).unwrap();
+        assert!(cleared.group_name.is_none());
+        repository.set_note_group(&note.id, Some("英语")).unwrap();
+        assert!(repository.delete_note_group("英语").unwrap());
+        assert!(repository.get_note(&note.id).unwrap().group_name.is_none());
+        assert!(!repository.delete_note_group("英语").unwrap());
 
         let _ = fs::remove_dir_all(directory);
     }

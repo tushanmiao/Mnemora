@@ -11,6 +11,7 @@ import type {
   LibraryListPage,
   LibraryListRequest,
   LibraryNote,
+  LibraryNoteGroup,
   LibraryNoteImportResult,
   LibraryNoteCreate,
   LibraryNoteSummary,
@@ -154,6 +155,25 @@ export function updateLibraryNote(update: LibraryNoteUpdate) {
 
 export function deleteLibraryNote(noteId: string) {
   return invoke<boolean>("library_delete_note", { noteId });
+}
+
+export function listLibraryNoteGroups() {
+  if (!isTauri()) return Promise.resolve<LibraryNoteGroup[]>([]);
+  return invoke<LibraryNoteGroup[]>("library_list_note_groups");
+}
+
+export function createLibraryNoteGroup(name: string) {
+  return invoke<LibraryNoteGroup>("library_create_note_group", { name });
+}
+
+/** 删除分组并把其中的笔记恢复为未分类。 */
+export function deleteLibraryNoteGroup(name: string) {
+  return invoke<boolean>("library_delete_note_group", { name });
+}
+
+/** 调整笔记分组；传 null 表示未分类。目标分组不存在时后端自动注册。 */
+export function setLibraryNoteGroup(noteId: string, groupName: string | null) {
+  return invoke<LibraryNote>("library_set_note_group", { noteId, groupName });
 }
 
 export function listLibraryCollections() {

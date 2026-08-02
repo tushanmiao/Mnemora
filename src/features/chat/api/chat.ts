@@ -8,7 +8,7 @@ export type ChatCompletionRequest = {
   modelId: string;
   conversationId?: string;
   messageId?: string;
-  operation?: "chatComplete" | "contextCompression";
+  operation?: "chatComplete" | "contextCompression" | "noteSummary";
   systemPrompt: string;
   activatedSkillIds?: string[];
   slashSkillId?: string;
