@@ -6,25 +6,9 @@ import {
   useState,
   type PointerEvent as ReactPointerEvent,
 } from "react";
+import { BookOpen, Highlighter, MessageCircleQuestion, Search, Underline, X } from "lucide-react";
 import {
-  ArrowDown,
-  ArrowUp,
-  BookOpen,
-  ExternalLink,
-  Highlighter,
-  Minus,
-  MoveHorizontal,
-  MessageCircleQuestion,
-  Plus,
-  ScanLine,
-  Search,
-  Underline,
-  X,
-} from "lucide-react";
-import {
-  getDocument,
   GlobalWorkerOptions,
-  PDFDataRangeTransport,
   type PDFDocumentProxy,
 } from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
@@ -35,39 +19,29 @@ import type {
   LibraryAnnotationRect,
   LibraryItem,
   LibraryNote,
-  LibraryNoteSummary,
 } from "../../library/types";
 import {
-  createLibraryAnnotation,
-  createLibraryNote,
-  deleteLibraryAnnotation,
-  deleteLibraryNote,
-  getLibraryReadingState,
   isLibraryRuntime,
-  listLibraryAnnotations,
-  listLibraryNotes,
-  readLibraryPdfRange,
   saveLibraryReadingState,
-  updateLibraryAnnotation,
-  updateLibraryNote,
 } from "../../library/api/library";
 import type { PdfOutlineEntry } from "../context/PdfReaderContext";
 import { usePdfReaderBridge } from "../context/PdfReaderContext";
 import { PDF_ANNOTATION_COLORS, type PdfTextSelection } from "../types";
 import type { LiteratureReference } from "../../../types/chat";
 import { useI18n } from "../../../i18n/I18nProvider";
-import type { TranslationKey } from "../../../i18n/translations";
 import {
   createLiteratureReference,
   MAX_LITERATURE_REFERENCE_TEXT_BYTES,
   normalizeLiteratureText,
 } from "../../chat/utils/literatureReferences";
 import { PdfPage } from "./PdfPage";
+import { PdfReaderToolbar } from "./PdfReaderToolbar";
+import { usePdfResources } from "../hooks/usePdfResources";
+import { loadPdfDocument, type ReadingPosition } from "../runtime/pdfDocumentLoader";
 import "../styles/pdf-reader.css";
 
 GlobalWorkerOptions.workerSrc = workerUrl;
 
-const RANGE_CHUNK_SIZE = 256 * 1024;
 const MAX_SEARCH_RESULTS = 100;
 
 type PdfReaderProps = {
@@ -77,50 +51,10 @@ type PdfReaderProps = {
   onAskSelection: (reference: LiteratureReference) => void;
 };
 
-type ReadingPosition = {
-  pageIndex: number;
-  scrollOffset: number;
-  zoom: number;
-};
-
 type SearchResult = {
   pageIndex: number;
   snippet: string;
 };
-
-class TauriPdfRangeTransport extends PDFDataRangeTransport {
-  private disposed = false;
-
-  constructor(
-    private readonly itemId: string,
-    length: number,
-    initialData: Uint8Array,
-    private readonly onReadError: () => void,
-  ) {
-    super(length, initialData);
-  }
-
-  requestDataRange(begin: number, end: number) {
-    if (this.disposed) return;
-    void readLibraryPdfRange(this.itemId, begin, end)
-      .then((chunk) => {
-        if (!this.disposed) this.onDataRange(begin, chunk);
-      })
-      .catch(() => {
-        if (this.disposed) return;
-        this.disposed = true;
-        this.onReadError();
-      });
-  }
-
-  dispose() {
-    this.disposed = true;
-  }
-
-  override abort() {
-    this.disposed = true;
-  }
-}
 
 export function PdfReader({ item, onOpenExternal, onOpenNote, onAskSelection }: PdfReaderProps) {
   const { t } = useI18n();
@@ -131,9 +65,6 @@ export function PdfReader({ item, onOpenExternal, onOpenNote, onAskSelection }: 
   const scrollFrameRef = useRef<number | null>(null);
   const pageNavigationFrameRef = useRef<number | null>(null);
   const searchGenerationRef = useRef(0);
-  const resourceGenerationRef = useRef(0);
-  const notesLoadRef = useRef({ itemId: "", loading: false, loaded: false });
-  const annotationCreateRef = useRef(false);
   const focusTimerRef = useRef<number | null>(null);
   const selectionColorMenuRef = useRef<HTMLDivElement>(null);
   const restoringRef = useRef(false);
@@ -152,18 +83,12 @@ export function PdfReader({ item, onOpenExternal, onOpenNote, onAskSelection }: 
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [searching, setSearching] = useState(false);
   const [readerWidth, setReaderWidth] = useState(0);
-  const [annotations, setAnnotations] = useState<LibraryAnnotation[]>([]);
-  const [notes, setNotes] = useState<LibraryNoteSummary[]>([]);
-  const [annotationsLoading, setAnnotationsLoading] = useState(false);
-  const [notesLoading, setNotesLoading] = useState(false);
-  const [notesLoaded, setNotesLoaded] = useState(false);
-  const [annotationError, setAnnotationError] = useState("");
-  const [noteError, setNoteError] = useState("");
   const [annotationMode, setAnnotationMode] = useState<"text" | "area">("text");
   const [annotationColor, setAnnotationColor] = useState<LibraryAnnotationColor>("yellow");
   const [textSelection, setTextSelection] = useState<PdfTextSelection | null>(null);
   const [selectionColorMenuOpen, setSelectionColorMenuOpen] = useState(false);
   const [focusedAnnotationId, setFocusedAnnotationId] = useState<string | null>(null);
+  const resources = usePdfResources(item.id);
 
   const scheduleSave = useCallback((next: ReadingPosition) => {
     readingRef.current = next;
@@ -235,42 +160,6 @@ export function PdfReader({ item, onOpenExternal, onOpenNote, onAskSelection }: 
   }, [textSelection]);
 
   useEffect(() => {
-    const generation = resourceGenerationRef.current + 1;
-    resourceGenerationRef.current = generation;
-    setAnnotations([]);
-    setNotes([]);
-    setAnnotationError("");
-    setNoteError("");
-    setAnnotationsLoading(true);
-    setNotesLoading(false);
-    setNotesLoaded(false);
-    notesLoadRef.current = { itemId: item.id, loading: false, loaded: false };
-    void listLibraryAnnotations(item.id)
-      .then((next) => {
-        if (resourceGenerationRef.current !== generation) return;
-        setAnnotations((current) => {
-          const merged = new Map(next.map((annotation) => [annotation.id, annotation]));
-          for (const annotation of current) merged.set(annotation.id, annotation);
-          return sortAnnotations([...merged.values()]);
-        });
-      })
-      .catch((loadError) => {
-        if (resourceGenerationRef.current === generation) {
-          setAnnotationError(loadError instanceof Error ? loadError.message : String(loadError));
-        }
-      })
-      .finally(() => {
-        if (resourceGenerationRef.current === generation) setAnnotationsLoading(false);
-      });
-    return () => {
-      resourceGenerationRef.current += 1;
-      if (notesLoadRef.current.itemId === item.id) {
-        notesLoadRef.current = { itemId: "", loading: false, loaded: false };
-      }
-    };
-  }, [item.id]);
-
-  useEffect(() => {
     const container = scrollContainerRef.current;
     if (!container) return;
     const updateWidth = () => setReaderWidth(Math.round(container.clientWidth));
@@ -281,19 +170,8 @@ export function PdfReader({ item, onOpenExternal, onOpenNote, onAskSelection }: 
   }, []);
 
   useEffect(() => {
-    let disposed = false;
-    let loadingTask: ReturnType<typeof getDocument> | null = null;
-    let transport: TauriPdfRangeTransport | null = null;
-    let destroyStarted = false;
-    let terminalError = "";
+    let cancelled = false;
     const defaultPosition: ReadingPosition = { pageIndex: 0, scrollOffset: 0, zoom: 1 };
-
-    const destroyLoadingTask = async () => {
-      if (!loadingTask || destroyStarted) return;
-      destroyStarted = true;
-      await loadingTask.destroy().catch(() => undefined);
-    };
-
     setLoading(true);
     setError("");
     setPdf(null);
@@ -304,96 +182,34 @@ export function PdfReader({ item, onOpenExternal, onOpenNote, onAskSelection }: 
     readingStateReadyRef.current = false;
     pendingRestoreRef.current = null;
     restoringRef.current = true;
-
-    const load = async () => {
-      if (!isLibraryRuntime()) {
-        throw new Error(t("pdf.desktopOnly"));
-      }
-      if (!Number.isSafeInteger(item.file.fileSize) || item.file.fileSize <= 0) {
-        throw new Error(t("pdf.invalidSize"));
-      }
-      const initialEnd = Math.min(item.file.fileSize, RANGE_CHUNK_SIZE);
-      const [initialData, savedState] = await Promise.all([
-        readLibraryPdfRange(item.id, 0, initialEnd),
-        getLibraryReadingState(item.id).catch(() => ({
-          itemId: item.id,
-          pageIndex: 0,
-          scrollOffset: 0,
-          zoom: 1,
-          updatedAt: 0,
-        })),
-      ]);
-      if (disposed) return;
-      const position: ReadingPosition = {
-        pageIndex: savedState.pageIndex,
-        scrollOffset: savedState.scrollOffset,
-        zoom: savedState.zoom,
-      };
-      readingRef.current = position;
-      readingStateReadyRef.current = true;
-      pendingRestoreRef.current = position;
-      setZoom(position.zoom);
-      setCurrentPage(position.pageIndex + 1);
-      transport = new TauriPdfRangeTransport(
-        item.id,
-        item.file.fileSize,
-        initialData,
-        () => {
-          if (disposed) return;
-          terminalError = t("pdf.readFailed");
-          setError(terminalError);
-          setLoading(false);
-          void destroyLoadingTask();
-        },
-      );
-      loadingTask = getDocument({
-        range: transport,
-        rangeChunkSize: RANGE_CHUNK_SIZE,
-        disableStream: true,
-        disableAutoFetch: true,
-        cMapUrl: new URL("/pdfjs/cmaps/", window.location.href).toString(),
-        cMapPacked: true,
-        standardFontDataUrl: new URL("/pdfjs/standard_fonts/", window.location.href).toString(),
-        wasmUrl: new URL("/pdfjs/wasm/", window.location.href).toString(),
-        useWorkerFetch: true,
-        useWasm: true,
-        isImageDecoderSupported: false,
-        maxImageSize: 25_000_000,
-      });
-      loadingTask.onPassword = () => {
-        terminalError = t("pdf.passwordRequired");
-        setError(terminalError);
-        void destroyLoadingTask();
-      };
-      const loadedPdf = await loadingTask.promise;
-      if (disposed) {
-        await destroyLoadingTask();
-        return;
-      }
-      setPdf(loadedPdf);
-      setPageCount(loadedPdf.numPages);
-      setCurrentPage(Math.min(loadedPdf.numPages, position.pageIndex + 1));
-      const rawOutline = await loadedPdf.getOutline().catch(() => null);
-      if (!disposed) setOutline(normalizeOutline(rawOutline ?? [], t));
-    };
-
-    void load()
+    const handle = loadPdfDocument(item, t);
+    void handle.promise
+      .then(({ pdf: loadedPdf, position, outline: nextOutline }) => {
+        if (cancelled) return;
+        readingRef.current = position;
+        readingStateReadyRef.current = true;
+        pendingRestoreRef.current = position;
+        setZoom(position.zoom);
+        setCurrentPage(position.pageIndex + 1);
+        setPdf(loadedPdf);
+        setPageCount(loadedPdf.numPages);
+        setCurrentPage(Math.min(loadedPdf.numPages, position.pageIndex + 1));
+        setOutline(nextOutline);
+      })
       .catch((loadError) => {
-        if (!disposed) {
-          setError(terminalError || (loadError instanceof Error ? loadError.message : t("pdf.loadFailed")));
-        }
+        if (cancelled) return;
+        setError(loadError instanceof Error ? loadError.message : t("pdf.loadFailed"));
       })
       .finally(() => {
-        if (!disposed) setLoading(false);
+        if (!cancelled) setLoading(false);
       });
 
     return () => {
-      disposed = true;
+      cancelled = true;
       searchGenerationRef.current += 1;
-      transport?.dispose();
-      void destroyLoadingTask();
+      handle.dispose();
     };
-  }, [item.file.fileSize, item.id, t]);
+  }, [item.id, item.file.fileSize, t]);
 
   useEffect(() => {
     const position = pendingRestoreRef.current;
@@ -548,11 +364,11 @@ export function PdfReader({ item, onOpenExternal, onOpenNote, onAskSelection }: 
       text: textSelection.text,
     });
     if (!reference) {
-      setAnnotationError(t("pdf.referenceSelectionFailed"));
+      resources.setAnnotationError(t("pdf.referenceSelectionFailed"));
       return;
     }
     if (typeof onAskSelection !== "function") {
-      setAnnotationError(t("pdf.chatUnavailable"));
+      resources.setAnnotationError(t("pdf.chatUnavailable"));
       return;
     }
     onAskSelection(reference);
@@ -603,62 +419,37 @@ export function PdfReader({ item, onOpenExternal, onOpenNote, onAskSelection }: 
 
   const annotationsByPage = useMemo(() => {
     const grouped = new Map<number, LibraryAnnotation[]>();
-    for (const annotation of annotations) {
+    for (const annotation of resources.annotations) {
       const pageAnnotations = grouped.get(annotation.pageIndex);
       if (pageAnnotations) pageAnnotations.push(annotation);
       else grouped.set(annotation.pageIndex, [annotation]);
     }
     return grouped;
-  }, [annotations]);
+  }, [resources.annotations]);
 
   const createTextAnnotation = useCallback(async (kind: Exclude<LibraryAnnotationKind, "area">) => {
     const selection = textSelection;
-    if (!selection || annotationCreateRef.current) return;
-    annotationCreateRef.current = true;
-    setAnnotationError("");
-    try {
-      const annotation = await createLibraryAnnotation({
-        itemId: item.id,
-        kind,
-        pageIndex: selection.pageIndex,
-        color: annotationColor,
-        text: selection.text,
-        rects: selection.rects,
-      });
-      setAnnotations((current) => sortAnnotations([...current, annotation]));
+    if (!selection) return;
+    const annotation = await resources.createAnnotation(
+      kind,
+      selection.pageIndex,
+      annotationColor,
+      selection.text,
+      selection.rects,
+    );
+    if (annotation) {
       setTextSelection(null);
       window.getSelection()?.removeAllRanges();
-    } catch (createError) {
-      setAnnotationError(createError instanceof Error ? createError.message : String(createError));
-    } finally {
-      annotationCreateRef.current = false;
     }
-  }, [annotationColor, item.id, textSelection]);
+  }, [annotationColor, resources, textSelection]);
 
   const createAreaAnnotation = useCallback(async (
     pageIndex: number,
     rect: LibraryAnnotationRect,
   ) => {
-    if (annotationCreateRef.current) return;
-    annotationCreateRef.current = true;
-    setAnnotationError("");
-    try {
-      const annotation = await createLibraryAnnotation({
-        itemId: item.id,
-        kind: "area",
-        pageIndex,
-        color: annotationColor,
-        text: "",
-        rects: [rect],
-      });
-      setAnnotations((current) => sortAnnotations([...current, annotation]));
-      setAnnotationMode("text");
-    } catch (createError) {
-      setAnnotationError(createError instanceof Error ? createError.message : String(createError));
-    } finally {
-      annotationCreateRef.current = false;
-    }
-  }, [annotationColor, item.id]);
+    const annotation = await resources.createAnnotation("area", pageIndex, annotationColor, "", [rect]);
+    if (annotation) setAnnotationMode("text");
+  }, [annotationColor, resources]);
 
   const goToAnnotation = useCallback((annotation: LibraryAnnotation) => {
     goToPage(annotation.pageIndex);
@@ -676,97 +467,6 @@ export function PdfReader({ item, onOpenExternal, onOpenNote, onAskSelection }: 
     window.getSelection()?.removeAllRanges();
   }, []);
 
-  const updateAnnotationAction = useCallback(async (
-    annotationId: string,
-    color: LibraryAnnotationColor,
-    comment: string,
-  ) => {
-    setAnnotationError("");
-    try {
-      const annotation = await updateLibraryAnnotation({ annotationId, color, comment });
-      setAnnotations((current) => current.map((candidate) => (
-        candidate.id === annotation.id ? annotation : candidate
-      )));
-      return annotation;
-    } catch (updateError) {
-      setAnnotationError(updateError instanceof Error ? updateError.message : String(updateError));
-      throw updateError;
-    }
-  }, []);
-
-  const deleteAnnotationAction = useCallback(async (annotationId: string) => {
-    setAnnotationError("");
-    try {
-      const removed = await deleteLibraryAnnotation(annotationId);
-      if (removed) setAnnotations((current) => current.filter((item) => item.id !== annotationId));
-      return removed;
-    } catch (deleteError) {
-      setAnnotationError(deleteError instanceof Error ? deleteError.message : String(deleteError));
-      throw deleteError;
-    }
-  }, []);
-
-  const loadNotesAction = useCallback(async () => {
-    const current = notesLoadRef.current;
-    if (current.itemId === item.id && (current.loading || current.loaded)) return;
-    notesLoadRef.current = { itemId: item.id, loading: true, loaded: false };
-    setNotesLoading(true);
-    setNoteError("");
-    try {
-      const next = await listLibraryNotes(item.id);
-      if (notesLoadRef.current.itemId !== item.id) return;
-      notesLoadRef.current = { itemId: item.id, loading: false, loaded: true };
-      setNotes(next);
-      setNotesLoaded(true);
-    } catch (loadError) {
-      if (notesLoadRef.current.itemId !== item.id) return;
-      notesLoadRef.current = { itemId: item.id, loading: false, loaded: false };
-      setNoteError(loadError instanceof Error ? loadError.message : String(loadError));
-    } finally {
-      if (notesLoadRef.current.itemId === item.id) setNotesLoading(false);
-    }
-  }, [item.id]);
-
-  const createNoteAction = useCallback(async (title: string, content: string) => {
-    setNoteError("");
-    try {
-      const note = await createLibraryNote({ itemId: item.id, title, content });
-      notesLoadRef.current = { itemId: item.id, loading: false, loaded: true };
-      setNotesLoaded(true);
-      setNotes((current) => [noteSummary(note), ...current]);
-      return note;
-    } catch (createError) {
-      setNoteError(createError instanceof Error ? createError.message : String(createError));
-      throw createError;
-    }
-  }, [item.id]);
-
-  const updateNoteAction = useCallback(async (noteId: string, title: string, content: string) => {
-    setNoteError("");
-    try {
-      const note = await updateLibraryNote({ noteId, title, content });
-      setNotes((current) => current.map((candidate) => (
-        candidate.id === note.id ? noteSummary(note) : candidate
-      )));
-      return note;
-    } catch (updateError) {
-      setNoteError(updateError instanceof Error ? updateError.message : String(updateError));
-      throw updateError;
-    }
-  }, []);
-
-  const deleteNoteAction = useCallback(async (noteId: string) => {
-    setNoteError("");
-    try {
-      const removed = await deleteLibraryNote(noteId);
-      if (removed) setNotes((current) => current.filter((note) => note.id !== noteId));
-      return removed;
-    } catch (deleteError) {
-      setNoteError(deleteError instanceof Error ? deleteError.message : String(deleteError));
-      throw deleteError;
-    }
-  }, []);
-
   useEffect(() => {
     if (!pdf) {
       unregister(item.id);
@@ -779,13 +479,13 @@ export function PdfReader({ item, onOpenExternal, onOpenNote, onAskSelection }: 
       currentPage,
       zoom,
       outline,
-      annotations,
-      notes,
-      annotationsLoading,
-      notesLoading,
-      notesLoaded,
-      annotationError,
-      noteError,
+      annotations: resources.annotations,
+      notes: resources.notes,
+      annotationsLoading: resources.annotationsLoading,
+      notesLoading: resources.notesLoading,
+      notesLoaded: resources.notesLoaded,
+      annotationError: resources.annotationError,
+      noteError: resources.noteError,
       annotationMode,
       annotationColor,
       goToPage,
@@ -793,42 +493,30 @@ export function PdfReader({ item, onOpenExternal, onOpenNote, onAskSelection }: 
       goToAnnotation,
       setAnnotationMode: setReaderAnnotationMode,
       setAnnotationColor,
-      updateAnnotation: updateAnnotationAction,
-      deleteAnnotation: deleteAnnotationAction,
-      loadNotes: loadNotesAction,
-      createNote: createNoteAction,
-      updateNote: updateNoteAction,
-      deleteNote: deleteNoteAction,
+      updateAnnotation: resources.updateAnnotation,
+      deleteAnnotation: resources.deleteAnnotation,
+      loadNotes: resources.loadNotes,
+      createNote: resources.createNote,
+      updateNote: resources.updateNote,
+      deleteNote: resources.deleteNote,
       openNote: onOpenNote,
     });
   }, [
     annotationColor,
-    annotationError,
     annotationMode,
-    annotations,
-    annotationsLoading,
-    createNoteAction,
     currentPage,
-    deleteAnnotationAction,
-    deleteNoteAction,
     goToAnnotation,
     goToPage,
     item.id,
-    loadNotesAction,
-    noteError,
-    notes,
-    notesLoaded,
-    notesLoading,
     onOpenNote,
     outline,
     pageCount,
     pdf,
     register,
     readPageText,
+    resources,
     setReaderAnnotationMode,
     unregister,
-    updateAnnotationAction,
-    updateNoteAction,
     zoom,
   ]);
 
@@ -843,108 +531,23 @@ export function PdfReader({ item, onOpenExternal, onOpenNote, onAskSelection }: 
       className={`mnemora-pdf-reader mnemora-pdf-color-${annotationColor}`}
       aria-label={t("pdf.reader", { title: item.title })}
     >
-      <header className="mnemora-pdf-toolbar">
-        <div className="mnemora-pdf-toolbar-group">
-          <button
-            className="icon-button"
-            type="button"
-            title={t("common.previous")}
-            aria-label={t("common.previous")}
-            disabled={!pdf || currentPage <= 1}
-            onClick={() => submitPage(String(currentPage - 1))}
-          >
-            <ArrowUp size={16} />
-          </button>
-          <label className="mnemora-pdf-page-input">
-            <input
-              key={currentPage}
-              type="number"
-              min={1}
-              max={Math.max(1, pageCount)}
-              defaultValue={currentPage}
-              aria-label={t("pdf.currentPage")}
-              disabled={!pdf}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") submitPage(event.currentTarget.value);
-              }}
-            />
-            <span>/ {pageCount || "-"}</span>
-          </label>
-          <button
-            className="icon-button"
-            type="button"
-            title={t("common.next")}
-            aria-label={t("common.next")}
-            disabled={!pdf || currentPage >= pageCount}
-            onClick={() => submitPage(String(currentPage + 1))}
-          >
-            <ArrowDown size={16} />
-          </button>
-        </div>
-
-        <div className="mnemora-pdf-toolbar-title" title={item.title}>
-          <BookOpen size={16} />
-          <span>{item.title}</span>
-        </div>
-
-        <div className="mnemora-pdf-toolbar-group">
-          <div className="mnemora-pdf-annotation-colors" aria-label={t("pdf.annotationColor")}>
-            {PDF_ANNOTATION_COLORS.map((color) => (
-              <button
-                className={`mnemora-pdf-color-swatch mnemora-pdf-color-${color.id}${annotationColor === color.id ? " is-active" : ""}`}
-                type="button"
-                title={color.label}
-                aria-label={t("pdf.annotationColorLabel", { color: color.label })}
-                aria-pressed={annotationColor === color.id}
-                disabled={!pdf}
-                key={color.id}
-                onClick={() => setAnnotationColor(color.id)}
-              />
-            ))}
-          </div>
-          <button
-            className={`icon-button${annotationMode === "area" ? " is-active" : ""}`}
-            type="button"
-            title={annotationMode === "area" ? t("pdf.exitArea") : t("pdf.areaAnnotation")}
-            aria-label={annotationMode === "area" ? t("pdf.exitArea") : t("pdf.areaAnnotation")}
-            aria-pressed={annotationMode === "area"}
-            disabled={!pdf}
-            onClick={() => setReaderAnnotationMode(annotationMode === "area" ? "text" : "area")}
-          >
-            <ScanLine size={16} />
-          </button>
-          <button className="icon-button" type="button" title={t("pdf.zoomOut")} aria-label={t("pdf.zoomOut")} disabled={!pdf} onClick={() => updateZoom(zoom - 0.1)}>
-            <Minus size={16} />
-          </button>
-          <span className="mnemora-pdf-zoom-label">{Math.round(zoom * 100)}%</span>
-          <button className="icon-button" type="button" title={t("pdf.zoomIn")} aria-label={t("pdf.zoomIn")} disabled={!pdf} onClick={() => updateZoom(zoom + 0.1)}>
-            <Plus size={16} />
-          </button>
-          <button className="icon-button" type="button" title={t("pdf.fitWidth")} aria-label={t("pdf.fitWidth")} disabled={!pdf} onClick={() => updateZoom(1)}>
-            <MoveHorizontal size={16} />
-          </button>
-          <button
-            className="icon-button"
-            type="button"
-            title={t("work.openSystem")}
-            aria-label={t("work.openSystem")}
-            onClick={() => void onOpenExternal(item.id).catch(() => undefined)}
-          >
-            <ExternalLink size={16} />
-          </button>
-          <button
-            className={`icon-button${searchOpen ? " is-active" : ""}`}
-            type="button"
-            title={t("pdf.search")}
-            aria-label={t("pdf.search")}
-            aria-pressed={searchOpen}
-            disabled={!pdf}
-            onClick={() => setSearchOpen((open) => !open)}
-          >
-            <Search size={16} />
-          </button>
-        </div>
-      </header>
+      <PdfReaderToolbar
+        title={item.title}
+        pdfAvailable={Boolean(pdf)}
+        currentPage={currentPage}
+        pageCount={pageCount}
+        zoom={zoom}
+        annotationMode={annotationMode}
+        annotationColor={annotationColor}
+        searchOpen={searchOpen}
+        t={t}
+        onPageSubmit={submitPage}
+        onAnnotationModeChange={setReaderAnnotationMode}
+        onAnnotationColorChange={setAnnotationColor}
+        onZoomChange={updateZoom}
+        onOpenExternal={() => void onOpenExternal(item.id).catch(() => undefined)}
+        onSearchToggle={() => setSearchOpen((open) => !open)}
+      />
 
       {searchOpen ? (
         <div className="mnemora-pdf-search-bar">
@@ -983,10 +586,10 @@ export function PdfReader({ item, onOpenExternal, onOpenNote, onAskSelection }: 
         </div>
       ) : null}
 
-      {annotationError ? (
+      {resources.annotationError ? (
         <div className="mnemora-pdf-annotation-error" role="alert">
-          <span>{annotationError}</span>
-          <button type="button" aria-label={t("pdf.closeAnnotationError")} onClick={() => setAnnotationError("")}>
+          <span>{resources.annotationError}</span>
+          <button type="button" aria-label={t("pdf.closeAnnotationError")} onClick={() => resources.setAnnotationError("")}>
             <X size={14} />
           </button>
         </div>
@@ -1092,49 +695,6 @@ export function PdfReader({ item, onOpenExternal, onOpenNote, onAskSelection }: 
       </div>
     </section>
   );
-}
-
-function normalizeOutline(items: Array<{
-  title: string;
-  dest: string | unknown[] | null;
-  items: Array<unknown>;
-}>, t: (key: TranslationKey, values?: Record<string, string | number>) => string): PdfOutlineEntry[] {
-  const visit = (entries: Array<{
-    title: string;
-    dest: string | unknown[] | null;
-    items: Array<unknown>;
-  }>, level: number, prefix: string): PdfOutlineEntry[] => entries.map((entry, index) => ({
-    id: `${prefix}-${index}`,
-    title: entry.title.trim() || t("pdf.unnamedSection"),
-    level,
-    dest: entry.dest,
-    children: visit(
-      (entry.items ?? []) as Array<{ title: string; dest: string | unknown[] | null; items: Array<unknown> }>,
-      level + 1,
-      `${prefix}-${index}`,
-    ),
-  }));
-  return visit(items, 0, "outline");
-}
-
-function noteSummary(note: LibraryNote): LibraryNoteSummary {
-  return {
-    id: note.id,
-    itemId: note.itemId,
-    itemTitle: note.itemTitle,
-    title: note.title,
-    contentPreview: note.content.slice(0, 600),
-    contentChars: note.content.length,
-    groupName: note.groupName,
-    createdAt: note.createdAt,
-    updatedAt: note.updatedAt,
-  };
-}
-
-function sortAnnotations(annotations: LibraryAnnotation[]) {
-  return [...annotations].sort((left, right) => (
-    left.pageIndex - right.pageIndex || left.createdAt - right.createdAt
-  ));
 }
 
 export default PdfReader;

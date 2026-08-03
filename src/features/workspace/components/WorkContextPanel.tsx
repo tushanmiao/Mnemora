@@ -37,7 +37,7 @@ import { createLiteratureReference, MAX_LINKED_LIBRARY_ITEMS } from "../../chat/
 import type { WorkPdfDocument } from "../types";
 import "../styles/work-context-panel.css";
 
-type WorkContextPanelProps = {
+export type WorkContextPanelProps = {
   activeView: WorkContextView;
   resourceLabel: string;
   resourceCount: number;

@@ -6,7 +6,7 @@ import {
 } from "../../layout/components/PanelResizeHandle";
 import "../styles/notes-workspace.css";
 
-type NotesContextPanelProps = {
+export type NotesContextPanelProps = {
   chatPanel: ReactNode;
   onClose: () => void;
   resize: Omit<PanelResizeHandleProps, "edge" | "label">;

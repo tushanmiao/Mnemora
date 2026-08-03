@@ -1,14 +1,10 @@
-import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
+import { useCallback, useState, type MutableRefObject } from "react";
 import {
-  cancelChatStream,
   completeChat,
   normalizeModelError,
-  startChatStream,
-  type ModelStreamEvent,
 } from "../api/chat";
 import type { AppSettings } from "../../../types/appSettings";
 import type {
-  ActivatedSkillSnapshot,
   ChatMessage,
   LiteratureReference,
   NoteReference,
@@ -16,25 +12,10 @@ import type {
 import type { ChatAttachment } from "../../../types/attachment";
 import type { Conversation } from "../../../types/conversation";
 import type { SkillActivationSelection, SkillSummary } from "../../../types/skill";
-import type {
-  ProviderConfig,
-  ProviderModelConfig,
-} from "../../../types/modelSettings";
 import type { WorkspaceMode } from "../../workspace/types";
 import {
-  appendStreamingDelta,
-  appendStreamingReasoningDelta,
-  consumeStreamingMessage,
-  resetAllStreamingMessages,
-  startStreamingMessage,
-} from "../stores/streamingStore";
-import { estimateConversationContext } from "../utils/contextUsage";
-import {
   activeContextMessages,
-  AUTO_COMPRESSION_RATIO,
   compressionCandidates,
-  compressionTranscript,
-  contextSummaryPrompt,
   toModelMessages,
 } from "../utils/contextCompression";
 import {
@@ -42,21 +23,17 @@ import {
   refreshActivatedSkillSnapshots,
   resolveSkillActivation,
 } from "../utils/skillActivation";
-import { composeChatSystemPrompt } from "../utils/systemPrompt";
+import {
+  compressConversation,
+  composeSystemPrompt,
+  createAssistantMessage,
+  createTemporaryTitle,
+  resetCompression,
+  type SelectedModel,
+} from "../runtime/generationHelpers";
+import { useStreamingRun } from "./useStreamingRun";
 
-const MAX_TEMPORARY_TITLE_LENGTH = 24;
-
-export type SelectedModel = {
-  provider: ProviderConfig;
-  model: ProviderModelConfig;
-};
-
-type ActiveStreamRun = {
-  runId: string;
-  conversationId: string;
-  messageId: string;
-  terminalReceived: boolean;
-};
+export type { SelectedModel } from "../runtime/generationHelpers";
 
 type PreparedGeneration = {
   runningConversation: Conversation;
@@ -82,107 +59,6 @@ type UseChatRuntimeOptions = {
   releaseConversation: (conversationId: string) => void;
 };
 
-function createTemporaryTitle(content: string) {
-  const characters = Array.from(content.replace(/\s+/g, " ").trim());
-  if (characters.length <= MAX_TEMPORARY_TITLE_LENGTH) return characters.join("");
-  return `${characters.slice(0, MAX_TEMPORARY_TITLE_LENGTH).join("")}...`;
-}
-
-function composeSystemPrompt(settings: AppSettings, conversation: Conversation) {
-  return composeChatSystemPrompt({
-    globalPrompt: settings.systemPrompt,
-    conversationPrompt: conversation.systemPrompt,
-    contextSummary: contextSummaryPrompt(conversation),
-    responseLanguage: settings.responseLanguage,
-  });
-}
-
-function createAssistantMessage(
-  conversationId: string,
-  selectedModel: SelectedModel,
-  messageId: string = crypto.randomUUID(),
-  activatedSkills: ActivatedSkillSnapshot[] = [],
-): ChatMessage {
-  const now = Date.now();
-  return {
-    id: messageId,
-    conversationId,
-    role: "assistant",
-    content: "",
-    status: "pending",
-    createdAt: now,
-    updatedAt: now,
-    modelId: selectedModel.model.id,
-    modelSnapshot: {
-      id: selectedModel.model.id,
-      apiModel: selectedModel.model.apiModel,
-      displayName: selectedModel.model.displayName,
-      providerId: selectedModel.provider.id,
-      providerName: selectedModel.provider.name,
-    },
-    activatedSkills,
-  };
-}
-
-function resetCompression(conversation: Conversation): Conversation {
-  return {
-    ...conversation,
-    contextSummary: "",
-    compressedUntilMessageId: null,
-    contextCompressionCount: 0,
-  };
-}
-
-async function compressConversation(
-  settings: AppSettings,
-  conversation: Conversation,
-  selectedModel: SelectedModel,
-  pendingUserMessage: ChatMessage | null,
-  options: { force?: boolean; focus?: string } = {},
-) {
-  const contextWindowTokens = selectedModel.model.contextWindowTokens;
-  if (!options.force) {
-    if (!contextWindowTokens) return null;
-    const projectedMessages = pendingUserMessage
-      ? [...activeContextMessages(conversation), pendingUserMessage]
-      : activeContextMessages(conversation);
-    const projected = estimateConversationContext(
-      projectedMessages,
-      composeSystemPrompt(settings, conversation),
-    );
-    if (projected.tokens / contextWindowTokens < AUTO_COMPRESSION_RATIO) return null;
-  }
-
-  const candidates = compressionCandidates(conversation);
-  const boundary = candidates[candidates.length - 1];
-  if (!boundary) return null;
-  const response = await completeChat({
-    providerId: selectedModel.provider.id,
-    modelId: selectedModel.model.id,
-    conversationId: conversation.id,
-    messageId: crypto.randomUUID(),
-    operation: "contextCompression",
-    systemPrompt: [
-      "你负责压缩对话上下文。",
-      "保留事实、用户偏好、约束、关键结论、文献名称与页码、代码或文件名称、待办事项和未解决问题。",
-      "删除寒暄、重复内容和无关细节。不要回答对话中的问题，只输出可供后续模型继续工作的中文摘要。",
-      options.focus?.trim() ? `用户要求本次压缩重点保留：${options.focus.trim()}` : "",
-    ].filter(Boolean).join("\n"),
-    messages: [{
-      role: "user",
-      content: compressionTranscript(conversation.contextSummary, candidates),
-    }],
-    options: {
-      maxOutputTokens: Math.min(4_096, settings.maxOutputTokens),
-      thinkingEnabled: false,
-    },
-  });
-  return {
-    summary: response.text.trim(),
-    boundaryMessageId: boundary.id,
-  };
-}
-
 export function useChatRuntime({
   appSettings,
   workspaceMode,
@@ -197,144 +73,12 @@ export function useChatRuntime({
   releaseConversation,
 }: UseChatRuntimeOptions) {
   const [requestInFlight, setRequestInFlight] = useState(false);
-  const [stopRequested, setStopRequested] = useState(false);
-  const activeStreamRunRef = useRef<ActiveStreamRun | null>(null);
-
-  useEffect(() => () => {
-    const activeRun = activeStreamRunRef.current;
-    activeStreamRunRef.current = null;
-    requestInFlightRef.current = false;
-    resetAllStreamingMessages();
-    if (activeRun && !activeRun.terminalReceived) {
-      void cancelChatStream(activeRun.runId).catch(() => undefined);
-    }
-    if (activeRun) releaseConversation(activeRun.conversationId);
-  }, [releaseConversation, requestInFlightRef]);
-
-  const finalizeStreamRun = useCallback((
-    run: ActiveStreamRun,
-    terminal: {
-      status: "completed" | "stopped" | "error";
-      usage?: ChatMessage["usage"];
-      errorMessage?: string;
-    },
-  ) => {
-    const streamedMessage = consumeStreamingMessage(run.messageId);
-    const conversation = conversationsRef.current.find((item) => item.id === run.conversationId);
-    if (!conversation) return;
-    const updatedAt = Date.now();
-    const nextConversation: Conversation = {
-      ...conversation,
-      messages: conversation.messages.map((message) => (
-        message.id === run.messageId
-          ? {
-              ...message,
-              content: streamedMessage?.content ?? message.content,
-              reasoning: streamedMessage?.reasoning || message.reasoning,
-              status: terminal.status,
-              usage: terminal.usage ?? message.usage,
-              toolTraces: message.toolTraces?.map(({ approvalId: _approvalId, ...trace }) => trace),
-              errorMessage: terminal.errorMessage,
-              updatedAt,
-            }
-          : message
-      )),
-      updatedAt,
-    };
-    cacheConversation(nextConversation);
-    saveStableConversation(nextConversation);
-  }, [cacheConversation, conversationsRef, saveStableConversation]);
-
-  const updateStreamingMessageMetadata = useCallback((
-    run: ActiveStreamRun,
-    update: (message: ChatMessage) => ChatMessage,
-  ) => {
-    const conversation = conversationsRef.current.find((item) => item.id === run.conversationId);
-    if (!conversation) return;
-    cacheConversation({
-      ...conversation,
-      messages: conversation.messages.map((message) => (
-        message.id === run.messageId ? update(message) : message
-      )),
-      updatedAt: Date.now(),
-    });
-  }, [cacheConversation, conversationsRef]);
-
-  const handleStreamEvent = useCallback((event: ModelStreamEvent) => {
-    const run = activeStreamRunRef.current;
-    if (
-      !run
-      || event.runId !== run.runId
-      || event.conversationId !== run.conversationId
-      || event.messageId !== run.messageId
-    ) return;
-    if (run.terminalReceived) return;
-
-    switch (event.type) {
-      case "started":
-        return;
-      case "textDelta":
-        appendStreamingDelta(run.messageId, event.delta);
-        return;
-      case "reasoningDelta":
-        appendStreamingReasoningDelta(run.messageId, event.delta);
-        return;
-      case "toolTrace":
-      case "toolApprovalRequested":
-        updateStreamingMessageMetadata(run, (message) => {
-          const nextTrace = {
-            ...event.trace,
-            approvalId: event.type === "toolApprovalRequested" ? event.approvalId : undefined,
-          };
-          const traces = message.toolTraces ?? [];
-          const existing = traces.findIndex((trace) => trace.callId === nextTrace.callId);
-          return {
-            ...message,
-            toolTraces: existing < 0
-              ? [...traces, nextTrace]
-              : traces.map((trace, index) => index === existing ? nextTrace : trace),
-          };
-        });
-        return;
-      case "skillActivated":
-        updateStreamingMessageMetadata(run, (message) => (
-          message.activatedSkills?.some((skill) => skill.id === event.skillId)
-            ? message
-            : {
-                ...message,
-                activatedSkills: [
-                  ...(message.activatedSkills ?? []),
-                  {
-                    id: event.skillId,
-                    name: event.name,
-                    version: event.version,
-                    contentHash: event.contentHash,
-                    activation: "model" as const,
-                  },
-                ],
-              }
-        ));
-        return;
-      case "completed":
-        run.terminalReceived = true;
-        finalizeStreamRun(run, { status: "completed", usage: event.usage });
-        return;
-      case "stopped":
-        run.terminalReceived = true;
-        finalizeStreamRun(run, { status: "stopped" });
-        return;
-      case "error":
-        run.terminalReceived = true;
-        finalizeStreamRun(run, { status: "error", errorMessage: event.error.message });
-    }
-  }, [finalizeStreamRun, updateStreamingMessageMetadata]);
-
-  const stopGeneration = useCallback(() => {
-    const run = activeStreamRunRef.current;
-    if (!run || stopRequested) return;
-    setStopRequested(true);
-    void cancelChatStream(run.runId).catch(() => setStopRequested(false));
-  }, [stopRequested]);
+  const streaming = useStreamingRun({
+    conversationsRef,
+    cacheConversation,
+    saveStableConversation,
+    releaseConversation,
+  });
 
   const runPreparedGeneration = useCallback(async ({
     runningConversation: initialRunningConversation,
@@ -348,11 +92,11 @@ export function useChatRuntime({
     const targetConversationId = initialRunningConversation.id;
     protectConversation(targetConversationId);
     if (appSettings.streamEnabled) {
-      startStreamingMessage(assistantMessageId);
+      streaming.prepareStreamingMessage(assistantMessageId);
     }
     requestInFlightRef.current = true;
     setRequestInFlight(true);
-    setStopRequested(false);
+    streaming.resetStopRequested();
     let runningConversation = initialRunningConversation;
     cacheConversation(runningConversation);
     saveStableConversation({
@@ -360,7 +104,6 @@ export function useChatRuntime({
       messages: runningConversation.messages.filter((message) => message.id !== assistantMessageId),
     });
 
-    let streamRun: ActiveStreamRun | null = null;
     try {
       const compression = await compressConversation(
         appSettings,
@@ -401,22 +144,7 @@ export function useChatRuntime({
       };
 
       if (appSettings.streamEnabled) {
-        streamRun = {
-          runId: crypto.randomUUID(),
-          conversationId: targetConversationId,
-          messageId: assistantMessageId,
-          terminalReceived: false,
-        };
-        activeStreamRunRef.current = streamRun;
-        await startChatStream({
-          runId: streamRun.runId,
-          conversationId: streamRun.conversationId,
-          messageId: streamRun.messageId,
-          completion: completionRequest,
-        }, handleStreamEvent);
-        if (!streamRun.terminalReceived) {
-          throw new Error("流式请求结束，但没有收到完成、停止或错误事件。");
-        }
+        await streaming.runStream(targetConversationId, assistantMessageId, completionRequest);
         return;
       }
 
@@ -462,16 +190,6 @@ export function useChatRuntime({
       }
     } catch (error) {
       const modelError = normalizeModelError(error);
-      if (streamRun) {
-        if (!streamRun.terminalReceived) {
-          streamRun.terminalReceived = true;
-          finalizeStreamRun(streamRun, { status: "error", errorMessage: modelError.message });
-        }
-        return;
-      }
-      if (appSettings.streamEnabled) {
-        consumeStreamingMessage(assistantMessageId);
-      }
       const conversation = conversationsRef.current.find((item) => item.id === targetConversationId);
       if (conversation) {
         const failedAt = Date.now();
@@ -488,23 +206,21 @@ export function useChatRuntime({
         saveStableConversation(failedConversation);
       }
     } finally {
-      if (activeStreamRunRef.current?.runId === streamRun?.runId) activeStreamRunRef.current = null;
       requestInFlightRef.current = false;
       setRequestInFlight(false);
-      setStopRequested(false);
+      streaming.resetStopRequested();
       releaseConversation(targetConversationId);
     }
   }, [
     appSettings,
     cacheConversation,
     conversationsRef,
-    finalizeStreamRun,
-    handleStreamEvent,
     protectConversation,
     releaseConversation,
     requestInFlightRef,
     saveStableConversation,
     skills,
+    streaming,
     workspaceMode,
   ]);
 
@@ -804,9 +520,9 @@ export function useChatRuntime({
 
   return {
     requestInFlight,
-    stopRequested,
+    stopRequested: streaming.stopRequested,
     sendMessage,
-    stopGeneration,
+    stopGeneration: streaming.stopGeneration,
     editMessage,
     regenerateMessage,
     deleteMessage,

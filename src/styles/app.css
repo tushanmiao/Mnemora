@@ -201,6 +201,47 @@ button {
   font-size: 12px;
 }
 
+.workspace-view-error {
+  align-content: center;
+  gap: 10px;
+  padding: 24px;
+  text-align: center;
+}
+
+.workspace-view-error strong {
+  color: var(--color-text);
+  font-size: 15px;
+}
+
+.workspace-view-error span {
+  max-width: 520px;
+  color: var(--color-muted);
+  overflow-wrap: anywhere;
+}
+
+.workspace-view-error-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+}
+
+.workspace-view-error-actions button {
+  display: inline-flex;
+  min-height: 34px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-surface-raised);
+  cursor: pointer;
+}
+
+.workspace-view-error-actions button:hover {
+  background: var(--color-hover);
+}
+
 .icon-button {
   display: inline-grid;
   width: 34px;

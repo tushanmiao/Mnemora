@@ -20,7 +20,6 @@ import {
   Pin,
   Plug,
   Search,
-  Settings,
   Sparkles,
   Trash2,
 } from "lucide-react";
@@ -30,7 +29,6 @@ import {
   PanelResizeHandle,
   type PanelResizeHandleProps,
 } from "../../layout/components/PanelResizeHandle";
-import { WorkspaceModeSwitch } from "../../workspace/components/WorkspaceModeSwitch";
 import { WorkSidebarNavigation } from "../../workspace/components/WorkSidebarNavigation";
 import type { WorkLibraryView, WorkspaceMode } from "../../workspace/types";
 import { useI18n } from "../../../i18n/I18nProvider";
@@ -45,8 +43,6 @@ type SidebarProps = {
   workLibraryBusy: boolean;
   workLibraryRuntimeAvailable: boolean;
   collapsed: boolean;
-  settingsOpen: boolean;
-  skillsOpen: boolean;
   userDisplayName: string;
   userAvatar: string;
   conversations: ConversationListItem[];
@@ -62,10 +58,7 @@ type SidebarProps = {
   onSummarizeConversationToNote: (conversationId: string) => void;
   onClearConversations: () => void;
   onLoadMoreConversations: () => void;
-  onOpenSettings: () => void;
   onOpenSkills: () => void;
-  onOpenNotes: () => void;
-  onModeChange: (mode: WorkspaceMode) => void;
   onWorkLibraryViewChange: (view: WorkLibraryView) => void;
   onWorkSearchQueryChange: (query: string) => void;
   onWorkCollectionSelect: (collectionId: string) => void;
@@ -86,8 +79,6 @@ export function Sidebar({
   workLibraryBusy,
   workLibraryRuntimeAvailable,
   collapsed,
-  settingsOpen,
-  skillsOpen,
   userDisplayName,
   userAvatar,
   conversations,
@@ -103,10 +94,7 @@ export function Sidebar({
   onSummarizeConversationToNote,
   onClearConversations,
   onLoadMoreConversations,
-  onOpenSettings,
   onOpenSkills,
-  onOpenNotes,
-  onModeChange,
   onWorkLibraryViewChange,
   onWorkSearchQueryChange,
   onWorkCollectionSelect,
@@ -201,9 +189,7 @@ export function Sidebar({
         </button>
       </div>
 
-      <WorkspaceModeSwitch mode={mode} collapsed={collapsed} onChange={onModeChange} />
-
-      {mode === "chat" || mode === "notes" ? (
+      {mode === "chat" ? (
         <>
           <nav className="sidebar-actions" aria-label={t("sidebar.primary")}>
         <button
@@ -218,15 +204,6 @@ export function Sidebar({
         <button className="sidebar-action" type="button" title={collapsed ? t("sidebar.search") : undefined}>
           <Search size={18} />
           <span>{t("sidebar.search")}</span>
-        </button>
-        <button
-          className={`sidebar-action${mode === "notes" ? " sidebar-action-active" : ""}`}
-          type="button"
-          title={collapsed ? "笔记" : undefined}
-          onClick={onOpenNotes}
-        >
-          <NotebookPen size={18} />
-          <span>笔记</span>
         </button>
         <button
           className="sidebar-action"
@@ -251,10 +228,9 @@ export function Sidebar({
           <div className="extension-list">
             {extensionItems.map(({ id, label, icon: Icon }) => (
               <button
-                className={`extension-item${id === "skills" && skillsOpen ? " extension-item-active" : ""}`}
+                className="extension-item"
                 type="button"
                 key={id}
-                aria-current={id === "skills" && skillsOpen ? "page" : undefined}
                 onClick={id === "skills" ? onOpenSkills : undefined}
               >
                 <Icon size={15} />
@@ -454,15 +430,6 @@ export function Sidebar({
             <span>{t("sidebar.localWorkspace")}</span>
           </div>
         </div>
-        <button
-          className={`icon-button${settingsOpen ? " sidebar-settings-active" : ""}`}
-          type="button"
-          title={t("sidebar.settings")}
-          aria-current={settingsOpen ? "page" : undefined}
-          onClick={onOpenSettings}
-        >
-          <Settings size={18} />
-        </button>
       </div>
 
       {!collapsed ? (

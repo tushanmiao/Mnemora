@@ -42,7 +42,7 @@ const PdfReader = lazy(() => import("../../pdf/components/PdfReader"));
 const NoteListView = lazy(() => import("../../notes/components/NoteListView"));
 const NoteWorkspace = lazy(() => import("../../notes/components/NoteWorkspace"));
 
-type WorkWorkspaceProps = {
+export type WorkWorkspaceProps = {
   libraryView: WorkLibraryView;
   searchQuery: string;
   collectionName: string | null;
