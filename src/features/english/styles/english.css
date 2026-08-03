@@ -15,6 +15,11 @@
 .english-install-actions button { display: inline-flex; align-items: center; gap: 7px; min-height: 36px; padding: 0 14px; border: 1px solid var(--color-accent); border-radius: 7px; color: #fff; background: var(--color-accent); cursor: pointer; }
 .english-install-actions button:disabled { opacity: .6; cursor: default; }
 .english-secondary-button { color: var(--color-text) !important; border-color: var(--color-border) !important; background: var(--color-surface-raised) !important; }
+.english-download-progress { display: grid; gap: 7px; margin-top: 15px; }
+.english-progress-track { height: 7px; overflow: hidden; border-radius: 999px; background: var(--color-border-soft); }
+.english-progress-track span { display: block; height: 100%; border-radius: inherit; background: var(--color-accent); transition: width .18s ease; }
+.english-progress-track.is-indeterminate span { animation: english-progress-indeterminate 1.15s ease-in-out infinite; }
+.english-progress-meta { display: flex; justify-content: space-between; gap: 12px; color: var(--color-muted); font-size: 12px; }
 .english-toolbar { display: flex; align-items: center; gap: 10px; max-width: 1180px; margin: 0 auto 14px; }
 .english-search { display: flex; flex: 1; align-items: center; gap: 8px; min-width: 180px; padding: 0 11px; border: 1px solid var(--color-border); border-radius: 7px; color: var(--color-muted); background: var(--color-surface-raised); }
 .english-search input { width: 100%; min-height: 36px; border: 0; outline: 0; color: var(--color-text); background: transparent; }
@@ -46,4 +51,5 @@
 .english-attribution button { padding: 0; border: 0; color: var(--color-accent); background: transparent; cursor: pointer; }
 .english-spinner { animation: english-spin .9s linear infinite; }
 @keyframes english-spin { to { transform: rotate(360deg); } }
+@keyframes english-progress-indeterminate { from { transform: translateX(-110%); } to { transform: translateX(360%); } }
 @media (max-width: 760px) { .english-view { padding: 26px 18px; } .english-main { grid-template-columns: 1fr; } .english-results { max-height: 270px; border-right: 0; border-bottom: 1px solid var(--color-border); } .english-toolbar { flex-wrap: wrap; } .english-search { flex-basis: 100%; } .english-toolbar select { flex: 1; max-width: none; } }

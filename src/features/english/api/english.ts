@@ -1,4 +1,4 @@
-import { invoke, isTauri } from "@tauri-apps/api/core";
+import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 
 export type EnglishDictionaryStatus = {
   installed: boolean;
@@ -7,6 +7,16 @@ export type EnglishDictionaryStatus = {
   wordCount: number;
   downloadedAt: number | null;
   dataSizeBytes: number;
+};
+
+export type EnglishDownloadProgress = {
+  phase: "download" | "backup" | "builtin" | "decode" | "index" | "complete";
+  downloadedBytes: number;
+  totalBytes: number | null;
+  indexedWords: number;
+  totalWords: number;
+  progress: number | null;
+  finished: boolean;
 };
 
 export type EnglishGroupSummary = { id: number; name: string; count: number };
@@ -55,9 +65,11 @@ export function getEnglishDictionaryStatus() {
   return invoke<EnglishDictionaryStatus>("english_dictionary_status");
 }
 
-export function downloadEnglishDictionary() {
+export function downloadEnglishDictionary(onProgress: (progress: EnglishDownloadProgress) => void) {
   if (!isTauri()) return Promise.reject(new Error("词库下载需要在 Tauri 桌面应用中执行。"));
-  return invoke<EnglishDictionaryStatus>("english_dictionary_download");
+  const channel = new Channel<EnglishDownloadProgress>();
+  channel.onmessage = onProgress;
+  return invoke<EnglishDictionaryStatus>("english_dictionary_download", { onProgress: channel });
 }
 
 export function searchEnglishDictionary(query: string, groupId: number | null, limit = 40) {

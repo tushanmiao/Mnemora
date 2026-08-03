@@ -32,7 +32,8 @@
     "targets": ["nsis", "msi"],
     "createUpdaterArtifacts": true,
     "resources": {
-      "resources/skills": "skills"
+      "resources/skills": "skills",
+      "resources/english": "english"
     },
     "icon": [
       "icons/32x32.png",

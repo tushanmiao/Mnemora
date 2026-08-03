@@ -11,6 +11,7 @@ import {
   releaseEnglishDictionary,
   searchEnglishDictionary,
   type EnglishDictionaryStatus,
+  type EnglishDownloadProgress,
   type EnglishGroupSummary,
   type EnglishWordEntry,
   type EnglishWordSummary,
@@ -39,6 +40,7 @@ export default function EnglishView() {
   const [groupId, setGroupId] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<"download" | "search" | "delete" | null>(null);
+  const [downloadProgress, setDownloadProgress] = useState<EnglishDownloadProgress | null>(null);
   const [error, setError] = useState("");
 
   const loadStatus = async () => {
@@ -96,8 +98,9 @@ export default function EnglishView() {
   const download = async () => {
     setBusy("download");
     setError("");
+    setDownloadProgress({ phase: "download", downloadedBytes: 0, totalBytes: null, indexedWords: 0, totalWords: 0, progress: null, finished: false });
     try {
-      const next = await downloadEnglishDictionary();
+      const next = await downloadEnglishDictionary((progress) => setDownloadProgress(progress));
       setStatus(next);
       setSelected(null);
       await search("", null);
@@ -105,6 +108,7 @@ export default function EnglishView() {
       setError(formatError(reason));
     } finally {
       setBusy(null);
+      setDownloadProgress(null);
     }
   };
 
@@ -154,6 +158,7 @@ export default function EnglishView() {
             <button type="button" onClick={() => void download()} disabled={busy !== null}><DownloadIcon busy={busy === "download"} />{busy === "download" ? t("english.downloading") : t("english.download")}</button>
             <button type="button" className="english-secondary-button" onClick={() => void openSource()}><ExternalLink size={16} />{t("english.openSource")}</button>
           </div>
+          {downloadProgress ? <EnglishDownloadProgressView progress={downloadProgress} t={t} /> : null}
         </section>
       ) : (
         <>
@@ -186,6 +191,26 @@ export default function EnglishView() {
 }
 
 function DownloadIcon({ busy }: { busy: boolean }) { return busy ? <LoaderCircle className="english-spinner" size={16} /> : <Download size={16} />; }
+
+function EnglishDownloadProgressView({ progress, t }: { progress: EnglishDownloadProgress; t: ReturnType<typeof useI18n>["t"] }) {
+  const percent = progress.progress ?? 0;
+  const sourceLabel = progress.phase === "backup"
+    ? t("english.progressBackup")
+    : progress.phase === "builtin"
+      ? t("english.progressBuiltin")
+      : t("english.progressDownload");
+  const detail = progress.phase === "index"
+    ? t("english.progressIndex", { current: progress.indexedWords.toLocaleString(), total: progress.totalWords.toLocaleString() })
+    : progress.phase === "decode"
+      ? t("english.progressDecode")
+    : progress.totalBytes
+      ? `${sourceLabel}：${formatSize(progress.downloadedBytes)} / ${formatSize(progress.totalBytes)}`
+      : `${sourceLabel}：${formatSize(progress.downloadedBytes)}`;
+  return <div className="english-download-progress" role="status" aria-live="polite">
+    <div className={`english-progress-track${progress.progress === null ? " is-indeterminate" : ""}`}><span style={{ width: progress.progress === null ? "28%" : `${percent}%` }} /></div>
+    <div className="english-progress-meta"><span>{detail}</span><strong>{progress.progress === null ? "..." : `${percent}%`}</strong></div>
+  </div>;
+}
 
 function EnglishEntry({ entry, t }: { entry: EnglishWordEntry | null; t: ReturnType<typeof useI18n>["t"] }) {
   const audioRef = useRef<HTMLAudioElement | null>(null);

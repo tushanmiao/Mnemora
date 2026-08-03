@@ -107,7 +107,7 @@ impl AppState {
         let memory_repository = MemoryRepository::new(app_data_dir.clone());
         let library_repository = LibraryRepository::new(app_data_dir.clone());
         let conversation_repository = ConversationRepository::new(app_data_dir.clone());
-        let english_repository = EnglishRepository::new(app_data_dir);
+        let english_repository = EnglishRepository::new(app_data_dir, resource_dir.clone());
         if let Err(error) = crate::chat::attachments::cleanup_staged_attachments_older_than(
             crate::chat::attachments::STAGED_ATTACHMENT_MAX_AGE,
         ) {

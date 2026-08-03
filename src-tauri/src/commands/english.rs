@@ -1,11 +1,15 @@
 //! 英语词库的按需下载和本地查询命令。
 
-use tauri::State;
+use std::time::{Duration, Instant};
+
+use tauri::{ipc::Channel, State};
 
 use crate::{
     english::{
-        download_source,
-        types::{EnglishDictionaryStatus, EnglishSearchResult, EnglishWordEntry},
+        download_source_with_progress,
+        types::{
+            EnglishDictionaryStatus, EnglishDownloadProgress, EnglishSearchResult, EnglishWordEntry,
+        },
     },
     state::AppState,
 };
@@ -25,13 +29,84 @@ pub async fn english_dictionary_status(
 #[tauri::command]
 pub async fn english_dictionary_download(
     state: State<'_, AppState>,
+    on_progress: Channel<EnglishDownloadProgress>,
 ) -> Result<EnglishDictionaryStatus, String> {
     let _guard = state.english_operations.lock().await;
-    let payload = download_source(&state.http).await?;
+    let progress_channel = on_progress.clone();
+    let mut last_download_progress = Instant::now() - Duration::from_millis(100);
+    let bundled_backup = state.english_repository.bundled_backup_path();
+    let payload = download_source_with_progress(
+        &state.http,
+        &bundled_backup,
+        move |phase, downloaded, total| {
+            let finished = total.is_some_and(|value| downloaded >= value);
+            if !finished && last_download_progress.elapsed() < Duration::from_millis(100) {
+                return;
+            }
+            last_download_progress = Instant::now();
+            let progress = total
+                .map(|value| (((downloaded as f64 / value.max(1) as f64) * 70.0) as u8).min(70));
+            let _ = progress_channel.send(EnglishDownloadProgress {
+                phase: phase.to_string(),
+                downloaded_bytes: downloaded,
+                total_bytes: total,
+                indexed_words: 0,
+                total_words: 0,
+                progress,
+                finished: false,
+            });
+        },
+    )
+    .await?;
+    let _ = on_progress.send(EnglishDownloadProgress {
+        phase: "decode".to_string(),
+        downloaded_bytes: payload.len() as u64,
+        total_bytes: Some(payload.len() as u64),
+        indexed_words: 0,
+        total_words: 0,
+        progress: Some(70),
+        finished: false,
+    });
     let repository = state.english_repository.clone();
-    tauri::async_runtime::spawn_blocking(move || repository.install_payload(payload))
+    let progress_channel = on_progress.clone();
+    let mut last_index_progress = Instant::now() - Duration::from_millis(100);
+    tauri::async_runtime::spawn_blocking(move || {
+        repository.install_payload_with_progress(payload, move |indexed, total| {
+            if indexed < total && last_index_progress.elapsed() < Duration::from_millis(100) {
+                return;
+            }
+            last_index_progress = Instant::now();
+            let progress = if total == 0 {
+                Some(100)
+            } else {
+                Some(70 + ((indexed as f64 / total as f64) * 29.0) as u8)
+            };
+            let _ = progress_channel.send(EnglishDownloadProgress {
+                phase: "index".to_string(),
+                downloaded_bytes: 0,
+                total_bytes: None,
+                indexed_words: indexed,
+                total_words: total,
+                progress,
+                finished: false,
+            });
+        })
+    })
+    .await
+    .map_err(|error| format!("安装英语词库失败：{error}"))??;
+    let _ = on_progress.send(EnglishDownloadProgress {
+        phase: "complete".to_string(),
+        downloaded_bytes: 0,
+        total_bytes: None,
+        indexed_words: 0,
+        total_words: 0,
+        progress: Some(100),
+        finished: true,
+    });
+    let repository = state.english_repository.clone();
+    tauri::async_runtime::spawn_blocking(move || repository.status())
         .await
-        .map_err(|error| format!("安装英语词库失败：{error}"))?
+        .map_err(|error| format!("读取英语词库状态失败：{error}"))?
 }
 
 #[tauri::command]

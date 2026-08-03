@@ -6,4 +6,4 @@
 mod repository;
 pub mod types;
 
-pub use repository::{download_source, EnglishRepository};
+pub use repository::{download_source_with_progress, EnglishRepository};

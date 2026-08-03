@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     fs::{self, File},
     io::{BufRead, BufReader, Cursor, Read, Seek, SeekFrom, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, RwLock},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -14,7 +14,7 @@ use serde_json::Value;
 use super::types::{
     EnglishDerivedWord, EnglishDictionaryStatus, EnglishExamExample, EnglishGroupSummary,
     EnglishIndexEntry, EnglishIndexFile, EnglishSearchResult, EnglishWordEntry, EnglishWordSummary,
-    ENGLISH_SOURCE_NAME, ENGLISH_SOURCE_URL,
+    ENGLISH_BACKUP_RESOURCE, ENGLISH_BACKUP_URL, ENGLISH_SOURCE_NAME, ENGLISH_SOURCE_URL,
 };
 
 const INDEX_FILE: &str = "index.json";
@@ -26,15 +26,31 @@ const MAX_DECODED_BYTES: usize = 128 * 1024 * 1024;
 #[derive(Clone)]
 pub struct EnglishRepository {
     root: PathBuf,
+    bundled_backup: PathBuf,
     cached_index: Arc<RwLock<Option<Arc<EnglishIndexFile>>>>,
 }
 
+struct PendingInstallDirectory(PathBuf);
+
+impl Drop for PendingInstallDirectory {
+    fn drop(&mut self) {
+        if self.0.exists() {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+}
+
 impl EnglishRepository {
-    pub fn new(app_data_dir: PathBuf) -> Self {
+    pub fn new(app_data_dir: PathBuf, resource_dir: PathBuf) -> Self {
         Self {
             root: app_data_dir.join("english").join("dictionary"),
+            bundled_backup: bundled_backup_path(resource_dir),
             cached_index: Arc::new(RwLock::new(None)),
         }
+    }
+
+    pub fn bundled_backup_path(&self) -> PathBuf {
+        self.bundled_backup.clone()
     }
 
     pub fn status(&self) -> Result<EnglishDictionaryStatus, String> {
@@ -123,16 +139,23 @@ impl EnglishRepository {
         Ok(())
     }
 
-    pub fn install_payload(&self, payload: Vec<u8>) -> Result<EnglishDictionaryStatus, String> {
+    pub fn install_payload_with_progress<F>(
+        &self,
+        payload: Vec<u8>,
+        mut on_progress: F,
+    ) -> Result<EnglishDictionaryStatus, String>
+    where
+        F: FnMut(usize, usize),
+    {
         if payload.len() > MAX_SOURCE_BYTES {
             return Err("English dictionary source is too large".to_string());
         }
         let source_data = decode_source_html(payload)?;
-        let temp_root = self.root.with_extension("download");
-        if temp_root.exists() {
-            fs::remove_dir_all(&temp_root)
-                .map_err(|error| format!("Clear English temporary directory failed: {error}"))?;
-        }
+        cleanup_stale_install_directories(&self.root);
+        let temp_root = self
+            .root
+            .with_file_name(format!("dictionary.download-{}", now_millis()));
+        let _pending_directory = PendingInstallDirectory(temp_root.clone());
         fs::create_dir_all(&temp_root)
             .map_err(|error| format!("Create English dictionary directory failed: {error}"))?;
         let entries_path = temp_root.join(ENTRIES_FILE);
@@ -145,6 +168,13 @@ impl EnglishRepository {
             .get("g")
             .and_then(Value::as_array)
             .ok_or_else(|| "English dictionary groups are missing".to_string())?;
+        let total_words = group_values
+            .iter()
+            .filter_map(|group| group.get("ws").and_then(Value::as_array))
+            .map(Vec::len)
+            .sum();
+        let mut indexed_words = 0usize;
+        on_progress(indexed_words, total_words);
         let pools = source_data
             .get("p")
             .ok_or_else(|| "English dictionary pools are missing".to_string())?;
@@ -188,11 +218,17 @@ impl EnglishRepository {
                     .map_err(|error| format!("Write English word failed: {error}"))?;
                 summaries.push(summary);
                 next_id = next_id.saturating_add(1);
+                indexed_words += 1;
+                if indexed_words == total_words || indexed_words % 128 == 0 {
+                    on_progress(indexed_words, total_words);
+                }
             }
         }
         entries_file
             .flush()
             .map_err(|error| format!("Flush English entries failed: {error}"))?;
+        // Windows 不允许在打开文件所在目录上执行重命名；安装前必须释放句柄。
+        drop(entries_file);
         // 解码阶段的完整 JSON 只用于安装，落盘前尽早释放它，避免常驻占用。
         drop(source_data);
         let downloaded_at = now_millis();
@@ -208,12 +244,7 @@ impl EnglishRepository {
             .map_err(|error| format!("Serialize English index failed: {error}"))?;
         fs::write(temp_root.join(INDEX_FILE), index_bytes)
             .map_err(|error| format!("Write English index failed: {error}"))?;
-        if self.root.exists() {
-            fs::remove_dir_all(&self.root)
-                .map_err(|error| format!("Replace English dictionary failed: {error}"))?;
-        }
-        fs::rename(&temp_root, &self.root)
-            .map_err(|error| format!("Install English dictionary failed: {error}"))?;
+        replace_dictionary_root(&self.root, &temp_root)?;
         self.set_cache(index);
         self.status()
     }
@@ -248,6 +279,42 @@ impl EnglishRepository {
     pub fn clear_cache(&self) {
         if let Ok(mut cache) = self.cached_index.write() {
             *cache = None;
+        }
+    }
+}
+
+fn replace_dictionary_root(root: &Path, replacement: &Path) -> Result<(), String> {
+    let backup = root.with_file_name(format!("dictionary.previous-{}", now_millis()));
+    let had_existing = root.exists();
+    if had_existing {
+        fs::rename(root, &backup).map_err(|error| {
+            format!("无法替换本地英语词库目录（旧目录可能正在被其他程序占用）：{error}")
+        })?;
+    }
+    if let Err(error) = fs::rename(replacement, root) {
+        if had_existing {
+            let _ = fs::rename(&backup, root);
+        }
+        return Err(format!("安装英语词库目录失败：{error}"));
+    }
+    if had_existing {
+        let _ = fs::remove_dir_all(backup);
+    }
+    Ok(())
+}
+
+fn cleanup_stale_install_directories(root: &Path) {
+    let Some(parent) = root.parent() else {
+        return;
+    };
+    let Ok(entries) = fs::read_dir(parent) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with("dictionary.download") || name.starts_with("dictionary.previous-") {
+            let _ = fs::remove_dir_all(entry.path());
         }
     }
 }
@@ -482,16 +549,25 @@ fn decode_source_html(payload: Vec<u8>) -> Result<Value, String> {
     let html = String::from_utf8(payload)
         .map_err(|error| format!("English dictionary source is not UTF-8: {error}"))?;
     let marker = r#"<script type="application/json" id="asp-data">"#;
-    let start = html
-        .find(marker)
-        .ok_or_else(|| "English dictionary payload was not found".to_string())?
-        + marker.len();
-    let end = html[start..]
-        .find("</script>")
-        .map(|offset| start + offset)
-        .ok_or_else(|| "English dictionary payload is incomplete".to_string())?;
-    let encoded = html[start..end].trim();
     let alphabet = build_alphabet();
+    let encoded = if let Some(marker_start) = html.find(marker) {
+        let start = marker_start + marker.len();
+        let end = html[start..]
+            .find("</script>")
+            .map(|offset| start + offset)
+            .ok_or_else(|| "English dictionary payload is incomplete".to_string())?;
+        html[start..end].trim()
+    } else if html.lines().any(|line| !line.trim().is_empty())
+        && html
+            .bytes()
+            .filter(|byte| !byte.is_ascii_whitespace())
+            .all(|byte| alphabet.contains_key(&byte))
+    {
+        // GitHub 备份只保存 asp-data 本身，不重复保存整页 HTML。
+        html.trim()
+    } else {
+        return Err("English dictionary payload was not found".to_string());
+    };
     let mut decoded = Vec::new();
     for line in encoded.lines() {
         let mut bytes = Vec::with_capacity(line.len() * 4 / 5 + 4);
@@ -544,36 +620,134 @@ fn build_alphabet() -> HashMap<u8, u8> {
     alphabet
 }
 
-pub async fn download_source(client: &reqwest::Client) -> Result<Vec<u8>, String> {
-    let response = client
-        .get(ENGLISH_SOURCE_URL)
+pub async fn download_source_with_progress<F>(
+    client: &reqwest::Client,
+    bundled_backup: &Path,
+    mut on_progress: F,
+) -> Result<Vec<u8>, String>
+where
+    F: FnMut(&str, u64, Option<u64>),
+{
+    match download_url_with_progress(client, ENGLISH_SOURCE_URL, "download", &mut on_progress).await
+    {
+        Ok(payload) => Ok(payload),
+        Err(source_error) => {
+            download_with_fallbacks(client, ENGLISH_BACKUP_URL, bundled_backup, &mut on_progress)
+                .await
+                .map_err(|backup_error| {
+                    format!("原始词库下载失败：{source_error}；备份来源均不可用：{backup_error}")
+                })
+        }
+    }
+}
+
+async fn download_with_fallbacks<F>(
+    client: &reqwest::Client,
+    backup_url: &str,
+    bundled_backup: &Path,
+    on_progress: &mut F,
+) -> Result<Vec<u8>, String>
+where
+    F: FnMut(&str, u64, Option<u64>),
+{
+    match download_url_with_progress(client, backup_url, "backup", on_progress).await {
+        Ok(payload) => Ok(payload),
+        Err(network_error) => read_bundled_backup_with_progress(bundled_backup, on_progress)
+            .map_err(|local_error| {
+                format!("GitHub 备份下载失败：{network_error}；内置词库备份不可用：{local_error}")
+            }),
+    }
+}
+
+fn bundled_backup_path(resource_dir: PathBuf) -> PathBuf {
+    let packaged = resource_dir.join(ENGLISH_BACKUP_RESOURCE);
+    if packaged.is_file() {
+        return packaged;
+    }
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("resources")
+        .join(ENGLISH_BACKUP_RESOURCE)
+}
+
+fn read_bundled_backup_with_progress<F>(path: &Path, on_progress: &mut F) -> Result<Vec<u8>, String>
+where
+    F: FnMut(&str, u64, Option<u64>),
+{
+    let mut file = File::open(path).map_err(|error| format!("读取内置词库备份失败：{error}"))?;
+    let total_bytes = file
+        .metadata()
+        .map_err(|error| format!("读取内置词库备份大小失败：{error}"))?
+        .len();
+    if total_bytes > MAX_SOURCE_BYTES as u64 {
+        return Err("内置英语词库备份超过安全大小限制".to_string());
+    }
+    let mut payload = Vec::with_capacity(total_bytes as usize);
+    let mut buffer = [0u8; 64 * 1024];
+    let mut downloaded_bytes = 0u64;
+    on_progress("builtin", downloaded_bytes, Some(total_bytes));
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|error| format!("读取内置词库备份失败：{error}"))?;
+        if read == 0 {
+            break;
+        }
+        downloaded_bytes = downloaded_bytes.saturating_add(read as u64);
+        payload.extend_from_slice(&buffer[..read]);
+        on_progress("builtin", downloaded_bytes, Some(total_bytes));
+    }
+    Ok(payload)
+}
+
+async fn download_url_with_progress<F>(
+    client: &reqwest::Client,
+    url: &str,
+    phase: &str,
+    on_progress: &mut F,
+) -> Result<Vec<u8>, String>
+where
+    F: FnMut(&str, u64, Option<u64>),
+{
+    let mut response = client
+        .get(url)
         .send()
         .await
-        .map_err(|error| format!("Download English dictionary failed: {error}"))?;
+        .map_err(|error| format!("下载请求失败：{error}"))?;
     if response.status() != StatusCode::OK {
-        return Err(format!(
-            "English dictionary returned HTTP {}",
-            response.status()
-        ));
+        return Err(format!("服务器返回 HTTP {}", response.status()));
     }
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|error| format!("Read English dictionary failed: {error}"))?;
-    if bytes.len() > MAX_SOURCE_BYTES {
+    let total_bytes = response.content_length();
+    if total_bytes.is_some_and(|total| total > MAX_SOURCE_BYTES as u64) {
         return Err("English dictionary download exceeds the safety limit".to_string());
     }
-    Ok(bytes.to_vec())
+    let mut payload =
+        Vec::with_capacity(total_bytes.unwrap_or(0).min(MAX_SOURCE_BYTES as u64) as usize);
+    let mut downloaded_bytes = 0u64;
+    on_progress(phase, downloaded_bytes, total_bytes);
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| format!("读取下载内容失败：{error}"))?
+    {
+        downloaded_bytes = downloaded_bytes.saturating_add(chunk.len() as u64);
+        if downloaded_bytes > MAX_SOURCE_BYTES as u64 {
+            return Err("English dictionary download exceeds the safety limit".to_string());
+        }
+        payload.extend_from_slice(&chunk);
+        on_progress(phase, downloaded_bytes, total_bytes);
+    }
+    Ok(payload)
 }
 
 #[cfg(test)]
 mod tests {
-    use std::io::Write;
+    use std::{fs, io::Write};
 
     use brotli::CompressorWriter;
     use serde_json::json;
+    use uuid::Uuid;
 
-    use super::{build_alphabet, decode_source_html};
+    use super::{build_alphabet, decode_source_html, EnglishRepository};
 
     fn encode_base85(bytes: &[u8]) -> String {
         let alphabet = build_alphabet();
@@ -599,21 +773,59 @@ mod tests {
         encoded
     }
 
-    #[test]
-    fn decodes_embedded_base85_brotli_payload() {
-        let expected = json!({"g": [{"n": "test", "ws": []}], "d": {}, "p": {}});
-        let source = serde_json::to_vec(&expected).unwrap();
+    fn encoded_dictionary(value: &serde_json::Value) -> String {
+        let source = serde_json::to_vec(value).unwrap();
         let mut compressed = Vec::new();
         {
             let mut writer = CompressorWriter::new(&mut compressed, 4096, 5, 22);
             writer.write_all(&source).unwrap();
         }
+        encode_base85(&compressed)
+    }
+
+    #[test]
+    fn decodes_embedded_base85_brotli_payload() {
+        let expected = json!({"g": [{"n": "test", "ws": []}], "d": {}, "p": {}});
         let html = format!(
             "<html><script type=\"application/json\" id=\"asp-data\">{}</script></html>",
-            encode_base85(&compressed)
+            encoded_dictionary(&expected)
         );
 
         assert_eq!(decode_source_html(html.into_bytes()).unwrap(), expected);
+    }
+
+    #[test]
+    fn decodes_plain_backup_payload() {
+        let expected = json!({"g": [{"n": "test", "ws": []}], "d": {}, "p": {}});
+        assert_eq!(
+            decode_source_html(encoded_dictionary(&expected).into_bytes()).unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn installs_and_replaces_dictionary_without_open_file_handles() {
+        let app_data = std::env::temp_dir().join(format!("mnemora-english-{}", Uuid::new_v4()));
+        let repository = EnglishRepository::new(app_data.clone(), app_data.clone());
+        let dictionary = json!({
+            "g": [{"n": "test", "ws": [{"w": "hello", "t": "你好"}]}],
+            "d": {},
+            "p": {}
+        });
+        let payload = encoded_dictionary(&dictionary).into_bytes();
+
+        let first = repository
+            .install_payload_with_progress(payload.clone(), |_, _| {})
+            .unwrap();
+        let second = repository
+            .install_payload_with_progress(payload, |_, _| {})
+            .unwrap();
+
+        assert_eq!(first.word_count, 1);
+        assert_eq!(second.word_count, 1);
+        assert_eq!(repository.search("hello", None, 10).unwrap().total, 1);
+        repository.clear_cache();
+        fs::remove_dir_all(app_data).unwrap();
     }
 
     #[test]

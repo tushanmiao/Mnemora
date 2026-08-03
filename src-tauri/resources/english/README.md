@@ -13,11 +13,10 @@ other page resources.
 - `isdc-asp-data.txt`: the 16-line Base85/Brotli dictionary payload.
 - `SOURCE.json`: source URL, download time, size, and SHA-256 checksums.
 
-The payload is kept as a backup copy only. The current English feature still
-uses user-triggered downloads and local indexing, and the payload is not
-automatically bundled into the Tauri installer. A later offline-first change
-can wrap this payload in the expected `asp-data` marker and pass it to the
-existing Rust decoder.
+The payload is kept as a user-triggered backup copy. The English feature first
+tries the source site, then GitHub Raw, and finally reads this bundled copy when
+both network sources are unavailable. It is indexed into the user's app-data
+directory only after the user clicks the install button.
 
 The source and permission information are recorded in
 `src/features/english/SOURCE.md`. If the upstream author changes the license

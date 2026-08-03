@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 
 pub const ENGLISH_SOURCE_URL: &str = "https://isdc.pages.dev/";
 pub const ENGLISH_SOURCE_NAME: &str = "雅思词典（isdc.pages.dev）";
+pub const ENGLISH_BACKUP_URL: &str = "https://raw.githubusercontent.com/tushanmiao/Mnemora/main/src-tauri/resources/english/isdc-asp-data.txt";
+pub const ENGLISH_BACKUP_RESOURCE: &str = "english/isdc-asp-data.txt";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -12,6 +14,18 @@ pub struct EnglishDictionaryStatus {
     pub word_count: usize,
     pub downloaded_at: Option<u64>,
     pub data_size_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnglishDownloadProgress {
+    pub phase: String,
+    pub downloaded_bytes: u64,
+    pub total_bytes: Option<u64>,
+    pub indexed_words: usize,
+    pub total_words: usize,
+    pub progress: Option<u8>,
+    pub finished: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
