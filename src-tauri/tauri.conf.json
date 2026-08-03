@@ -23,8 +23,8 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost https://ipc.localhost; img-src 'self' https: asset: http://asset.localhost data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; object-src 'none'; frame-src 'self'; base-uri 'none'; form-action 'none'",
-      "devCsp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost https://ipc.localhost ws://localhost:*; img-src 'self' https: asset: http://asset.localhost data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-eval'; object-src 'none'; frame-src 'self'; base-uri 'none'; form-action 'none'"
+      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost https://ipc.localhost; img-src 'self' https: asset: http://asset.localhost data: blob:; media-src 'self' https://oss.ors.de5.net; style-src 'self' 'unsafe-inline'; script-src 'self'; object-src 'none'; frame-src 'self'; base-uri 'none'; form-action 'none'",
+      "devCsp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost https://ipc.localhost ws://localhost:*; img-src 'self' https: asset: http://asset.localhost data: blob:; media-src 'self' https://oss.ors.de5.net; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-eval'; object-src 'none'; frame-src 'self'; base-uri 'none'; form-action 'none'"
     }
   },
   "bundle": {

@@ -34,6 +34,8 @@ import { WorkspaceViewHost } from "./features/workspace/components/WorkspaceView
 import { ChatViewRuntimeProvider } from "./features/workspace/runtime/ChatViewRuntime";
 import { NotesViewRuntimeProvider } from "./features/workspace/runtime/NotesViewRuntime";
 import { WorkViewRuntimeProvider } from "./features/workspace/runtime/WorkViewRuntime";
+import { OverviewViewRuntimeProvider } from "./features/workspace/runtime/OverviewViewRuntime";
+import type { OverviewRecentItem } from "./features/overview/types";
 import { I18nProvider } from "./i18n/I18nProvider";
 import { ImageViewerProvider } from "./features/chat/image-viewer/ImageViewerContext";
 import { useWorkspaceNavigation } from "./app/hooks/useWorkspaceNavigation";
@@ -437,6 +439,19 @@ function App() {
             : null,
   };
 
+  const overviewViewRuntime = {
+    onNewChat: () => {
+      conversations.createNewConversation();
+      changeWorkspaceMode("chat");
+    },
+    onOpenNotes: () => changeWorkspaceMode("notes"),
+    onOpenWork: () => changeWorkspaceMode("work"),
+    onOpenItem: (item: OverviewRecentItem) => {
+      if (item.destination === "chat") conversations.selectConversation(item.id);
+      changeWorkspaceMode(item.destination);
+    },
+  };
+
   return (
     <I18nProvider language={settings.appSettings.interfaceLanguage}>
     <main
@@ -540,15 +555,17 @@ function App() {
         <ChatViewRuntimeProvider chatPanel={chatWorkspace}>
           <NotesViewRuntimeProvider value={notesViewRuntime}>
             <WorkViewRuntimeProvider value={workViewRuntime}>
-              <WorkspaceViewHost
-                mode={workspaceMode}
-                contextOpen={workspaceMode === "work"
-                  ? workContextPanelOpen
-                  : workspaceMode === "notes"
-                    ? notesContextPanelOpen
-                    : false}
-                onReturnToChat={() => changeWorkspaceMode("chat")}
-              />
+              <OverviewViewRuntimeProvider value={overviewViewRuntime}>
+                <WorkspaceViewHost
+                  mode={workspaceMode}
+                  contextOpen={workspaceMode === "work"
+                    ? workContextPanelOpen
+                    : workspaceMode === "notes"
+                      ? notesContextPanelOpen
+                      : false}
+                  onReturnToChat={() => changeWorkspaceMode("chat")}
+                />
+              </OverviewViewRuntimeProvider>
             </WorkViewRuntimeProvider>
           </NotesViewRuntimeProvider>
         </ChatViewRuntimeProvider>

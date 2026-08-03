@@ -2,6 +2,7 @@ mod ai;
 mod app_update;
 mod chat;
 mod commands;
+mod english;
 mod html_preview;
 mod library;
 mod memory;
@@ -99,6 +100,12 @@ pub fn run() {
             commands::conversations::save_conversation_as_note,
             commands::html_preview::html_preview_open,
             commands::html_preview::html_preview_get,
+            commands::english::english_dictionary_status,
+            commands::english::english_dictionary_download,
+            commands::english::english_dictionary_search,
+            commands::english::english_dictionary_get,
+            commands::english::english_dictionary_delete,
+            commands::english::english_dictionary_release,
             commands::library::library_list_items,
             commands::library::library_get_item,
             commands::library::library_import_pdfs,

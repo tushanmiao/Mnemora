@@ -28,6 +28,7 @@ serde_yaml = "0.9"
 sha2 = "0.10"
 rusqlite = { version = "0.32", features = ["bundled"] }
 base64 = "0.22"
+brotli = "8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 keyring = "4.1.5"
 zeroize = "1"

@@ -1,5 +1,5 @@
 import type { ComponentType, LazyExoticComponent } from "react";
-import { BookOpenText, MessageCircle, NotebookPen, type LucideIcon } from "lucide-react";
+import { BookOpenText, Languages, LayoutDashboard, MessageCircle, NotebookPen, type LucideIcon } from "lucide-react";
 import { retryLazy } from "../../bootstrap/retryLazy";
 import type { WorkspaceMode } from "./types";
 import type { TranslationKey } from "../../i18n/translations";
@@ -27,10 +27,19 @@ export type WorkspaceViewDefinition = {
 
 export const WORKSPACE_VIEWS: readonly WorkspaceViewDefinition[] = [
   {
+    id: "overview",
+    labelKey: "view.overview",
+    icon: LayoutDashboard,
+    order: 1,
+    component: retryLazy(() => import("../overview/components/OverviewView")),
+    contextSidebar: false,
+    aiPanel: "panel",
+  },
+  {
     id: "chat",
     labelKey: "view.chat",
     icon: MessageCircle,
-    order: 1,
+    order: 2,
     component: retryLazy(() => import("./views/ChatView")),
     contextSidebar: true,
     aiPanel: "primary",
@@ -39,7 +48,7 @@ export const WORKSPACE_VIEWS: readonly WorkspaceViewDefinition[] = [
     id: "notes",
     labelKey: "view.notes",
     icon: NotebookPen,
-    order: 2,
+    order: 3,
     component: retryLazy(() => import("./views/NotesView")),
     contextSidebar: false,
     aiPanel: "panel",
@@ -48,9 +57,18 @@ export const WORKSPACE_VIEWS: readonly WorkspaceViewDefinition[] = [
     id: "work",
     labelKey: "view.work",
     icon: BookOpenText,
-    order: 3,
+    order: 4,
     component: retryLazy(() => import("./views/WorkView")),
     contextSidebar: true,
+    aiPanel: "panel",
+  },
+  {
+    id: "english",
+    labelKey: "view.english",
+    icon: Languages,
+    order: 5,
+    component: retryLazy(() => import("../english/components/EnglishView")),
+    contextSidebar: false,
     aiPanel: "panel",
   },
 ];

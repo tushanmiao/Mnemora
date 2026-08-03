@@ -1,5 +1,6 @@
 /** Notes 从 Chat 侧栏进入独立工作区；Work 仍保留 PDF 学习流程。 */
-export type WorkspaceMode = "chat" | "notes" | "work";
+/** 已实现的工作区视图。Review 与 English 先保持功能域边界，待页面落地后再注册。 */
+export type WorkspaceMode = "overview" | "chat" | "notes" | "work" | "english";
 
 /** Work 左侧文献库的稳定入口。 */
 export type WorkLibraryView =

@@ -126,6 +126,10 @@ export function useChatRuntime({
         });
       }
       const modelMessages = toModelMessages(activeContextMessages(runningConversation));
+      // 总览只是聚合页面，不会发起 Chat 请求；若运行时合同被复用，按普通 Chat 处理。
+      const completionWorkspaceMode = workspaceMode === "overview" || workspaceMode === "english"
+        ? "chat"
+        : workspaceMode;
       const completionRequest = {
         providerId: selectedModel.provider.id,
         modelId: selectedModel.model.id,
@@ -135,7 +139,7 @@ export function useChatRuntime({
         activatedSkillIds,
         slashSkillId,
         permissionMode: runningConversation.permissionMode,
-        workspaceMode,
+        workspaceMode: completionWorkspaceMode,
         messages: modelMessages,
         options: {
           maxOutputTokens: appSettings.maxOutputTokens,

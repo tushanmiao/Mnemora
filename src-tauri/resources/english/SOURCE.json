@@ -1,0 +1,13 @@
+{
+    "sourceUrl":  "https://isdc.pages.dev/",
+    "sourceDownloadedAt":  "2026-08-03T13:28:23.2422405Z",
+    "sourceProvidedByUser":  "作者公开授权信息由项目用户提供，Mnemora 保留来源链接。",
+    "backupKind":  "asp-data payload only",
+    "payloadFile":  "isdc-asp-data.txt",
+    "payloadBytes":  18848757,
+    "payloadSha256":  "07183ef6a4c6a9089fac558790613c8e42ec1cf1c4e30bd066203e0a4b3067a4",
+    "sourceHtmlBytes":  19040827,
+    "sourceHtmlSha256":  "c5cab0349b5fcf3e56904619a5f15c8923c7021a1f30c2c20639e2e597459c20",
+    "segmentCount":  16,
+    "notes":  "不包含站点界面代码；需要时可将 payload 包裹在 asp-data script 标签中交给解码器。此备份不自动加入 Tauri 安装包。"
+}

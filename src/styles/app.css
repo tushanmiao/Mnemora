@@ -153,6 +153,8 @@ button {
 }
 
 .workspace-stage[data-workspace-mode="chat"],
+.workspace-stage[data-workspace-mode="overview"],
+.workspace-stage[data-workspace-mode="english"],
 .workspace-stage[data-workspace-mode="work"][data-context-open="false"],
 .workspace-stage[data-workspace-mode="notes"][data-context-open="false"] {
   grid-template-columns: minmax(0, 1fr);
