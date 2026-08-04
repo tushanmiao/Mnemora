@@ -10,7 +10,7 @@ use tokio::sync::{oneshot, Mutex, Semaphore};
 use tokio_util::sync::CancellationToken;
 
 use crate::chat::storage::ConversationRepository;
-use crate::english::EnglishRepository;
+use crate::english::{learning::EnglishLearningRepository, EnglishRepository};
 use crate::library::LibraryRepository;
 use crate::memory::MemoryRepository;
 use crate::request_debug::RequestDebugRecord;
@@ -41,6 +41,9 @@ pub struct AppState {
     pub conversation_repository: ConversationRepository,
     pub english_repository: EnglishRepository,
     pub english_operations: Mutex<()>,
+    pub english_learning_repository: EnglishLearningRepository,
+    pub english_learning_operations: Mutex<()>,
+    pub english_audio_operations: Mutex<()>,
     pub conversation_writes: Mutex<()>,
     pub library_repository: LibraryRepository,
     pub library_operations: Mutex<()>,
@@ -108,6 +111,7 @@ impl AppState {
         let memory_repository = MemoryRepository::new(app_data_dir.clone());
         let library_repository = LibraryRepository::new(app_data_dir.clone());
         let conversation_repository = ConversationRepository::new(app_data_dir.clone());
+        let english_learning_repository = EnglishLearningRepository::new(app_data_dir.clone());
         let english_repository = EnglishRepository::new(app_data_dir, resource_dir.clone());
         if let Err(error) = crate::chat::attachments::cleanup_staged_attachments_older_than(
             crate::chat::attachments::STAGED_ATTACHMENT_MAX_AGE,
@@ -145,6 +149,9 @@ impl AppState {
             conversation_repository,
             english_repository,
             english_operations: Mutex::new(()),
+            english_learning_repository,
+            english_learning_operations: Mutex::new(()),
+            english_audio_operations: Mutex::new(()),
             conversation_writes: Mutex::new(()),
             library_repository,
             library_operations: Mutex::new(()),

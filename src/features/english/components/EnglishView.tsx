@@ -1,252 +1,371 @@
-import { Download, ExternalLink, Headphones, LoaderCircle, RefreshCw, Search, Trash2 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { openUrl } from "@tauri-apps/plugin-opener";
-import { isTauri } from "@tauri-apps/api/core";
+import { BookOpen, ChartNoAxesCombined, CircleAlert, Download, LoaderCircle, RefreshCw, Settings2, Sun, Trash2, Upload } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { useI18n } from "../../../i18n/I18nProvider";
 import {
-  deleteEnglishDictionary,
-  downloadEnglishDictionary,
   getEnglishDictionaryStatus,
-  getEnglishWord,
-  releaseEnglishDictionary,
   searchEnglishDictionary,
   type EnglishDictionaryStatus,
-  type EnglishDownloadProgress,
   type EnglishGroupSummary,
-  type EnglishWordEntry,
-  type EnglishWordSummary,
 } from "../api/english";
+import {
+  archiveEnglishItem,
+  addEnglishWordToPlan,
+  createEnglishLearningPlan,
+  clearEnglishAudioCache,
+  defaultEnglishPlanSettings,
+  exportEnglishWordBook,
+  getEnglishAudioCacheStatus,
+  getEnglishLearningBatch,
+  getEnglishLearningOverview,
+  getEnglishLearningStats,
+  markEnglishItemMastered,
+  importEnglishWordBook,
+  prefetchEnglishAudio,
+  restoreEnglishItem,
+  updateEnglishLearningPlan,
+  type EnglishAudioCacheStatus,
+  type EnglishLearningOverview,
+  type EnglishLearningStats,
+  type EnglishPlanSettings,
+  type EnglishQueueItem,
+  type EnglishQueueMode,
+} from "../api/learning";
+import EnglishDictionary from "./EnglishDictionary";
+import EnglishHome from "./EnglishHome";
+import EnglishLearningSession from "./EnglishLearningSession";
+import EnglishPlanSetup from "./EnglishPlanSetup";
+import EnglishProgress from "./EnglishProgress";
 import "../styles/english.css";
 
-const SOURCE_URL = "https://isdc.pages.dev/";
+type Tab = "today" | "dictionary" | "progress" | "settings";
 
-function formatSize(bytes: number) {
-  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-}
-
-function formatError(error: unknown) {
-  return error instanceof Error ? error.message : String(error);
-}
+const emptyStats: EnglishLearningStats = { attempts7d: 0, correct7d: 0, hintUses7d: 0, averageResponseMs7d: 0, dueBacklog: 0, activeDays7d: 0, currentStreakDays: 0, skills: [] };
 
 export default function EnglishView() {
   const { t } = useI18n();
   const [status, setStatus] = useState<EnglishDictionaryStatus | null>(null);
+  const [overview, setOverview] = useState<EnglishLearningOverview | null>(null);
+  const [stats, setStats] = useState<EnglishLearningStats>(emptyStats);
   const [groups, setGroups] = useState<EnglishGroupSummary[]>([]);
-  const [items, setItems] = useState<EnglishWordSummary[]>([]);
-  const [resultTotal, setResultTotal] = useState(0);
-  const [selected, setSelected] = useState<EnglishWordEntry | null>(null);
-  const [query, setQuery] = useState("");
-  const [groupId, setGroupId] = useState<number | null>(null);
+  const [tab, setTab] = useState<Tab>("today");
+  const [queue, setQueue] = useState<EnglishQueueItem[]>([]);
+  const [queueIndex, setQueueIndex] = useState(0);
+  const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState<"download" | "search" | "delete" | null>(null);
-  const [downloadProgress, setDownloadProgress] = useState<EnglishDownloadProgress | null>(null);
   const [error, setError] = useState("");
+  const loadRequestRef = useRef(0);
 
-  const loadStatus = async () => {
-    setLoading(true);
+  const refresh = async () => {
+    const request = ++loadRequestRef.current;
+    if (!status || !overview) setLoading(true);
     setError("");
     try {
-      const next = await getEnglishDictionaryStatus();
-      setStatus(next);
+      const [nextStatus, nextOverview] = await withTimeout(
+        Promise.all([getEnglishDictionaryStatus(), getEnglishLearningOverview()]),
+        12_000,
+        "英语模块加载超时，请重试。",
+      );
+      if (request !== loadRequestRef.current) return;
+      setStatus(nextStatus);
+      setOverview(nextOverview);
+      setLoading(false);
+      void loadSecondaryData(request, nextStatus.installed && !nextOverview.activePlan);
     } catch (reason) {
+      if (request !== loadRequestRef.current) return;
       setError(formatError(reason));
     } finally {
-      setLoading(false);
+      if (request === loadRequestRef.current) setLoading(false);
     }
   };
 
+  const loadSecondaryData = async (request: number, needsGroups: boolean) => {
+    const [statsResult, groupsResult] = await Promise.allSettled([
+      getEnglishLearningStats(),
+      needsGroups ? searchEnglishDictionary("", null, 1) : Promise.resolve(null),
+    ]);
+    if (request !== loadRequestRef.current) return;
+    if (statsResult.status === "fulfilled") setStats(statsResult.value);
+    if (groupsResult.status === "fulfilled" && groupsResult.value) setGroups(groupsResult.value.groups);
+    const failed = [statsResult, groupsResult].find((result) => result.status === "rejected");
+    if (failed?.status === "rejected") setError(`部分英语数据加载失败：${formatError(failed.reason)}`);
+  };
+
   useEffect(() => {
-    let active = true;
-    void getEnglishDictionaryStatus().then((next) => {
-      if (active) { setStatus(next); setLoading(false); }
-    }).catch((reason) => {
-      if (active) { setError(formatError(reason)); setLoading(false); }
-    });
-    return () => {
-      active = false;
-      void releaseEnglishDictionary();
-    };
+    void refresh();
+    return () => { loadRequestRef.current += 1; };
   }, []);
 
-  const search = async (nextQuery = query, nextGroupId = groupId) => {
-    setBusy("search");
+  const createPlan = async (name: string, groupIds: number[], settings: EnglishPlanSettings) => {
+    setBusy(true);
     setError("");
     try {
-      const result = await searchEnglishDictionary(nextQuery, nextGroupId);
-      setItems(result.items);
-      setResultTotal(result.total);
-      setGroups(result.groups);
-      if (result.items.length > 0) {
-        setSelected(await getEnglishWord(result.items[0].id));
-      } else {
-        setSelected(null);
+      await createEnglishLearningPlan({ name, groupIds, settings });
+      const [nextOverview, nextStats] = await Promise.all([getEnglishLearningOverview(), getEnglishLearningStats()]);
+      setOverview(nextOverview);
+      setStats(nextStats);
+    } catch (reason) {
+      setError(formatError(reason));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const importBook = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      const imported = await importEnglishWordBook();
+      if (!imported) return;
+      await refresh();
+      setTab("today");
+    } catch (reason) {
+      setError(formatError(reason));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const exportBook = async () => {
+    const plan = overview?.activePlan;
+    if (!plan) return;
+    setBusy(true);
+    setError("");
+    try {
+      await exportEnglishWordBook(plan.bookName);
+    } catch (reason) {
+      setError(formatError(reason));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const startSession = async (mode: EnglishQueueMode) => {
+    setBusy(true);
+    setError("");
+    try {
+      const items = await getEnglishLearningBatch(mode);
+      if (items.length === 0) {
+        setError(mode === "review" ? "当前没有到期复习。" : "当前模式没有可练习的单词。");
+        return;
       }
+      setQueue(items);
+      setQueueIndex(0);
     } catch (reason) {
       setError(formatError(reason));
     } finally {
-      setBusy(null);
+      setBusy(false);
     }
   };
 
-  useEffect(() => {
-    if (!status?.installed) return;
-    const timer = window.setTimeout(() => { void search(); }, 180);
-    return () => window.clearTimeout(timer);
-  }, [status?.installed, query, groupId]);
-
-  const download = async () => {
-    setBusy("download");
-    setError("");
-    setDownloadProgress({ phase: "download", downloadedBytes: 0, totalBytes: null, indexedWords: 0, totalWords: 0, progress: null, finished: false });
-    try {
-      const next = await downloadEnglishDictionary((progress) => setDownloadProgress(progress));
-      setStatus(next);
-      setSelected(null);
-      await search("", null);
-    } catch (reason) {
-      setError(formatError(reason));
-    } finally {
-      setBusy(null);
-      setDownloadProgress(null);
+  const finishOrAdvance = async () => {
+    if (queueIndex + 1 < queue.length) {
+      setQueueIndex((index) => index + 1);
+      return;
     }
+    setQueue([]);
+    setQueueIndex(0);
+    const [nextOverview, nextStats] = await Promise.all([
+      getEnglishLearningOverview(),
+      getEnglishLearningStats(),
+    ]);
+    setOverview(nextOverview);
+    setStats(nextStats);
   };
 
-  const remove = async () => {
-    if (!window.confirm(t("english.deleteConfirm"))) return;
-    setBusy("delete");
-    try {
-      await deleteEnglishDictionary();
-      setStatus((current) => current ? { ...current, installed: false, wordCount: 0, dataSizeBytes: 0, downloadedAt: null } : current);
-      setItems([]);
-      setResultTotal(0);
-      setGroups([]);
-      setSelected(null);
-    } catch (reason) {
-      setError(formatError(reason));
-    } finally {
-      setBusy(null);
-    }
-  };
+  if (loading && (!status || !overview)) {
+    return <div className="english-view english-state" role="status"><LoaderCircle className="english-spinner" size={18} />{t("english.loading")}</div>;
+  }
 
-  const openSource = async () => {
-    if (isTauri()) await openUrl(SOURCE_URL);
-    else window.open(SOURCE_URL, "_blank", "noopener,noreferrer");
-  };
+  if (!status || !overview) {
+    return <div className="english-view english-load-failure" role="alert">
+      <CircleAlert size={22} />
+      <div><h2>英语模块暂时无法加载</h2><p>{error || "没有读取到词库或学习进度。"}</p></div>
+      <button type="button" onClick={() => void refresh()}><RefreshCw size={16} />重试</button>
+    </div>;
+  }
 
-  const selectedGroupName = useMemo(() => groups.find((group) => group.id === groupId)?.name, [groupId, groups]);
+  if (queue.length > 0 && overview.activePlan) {
+    const current = queue[queueIndex];
+    return <div className="english-view english-view-session"><EnglishLearningSession
+      key={current.progressId}
+      item={current}
+      position={queueIndex}
+      total={queue.length}
+      settings={overview.activePlan.settings}
+      onBack={() => { setQueue([]); setQueueIndex(0); }}
+      onAdvance={() => void finishOrAdvance()}
+      onCompleted={(result) => setOverview(result.overview)}
+      onMastered={async () => { setOverview(await markEnglishItemMastered(current.progressId)); }}
+      onArchive={async () => { setOverview(await archiveEnglishItem(current.progressId)); }}
+    /></div>;
+  }
 
-  if (loading) return <div className="english-view english-state" role="status"><LoaderCircle className="english-spinner" size={18} />{t("english.loading")}</div>;
-
+  const showSetup = !overview.activePlan;
   return (
     <div className="english-view">
       <header className="english-header">
-        <div>
-          <p className="english-eyebrow">Mnemora / English</p>
-          <h1>{t("english.title")}</h1>
-          <p>{t("english.subtitle")}</p>
-        </div>
-        <button className="english-icon-button" type="button" onClick={() => void loadStatus()} title={t("english.refresh")} aria-label={t("english.refresh")}><RefreshCw size={16} /></button>
+        <div><p className="english-eyebrow">Mnemora / English</p><h1>{t("english.title")}</h1><p>单词学习、主动回忆与到期复习</p></div>
+        <button className="english-icon-button" type="button" onClick={() => void refresh()} title={t("english.refresh")} aria-label={t("english.refresh")}><RefreshCw size={16} /></button>
       </header>
 
-      {!status?.installed ? (
-        <section className="english-install-panel">
-          <h2>{t("english.downloadTitle")}</h2>
-          <p>{t("english.downloadDescription")}</p>
-          <p className="english-source-note">{t("english.sourceNote")}</p>
-          <div className="english-install-actions">
-            <button type="button" onClick={() => void download()} disabled={busy !== null}><DownloadIcon busy={busy === "download"} />{busy === "download" ? t("english.downloading") : t("english.download")}</button>
-            <button type="button" className="english-secondary-button" onClick={() => void openSource()}><ExternalLink size={16} />{t("english.openSource")}</button>
-          </div>
-          {downloadProgress ? <EnglishDownloadProgressView progress={downloadProgress} t={t} /> : null}
-        </section>
-      ) : (
-        <>
-          <div className="english-toolbar">
-            <label className="english-search"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("english.searchPlaceholder")} /></label>
-            <select value={groupId ?? "all"} onChange={(event) => setGroupId(event.target.value === "all" ? null : Number(event.target.value))} aria-label={t("english.groupFilter")}>
-              <option value="all">{t("english.allGroups")}</option>
-              {groups.map((group) => <option key={group.id} value={group.id}>{group.name} ({group.count})</option>)}
-            </select>
-            <button className="english-icon-button" type="button" onClick={() => void remove()} disabled={busy !== null} title={t("english.deleteDictionary")} aria-label={t("english.deleteDictionary")}><Trash2 size={16} /></button>
-          </div>
-          <div className="english-main">
-            <section className="english-results" aria-label={t("english.results")}>
-              <div className="english-results-heading"><span>{selectedGroupName ?? t("english.allGroups")}</span><small>{items.length} / {resultTotal}</small></div>
-              {busy === "search" ? <div className="english-inline-state"><LoaderCircle className="english-spinner" size={16} />{t("english.searching")}</div> : null}
-              {items.map((item) => <button key={item.id} type="button" className={`english-result${selected?.id === item.id ? " is-active" : ""}`} onClick={() => void getEnglishWord(item.id).then(setSelected).catch((reason) => setError(formatError(reason)))}><strong>{item.word}</strong><span>{item.pronunciation}</span><small>{item.groupName}{item.occurrence ? ` · ${item.occurrence}` : ""}</small></button>)}
-              {items.length === 0 && busy !== "search" ? <p className="english-empty">{t("english.noResults")}</p> : null}
-            </section>
-            <EnglishEntry entry={selected} t={t} />
-          </div>
-        </>
-      )}
+      {!showSetup ? <nav className="english-tabs" aria-label="英语学习视图">
+        <TabButton active={tab === "today"} onClick={() => setTab("today")} icon={<Sun size={16} />} label="今日" />
+        <TabButton active={tab === "dictionary"} onClick={() => setTab("dictionary")} icon={<BookOpen size={16} />} label="词典" />
+        <TabButton active={tab === "progress"} onClick={() => setTab("progress")} icon={<ChartNoAxesCombined size={16} />} label="进度" />
+        <TabButton active={tab === "settings"} onClick={() => setTab("settings")} icon={<Settings2 size={16} />} label="设置" />
+      </nav> : null}
+
+      <div className="english-workspace">
+        {showSetup && status.installed ? <EnglishPlanSetup groups={groups} busy={busy} onCreate={createPlan} onImport={importBook} /> : null}
+        {showSetup && !status.installed ? <div className="english-setup-with-import">
+          <EnglishDictionary status={status} onStatusChange={setStatus} onGroupsChange={setGroups} hasPlan={false} pageSize={20} onAddWord={async () => undefined} />
+          <button className="english-secondary-button" type="button" disabled={busy} onClick={() => void importBook()}><Upload size={16} />不安装词典，导入自定义词书</button>
+        </div> : null}
+        {!showSetup && tab === "today" ? <EnglishHome overview={overview} busy={busy} onStart={(mode) => void startSession(mode)} onOpenSettings={() => setTab("settings")} /> : null}
+        {!showSetup && tab === "dictionary" ? <EnglishDictionary status={status} onStatusChange={setStatus} onGroupsChange={setGroups} hasPlan={Boolean(overview.activePlan)} pageSize={overview.activePlan?.settings.dictionaryPageSize ?? 20} onAddWord={async (wordId) => { setOverview(await addEnglishWordToPlan(wordId)); }} /> : null}
+        {!showSetup && tab === "progress" ? <EnglishProgress
+          overview={overview}
+          stats={stats}
+          onRestore={async (progressId) => {
+            setError("");
+            try {
+              const nextOverview = await restoreEnglishItem(progressId);
+              setOverview(nextOverview);
+            } catch (reason) {
+              setError(formatError(reason));
+              throw reason;
+            }
+          }}
+        /> : null}
+        {!showSetup && tab === "settings" && overview.activePlan ? <EnglishPlanSettingsPanel
+          settings={overview.activePlan.settings}
+          bookName={overview.activePlan.bookName}
+          busy={busy}
+          onExport={exportBook}
+          onImport={importBook}
+          onError={setError}
+          onSave={async (settings) => {
+            setBusy(true);
+            try {
+              await updateEnglishLearningPlan(overview.activePlan!.id, settings);
+              setOverview(await getEnglishLearningOverview());
+              setTab("today");
+            } catch (reason) { setError(formatError(reason)); }
+            finally { setBusy(false); }
+          }}
+        /> : null}
+      </div>
       {error ? <p className="english-error" role="alert">{error}</p> : null}
-      <footer className="english-attribution">
-        {t("english.attribution")} <button type="button" onClick={() => void openSource()}>{status?.sourceName ?? "isdc.pages.dev"}</button>
-        {status?.installed ? <span> · {formatSize(status.dataSizeBytes)}</span> : null}
-      </footer>
     </div>
   );
 }
 
-function DownloadIcon({ busy }: { busy: boolean }) { return busy ? <LoaderCircle className="english-spinner" size={16} /> : <Download size={16} />; }
-
-function EnglishDownloadProgressView({ progress, t }: { progress: EnglishDownloadProgress; t: ReturnType<typeof useI18n>["t"] }) {
-  const percent = progress.progress ?? 0;
-  const sourceLabel = progress.phase === "backup"
-    ? t("english.progressBackup")
-    : progress.phase === "builtin"
-      ? t("english.progressBuiltin")
-      : t("english.progressDownload");
-  const detail = progress.phase === "index"
-    ? t("english.progressIndex", { current: progress.indexedWords.toLocaleString(), total: progress.totalWords.toLocaleString() })
-    : progress.phase === "decode"
-      ? t("english.progressDecode")
-    : progress.totalBytes
-      ? `${sourceLabel}：${formatSize(progress.downloadedBytes)} / ${formatSize(progress.totalBytes)}`
-      : `${sourceLabel}：${formatSize(progress.downloadedBytes)}`;
-  return <div className="english-download-progress" role="status" aria-live="polite">
-    <div className={`english-progress-track${progress.progress === null ? " is-indeterminate" : ""}`}><span style={{ width: progress.progress === null ? "28%" : `${percent}%` }} /></div>
-    <div className="english-progress-meta"><span>{detail}</span><strong>{progress.progress === null ? "..." : `${percent}%`}</strong></div>
-  </div>;
+function TabButton({ active, onClick, icon, label }: { active: boolean; onClick: () => void; icon: React.ReactNode; label: string }) {
+  return <button type="button" className={active ? "is-active" : ""} onClick={onClick}>{icon}{label}</button>;
 }
 
-function EnglishEntry({ entry, t }: { entry: EnglishWordEntry | null; t: ReturnType<typeof useI18n>["t"] }) {
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-
-  useEffect(() => () => {
-    const audio = audioRef.current;
-    if (!audio) return;
-    audio.pause();
-    audio.removeAttribute("src");
-    audio.load();
-    audioRef.current = null;
-  }, [entry?.id]);
-
-  if (!entry) return <section className="english-entry english-entry-empty">{t("english.selectWord")}</section>;
-  const play = (url: string) => {
-    if (!url) return;
-    if (audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current.removeAttribute("src");
-      audioRef.current.load();
+function EnglishPlanSettingsPanel({
+  settings: initial,
+  bookName,
+  busy,
+  onSave,
+  onExport,
+  onImport,
+  onError,
+}: {
+  settings: EnglishPlanSettings;
+  bookName: string;
+  busy: boolean;
+  onSave: (settings: EnglishPlanSettings) => Promise<void>;
+  onExport: () => Promise<void>;
+  onImport: () => Promise<void>;
+  onError: (message: string) => void;
+}) {
+  const [settings, setSettings] = useState(initial ?? defaultEnglishPlanSettings);
+  const [cacheStatus, setCacheStatus] = useState<EnglishAudioCacheStatus | null>(null);
+  const [cacheBusy, setCacheBusy] = useState(false);
+  useEffect(() => {
+    void getEnglishAudioCacheStatus().then(setCacheStatus).catch((reason) => onError(formatError(reason)));
+  }, []);
+  const runCacheAction = async (action: "prefetch" | "clear") => {
+    setCacheBusy(true);
+    onError("");
+    try {
+      setCacheStatus(await (action === "prefetch" ? prefetchEnglishAudio() : clearEnglishAudioCache()));
+    } catch (reason) {
+      onError(formatError(reason));
+    } finally {
+      setCacheBusy(false);
     }
-    const audio = new Audio();
-    audio.preload = "none";
-    audio.src = url;
-    audioRef.current = audio;
-    void audio.play().catch(() => undefined);
   };
-  return <section className="english-entry">
-    <div className="english-entry-header"><div><h2>{entry.word}</h2><p>/{entry.pronunciation}/</p></div><div className="english-audio-actions">{entry.britishAudio ? <button type="button" onClick={() => play(entry.britishAudio)} title={t("english.britishAudio")} aria-label={t("english.britishAudio")}><Headphones size={16} />UK</button> : null}{entry.americanAudio ? <button type="button" onClick={() => play(entry.americanAudio)} title={t("english.americanAudio")} aria-label={t("english.americanAudio")}><Headphones size={16} />US</button> : null}</div></div>
-    {entry.translation ? <DetailSection title={t("english.translation")}><p>{entry.translation}</p></DetailSection> : null}
-    {entry.example ? <DetailSection title={t("english.example")}><p>{entry.example}</p>{entry.exampleTranslation ? <p className="english-muted">{entry.exampleTranslation}</p> : null}</DetailSection> : null}
-    {entry.englishDefinition ? <DetailSection title={t("english.definition")}><p>{entry.englishDefinition}</p></DetailSection> : null}
-    {entry.mnemonic || entry.rootAffixes ? <DetailSection title={t("english.wordFormation")}>{entry.rootAffixes ? <p>{entry.rootAffixes}</p> : null}{entry.mnemonic ? <p className="english-muted">{entry.mnemonic}</p> : null}</DetailSection> : null}
-    {entry.derivedWords.length > 0 ? <DetailSection title={t("english.derivedWords")}><p>{entry.derivedWords.map((item) => `${item.word} ${item.partOfSpeech} ${item.definition}`).join(" · ")}</p></DetailSection> : null}
-    {entry.examExamples.length > 0 ? <DetailSection title={t("english.examExamples")}><div className="english-example-list">{entry.examExamples.slice(0, 10).map((item, index) => <div key={`${item.source}-${index}`}><p>{item.sentence}</p><small>{item.source} {item.section}</small></div>)}</div></DetailSection> : null}
+  const toggleRestDay = (day: number) => {
+    const restDays = settings.restDays.includes(day)
+      ? settings.restDays.filter((value) => value !== day)
+      : [...settings.restDays, day].sort((left, right) => left - right);
+    setSettings({ ...settings, restDays });
+  };
+  return <section className="english-settings-panel">
+    <div className="english-section-heading"><div><h2>学习设置</h2><p>每日复习是软目标；到期单词不会被自动丢弃。</p></div></div>
+    <div className="english-plan-form">
+      <SettingsNumber label="每组新词数" value={settings.newBatchSize} min={1} max={100} onChange={(value) => setSettings({ ...settings, newBatchSize: value })} />
+      <SettingsNumber label="每日新词目标" value={settings.dailyNewTarget} min={1} max={500} onChange={(value) => setSettings({ ...settings, dailyNewTarget: value })} />
+      <SettingsNumber label="每组复习数" value={settings.reviewBatchSize} min={1} max={100} onChange={(value) => setSettings({ ...settings, reviewBatchSize: value })} />
+      <SettingsNumber label="每日复习软目标" value={settings.dailyReviewTarget} min={1} max={2000} onChange={(value) => setSettings({ ...settings, dailyReviewTarget: value })} />
+      <label className="english-field"><span>目标保持率</span><select value={settings.desiredRetention} onChange={(event) => setSettings({ ...settings, desiredRetention: Number(event.target.value) })}><option value={0.85}>轻量 · 85%</option><option value={0.9}>标准 · 90%</option><option value={0.95}>强化 · 95%</option></select></label>
+      <label className="english-field"><span>首选发音</span><select value={settings.preferredAccent} onChange={(event) => setSettings({ ...settings, preferredAccent: event.target.value as "british" | "american" })}><option value="british">英音</option><option value="american">美音</option></select></label>
+      <label className="english-field"><span>播放速度</span><select value={settings.playbackRate} onChange={(event) => setSettings({ ...settings, playbackRate: Number(event.target.value) })}><option value={0.8}>0.8x</option><option value={1}>1.0x</option><option value={1.2}>1.2x</option></select></label>
+      <SettingsNumber label="音频缓存上限（MB）" value={settings.audioCacheMaxMb} min={0} max={2048} onChange={(value) => setSettings({ ...settings, audioCacheMaxMb: value })} />
+      <SettingsNumber label="预下载未来天数" value={settings.audioPrefetchDays} min={0} max={30} onChange={(value) => setSettings({ ...settings, audioPrefetchDays: value })} />
+      <PageSizeField label="词典每页数量" value={settings.dictionaryPageSize} onChange={(value) => setSettings({ ...settings, dictionaryPageSize: value })} />
+      <PageSizeField label="归档单词每页数量" value={settings.archivePageSize} onChange={(value) => setSettings({ ...settings, archivePageSize: value })} />
+      <PageSizeField label="最近答题每页数量" value={settings.historyPageSize} onChange={(value) => setSettings({ ...settings, historyPageSize: value })} />
+      <label className="english-toggle"><input type="checkbox" checked={settings.autoPlay} onChange={(event) => setSettings({ ...settings, autoPlay: event.target.checked })} /><span>听写时自动播放</span></label>
+      <label className="english-toggle"><input type="checkbox" checked={settings.masteredAudits} onChange={(event) => setSettings({ ...settings, masteredAudits: event.target.checked })} /><span>启用已掌握抽查</span></label>
+      <label className="english-toggle"><input type="checkbox" checked={settings.pauseNewWords} onChange={(event) => setSettings({ ...settings, pauseNewWords: event.target.checked })} /><span>暂停引入新词</span></label>
+    </div>
+    <div className="english-rest-days">
+      <span>休息日（仍可复习到期单词，不引入新词）</span>
+      <div>{["日", "一", "二", "三", "四", "五", "六"].map((label, day) => <button key={label} type="button" className={settings.restDays.includes(day) ? "is-selected" : ""} onClick={() => toggleRestDay(day)}>周{label}</button>)}</div>
+    </div>
+    <div className="english-settings-tools">
+      <div><strong>自定义词书</strong><span>{bookName} · 可导出为开放 JSON 文件，并在其他设备重新导入。</span></div>
+      <div className="english-settings-tool-actions">
+        <button className="english-secondary-button" type="button" disabled={busy} onClick={() => void onExport()}><Download size={15} />导出词书</button>
+        <button className="english-secondary-button" type="button" disabled={busy} onClick={() => { if (window.confirm("导入词书会暂停当前计划并切换到新计划，是否继续？")) void onImport(); }}><Upload size={15} />导入词书</button>
+      </div>
+    </div>
+    <div className="english-settings-tools">
+      <div><strong>音频缓存</strong><span>{cacheStatus ? `${cacheStatus.files} 个文件 · ${formatBytes(cacheStatus.bytes)} / ${formatBytes(cacheStatus.maxBytes)}` : "正在读取缓存状态"}</span></div>
+      <div className="english-settings-tool-actions">
+        <button className="english-secondary-button" type="button" disabled={cacheBusy || settings.audioCacheMaxMb === 0} onClick={() => void runCacheAction("prefetch")}><Download size={15} />预下载</button>
+        <button className="english-secondary-button" type="button" disabled={cacheBusy || !cacheStatus?.files} onClick={() => void runCacheAction("clear")}><Trash2 size={15} />清理缓存</button>
+      </div>
+    </div>
+    <div className="english-settings-save"><button type="button" disabled={busy} onClick={() => void onSave(settings)}>{busy ? "正在保存" : "保存设置"}</button></div>
   </section>;
 }
 
-function DetailSection({ title, children }: { title: string; children: React.ReactNode }) { return <div className="english-detail"><h3>{title}</h3>{children}</div>; }
+function SettingsNumber({ label, value, min, max, onChange }: { label: string; value: number; min: number; max: number; onChange: (value: number) => void }) {
+  return <label className="english-field"><span>{label}</span><input type="number" value={value} min={min} max={max} onChange={(event) => onChange(Math.min(max, Math.max(min, Number(event.target.value) || min)))} /></label>;
+}
+
+function PageSizeField({ label, value, onChange }: { label: string; value: number; onChange: (value: number) => void }) {
+  return <label className="english-field"><span>{label}</span><select value={value} onChange={(event) => onChange(Number(event.target.value))}><option value={20}>20 个</option><option value={40}>40 个</option></select></label>;
+}
+
+function formatError(error: unknown) { return error instanceof Error ? error.message : String(error); }
+function formatBytes(bytes: number) { return bytes < 1024 * 1024 ? `${Math.round(bytes / 1024)} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`; }
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timer = 0;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = window.setTimeout(() => reject(new Error(message)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    window.clearTimeout(timer);
+  }
+}

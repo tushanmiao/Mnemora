@@ -40,6 +40,10 @@ pub struct EnglishGroupSummary {
 #[serde(rename_all = "camelCase")]
 pub struct EnglishWordSummary {
     pub id: u32,
+    #[serde(default)]
+    pub entry_key: String,
+    #[serde(default)]
+    pub source_version: String,
     pub word: String,
     pub group_id: u32,
     pub group_name: String,
@@ -52,6 +56,10 @@ pub struct EnglishWordSummary {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct EnglishIndexEntry {
     pub id: u32,
+    #[serde(default)]
+    pub entry_key: String,
+    #[serde(default)]
+    pub source_version: String,
     pub word: String,
     pub group_id: u32,
     pub pronunciation: String,
@@ -81,6 +89,10 @@ pub struct EnglishExamExample {
 #[serde(rename_all = "camelCase")]
 pub struct EnglishWordEntry {
     pub id: u32,
+    #[serde(default)]
+    pub entry_key: String,
+    #[serde(default)]
+    pub source_version: String,
     pub word: String,
     pub group_id: u32,
     pub group_name: String,
@@ -111,6 +123,8 @@ pub struct EnglishSearchResult {
 pub(crate) struct EnglishIndexFile {
     pub source_name: String,
     pub source_url: String,
+    #[serde(default)]
+    pub source_version: String,
     pub downloaded_at: u64,
     pub word_count: usize,
     pub groups: Vec<EnglishGroupSummary>,

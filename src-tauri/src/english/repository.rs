@@ -10,7 +10,9 @@ use std::{
 use brotli::Decompressor;
 use reqwest::StatusCode;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
+use super::learning::types::EnglishLearningSnapshot;
 use super::types::{
     EnglishDerivedWord, EnglishDictionaryStatus, EnglishExamExample, EnglishGroupSummary,
     EnglishIndexEntry, EnglishIndexFile, EnglishSearchResult, EnglishWordEntry, EnglishWordSummary,
@@ -19,6 +21,7 @@ use super::types::{
 
 const INDEX_FILE: &str = "index.json";
 const ENTRIES_FILE: &str = "entries.jsonl";
+const STATUS_FILE: &str = "status.json";
 const MAX_SEARCH_RESULTS: usize = 100;
 const MAX_SOURCE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_DECODED_BYTES: usize = 128 * 1024 * 1024;
@@ -65,21 +68,36 @@ impl EnglishRepository {
                 data_size_bytes: 0,
             });
         }
-        let index = self.load_index()?;
-        let data_size_bytes = fs::metadata(&index_path)
-            .map(|meta| meta.len())
-            .unwrap_or(0)
-            + fs::metadata(self.root.join(ENTRIES_FILE))
+        let index_metadata = fs::metadata(&index_path)
+            .map_err(|error| format!("Read English dictionary index metadata failed: {error}"))?;
+        let entries_path = self.root.join(ENTRIES_FILE);
+        let data_size_bytes = index_metadata.len()
+            + fs::metadata(&entries_path)
                 .map(|meta| meta.len())
                 .unwrap_or(0);
-        Ok(EnglishDictionaryStatus {
+        let status_path = self.root.join(STATUS_FILE);
+        if status_manifest_is_current(&status_path, &index_metadata) {
+            if let Ok(bytes) = fs::read(&status_path) {
+                if let Ok(mut status) = serde_json::from_slice::<EnglishDictionaryStatus>(&bytes) {
+                    status.installed = true;
+                    status.data_size_bytes = data_size_bytes;
+                    return Ok(status);
+                }
+            }
+        }
+        let index = self.load_index()?;
+        let status = EnglishDictionaryStatus {
             installed: true,
             source_name: index.source_name.clone(),
             source_url: index.source_url.clone(),
             word_count: index.word_count,
             downloaded_at: Some(index.downloaded_at),
             data_size_bytes,
-        })
+        };
+        if let Ok(bytes) = serde_json::to_vec(&status) {
+            let _ = fs::write(status_path, bytes);
+        }
+        Ok(status)
     }
 
     pub fn search(
@@ -87,6 +105,7 @@ impl EnglishRepository {
         query: &str,
         group_id: Option<u32>,
         limit: usize,
+        offset: usize,
     ) -> Result<EnglishSearchResult, String> {
         let index = self.load_index()?;
         let needle = query.trim().as_bytes();
@@ -99,10 +118,10 @@ impl EnglishRepository {
             if !matches {
                 continue;
             }
-            total += 1;
-            if items.len() < limit {
+            if total >= offset && items.len() < limit {
                 items.push(index_entry_summary(entry, &index.groups));
             }
+            total += 1;
         }
         Ok(EnglishSearchResult {
             items,
@@ -126,8 +145,9 @@ impl EnglishRepository {
         BufReader::new(file)
             .read_line(&mut line)
             .map_err(|error| format!("Read English dictionary entry failed: {error}"))?;
-        serde_json::from_str(line.trim())
-            .map_err(|error| format!("Parse English word failed: {error}"))
+        let entry: EnglishWordEntry = serde_json::from_str(line.trim())
+            .map_err(|error| format!("Parse English word failed: {error}"))?;
+        Ok(hydrate_entry_identity(entry, &index.source_version))
     }
 
     pub fn delete(&self) -> Result<(), String> {
@@ -151,6 +171,10 @@ impl EnglishRepository {
             return Err("English dictionary source is too large".to_string());
         }
         let source_data = decode_source_html(payload)?;
+        let source_version =
+            stable_digest(&serde_json::to_vec(&source_data).map_err(|error| {
+                format!("Serialize English dictionary version failed: {error}")
+            })?);
         cleanup_stale_install_directories(&self.root);
         let temp_root = self
             .root
@@ -196,12 +220,15 @@ impl EnglishRepository {
                     next_id,
                     group_id as u32,
                     &group_name,
+                    &source_version,
                     word,
                     pools,
                     exam_pools,
                 )?;
                 let summary = EnglishIndexEntry {
                     id: entry.id,
+                    entry_key: entry.entry_key.clone(),
+                    source_version: entry.source_version.clone(),
                     word: entry.word.clone(),
                     group_id: entry.group_id,
                     pronunciation: entry.pronunciation.clone(),
@@ -235,6 +262,7 @@ impl EnglishRepository {
         let index = EnglishIndexFile {
             source_name: ENGLISH_SOURCE_NAME.to_string(),
             source_url: ENGLISH_SOURCE_URL.to_string(),
+            source_version,
             downloaded_at,
             word_count: summaries.len(),
             groups,
@@ -281,6 +309,45 @@ impl EnglishRepository {
             *cache = None;
         }
     }
+
+    /// 计划创建时按词典分组读取快照。该操作只在用户明确创建计划时执行。
+    pub fn learning_snapshots_for_groups(
+        &self,
+        group_ids: &[u32],
+    ) -> Result<Vec<EnglishLearningSnapshot>, String> {
+        if group_ids.is_empty() {
+            return Err("请至少选择一个词典分组。".to_string());
+        }
+        let index = self.load_index()?;
+        let summaries = index
+            .entries
+            .iter()
+            .filter(|entry| group_ids.contains(&entry.group_id))
+            .cloned()
+            .collect::<Vec<_>>();
+        if summaries.is_empty() {
+            return Err("选择的词典分组没有可学习单词。".to_string());
+        }
+        let mut reader = BufReader::new(
+            File::open(self.root.join(ENTRIES_FILE))
+                .map_err(|error| format!("打开英语词典条目失败：{error}"))?,
+        );
+        let mut snapshots = Vec::with_capacity(summaries.len());
+        for summary in summaries {
+            reader
+                .seek(SeekFrom::Start(summary.file_offset))
+                .map_err(|error| format!("定位英语词典条目失败：{error}"))?;
+            let mut line = String::new();
+            reader
+                .read_line(&mut line)
+                .map_err(|error| format!("读取英语词典条目失败：{error}"))?;
+            let entry = serde_json::from_str::<EnglishWordEntry>(line.trim())
+                .map_err(|error| format!("解析英语词典条目失败：{error}"))?;
+            let entry = hydrate_entry_identity(entry, &index.source_version);
+            snapshots.push(EnglishLearningSnapshot::from(&entry));
+        }
+        Ok(snapshots)
+    }
 }
 
 fn replace_dictionary_root(root: &Path, replacement: &Path) -> Result<(), String> {
@@ -319,18 +386,48 @@ fn cleanup_stale_install_directories(root: &Path) {
     }
 }
 
+fn status_manifest_is_current(status_path: &Path, index_metadata: &fs::Metadata) -> bool {
+    let Ok(status_modified) = fs::metadata(status_path).and_then(|metadata| metadata.modified())
+    else {
+        return false;
+    };
+    let Ok(index_modified) = index_metadata.modified() else {
+        return false;
+    };
+    status_modified >= index_modified
+}
+
 fn index_entry_summary(
     entry: &EnglishIndexEntry,
     groups: &[EnglishGroupSummary],
 ) -> EnglishWordSummary {
+    let group_name = groups
+        .get(entry.group_id as usize)
+        .map(|group| group.name.clone())
+        .unwrap_or_default();
+    let source_version = if entry.source_version.is_empty() {
+        "legacy".to_string()
+    } else {
+        entry.source_version.clone()
+    };
+    let entry_key = if entry.entry_key.is_empty() {
+        stable_entry_key(
+            &source_version,
+            &entry.word,
+            &group_name,
+            &entry.pronunciation,
+            "",
+        )
+    } else {
+        entry.entry_key.clone()
+    };
     EnglishWordSummary {
         id: entry.id,
+        entry_key,
+        source_version,
         word: entry.word.clone(),
         group_id: entry.group_id,
-        group_name: groups
-            .get(entry.group_id as usize)
-            .map(|group| group.name.clone())
-            .unwrap_or_default(),
+        group_name,
         pronunciation: entry.pronunciation.clone(),
         occurrence: entry.occurrence,
     }
@@ -371,6 +468,7 @@ fn normalize_word(
     id: u32,
     group_id: u32,
     group_name: &str,
+    source_version: &str,
     word: &Value,
     pools: &Value,
     exam_pools: &Value,
@@ -442,13 +540,25 @@ fn normalize_word(
         })
         .unwrap_or_default();
     let exam_examples = normalize_exam_examples(word.get("dt"), exam_pools, pools);
+    let pronunciation = string_value(word.get("p")).unwrap_or_default();
+    let translation = string_value(word.get("t")).unwrap_or_default();
+    let normalized_word = word_text.trim().to_lowercase();
+    let entry_key = stable_entry_key(
+        source_version,
+        &normalized_word,
+        group_name,
+        &pronunciation,
+        &translation,
+    );
     Ok(EnglishWordEntry {
         id,
+        entry_key,
+        source_version: source_version.to_string(),
         word: word_text,
         group_id,
         group_name: group_name.to_string(),
-        pronunciation: string_value(word.get("p")).unwrap_or_default(),
-        translation: string_value(word.get("t")).unwrap_or_default(),
+        pronunciation,
+        translation,
         example: string_value(word.get("e")).unwrap_or_default(),
         example_translation: string_value(word.get("ec")).unwrap_or_default(),
         british_audio: audio_url(string_value(word.get("ay"))),
@@ -463,6 +573,51 @@ fn normalize_word(
             .map(|value| value as u32),
         exam_examples,
     })
+}
+
+fn stable_digest(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+fn stable_entry_key(
+    source_version: &str,
+    word: &str,
+    group_name: &str,
+    pronunciation: &str,
+    translation: &str,
+) -> String {
+    let normalized_word = word.trim().to_lowercase();
+    let fingerprint =
+        stable_digest(format!("{group_name}\u{1f}{pronunciation}\u{1f}{translation}").as_bytes());
+    format!(
+        "isdc:{}:{}:{}",
+        source_version,
+        normalized_word,
+        &fingerprint[..16]
+    )
+}
+
+fn hydrate_entry_identity(
+    mut entry: EnglishWordEntry,
+    index_source_version: &str,
+) -> EnglishWordEntry {
+    if entry.source_version.is_empty() {
+        entry.source_version = if index_source_version.is_empty() {
+            "legacy".to_string()
+        } else {
+            index_source_version.to_string()
+        };
+    }
+    if entry.entry_key.is_empty() {
+        entry.entry_key = stable_entry_key(
+            &entry.source_version,
+            &entry.word,
+            &entry.group_name,
+            &entry.pronunciation,
+            &entry.translation,
+        );
+    }
+    entry
 }
 
 fn audio_url(value: Option<String>) -> String {
@@ -747,7 +902,7 @@ mod tests {
     use serde_json::json;
     use uuid::Uuid;
 
-    use super::{build_alphabet, decode_source_html, EnglishRepository};
+    use super::{build_alphabet, decode_source_html, EnglishRepository, STATUS_FILE};
 
     fn encode_base85(bytes: &[u8]) -> String {
         let alphabet = build_alphabet();
@@ -823,7 +978,21 @@ mod tests {
 
         assert_eq!(first.word_count, 1);
         assert_eq!(second.word_count, 1);
-        assert_eq!(repository.search("hello", None, 10).unwrap().total, 1);
+        assert!(app_data
+            .join("english")
+            .join("dictionary")
+            .join(STATUS_FILE)
+            .is_file());
+        assert_eq!(repository.search("hello", None, 10, 0).unwrap().total, 1);
+        let entry = repository.get_entry(0).unwrap();
+        assert!(!entry.entry_key.is_empty());
+        assert_eq!(
+            repository
+                .learning_snapshots_for_groups(&[0])
+                .unwrap()
+                .len(),
+            1
+        );
         repository.clear_cache();
         fs::remove_dir_all(app_data).unwrap();
     }
@@ -839,5 +1008,37 @@ mod tests {
         assert!(super::contains_ascii_case_insensitive("Deposit", b"pos"));
         assert!(super::contains_ascii_case_insensitive("Deposit", b"DEPO"));
         assert!(!super::contains_ascii_case_insensitive("Deposit", b"desk"));
+    }
+
+    #[test]
+    fn dictionary_search_returns_bounded_pages_and_full_total() {
+        let app_data = std::env::temp_dir().join(format!("mnemora-english-{}", Uuid::new_v4()));
+        let repository = EnglishRepository::new(app_data.clone(), app_data.clone());
+        let dictionary = json!({
+            "g": [{
+                "n": "test",
+                "ws": [
+                    {"w": "alpha", "t": "A"},
+                    {"w": "bravo", "t": "B"},
+                    {"w": "charlie", "t": "C"}
+                ]
+            }],
+            "d": {},
+            "p": {}
+        });
+        repository
+            .install_payload_with_progress(encoded_dictionary(&dictionary).into_bytes(), |_, _| {})
+            .unwrap();
+
+        let first = repository.search("", None, 2, 0).unwrap();
+        let second = repository.search("", None, 2, 2).unwrap();
+        assert_eq!(first.total, 3);
+        assert_eq!(second.total, 3);
+        assert_eq!(first.items.len(), 2);
+        assert_eq!(second.items.len(), 1);
+        assert_ne!(first.items[0].id, second.items[0].id);
+
+        repository.clear_cache();
+        fs::remove_dir_all(app_data).unwrap();
     }
 }

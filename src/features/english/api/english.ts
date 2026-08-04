@@ -22,6 +22,8 @@ export type EnglishDownloadProgress = {
 export type EnglishGroupSummary = { id: number; name: string; count: number };
 export type EnglishWordSummary = {
   id: number;
+  entryKey: string;
+  sourceVersion: string;
   word: string;
   groupId: number;
   groupName: string;
@@ -72,9 +74,9 @@ export function downloadEnglishDictionary(onProgress: (progress: EnglishDownload
   return invoke<EnglishDictionaryStatus>("english_dictionary_download", { onProgress: channel });
 }
 
-export function searchEnglishDictionary(query: string, groupId: number | null, limit = 40) {
+export function searchEnglishDictionary(query: string, groupId: number | null, limit = 20, offset = 0) {
   if (!isTauri()) return unavailable<EnglishSearchResult>({ items: [], total: 0, groups: [] });
-  return invoke<EnglishSearchResult>("english_dictionary_search", { query, groupId, limit });
+  return invoke<EnglishSearchResult>("english_dictionary_search", { query, groupId, limit, offset });
 }
 
 export function getEnglishWord(wordId: number) {

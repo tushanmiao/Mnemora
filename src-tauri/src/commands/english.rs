@@ -115,11 +115,12 @@ pub async fn english_dictionary_search(
     query: String,
     group_id: Option<u32>,
     limit: Option<usize>,
+    offset: Option<usize>,
 ) -> Result<EnglishSearchResult, String> {
     let _guard = state.english_operations.lock().await;
     let repository = state.english_repository.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        repository.search(&query, group_id, limit.unwrap_or(40))
+        repository.search(&query, group_id, limit.unwrap_or(20), offset.unwrap_or(0))
     })
     .await
     .map_err(|error| format!("搜索英语词库失败：{error}"))?

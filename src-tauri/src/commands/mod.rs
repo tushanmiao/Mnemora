@@ -4,6 +4,7 @@ pub mod attachments;
 pub mod chat;
 pub mod conversations;
 pub mod english;
+pub mod english_learning;
 pub mod html_preview;
 pub mod library;
 pub mod memory;
