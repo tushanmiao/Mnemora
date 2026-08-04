@@ -7,6 +7,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Download,
+  FilePenLine,
   FileJson,
   FileText,
   Folder,
@@ -56,6 +57,8 @@ type SidebarProps = {
   onExportConversation: (conversationId: string, format: "markdown" | "json") => void;
   onSaveConversationAsNote: (conversationId: string) => void;
   onSummarizeConversationToNote: (conversationId: string) => void;
+  onGenerateDeepNote: (conversationId: string) => void;
+  onUpdateExistingNote: (conversationId: string) => void;
   onClearConversations: () => void;
   onLoadMoreConversations: () => void;
   onOpenSkills: () => void;
@@ -92,6 +95,8 @@ export function Sidebar({
   onExportConversation,
   onSaveConversationAsNote,
   onSummarizeConversationToNote,
+  onGenerateDeepNote,
+  onUpdateExistingNote,
   onClearConversations,
   onLoadMoreConversations,
   onOpenSkills,
@@ -358,6 +363,14 @@ export function Sidebar({
                         setConversationMenu(null);
                         onSummarizeConversationToNote(conversation.id);
                       }}
+                      onGenerateDeepNote={() => {
+                        setConversationMenu(null);
+                        onGenerateDeepNote(conversation.id);
+                      }}
+                      onUpdateExistingNote={() => {
+                        setConversationMenu(null);
+                        onUpdateExistingNote(conversation.id);
+                      }}
                       onDelete={() => {
                         setConversationMenu(null);
                         onDeleteConversation(conversation.id);
@@ -448,6 +461,8 @@ type ConversationMenuProps = {
   onExport: (format: "markdown" | "json") => void;
   onSaveAsNote: () => void;
   onSummarizeToNote: () => void;
+  onGenerateDeepNote: () => void;
+  onUpdateExistingNote: () => void;
   onDelete: () => void;
 };
 
@@ -456,6 +471,8 @@ function ConversationMenu({
   onExport,
   onSaveAsNote,
   onSummarizeToNote,
+  onGenerateDeepNote,
+  onUpdateExistingNote,
   onDelete,
 }: ConversationMenuProps) {
   return (
@@ -483,6 +500,14 @@ function ConversationMenu({
       <button className="sidebar-menu-item" type="button" role="menuitem" onClick={onSummarizeToNote}>
         <Sparkles size={16} />
         <span>{t("sidebar.summarizeToNote")}</span>
+      </button>
+      <button className="sidebar-menu-item" type="button" role="menuitem" onClick={onGenerateDeepNote}>
+        <BookOpenText size={16} />
+        <span>{t("sidebar.deepNote")}</span>
+      </button>
+      <button className="sidebar-menu-item" type="button" role="menuitem" onClick={onUpdateExistingNote}>
+        <FilePenLine size={16} />
+        <span>{t("sidebar.updateExistingNote")}</span>
       </button>
       <button className="sidebar-menu-item" type="button" role="menuitem" onClick={() => onExport("markdown")}>
         <Download size={16} />

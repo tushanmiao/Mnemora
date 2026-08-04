@@ -7,6 +7,7 @@ pub mod english;
 pub mod html_preview;
 pub mod library;
 pub mod memory;
+pub mod note_pipeline;
 pub mod providers;
 pub mod settings;
 pub mod skills;

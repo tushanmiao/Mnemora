@@ -33,6 +33,7 @@ pub struct AppState {
     pub model_settings_repository: ModelSettingsRepository,
     pub secrets: SecretStore,
     pub active_chat_runs: Mutex<HashMap<String, CancellationToken>>,
+    pub active_note_pipeline_runs: Mutex<HashMap<String, CancellationToken>>,
     pub pending_tool_approvals: Mutex<HashMap<String, oneshot::Sender<bool>>>,
     pub active_attachment_tasks: StdMutex<HashMap<String, CancellationToken>>,
     pub attachment_preview_gate: Semaphore,
@@ -136,6 +137,7 @@ impl AppState {
             model_settings_repository,
             secrets,
             active_chat_runs: Mutex::new(HashMap::new()),
+            active_note_pipeline_runs: Mutex::new(HashMap::new()),
             pending_tool_approvals: Mutex::new(HashMap::new()),
             active_attachment_tasks: StdMutex::new(HashMap::new()),
             attachment_preview_gate: Semaphore::new(2),
@@ -168,6 +170,37 @@ impl AppState {
     /** 向所有活动 Chat 流发送取消信号；真实任务结束后仍由 service 移除注册项。 */
     pub async fn cancel_all_chat_runs(&self) -> usize {
         let runs = self.active_chat_runs.lock().await;
+        cancel_chat_run_tokens(&runs)
+    }
+
+    pub async fn register_note_pipeline_run(
+        &self,
+        run_id: String,
+        cancellation: CancellationToken,
+    ) -> bool {
+        let mut runs = self.active_note_pipeline_runs.lock().await;
+        if runs.contains_key(&run_id) {
+            return false;
+        }
+        runs.insert(run_id, cancellation);
+        true
+    }
+
+    pub async fn finish_note_pipeline_run(&self, run_id: &str) {
+        self.active_note_pipeline_runs.lock().await.remove(run_id);
+    }
+
+    pub async fn cancel_note_pipeline_run(&self, run_id: &str) -> bool {
+        let runs = self.active_note_pipeline_runs.lock().await;
+        let Some(token) = runs.get(run_id) else {
+            return false;
+        };
+        token.cancel();
+        true
+    }
+
+    pub async fn cancel_all_note_pipeline_runs(&self) -> usize {
+        let runs = self.active_note_pipeline_runs.lock().await;
         cancel_chat_run_tokens(&runs)
     }
 

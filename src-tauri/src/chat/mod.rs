@@ -6,6 +6,7 @@
 pub mod agent;
 pub mod attachments;
 pub mod conversation_types;
+pub mod note_pipeline;
 mod prompt;
 pub mod service;
 pub mod storage;

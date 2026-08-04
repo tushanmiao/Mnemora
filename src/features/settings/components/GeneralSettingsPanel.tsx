@@ -46,6 +46,7 @@ type GeneralSettingsPanelProps = {
   onSave: (settings: AppSettings) => Promise<AppSettings>;
   onImported: (bundle: SettingsBundle) => void;
   onDefaultModelChange: (providerId: string, modelId: string) => Promise<void>;
+  onNoteModelChange: (providerId: string | null, modelId: string | null) => Promise<void>;
 };
 
 const TOKEN_OPTIONS = [4_096, 8_192, 16_384, 32_768, 65_536, 131_072];
@@ -62,6 +63,7 @@ export function GeneralSettingsPanel({
   onSave,
   onImported,
   onDefaultModelChange,
+  onNoteModelChange,
 }: GeneralSettingsPanelProps) {
   const { t } = useI18n();
   const [draft, setDraft] = useState(settings);
@@ -92,6 +94,9 @@ export function GeneralSettingsPanel({
 
   const defaultModelValue = modelSettings.defaultProviderId && modelSettings.defaultModelId
     ? JSON.stringify([modelSettings.defaultProviderId, modelSettings.defaultModelId])
+    : "";
+  const noteModelValue = modelSettings.noteProviderId && modelSettings.noteModelId
+    ? JSON.stringify([modelSettings.noteProviderId, modelSettings.noteModelId])
     : "";
 
   const updateDraft = <Key extends keyof AppSettings>(key: Key, value: AppSettings[Key]) => {
@@ -518,6 +523,32 @@ export function GeneralSettingsPanel({
               <option value="">{t("general.notSet")}</option>
               {modelOptions.map((option) => (
                 <option value={option.value} key={`${option.providerId}:${option.modelId}`}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </SettingRow>
+          <SettingRow label={t("general.noteModel")} description={t("general.noteModelDescription")}>
+            <select
+              className="settings-input settings-select general-control"
+              value={noteModelValue}
+              onChange={(event) => {
+                if (!event.target.value) {
+                  void onNoteModelChange(null, null).catch((error) => {
+                    setFeedback({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+                  });
+                  return;
+                }
+                const option = modelOptions.find((item) => item.value === event.target.value);
+                if (!option) return;
+                void onNoteModelChange(option.providerId, option.modelId).catch((error) => {
+                  setFeedback({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+                });
+              }}
+            >
+              <option value="">{t("general.followChatModel")}</option>
+              {modelOptions.map((option) => (
+                <option value={option.value} key={`note:${option.providerId}:${option.modelId}`}>
                   {option.label}
                 </option>
               ))}

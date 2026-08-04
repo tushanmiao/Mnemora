@@ -102,6 +102,17 @@ export function useAppSettings() {
     }, []);
   }, [modelSettings, saveModelSettings]);
 
+  const changeNoteModel = useCallback(async (
+    providerId: string | null,
+    modelId: string | null,
+  ) => {
+    await saveModelSettings({
+      ...modelSettings,
+      noteProviderId: providerId,
+      noteModelId: modelId,
+    }, []);
+  }, [modelSettings, saveModelSettings]);
+
   const applyImportedSettings = useCallback((bundle: SettingsBundle) => {
     setAppSettings(bundle.appSettings);
     setModelSettings(bundle.modelSettings);
@@ -129,6 +140,7 @@ export function useAppSettings() {
     saveAppSettings,
     saveModelSettings,
     changeDefaultModel,
+    changeNoteModel,
     applyImportedSettings,
     toggleTheme,
   };

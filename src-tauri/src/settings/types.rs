@@ -10,7 +10,7 @@ use std::collections::HashSet;
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 
-pub const CURRENT_MODEL_SETTINGS_VERSION: u32 = 4;
+pub const CURRENT_MODEL_SETTINGS_VERSION: u32 = 5;
 const MAX_PROVIDERS: usize = 100;
 const MAX_MODELS_PER_PROVIDER: usize = 2_000;
 
@@ -119,6 +119,10 @@ pub struct ModelSettings {
     pub default_provider_id: Option<String>,
     #[serde(default)]
     pub default_model_id: Option<String>,
+    #[serde(default)]
+    pub note_provider_id: Option<String>,
+    #[serde(default)]
+    pub note_model_id: Option<String>,
 }
 
 fn current_version() -> u32 {
@@ -166,6 +170,8 @@ impl Default for ModelSettings {
             ],
             default_provider_id: None,
             default_model_id: None,
+            note_provider_id: None,
+            note_model_id: None,
         }
     }
 }
@@ -285,6 +291,7 @@ impl ModelSettings {
         }
 
         self.reconcile_default_model();
+        self.reconcile_note_model();
         Ok(self)
     }
 
@@ -322,6 +329,20 @@ impl ModelSettings {
             .as_ref()
             .map(|(provider_id, _)| provider_id.clone());
         self.default_model_id = fallback.map(|(_, model_id)| model_id);
+    }
+
+    fn reconcile_note_model(&mut self) {
+        let current_is_valid = self.providers.iter().any(|provider| {
+            provider.enabled
+                && self.note_provider_id.as_deref() == Some(provider.id.as_str())
+                && provider.models.iter().any(|model| {
+                    model.enabled && self.note_model_id.as_deref() == Some(model.id.as_str())
+                })
+        });
+        if !current_is_valid {
+            self.note_provider_id = None;
+            self.note_model_id = None;
+        }
     }
 }
 
@@ -449,5 +470,16 @@ mod tests {
             settings.providers[0].models[0].context_window_tokens,
             Some(128_000)
         );
+    }
+
+    #[test]
+    fn clears_unavailable_note_model_selection() {
+        let mut settings = ModelSettings::default();
+        settings.note_provider_id = Some("missing-provider".to_string());
+        settings.note_model_id = Some("missing-model".to_string());
+
+        let settings = settings.normalize_and_validate().unwrap();
+        assert_eq!(settings.note_provider_id, None);
+        assert_eq!(settings.note_model_id, None);
     }
 }

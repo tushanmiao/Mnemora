@@ -17,6 +17,7 @@ import {
   PanelRightOpen,
   Quote,
   Trash2,
+  WandSparkles,
 } from "lucide-react";
 import type { LibraryNote } from "../../library/types";
 import type { MarkdownOutlineItem } from "../../chat/markdown/utils/outline";
@@ -27,6 +28,7 @@ import {
   OUTLINE_MIN_WIDTH,
   type NotesLayout,
 } from "../utils/notesWorkspace";
+import { NoteSourcesBar } from "./NoteSourcesBar";
 
 const MarkdownNotePreview = lazy(() => import("./MarkdownNotePreview"));
 
@@ -70,6 +72,8 @@ type NoteEditorProps = {
   onPreviewSelection: (event: ReactMouseEvent<HTMLDivElement>) => void;
   onSelectionClear: () => void;
   onAskSelection: () => void;
+  onEditSelection: () => void;
+  onOpenSourceConversation?: (conversationId: string, messageId: string | null) => void;
 };
 
 /** 单篇笔记编辑器只负责展示和编辑交互，加载、保存与分组状态留在工作区容器。 */
@@ -105,6 +109,8 @@ export function NoteEditor({
   onPreviewSelection,
   onSelectionClear,
   onAskSelection,
+  onEditSelection,
+  onOpenSourceConversation,
 }: NoteEditorProps) {
   return (
     <section
@@ -180,6 +186,7 @@ export function NoteEditor({
         </header>
 
         {error ? <div className="notes-error" role="alert">{error}</div> : null}
+        <NoteSourcesBar noteId={activeNote.id} onOpenConversation={onOpenSourceConversation} />
         {loading ? (
           <div className="notes-empty" role="status"><LoaderCircle className="is-spinning" size={24} />正在加载笔记</div>
         ) : (
@@ -206,6 +213,7 @@ export function NoteEditor({
               <div className="notes-selection-menu" style={{ left: selectionMenu.left, top: selectionMenu.top }} onMouseDown={(event) => event.preventDefault()}>
                 <button type="button" onClick={() => { void navigator.clipboard?.writeText(selectionMenu.text); onSelectionClear(); }}><Copy size={13} />复制</button>
                 <button type="button" onClick={onAskSelection}><Quote size={13} />引用提问</button>
+                <button type="button" onClick={onEditSelection}><WandSparkles size={13} />AI 修改</button>
               </div>
             ) : null}
           </div>

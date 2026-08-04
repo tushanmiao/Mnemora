@@ -24,6 +24,12 @@ pub const MAX_NOTE_TITLE_CHARS: usize = 500;
 pub const MAX_NOTE_CONTENT_CHARS: usize = 500_000;
 pub const MAX_NOTE_IMPORT_FILES: usize = 50;
 pub const MAX_NOTE_IMPORT_BYTES: u64 = 2 * 1024 * 1024;
+/// 单篇笔记的章节级来源条数上限，避免写入过多溯源记录。
+pub const MAX_NOTE_SOURCES: usize = 2000;
+pub const MAX_NOTE_PIPELINE_SECTIONS: usize = 40;
+pub const MAX_NOTE_PIPELINE_JSON_BYTES: usize = 512 * 1024;
+/// 章节 id 字符上限（对应提纲 sections[].id，允许模型生成较宽松取值）。
+pub const MAX_NOTE_SECTION_ID_CHARS: usize = 128;
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -373,6 +379,278 @@ pub fn normalize_note_group_name(value: &str) -> Result<String, String> {
     normalize_text("分组名称", value, MAX_COLLECTION_NAME_CHARS, false)
 }
 
+/// 笔记章节来源类型：来自对话消息，或 AI 补充的背景知识。
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum NoteSourceOrigin {
+    Conversation,
+    AiSupplement,
+}
+
+impl NoteSourceOrigin {
+    /// 数据库存储用的稳定字符串（与 CHECK 约束一致）。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Conversation => "conversation",
+            Self::AiSupplement => "ai_supplement",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "conversation" => Ok(Self::Conversation),
+            "ai_supplement" => Ok(Self::AiSupplement),
+            _ => Err("笔记来源类型无效。".to_string()),
+        }
+    }
+}
+
+/// 笔记章节级来源（读取用）。会话删除后 conversation_id / message_id 置 NULL。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteSource {
+    pub id: String,
+    pub note_id: String,
+    pub section_id: String,
+    pub origin: NoteSourceOrigin,
+    /// 会话删除后置 NULL：来源显示为“原会话已删除”。
+    pub conversation_id: Option<String>,
+    /// 会话删除后置 NULL。
+    pub message_id: Option<String>,
+    /// M2 增量合并锚点，可空。
+    pub summarized_until_message_id: Option<String>,
+    pub created_at: u64,
+}
+
+/// 写入一条笔记来源；note_id 由调用方保证存在。
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteSourceCreate {
+    pub section_id: String,
+    pub origin: NoteSourceOrigin,
+    #[serde(default)]
+    pub conversation_id: Option<String>,
+    #[serde(default)]
+    pub message_id: Option<String>,
+    #[serde(default)]
+    pub summarized_until_message_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum NotePipelinePhase {
+    Analyzing,
+    AwaitingOutline,
+    Drafting,
+    Assembling,
+    Persisting,
+    Done,
+    Cancelled,
+    Error,
+}
+
+impl NotePipelinePhase {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Analyzing => "analyzing",
+            Self::AwaitingOutline => "awaiting_outline",
+            Self::Drafting => "drafting",
+            Self::Assembling => "assembling",
+            Self::Persisting => "persisting",
+            Self::Done => "done",
+            Self::Cancelled => "cancelled",
+            Self::Error => "error",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "analyzing" => Ok(Self::Analyzing),
+            "awaiting_outline" => Ok(Self::AwaitingOutline),
+            "drafting" => Ok(Self::Drafting),
+            "assembling" => Ok(Self::Assembling),
+            "persisting" => Ok(Self::Persisting),
+            "done" => Ok(Self::Done),
+            "cancelled" => Ok(Self::Cancelled),
+            "error" => Ok(Self::Error),
+            _ => Err("深度笔记任务阶段无效。".to_string()),
+        }
+    }
+
+    pub fn is_resumable(self) -> bool {
+        matches!(
+            self,
+            Self::Analyzing
+                | Self::AwaitingOutline
+                | Self::Drafting
+                | Self::Assembling
+                | Self::Persisting
+                | Self::Error
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum NotePipelineSectionStatus {
+    Pending,
+    Completed,
+    Failed,
+}
+
+impl NotePipelineSectionStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "pending" => Ok(Self::Pending),
+            "completed" => Ok(Self::Completed),
+            "failed" => Ok(Self::Failed),
+            _ => Err("深度笔记章节状态无效。".to_string()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotePipelineRun {
+    pub id: String,
+    pub conversation_id: String,
+    pub note_id: Option<String>,
+    pub phase: NotePipelinePhase,
+    pub outline_json: String,
+    pub selected_section_ids: Vec<String>,
+    pub provider_id: String,
+    pub model_id: String,
+    pub max_output_tokens: u32,
+    pub thinking_enabled: bool,
+    pub retry_attempts: u8,
+    pub completed_section_ids: Vec<String>,
+    pub failed_section_ids: Vec<String>,
+    pub warnings: Vec<String>,
+    pub error_message: Option<String>,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct NotePipelineRunCreate {
+    pub id: String,
+    pub conversation_id: String,
+    pub provider_id: String,
+    pub model_id: String,
+    pub max_output_tokens: u32,
+    pub thinking_enabled: bool,
+    pub retry_attempts: u8,
+}
+
+#[derive(Debug, Clone)]
+pub struct NotePipelineSection {
+    pub run_id: String,
+    pub section_id: String,
+    pub position: usize,
+    pub section_json: String,
+    pub markdown: String,
+    pub status: NotePipelineSectionStatus,
+    pub error_message: Option<String>,
+    pub updated_at: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct NotePipelineSectionCreate {
+    pub section_id: String,
+    pub position: usize,
+    pub section_json: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryNoteVersion {
+    pub id: String,
+    pub note_id: String,
+    pub title: String,
+    pub reason: String,
+    pub created_at: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteEditProposal {
+    pub id: String,
+    pub note_id: String,
+    pub conversation_id: String,
+    pub source_message_id: Option<String>,
+    pub expected_note_updated_at: u64,
+    pub old_title: String,
+    pub new_title: String,
+    pub old_content: String,
+    pub new_content: String,
+    pub diff: String,
+    pub created_at: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct NoteEditProposalCreate {
+    pub id: String,
+    pub note_id: String,
+    pub conversation_id: String,
+    pub source_message_id: Option<String>,
+    pub expected_note_updated_at: u64,
+    pub old_title: String,
+    pub new_title: String,
+    pub old_content: String,
+    pub new_content: String,
+    pub diff: String,
+    pub sources: Vec<NoteSourceCreate>,
+}
+
+impl NoteSourceCreate {
+    pub fn normalize_and_validate(mut self) -> Result<Self, String> {
+        self.section_id = normalize_text(
+            "章节 ID",
+            &self.section_id,
+            MAX_NOTE_SECTION_ID_CHARS,
+            false,
+        )?;
+        self.conversation_id = self
+            .conversation_id
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .map(|value| normalize_identifier("会话 ID", value))
+            .transpose()?;
+        self.message_id = self
+            .message_id
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .map(|value| normalize_identifier("消息 ID", value))
+            .transpose()?;
+        self.summarized_until_message_id = self
+            .summarized_until_message_id
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .map(|value| normalize_identifier("消息 ID", value))
+            .transpose()?;
+        // 对话来源必须带会话锚点；AI 补充来源没有会话锚点。
+        if self.origin == NoteSourceOrigin::Conversation && self.conversation_id.is_none() {
+            return Err("对话来源必须包含会话 ID。".to_string());
+        }
+        if self.origin == NoteSourceOrigin::AiSupplement
+            && (self.conversation_id.is_some()
+                || self.message_id.is_some()
+                || self.summarized_until_message_id.is_some())
+        {
+            return Err("AI 补充来源不能包含会话锚点。".to_string());
+        }
+        Ok(self)
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LibraryNoteCreate {
@@ -622,7 +900,7 @@ fn normalize_string_list(
 mod tests {
     use super::{
         LibraryAnnotationCreate, LibraryItemUpdate, LibraryListRequest, LibraryNoteCreate,
-        MAX_LIBRARY_PAGE_SIZE,
+        NoteSourceCreate, NoteSourceOrigin, MAX_LIBRARY_PAGE_SIZE,
     };
 
     #[test]
@@ -687,5 +965,39 @@ mod tests {
         let note = note.normalize_and_validate().unwrap();
         assert_eq!(note.title, "Note");
         assert!(note.content.contains("paragraph two"));
+    }
+
+    #[test]
+    fn note_source_requires_conversation_anchor_and_normalizes_ids() {
+        let source = NoteSourceCreate {
+            section_id: " sec-1 ".to_string(),
+            origin: NoteSourceOrigin::Conversation,
+            conversation_id: Some(" conversation-1 ".to_string()),
+            message_id: Some(" message-1 ".to_string()),
+            summarized_until_message_id: None,
+        }
+        .normalize_and_validate()
+        .unwrap();
+        assert_eq!(source.section_id, "sec-1");
+        assert_eq!(source.conversation_id.as_deref(), Some("conversation-1"));
+        assert_eq!(source.message_id.as_deref(), Some("message-1"));
+
+        let invalid = NoteSourceCreate {
+            section_id: "sec-1".to_string(),
+            origin: NoteSourceOrigin::Conversation,
+            conversation_id: None,
+            message_id: None,
+            summarized_until_message_id: None,
+        };
+        assert!(invalid.normalize_and_validate().is_err());
+
+        let invalid_ai_source = NoteSourceCreate {
+            section_id: "sec-2".to_string(),
+            origin: NoteSourceOrigin::AiSupplement,
+            conversation_id: Some("conversation-1".to_string()),
+            message_id: None,
+            summarized_until_message_id: None,
+        };
+        assert!(invalid_ai_source.normalize_and_validate().is_err());
     }
 }

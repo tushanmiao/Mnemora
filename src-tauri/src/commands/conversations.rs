@@ -8,7 +8,9 @@ use tauri::State;
 
 use crate::{
     chat::conversation_types::{ConversationListItem, ConversationListPage, StoredConversation},
-    library::types::{LibraryNote, LibraryNoteCreate, MAX_NOTE_CONTENT_CHARS, MAX_NOTE_TITLE_CHARS},
+    library::types::{
+        LibraryNote, LibraryNoteCreate, MAX_NOTE_CONTENT_CHARS, MAX_NOTE_TITLE_CHARS,
+    },
     state::AppState,
 };
 
@@ -75,19 +77,33 @@ pub async fn delete_conversation(
     conversation_id: String,
 ) -> Result<bool, String> {
     let _write_guard = state.conversation_writes.lock().await;
-    let repository = state.conversation_repository.clone();
-    tauri::async_runtime::spawn_blocking(move || repository.delete(&conversation_id))
-        .await
-        .map_err(join_error)?
+    let _library_guard = state.library_operations.lock().await;
+    let conversations = state.conversation_repository.clone();
+    let library = state.library_repository.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let removed = conversations.delete(&conversation_id)?;
+        if removed {
+            library.detach_note_sources_for_conversation(&conversation_id)?;
+        }
+        Ok(removed)
+    })
+    .await
+    .map_err(join_error)?
 }
 
 #[tauri::command]
 pub async fn clear_conversations(state: State<'_, AppState>) -> Result<(), String> {
     let _write_guard = state.conversation_writes.lock().await;
-    let repository = state.conversation_repository.clone();
-    tauri::async_runtime::spawn_blocking(move || repository.clear())
-        .await
-        .map_err(join_error)?
+    let _library_guard = state.library_operations.lock().await;
+    let conversations = state.conversation_repository.clone();
+    let library = state.library_repository.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        conversations.clear()?;
+        library.detach_all_note_conversation_sources()?;
+        Ok(())
+    })
+    .await
+    .map_err(join_error)?
 }
 
 #[tauri::command]
@@ -144,7 +160,13 @@ pub async fn save_conversation_as_note(
 fn note_title_from_conversation(title: &str) -> String {
     let cleaned = title
         .chars()
-        .map(|character| if character.is_control() { ' ' } else { character })
+        .map(|character| {
+            if character.is_control() {
+                ' '
+            } else {
+                character
+            }
+        })
         .collect::<String>();
     let cleaned = cleaned.trim();
     if cleaned.is_empty() {
@@ -251,7 +273,10 @@ mod tests {
     #[test]
     fn note_title_falls_back_and_strips_control_characters() {
         assert_eq!(note_title_from_conversation("   "), "未命名对话");
-        assert_eq!(note_title_from_conversation("slain 的\t用法\n"), "slain 的 用法");
+        assert_eq!(
+            note_title_from_conversation("slain 的\t用法\n"),
+            "slain 的 用法"
+        );
         let long_title = "题".repeat(MAX_NOTE_TITLE_CHARS + 20);
         assert_eq!(
             note_title_from_conversation(&long_title).chars().count(),

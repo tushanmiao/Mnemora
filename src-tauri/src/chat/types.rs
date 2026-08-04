@@ -182,7 +182,7 @@ impl ChatCompletionRequest {
     pub fn is_auxiliary_operation(&self) -> bool {
         matches!(
             self.operation.as_deref(),
-            Some("contextCompression") | Some("noteSummary")
+            Some("contextCompression") | Some("noteSummary") | Some("deepNote") | Some("noteEdit")
         )
     }
 
@@ -191,13 +191,12 @@ impl ChatCompletionRequest {
             .map_err(ModelError::invalid_configuration)?;
         validate_stable_id("Model ID", self.model_id.trim())
             .map_err(ModelError::invalid_configuration)?;
-        if self
-            .operation
-            .as_deref()
-            .is_some_and(|operation| {
-                !matches!(operation, "chatComplete" | "contextCompression" | "noteSummary")
-            })
-        {
+        if self.operation.as_deref().is_some_and(|operation| {
+            !matches!(
+                operation,
+                "chatComplete" | "contextCompression" | "noteSummary" | "deepNote" | "noteEdit"
+            )
+        }) {
             return Err(ModelError::invalid_configuration(
                 "Chat operation is not supported.",
             ));
@@ -674,6 +673,22 @@ mod tests {
             with_attachment.validate().unwrap_err().kind,
             ModelErrorKind::InvalidConfiguration
         );
+    }
+
+    #[test]
+    fn deep_note_is_a_valid_auxiliary_operation() {
+        let mut value = request("讲解这段对话");
+        value.operation = Some("deepNote".to_string());
+        value.validate().unwrap();
+        assert!(value.is_auxiliary_operation());
+    }
+
+    #[test]
+    fn note_edit_is_a_valid_auxiliary_operation() {
+        let mut value = request("增量更新这篇笔记");
+        value.operation = Some("noteEdit".to_string());
+        value.validate().unwrap();
+        assert!(value.is_auxiliary_operation());
     }
 
     #[test]

@@ -42,6 +42,8 @@ import { useWorkspaceNavigation } from "./app/hooks/useWorkspaceNavigation";
 import { useWorkspaceLayout } from "./app/hooks/useWorkspaceLayout";
 import { useChatReferences } from "./app/hooks/useChatReferences";
 import { useNoteActions } from "./app/hooks/useNoteActions";
+import { DeepNoteOutlineDialog } from "./features/chat/notePipeline/DeepNoteOutlineDialog";
+import { NoteEditDialog } from "./features/chat/notePipeline/NoteEditDialog";
 function App() {
   const appShellRef = useRef<HTMLElement>(null);
   const navigation = useWorkspaceNavigation();
@@ -172,7 +174,7 @@ function App() {
         conversations.createNewConversation();
         return { executed: true };
       case "clear": {
-        if (!window.confirm("确定永久删除当前对话及其附件吗？此操作无法撤销。")) {
+        if (!window.confirm("确定永久删除当前对话及其附件吗？关联笔记不会删除，但部分来源跳转将失效。此操作无法撤销。")) {
           return { executed: false, message: "已取消清除当前对话。" };
         }
         const deleted = await conversations.deleteCurrentConversationPermanently();
@@ -352,6 +354,11 @@ function App() {
               setNotesContextPanelOpen((open) => !open);
             },
             onAskSelection: references.addNoteReference,
+            onEditSelection: noteActions.openSelectionNoteEdit,
+            onOpenSourceConversation: (conversationId: string) => {
+              conversations.selectConversation(conversationId);
+              changeWorkspaceMode("chat");
+            },
           },
     contextPanel: notesContextPanelOpen
             ? {
@@ -496,7 +503,10 @@ function App() {
           conversations.selectConversation(conversationId);
           setWorkspaceMode("chat");
         }}
-        onDeleteConversation={conversations.deleteConversation}
+        onDeleteConversation={(conversationId) => {
+          if (!window.confirm("确定删除这个对话吗？关联笔记不会删除，但部分来源跳转将失效。")) return;
+          conversations.deleteConversation(conversationId);
+        }}
         onExportConversation={(conversationId, format) => {
           const item = conversations.conversationListItems.find((conversation) => conversation.id === conversationId);
           void exportStoredConversation(conversationId, item?.title ?? "Mnemora 会话", format)
@@ -509,7 +519,16 @@ function App() {
         onSummarizeConversationToNote={(conversationId) => {
           void noteActions.summarizeConversationAsNote(conversationId);
         }}
-        onClearConversations={conversations.clearConversations}
+        onGenerateDeepNote={(conversationId) => {
+          void noteActions.startDeepNote(conversationId);
+        }}
+        onUpdateExistingNote={(conversationId) => {
+          void noteActions.openConversationNoteEdit(conversationId);
+        }}
+        onClearConversations={() => {
+          if (!window.confirm("确定清空全部对话吗？关联笔记不会删除，但其对话来源跳转将全部失效。")) return;
+          conversations.clearConversations();
+        }}
         onLoadMoreConversations={conversations.loadMoreConversations}
         onOpenSkills={() => openSettings("skills")}
         onWorkLibraryViewChange={changeWorkLibraryView}
@@ -550,6 +569,7 @@ function App() {
           onSaveAppSettings={settings.saveAppSettings}
           onSettingsImported={settings.applyImportedSettings}
           onDefaultModelChange={settings.changeDefaultModel}
+          onNoteModelChange={settings.changeNoteModel}
         />
       ) : (
         <ChatViewRuntimeProvider chatPanel={chatWorkspace}>
@@ -572,6 +592,27 @@ function App() {
       )}
       </ImageViewerProvider>
 
+      {noteActions.deepNoteReview ? (
+        <DeepNoteOutlineDialog
+          outline={noteActions.deepNoteReview.outline}
+          busy={noteActions.deepNoteReviewBusy}
+          onCancel={noteActions.cancelDeepNote}
+          onAdjust={(requirement) => void noteActions.adjustDeepNoteOutline(requirement)}
+          onConfirm={(selectedSectionIds) => void noteActions.confirmDeepNoteOutline(selectedSectionIds)}
+        />
+      ) : null}
+
+      {noteActions.noteEditRequest || noteActions.noteEditResult ? (
+        <NoteEditDialog
+          request={noteActions.noteEditRequest}
+          result={noteActions.noteEditResult}
+          busy={noteActions.noteEditBusy}
+          onClose={() => void noteActions.closeNoteEdit()}
+          onPrepare={(noteId, requirement) => void noteActions.prepareExistingNoteEdit(noteId, requirement)}
+          onApply={() => void noteActions.applyNoteEdit()}
+        />
+      ) : null}
+
       {noteActions.feedback ? (
         <div
           className={`app-toast app-toast-${noteActions.feedback.kind}`}
@@ -582,6 +623,9 @@ function App() {
             <LoaderCircle size={15} className="app-toast-spinner" />
           ) : null}
           <span>{noteActions.feedback.text}</span>
+          {noteActions.feedback.kind === "progress" && noteActions.deepNoteActive ? (
+            <button className="app-toast-cancel" type="button" onClick={noteActions.cancelDeepNote}>取消</button>
+          ) : null}
         </div>
       ) : null}
     </main>

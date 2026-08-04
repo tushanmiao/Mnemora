@@ -99,6 +99,24 @@ export function noteSummaryTranscript(conversation: Conversation): string {
   return transcript.slice(0, MAX_TRANSCRIPT_CHARS) + TRANSCRIPT_TRUNCATION_NOTICE;
 }
 
+/**
+ * 深度笔记分析师专用转写：暴露稳定消息 ID，并把 reasoning 放进隔离的分析块。
+ * 章节撰写阶段继续使用普通转写，避免把模型推理内容直接写入笔记正文。
+ */
+export function deepNoteAnalysisTranscript(conversation: Conversation): string {
+  const messages = noteworthyMessages(conversation);
+  if (messages.length === 0) return "";
+  const transcript = messages.map((message) => [
+    `<!-- message-id: ${message.id} -->`,
+    compressionTranscript("", [message]),
+    message.reasoning?.trim()
+      ? `### 助手推理（仅供分析，不得写入笔记正文）\n${message.reasoning.trim()}`
+      : "",
+  ].filter(Boolean).join("\n")).join("\n\n");
+  if (transcript.length <= MAX_TRANSCRIPT_CHARS) return transcript;
+  return transcript.slice(0, MAX_TRANSCRIPT_CHARS) + TRANSCRIPT_TRUNCATION_NOTICE;
+}
+
 export type NoteSummaryOptions = {
   /** 用户设置的输出上限；深度笔记篇幅大，内部再取不超过 16K 的上限。 */
   maxOutputTokens: number;

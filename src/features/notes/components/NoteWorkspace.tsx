@@ -6,6 +6,7 @@ import {
   updateLibraryNote,
 } from "../../library/api/library";
 import type { LibraryNote } from "../../library/types";
+import { NoteSourcesBar } from "./NoteSourcesBar";
 import "../styles/notes.css";
 import "../styles/notes-workspace.css";
 
@@ -113,6 +114,7 @@ export function NoteWorkspace({ noteId, onUpdated, onDeleted }: NoteWorkspacePro
         </div>
       </header>
       {error ? <p className="note-workspace-error" role="alert">{error}</p> : null}
+      <NoteSourcesBar noteId={note.id} />
       <input
         className="note-workspace-title"
         value={title}

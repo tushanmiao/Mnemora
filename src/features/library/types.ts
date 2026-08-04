@@ -140,6 +140,27 @@ export interface LibraryNoteCreate {
   groupName?: string | null;
 }
 
+export type NoteSourceOrigin = "conversation" | "aiSupplement";
+
+export interface NoteSource {
+  id: string;
+  noteId: string;
+  sectionId: string;
+  origin: NoteSourceOrigin;
+  conversationId: string | null;
+  messageId: string | null;
+  summarizedUntilMessageId: string | null;
+  createdAt: number;
+}
+
+export interface NoteSourceCreate {
+  sectionId: string;
+  origin: NoteSourceOrigin;
+  conversationId?: string | null;
+  messageId?: string | null;
+  summarizedUntilMessageId?: string | null;
+}
+
 export interface LibraryNoteUpdate {
   noteId: string;
   title: string;

@@ -12,6 +12,7 @@ use crate::{
         LibraryImportResult, LibraryItem, LibraryItemUpdate, LibraryListPage, LibraryListRequest,
         LibraryNote, LibraryNoteCreate, LibraryNoteGroup, LibraryNoteImportResult,
         LibraryNoteSummary, LibraryNoteUpdate, LibraryReadingState, LibraryReadingStateUpdate,
+        NoteSource, NoteSourceCreate,
     },
     state::AppState,
 };
@@ -265,6 +266,32 @@ pub async fn library_create_note(
     let _write_guard = state.library_operations.lock().await;
     let repository = state.library_repository.clone();
     tauri::async_runtime::spawn_blocking(move || repository.create_note(create))
+        .await
+        .map_err(join_error)?
+}
+
+#[tauri::command]
+pub async fn library_create_note_with_sources(
+    state: State<'_, AppState>,
+    create: LibraryNoteCreate,
+    sources: Vec<NoteSourceCreate>,
+) -> Result<LibraryNote, String> {
+    let _write_guard = state.library_operations.lock().await;
+    let repository = state.library_repository.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        repository.create_note_with_sources(create, sources)
+    })
+    .await
+    .map_err(join_error)?
+}
+
+#[tauri::command]
+pub async fn library_list_note_sources(
+    state: State<'_, AppState>,
+    note_id: String,
+) -> Result<Vec<NoteSource>, String> {
+    let repository = state.library_repository.clone();
+    tauri::async_runtime::spawn_blocking(move || repository.list_note_sources(&note_id))
         .await
         .map_err(join_error)?
 }

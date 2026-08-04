@@ -583,7 +583,7 @@ mod tests {
                 .required_tools,
             vec!["read_xlsx_rows"]
         );
-        assert_eq!(skills.len(), 11);
+        assert_eq!(skills.len(), 12);
         for skill in &skills {
             assert!(skill
                 .license

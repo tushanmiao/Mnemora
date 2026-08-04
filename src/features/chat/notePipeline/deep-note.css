@@ -1,0 +1,90 @@
+.deep-note-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  padding: 28px;
+  background: rgb(12 19 16 / 50%);
+  backdrop-filter: blur(5px);
+}
+
+.deep-note-dialog {
+  width: min(760px, 100%);
+  max-height: min(780px, calc(100vh - 56px));
+  overflow: auto;
+  border: 1px solid var(--color-border);
+  border-radius: 18px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  box-shadow: 0 24px 80px rgb(5 12 9 / 32%);
+  animation: deep-note-dialog-enter 160ms ease-out;
+}
+
+.deep-note-dialog-header,
+.deep-note-dialog-footer {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 20px 22px;
+}
+
+.deep-note-dialog-header { border-bottom: 1px solid var(--color-border-soft); }
+.deep-note-dialog-header h2 { margin: 5px 0 3px; font-size: 21px; }
+.deep-note-dialog-header p { margin: 0; color: var(--color-muted); line-height: 1.55; }
+.deep-note-eyebrow { display: inline-flex; align-items: center; gap: 6px; color: var(--color-accent); font-size: 12px; font-weight: 700; }
+
+.deep-note-weak-points {
+  display: flex;
+  gap: 8px;
+  margin: 16px 22px 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--color-danger-soft);
+  color: var(--color-danger);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.deep-note-section-list { display: grid; gap: 8px; padding: 16px 22px; }
+.deep-note-section-item { display: grid; grid-template-columns: 18px 1fr; gap: 10px; padding: 12px; border: 1px solid var(--color-border-soft); border-radius: 12px; cursor: pointer; }
+.deep-note-section-item:hover { border-color: var(--color-border); background: var(--color-surface-soft); }
+.deep-note-section-item span { display: grid; gap: 4px; }
+.deep-note-section-item strong { font-size: 14px; }
+.deep-note-section-item small { color: var(--color-muted); line-height: 1.5; }
+.deep-note-section-item em { color: var(--color-accent); font-size: 11px; font-style: normal; }
+
+.deep-note-requirement { display: grid; gap: 7px; padding: 0 22px 18px; font-size: 12px; font-weight: 600; }
+.deep-note-requirement textarea { min-height: 78px; resize: vertical; padding: 10px 12px; border: 1px solid var(--color-border); border-radius: 10px; background: var(--color-surface-soft); color: var(--color-text); font: inherit; font-weight: 400; line-height: 1.5; }
+.deep-note-dialog-footer { align-items: center; border-top: 1px solid var(--color-border-soft); color: var(--color-muted); font-size: 12px; }
+.deep-note-dialog-footer > div { display: flex; gap: 9px; }
+
+@media (max-width: 640px) {
+  .deep-note-backdrop { padding: 12px; }
+  .deep-note-dialog-footer { align-items: stretch; flex-direction: column; }
+  .deep-note-dialog-footer > div { justify-content: flex-end; }
+}
+
+@keyframes deep-note-dialog-enter {
+  from { transform: translateY(8px) scale(0.99); opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .deep-note-dialog { animation: none; }
+}
+
+.note-edit-dialog { width: min(860px, 100%); }
+.note-edit-target-list { display: grid; gap: 7px; max-height: 310px; overflow: auto; padding: 16px 22px; }
+.note-edit-target { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 10px; padding: 11px 12px; border: 1px solid var(--color-border-soft); border-radius: 8px; cursor: pointer; }
+.note-edit-target:has(input:checked) { border-color: var(--color-accent); background: var(--color-surface-soft); }
+.note-edit-target span { display: grid; min-width: 0; gap: 4px; }
+.note-edit-target strong,
+.note-edit-target small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.note-edit-target small { color: var(--color-muted); font-size: 12px; }
+.note-edit-fixed-target { display: flex; align-items: baseline; gap: 12px; padding: 16px 22px 0; }
+.note-edit-fixed-target span { color: var(--color-muted); font-size: 12px; }
+.note-edit-selection { display: grid; gap: 6px; max-height: 150px; overflow: auto; margin: 16px 22px 0; padding: 12px 14px; border-left: 3px solid var(--color-accent); background: var(--color-surface-soft); color: var(--color-muted); font-size: 12px; line-height: 1.55; }
+.note-edit-selection strong { color: var(--color-text); }
+.note-edit-requirement { padding-top: 16px; }
+.note-edit-diff { max-height: min(560px, calc(100vh - 260px)); overflow: auto; margin: 0; padding: 18px 22px; background: var(--color-surface-soft); color: var(--color-text); font: 12px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }

@@ -52,6 +52,7 @@ type SettingsPageProps = {
   onSaveAppSettings: (settings: AppSettings) => Promise<AppSettings>;
   onSettingsImported: (bundle: SettingsBundle) => void;
   onDefaultModelChange: (providerId: string, modelId: string) => Promise<void>;
+  onNoteModelChange: (providerId: string | null, modelId: string | null) => Promise<void>;
 };
 
 export function SettingsPage(props: SettingsPageProps) {
@@ -130,6 +131,7 @@ export function SettingsPage(props: SettingsPageProps) {
                 onSave={props.onSaveAppSettings}
                 onImported={props.onSettingsImported}
                 onDefaultModelChange={props.onDefaultModelChange}
+                onNoteModelChange={props.onNoteModelChange}
               />
             ) : activeCategory === "models" ? (
               <ModelSettingsPanel settings={props.settings} initialError={props.initialError} onSave={props.onSave} />

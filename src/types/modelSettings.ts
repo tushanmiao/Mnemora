@@ -95,6 +95,9 @@ export interface ModelSettings {
   defaultProviderId: string | null;
   /** 全局默认模型 ID；必须属于 `defaultProviderId` 对应供应商。 */
   defaultModelId: string | null;
+  /** 深度笔记专用模型；任一字段为空时跟随当前 Chat 模型。 */
+  noteProviderId: string | null;
+  noteModelId: string | null;
 }
 
 /** 设置页提交给 Rust 的单向密钥变更；普通读取不会返回完整 API Key。 */
@@ -102,7 +105,7 @@ export type ProviderApiKeyUpdate =
   | { providerId: string; action: "set"; apiKey: string }
   | { providerId: string; action: "delete" };
 
-export const CURRENT_MODEL_SETTINGS_VERSION = 4;
+export const CURRENT_MODEL_SETTINGS_VERSION = 5;
 
 /** 创建首次启动时的三家官方供应商配置。 */
 export function createInitialModelSettings(): ModelSettings {
@@ -145,7 +148,26 @@ export function createInitialModelSettings(): ModelSettings {
     ],
     defaultProviderId: null,
     defaultModelId: null,
+    noteProviderId: null,
+    noteModelId: null,
   };
+}
+
+export function resolveNoteModel(
+  settings: ModelSettings,
+  conversationProviderId: string | null,
+  conversationModelId: string | null,
+) {
+  if (settings.noteProviderId && settings.noteModelId) {
+    const provider = settings.providers.find(
+      (item) => item.enabled && item.id === settings.noteProviderId,
+    );
+    const model = provider?.models.find(
+      (item) => item.enabled && item.id === settings.noteModelId,
+    );
+    if (provider && model) return { provider, model };
+  }
+  return resolveConversationModel(settings, conversationProviderId, conversationModelId);
 }
 
 /** 查找当前全局默认模型，并确保供应商和模型仍然存在。 */

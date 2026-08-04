@@ -56,7 +56,13 @@ export type NotesWorkspaceProps = {
   userDisplayName: string;
   onToggleChat: () => void;
   onAskSelection: (reference: NoteReference) => void;
+  onEditSelection: (selection: {
+    noteId: string;
+    selectedText: string;
+    sectionHeading: string;
+  }) => void;
   onBack: () => void;
+  onOpenSourceConversation?: (conversationId: string, messageId: string | null) => void;
 };
 
 /** 旧版 localStorage 分组一次性迁入 SQLite；成败都不阻塞页面。 */
@@ -109,7 +115,9 @@ export default function NotesWorkspace({
   userDisplayName,
   onToggleChat,
   onAskSelection,
+  onEditSelection,
   onBack,
+  onOpenSourceConversation,
 }: NotesWorkspaceProps) {
   const editorRef = useRef<HTMLTextAreaElement>(null);
   const previewRef = useRef<HTMLDivElement>(null);
@@ -521,6 +529,26 @@ export default function NotesWorkspace({
     window.getSelection()?.removeAllRanges();
   };
 
+  const editSelection = () => {
+    if (!activeNote || !selectionMenu) return;
+    const lines = content.split(/\r?\n/);
+    const beforeSelection = selectionMenu.startLine
+      ? lines.slice(0, selectionMenu.startLine)
+      : lines;
+    const sectionHeading = beforeSelection
+      .reverse()
+      .find((line) => /^##\s+/.test(line))
+      ?.replace(/^##\s+/, "")
+      .trim() ?? "";
+    onEditSelection({
+      noteId: activeNote.id,
+      selectedText: selectionMenu.text,
+      sectionHeading,
+    });
+    setSelectionMenu(null);
+    window.getSelection()?.removeAllRanges();
+  };
+
   if (!activeNote) {
     return (
       <NotesBrowser
@@ -582,6 +610,8 @@ export default function NotesWorkspace({
       onPreviewSelection={showPreviewSelection}
       onSelectionClear={() => setSelectionMenu(null)}
       onAskSelection={askSelection}
+      onEditSelection={editSelection}
+      onOpenSourceConversation={onOpenSourceConversation}
     />
   );
 }

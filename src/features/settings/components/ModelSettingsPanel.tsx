@@ -80,6 +80,17 @@ function reconcileDefaultModel(settings: ModelSettings): ModelSettings {
   };
 }
 
+function reconcileNoteModel(settings: ModelSettings): ModelSettings {
+  const provider = settings.providers.find(
+    (item) => item.id === settings.noteProviderId && item.enabled,
+  );
+  const model = provider?.models.find(
+    (item) => item.id === settings.noteModelId && item.enabled,
+  );
+  if (provider && model) return settings;
+  return { ...settings, noteProviderId: null, noteModelId: null };
+}
+
 function normalizeSettings(settings: ModelSettings): ModelSettings {
   const normalized: ModelSettings = {
     ...settings,
@@ -98,7 +109,7 @@ function normalizeSettings(settings: ModelSettings): ModelSettings {
     })),
   };
 
-  return reconcileDefaultModel(normalized);
+  return reconcileNoteModel(reconcileDefaultModel(normalized));
 }
 
 function validateSettings(settings: ModelSettings): ValidationErrors {

@@ -16,6 +16,8 @@ import type {
   LibraryNoteCreate,
   LibraryNoteSummary,
   LibraryNoteUpdate,
+  NoteSource,
+  NoteSourceCreate,
   LibraryReadingState,
   LibraryReadingStateUpdate,
 } from "../types";
@@ -143,6 +145,18 @@ export function getLibraryNote(noteId: string) {
 
 export function createLibraryNote(create: LibraryNoteCreate) {
   return invoke<LibraryNote>("library_create_note", { create });
+}
+
+export function createLibraryNoteWithSources(
+  create: LibraryNoteCreate,
+  sources: NoteSourceCreate[],
+) {
+  return invoke<LibraryNote>("library_create_note_with_sources", { create, sources });
+}
+
+export function listLibraryNoteSources(noteId: string) {
+  if (!isTauri()) return Promise.resolve<NoteSource[]>([]);
+  return invoke<NoteSource[]>("library_list_note_sources", { noteId });
 }
 
 export function importLibraryMarkdownNotes(paths: string[]) {

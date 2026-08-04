@@ -22,12 +22,16 @@ use super::{
         LibraryImportResult, LibraryItem, LibraryItemUpdate, LibraryListPage, LibraryListRequest,
         LibraryNote, LibraryNoteCreate, LibraryNoteGroup, LibraryNoteImportFailure,
         LibraryNoteImportResult, LibraryNoteSummary, LibraryNoteUpdate, LibraryReadingState,
-        LibraryReadingStateUpdate, LibrarySort, LibraryView, MAX_NOTE_IMPORT_BYTES,
-        MAX_NOTE_IMPORT_FILES, MAX_PDF_RANGE_BYTES,
+        LibraryReadingStateUpdate, LibrarySort, LibraryView, NoteEditProposal,
+        NoteEditProposalCreate, NotePipelinePhase, NotePipelineRun, NotePipelineRunCreate,
+        NotePipelineSection, NotePipelineSectionCreate, NotePipelineSectionStatus, NoteSource,
+        NoteSourceCreate, NoteSourceOrigin, MAX_NOTE_IMPORT_BYTES, MAX_NOTE_IMPORT_FILES,
+        MAX_NOTE_PIPELINE_JSON_BYTES, MAX_NOTE_PIPELINE_SECTIONS, MAX_NOTE_SOURCES,
+        MAX_PDF_RANGE_BYTES,
     },
 };
 
-const LIBRARY_SCHEMA_VERSION: i64 = 4;
+const LIBRARY_SCHEMA_VERSION: i64 = 6;
 const LIBRARY_DIRECTORY_NAME: &str = "library";
 const LIBRARY_DATABASE_NAME: &str = "library.sqlite3";
 const LIBRARY_FILES_DIRECTORY_NAME: &str = "files";
@@ -627,6 +631,550 @@ impl LibraryRepository {
             .ok_or_else(|| "创建后的笔记不存在。".to_string())
     }
 
+    /// 原子创建笔记及其章节级来源。任一来源写入失败时整篇笔记回滚。
+    pub fn create_note_with_sources(
+        &self,
+        create: LibraryNoteCreate,
+        sources: Vec<NoteSourceCreate>,
+    ) -> Result<LibraryNote, String> {
+        let create = create.normalize_and_validate()?;
+        let sources = normalize_note_sources(sources)?;
+        let mut connection = self.open_connection()?;
+        if let Some(item_id) = create.item_id.as_deref() {
+            ensure_active_item_exists(&connection, item_id)?;
+        }
+        let id = Uuid::new_v4().to_string();
+        let now = now_millis_i64();
+        let transaction = connection
+            .transaction()
+            .map_err(|error| format!("开始创建深度笔记失败：{error}"))?;
+        if let Some(group_name) = create.group_name.as_deref() {
+            register_note_group(&transaction, group_name, now)?;
+        }
+        transaction
+            .execute(
+                "INSERT INTO library_notes (id, item_id, title, content, group_name, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)",
+                params![id, create.item_id, create.title, create.content, create.group_name, now, now],
+            )
+            .map_err(|error| format!("创建深度笔记失败：{error}"))?;
+        insert_note_sources(&transaction, &id, sources, now)?;
+        transaction
+            .commit()
+            .map_err(|error| format!("提交深度笔记失败：{error}"))?;
+        self.get_note_with_connection(&connection, &id)?
+            .ok_or_else(|| "创建后的深度笔记不存在。".to_string())
+    }
+
+    pub fn list_note_sources(&self, note_id: &str) -> Result<Vec<NoteSource>, String> {
+        let note_id = normalize_identifier("笔记 ID", note_id)?;
+        let connection = self.open_connection()?;
+        self.get_note_with_connection(&connection, &note_id)?
+            .ok_or_else(|| "笔记不存在或所属文献位于回收站。".to_string())?;
+        let mut statement = connection
+            .prepare(
+                "SELECT id, note_id, section_id, origin, conversation_id, message_id,
+                        summarized_until_message_id, created_at
+                 FROM note_sources
+                 WHERE note_id = ?
+                 ORDER BY created_at ASC, id ASC",
+            )
+            .map_err(|error| format!("准备笔记来源查询失败：{error}"))?;
+        let rows = statement
+            .query_map(params![note_id], note_source_from_row)
+            .map_err(|error| format!("查询笔记来源失败：{error}"))?;
+        let mut sources = Vec::new();
+        for row in rows {
+            sources.push(row.map_err(|error| format!("读取笔记来源失败：{error}"))??);
+        }
+        Ok(sources)
+    }
+
+    /// 删除单个会话时只断开来源锚点，不删除来源记录或笔记正文。
+    pub fn detach_note_sources_for_conversation(
+        &self,
+        conversation_id: &str,
+    ) -> Result<usize, String> {
+        let conversation_id = normalize_identifier("会话 ID", conversation_id)?;
+        let connection = self.open_connection()?;
+        connection
+            .execute(
+                "UPDATE note_sources
+                 SET conversation_id = NULL,
+                     message_id = NULL,
+                     summarized_until_message_id = NULL
+                 WHERE conversation_id = ?",
+                params![conversation_id],
+            )
+            .map_err(|error| format!("断开笔记会话来源失败：{error}"))
+    }
+
+    /// 清空会话前断开全部会话来源；AI 补充来源不受影响。
+    pub fn detach_all_note_conversation_sources(&self) -> Result<usize, String> {
+        let connection = self.open_connection()?;
+        connection
+            .execute(
+                "UPDATE note_sources
+                 SET conversation_id = NULL,
+                     message_id = NULL,
+                     summarized_until_message_id = NULL
+                 WHERE conversation_id IS NOT NULL",
+                [],
+            )
+            .map_err(|error| format!("断开全部笔记会话来源失败：{error}"))
+    }
+
+    pub fn create_note_pipeline_run(
+        &self,
+        create: NotePipelineRunCreate,
+    ) -> Result<NotePipelineRun, String> {
+        let id = normalize_identifier("任务 ID", &create.id)?;
+        let conversation_id = normalize_identifier("会话 ID", &create.conversation_id)?;
+        let provider_id = normalize_identifier("供应商 ID", &create.provider_id)?;
+        let model_id = normalize_identifier("模型 ID", &create.model_id)?;
+        if !(256..=131_072).contains(&create.max_output_tokens) {
+            return Err("深度笔记输出 Token 上限无效。".to_string());
+        }
+        if !(1..=5).contains(&create.retry_attempts) {
+            return Err("深度笔记重试次数无效。".to_string());
+        }
+        let connection = self.open_connection()?;
+        let now = now_millis_i64();
+        let inserted = connection.execute(
+            "INSERT INTO note_pipeline_runs (
+                id, conversation_id, phase, outline_json, selected_section_ids_json,
+                provider_id, model_id, max_output_tokens, thinking_enabled, retry_attempts,
+                warnings_json, created_at, updated_at
+             ) VALUES (?, ?, 'analyzing', '', '[]', ?, ?, ?, ?, ?, '[]', ?, ?)",
+            params![
+                id,
+                conversation_id,
+                provider_id,
+                model_id,
+                i64::from(create.max_output_tokens),
+                bool_to_i64(create.thinking_enabled),
+                i64::from(create.retry_attempts),
+                now,
+                now,
+            ],
+        );
+        match inserted {
+            Ok(_) => get_note_pipeline_run_with_connection(&connection, &id)?
+                .ok_or_else(|| "创建后的深度笔记任务不存在。".to_string()),
+            Err(error) if is_unique_constraint(&error) => {
+                Err("该会话已有一个可恢复的深度笔记任务。".to_string())
+            }
+            Err(error) => Err(format!("创建深度笔记任务失败：{error}")),
+        }
+    }
+
+    pub fn get_note_pipeline_run(&self, run_id: &str) -> Result<NotePipelineRun, String> {
+        let run_id = normalize_identifier("任务 ID", run_id)?;
+        let connection = self.open_connection()?;
+        get_note_pipeline_run_with_connection(&connection, &run_id)?
+            .ok_or_else(|| "深度笔记任务不存在。".to_string())
+    }
+
+    pub fn list_resumable_note_pipeline_runs(&self) -> Result<Vec<NotePipelineRun>, String> {
+        let connection = self.open_connection()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT id FROM note_pipeline_runs
+                 WHERE phase IN ('analyzing', 'awaiting_outline', 'drafting', 'assembling', 'persisting', 'error')
+                 ORDER BY updated_at DESC",
+            )
+            .map_err(|error| format!("准备深度笔记任务查询失败：{error}"))?;
+        let ids = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|error| format!("查询深度笔记任务失败：{error}"))?;
+        let mut runs = Vec::new();
+        for id in ids {
+            let id = id.map_err(|error| format!("读取深度笔记任务失败：{error}"))?;
+            if let Some(run) = get_note_pipeline_run_with_connection(&connection, &id)? {
+                runs.push(run);
+            }
+        }
+        Ok(runs)
+    }
+
+    pub fn save_note_pipeline_outline(
+        &self,
+        run_id: &str,
+        outline_json: &str,
+        sections: Vec<NotePipelineSectionCreate>,
+    ) -> Result<NotePipelineRun, String> {
+        let run_id = normalize_identifier("任务 ID", run_id)?;
+        if outline_json.is_empty() || outline_json.len() > MAX_NOTE_PIPELINE_JSON_BYTES {
+            return Err("深度笔记提纲为空或过长。".to_string());
+        }
+        serde_json::from_str::<serde_json::Value>(outline_json)
+            .map_err(|error| format!("深度笔记提纲 JSON 无效：{error}"))?;
+        if sections.is_empty() || sections.len() > MAX_NOTE_PIPELINE_SECTIONS {
+            return Err(format!(
+                "深度笔记提纲必须包含 1 到 {MAX_NOTE_PIPELINE_SECTIONS} 个章节。"
+            ));
+        }
+        let mut normalized = Vec::with_capacity(sections.len());
+        let mut ids = std::collections::HashSet::new();
+        for section in sections {
+            let section_id = normalize_identifier("章节 ID", &section.section_id)?;
+            if !ids.insert(section_id.clone()) {
+                return Err("深度笔记提纲包含重复章节 ID。".to_string());
+            }
+            if section.section_json.is_empty()
+                || section.section_json.len() > MAX_NOTE_PIPELINE_JSON_BYTES
+            {
+                return Err("深度笔记章节 JSON 为空或过长。".to_string());
+            }
+            serde_json::from_str::<serde_json::Value>(&section.section_json)
+                .map_err(|error| format!("深度笔记章节 JSON 无效：{error}"))?;
+            normalized.push(NotePipelineSectionCreate {
+                section_id,
+                ..section
+            });
+        }
+        let mut connection = self.open_connection()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| format!("开始保存深度笔记提纲失败：{error}"))?;
+        let now = now_millis_i64();
+        let changed = transaction
+            .execute(
+                "UPDATE note_pipeline_runs
+                 SET phase = 'awaiting_outline', outline_json = ?, error_message = NULL, updated_at = ?
+                 WHERE id = ?",
+                params![outline_json, now, run_id],
+            )
+            .map_err(|error| format!("保存深度笔记提纲失败：{error}"))?;
+        if changed == 0 {
+            return Err("深度笔记任务不存在。".to_string());
+        }
+        transaction
+            .execute(
+                "DELETE FROM note_pipeline_sections WHERE run_id = ?",
+                params![run_id],
+            )
+            .map_err(|error| format!("重置深度笔记章节失败：{error}"))?;
+        for section in normalized {
+            transaction
+                .execute(
+                    "INSERT INTO note_pipeline_sections (
+                        run_id, section_id, position, section_json, markdown, status, updated_at
+                     ) VALUES (?, ?, ?, ?, '', 'pending', ?)",
+                    params![
+                        run_id,
+                        section.section_id,
+                        section.position as i64,
+                        section.section_json,
+                        now
+                    ],
+                )
+                .map_err(|error| format!("保存深度笔记章节失败：{error}"))?;
+        }
+        transaction
+            .commit()
+            .map_err(|error| format!("提交深度笔记提纲失败：{error}"))?;
+        self.get_note_pipeline_run(&run_id)
+    }
+
+    pub fn select_note_pipeline_sections(
+        &self,
+        run_id: &str,
+        selected_section_ids: Vec<String>,
+    ) -> Result<NotePipelineRun, String> {
+        let run_id = normalize_identifier("任务 ID", run_id)?;
+        if selected_section_ids.is_empty()
+            || selected_section_ids.len() > MAX_NOTE_PIPELINE_SECTIONS
+        {
+            return Err("请至少保留一个深度笔记章节。".to_string());
+        }
+        let selected_section_ids = selected_section_ids
+            .into_iter()
+            .map(|id| normalize_identifier("章节 ID", &id))
+            .collect::<Result<Vec<_>, _>>()?;
+        let selected_json = serde_json::to_string(&selected_section_ids)
+            .map_err(|error| format!("序列化章节选择失败：{error}"))?;
+        let connection = self.open_connection()?;
+        let available = get_note_pipeline_sections_with_connection(&connection, &run_id)?;
+        let available_ids = available
+            .iter()
+            .map(|section| section.section_id.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        if selected_section_ids
+            .iter()
+            .any(|section_id| !available_ids.contains(section_id.as_str()))
+        {
+            return Err("章节选择包含提纲中不存在的 ID。".to_string());
+        }
+        let changed = connection
+            .execute(
+                "UPDATE note_pipeline_runs
+                 SET phase = 'drafting', selected_section_ids_json = ?, error_message = NULL, updated_at = ?
+                 WHERE id = ?",
+                params![selected_json, now_millis_i64(), run_id],
+            )
+            .map_err(|error| format!("保存章节选择失败：{error}"))?;
+        if changed == 0 {
+            return Err("深度笔记任务不存在。".to_string());
+        }
+        self.get_note_pipeline_run(&run_id)
+    }
+
+    pub fn list_note_pipeline_sections(
+        &self,
+        run_id: &str,
+    ) -> Result<Vec<NotePipelineSection>, String> {
+        let run_id = normalize_identifier("任务 ID", run_id)?;
+        let connection = self.open_connection()?;
+        get_note_pipeline_sections_with_connection(&connection, &run_id)
+    }
+
+    pub fn save_note_pipeline_section(
+        &self,
+        run_id: &str,
+        section_id: &str,
+        markdown: &str,
+        status: NotePipelineSectionStatus,
+        error_message: Option<&str>,
+    ) -> Result<(), String> {
+        let run_id = normalize_identifier("任务 ID", run_id)?;
+        let section_id = normalize_identifier("章节 ID", section_id)?;
+        if markdown.len() > MAX_NOTE_PIPELINE_JSON_BYTES {
+            return Err("深度笔记章节正文过长。".to_string());
+        }
+        let connection = self.open_connection()?;
+        let now = now_millis_i64();
+        let changed = connection
+            .execute(
+                "UPDATE note_pipeline_sections
+                 SET markdown = ?, status = ?, error_message = ?, updated_at = ?
+                 WHERE run_id = ? AND section_id = ?",
+                params![
+                    markdown,
+                    status.as_str(),
+                    error_message,
+                    now,
+                    run_id,
+                    section_id
+                ],
+            )
+            .map_err(|error| format!("保存深度笔记章节状态失败：{error}"))?;
+        if changed == 0 {
+            return Err("深度笔记章节不存在。".to_string());
+        }
+        connection
+            .execute(
+                "UPDATE note_pipeline_runs SET updated_at = ? WHERE id = ?",
+                params![now, run_id],
+            )
+            .map_err(|error| format!("更新深度笔记任务时间失败：{error}"))?;
+        Ok(())
+    }
+
+    pub fn update_note_pipeline_phase(
+        &self,
+        run_id: &str,
+        phase: NotePipelinePhase,
+        note_id: Option<&str>,
+        warnings: &[String],
+        error_message: Option<&str>,
+    ) -> Result<NotePipelineRun, String> {
+        let run_id = normalize_identifier("任务 ID", run_id)?;
+        let note_id = note_id
+            .map(|id| normalize_identifier("笔记 ID", id))
+            .transpose()?;
+        let warnings_json = serde_json::to_string(warnings)
+            .map_err(|error| format!("序列化深度笔记检查提示失败：{error}"))?;
+        let connection = self.open_connection()?;
+        let changed = connection
+            .execute(
+                "UPDATE note_pipeline_runs
+                 SET phase = ?, note_id = COALESCE(?, note_id), warnings_json = ?,
+                     error_message = ?, updated_at = ?
+                 WHERE id = ?",
+                params![
+                    phase.as_str(),
+                    note_id,
+                    warnings_json,
+                    error_message,
+                    now_millis_i64(),
+                    run_id
+                ],
+            )
+            .map_err(|error| format!("更新深度笔记任务状态失败：{error}"))?;
+        if changed == 0 {
+            return Err("深度笔记任务不存在。".to_string());
+        }
+        self.get_note_pipeline_run(&run_id)
+    }
+
+    pub fn latest_summarized_message_id(
+        &self,
+        note_id: &str,
+        conversation_id: &str,
+    ) -> Result<Option<String>, String> {
+        let note_id = normalize_identifier("笔记 ID", note_id)?;
+        let conversation_id = normalize_identifier("会话 ID", conversation_id)?;
+        let connection = self.open_connection()?;
+        connection
+            .query_row(
+                "SELECT summarized_until_message_id FROM note_sources
+                 WHERE note_id = ? AND conversation_id = ? AND summarized_until_message_id IS NOT NULL
+                 ORDER BY created_at DESC LIMIT 1",
+                params![note_id, conversation_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| format!("读取笔记增量锚点失败：{error}"))
+    }
+
+    pub fn create_note_edit_proposal(
+        &self,
+        create: NoteEditProposalCreate,
+    ) -> Result<NoteEditProposal, String> {
+        let id = normalize_identifier("修改提案 ID", &create.id)?;
+        let note_id = normalize_identifier("笔记 ID", &create.note_id)?;
+        let conversation_id = normalize_identifier("会话 ID", &create.conversation_id)?;
+        let source_message_id = create
+            .source_message_id
+            .as_deref()
+            .map(|id| normalize_identifier("消息 ID", id))
+            .transpose()?;
+        let normalized = LibraryNoteUpdate {
+            note_id: note_id.clone(),
+            title: create.new_title,
+            content: create.new_content,
+        }
+        .normalize_and_validate()?;
+        let sources = normalize_note_sources(create.sources)?;
+        if create.diff.is_empty() || create.diff.len() > MAX_NOTE_PIPELINE_JSON_BYTES {
+            return Err("修改提案 diff 为空或过长。".to_string());
+        }
+        let sources_json = serde_json::to_string(&sources)
+            .map_err(|error| format!("序列化修改来源失败：{error}"))?;
+        let connection = self.open_connection()?;
+        let note = self
+            .get_note_with_connection(&connection, &note_id)?
+            .ok_or_else(|| "目标笔记不存在。".to_string())?;
+        if note.updated_at != create.expected_note_updated_at {
+            return Err("目标笔记已发生变化，请重新生成修改提案。".to_string());
+        }
+        let now = now_millis_i64();
+        connection
+            .execute(
+                "INSERT INTO note_edit_proposals (
+                    id, note_id, conversation_id, source_message_id, expected_note_updated_at,
+                    old_title, new_title, old_content, new_content, diff_text, sources_json,
+                    status, created_at, updated_at
+                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
+                params![
+                    id,
+                    note_id,
+                    conversation_id,
+                    source_message_id,
+                    i64::try_from(create.expected_note_updated_at).unwrap_or(i64::MAX),
+                    create.old_title,
+                    normalized.title,
+                    create.old_content,
+                    normalized.content,
+                    create.diff,
+                    sources_json,
+                    now,
+                    now,
+                ],
+            )
+            .map_err(|error| format!("保存笔记修改提案失败：{error}"))?;
+        get_note_edit_proposal_with_connection(&connection, &id)?
+            .ok_or_else(|| "创建后的笔记修改提案不存在。".to_string())
+    }
+
+    pub fn resolve_note_edit_proposal(
+        &self,
+        proposal_id: &str,
+        accepted: bool,
+    ) -> Result<Option<LibraryNote>, String> {
+        let proposal_id = normalize_identifier("修改提案 ID", proposal_id)?;
+        let mut connection = self.open_connection()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| format!("开始应用笔记修改失败：{error}"))?;
+        let raw = transaction
+            .query_row(
+                "SELECT note_id, expected_note_updated_at, old_title, new_title,
+                        old_content, new_content, sources_json, status
+                 FROM note_edit_proposals WHERE id = ?",
+                params![proposal_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, String>(6)?,
+                        row.get::<_, String>(7)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|error| format!("读取笔记修改提案失败：{error}"))?
+            .ok_or_else(|| "笔记修改提案不存在。".to_string())?;
+        if raw.7 != "pending" {
+            return Err("笔记修改提案已经处理。".to_string());
+        }
+        let now = now_millis_i64();
+        if !accepted {
+            transaction
+                .execute(
+                    "UPDATE note_edit_proposals SET status = 'rejected', updated_at = ? WHERE id = ?",
+                    params![now, proposal_id],
+                )
+                .map_err(|error| format!("拒绝笔记修改提案失败：{error}"))?;
+            transaction
+                .commit()
+                .map_err(|error| format!("提交拒绝结果失败：{error}"))?;
+            return Ok(None);
+        }
+        let current = self
+            .get_note_with_connection(&transaction, &raw.0)?
+            .ok_or_else(|| "目标笔记不存在。".to_string())?;
+        if current.updated_at != i64_to_u64(raw.1) {
+            return Err("目标笔记已发生变化，请重新生成修改提案。".to_string());
+        }
+        let version_id = Uuid::new_v4().to_string();
+        transaction
+            .execute(
+                "INSERT INTO library_note_versions (id, note_id, title, content, reason, created_at)
+                 VALUES (?, ?, ?, ?, 'noteEdit', ?)",
+                params![version_id, raw.0, raw.2, raw.4, now],
+            )
+            .map_err(|error| format!("备份旧笔记版本失败：{error}"))?;
+        let updated_at = now.max(raw.1.saturating_add(1));
+        transaction
+            .execute(
+                "UPDATE library_notes SET title = ?, content = ?, updated_at = ? WHERE id = ?",
+                params![raw.3, raw.5, updated_at, raw.0],
+            )
+            .map_err(|error| format!("应用笔记修改失败：{error}"))?;
+        let sources = serde_json::from_str::<Vec<NoteSourceCreate>>(&raw.6)
+            .map_err(|error| format!("读取修改来源失败：{error}"))?;
+        insert_note_sources(&transaction, &raw.0, sources, updated_at)?;
+        transaction
+            .execute(
+                "UPDATE note_edit_proposals SET status = 'applied', updated_at = ? WHERE id = ?",
+                params![updated_at, proposal_id],
+            )
+            .map_err(|error| format!("完成笔记修改提案失败：{error}"))?;
+        transaction
+            .commit()
+            .map_err(|error| format!("提交笔记修改失败：{error}"))?;
+        Ok(Some(
+            self.get_note_with_connection(&connection, &raw.0)?
+                .ok_or_else(|| "更新后的笔记不存在。".to_string())?,
+        ))
+    }
+
     /// 列出全部笔记分组（含空分组）；计数只统计独立笔记。
     pub fn list_note_groups(&self) -> Result<Vec<LibraryNoteGroup>, String> {
         let connection = self.open_connection()?;
@@ -737,39 +1285,66 @@ impl LibraryRepository {
             .ok_or_else(|| "调整分组后的笔记不存在。".to_string())
     }
 
-    pub fn import_markdown_notes(&self, paths: Vec<String>) -> Result<LibraryNoteImportResult, String> {
+    pub fn import_markdown_notes(
+        &self,
+        paths: Vec<String>,
+    ) -> Result<LibraryNoteImportResult, String> {
         if paths.is_empty() {
             return Err("没有选择需要导入的 Markdown 文件。".to_string());
         }
         if paths.len() > MAX_NOTE_IMPORT_FILES {
-            return Err(format!("单次最多导入 {MAX_NOTE_IMPORT_FILES} 个 Markdown 文件。"));
+            return Err(format!(
+                "单次最多导入 {MAX_NOTE_IMPORT_FILES} 个 Markdown 文件。"
+            ));
         }
-        let mut result = LibraryNoteImportResult { imported: Vec::new(), failed: Vec::new() };
+        let mut result = LibraryNoteImportResult {
+            imported: Vec::new(),
+            failed: Vec::new(),
+        };
         for path in paths {
             let file_name = Path::new(&path)
                 .file_name()
                 .map(|value| value.to_string_lossy().into_owned())
                 .unwrap_or_else(|| path.clone());
             let import = (|| {
-                let extension = Path::new(&path).extension().and_then(|value| value.to_str()).unwrap_or("");
-                if !extension.eq_ignore_ascii_case("md") && !extension.eq_ignore_ascii_case("markdown") {
+                let extension = Path::new(&path)
+                    .extension()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("");
+                if !extension.eq_ignore_ascii_case("md")
+                    && !extension.eq_ignore_ascii_case("markdown")
+                {
                     return Err("仅支持 .md 或 .markdown 文件。".to_string());
                 }
-                let metadata = fs::metadata(&path).map_err(|error| format!("读取文件信息失败：{error}"))?;
+                let metadata =
+                    fs::metadata(&path).map_err(|error| format!("读取文件信息失败：{error}"))?;
                 if metadata.len() > MAX_NOTE_IMPORT_BYTES {
                     return Err("单篇 Markdown 笔记不能超过 2 MB。".to_string());
                 }
-                let content = fs::read_to_string(&path).map_err(|error| format!("读取 UTF-8 文件失败：{error}"))?;
-                let content = content.strip_prefix('\u{feff}').unwrap_or(&content).to_string();
+                let content = fs::read_to_string(&path)
+                    .map_err(|error| format!("读取 UTF-8 文件失败：{error}"))?;
+                let content = content
+                    .strip_prefix('\u{feff}')
+                    .unwrap_or(&content)
+                    .to_string();
                 let title = Path::new(&path)
                     .file_stem()
                     .map(|value| value.to_string_lossy().into_owned())
                     .unwrap_or_else(|| "导入笔记".to_string());
-                self.create_note(LibraryNoteCreate { item_id: None, title, content, group_name: None })
+                self.create_note(LibraryNoteCreate {
+                    item_id: None,
+                    title,
+                    content,
+                    group_name: None,
+                })
             })();
             match import {
                 Ok(note) => result.imported.push(note),
-                Err(error) => result.failed.push(LibraryNoteImportFailure { path, file_name, error }),
+                Err(error) => result.failed.push(LibraryNoteImportFailure {
+                    path,
+                    file_name,
+                    error,
+                }),
             }
         }
         Ok(result)
@@ -1370,6 +1945,113 @@ fn migrate(connection: &Connection) -> Result<(), String> {
             )
             .map_err(|error| format!("升级笔记分组结构失败：{error}"))?;
     }
+    // v5：新增章节级笔记来源表 note_sources（Chat 深度笔记管线的溯源锚点）。
+    // note_id 对笔记 ON DELETE CASCADE；conversation_id / message_id 是普通可空列，
+    // 绝不加外键、绝不 CASCADE——对话与笔记分属两库，断链在应用层维护。
+    if version <= 4 {
+        connection
+            .execute_batch(
+                "BEGIN IMMEDIATE;
+                 CREATE TABLE IF NOT EXISTS note_sources (
+                    id TEXT PRIMARY KEY,
+                    note_id TEXT NOT NULL REFERENCES library_notes(id) ON DELETE CASCADE,
+                    section_id TEXT NOT NULL,
+                    origin TEXT NOT NULL CHECK (origin IN ('conversation', 'ai_supplement')),
+                    conversation_id TEXT,
+                    message_id TEXT,
+                    summarized_until_message_id TEXT,
+                    created_at INTEGER NOT NULL
+                 );
+                 CREATE INDEX IF NOT EXISTS note_sources_note
+                    ON note_sources(note_id);
+                 CREATE INDEX IF NOT EXISTS note_sources_conversation
+                    ON note_sources(conversation_id);
+                 PRAGMA user_version = 5;
+                 COMMIT;",
+            )
+            .map_err(|error| format!("升级笔记来源结构失败：{error}"))?;
+    }
+    // v6：M2 后台任务恢复、笔记版本与必须确认的 noteEdit 提案。
+    if version <= 5 {
+        connection
+            .execute_batch(
+                "BEGIN IMMEDIATE;
+                 CREATE TABLE IF NOT EXISTS note_pipeline_runs (
+                    id TEXT PRIMARY KEY,
+                    conversation_id TEXT NOT NULL,
+                    note_id TEXT REFERENCES library_notes(id) ON DELETE SET NULL,
+                    phase TEXT NOT NULL CHECK (phase IN (
+                        'analyzing', 'awaiting_outline', 'drafting', 'assembling',
+                        'persisting', 'done', 'cancelled', 'error'
+                    )),
+                    outline_json TEXT NOT NULL DEFAULT '',
+                    selected_section_ids_json TEXT NOT NULL DEFAULT '[]',
+                    provider_id TEXT NOT NULL,
+                    model_id TEXT NOT NULL,
+                    max_output_tokens INTEGER NOT NULL,
+                    thinking_enabled INTEGER NOT NULL DEFAULT 0 CHECK (thinking_enabled IN (0, 1)),
+                    retry_attempts INTEGER NOT NULL DEFAULT 1,
+                    warnings_json TEXT NOT NULL DEFAULT '[]',
+                    error_message TEXT,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL
+                 );
+                 CREATE UNIQUE INDEX IF NOT EXISTS note_pipeline_active_conversation
+                    ON note_pipeline_runs(conversation_id)
+                    WHERE phase IN (
+                        'analyzing', 'awaiting_outline', 'drafting', 'assembling',
+                        'persisting', 'error'
+                    );
+                 CREATE INDEX IF NOT EXISTS note_pipeline_runs_updated
+                    ON note_pipeline_runs(updated_at DESC);
+                 CREATE TABLE IF NOT EXISTS note_pipeline_sections (
+                    run_id TEXT NOT NULL REFERENCES note_pipeline_runs(id) ON DELETE CASCADE,
+                    section_id TEXT NOT NULL,
+                    position INTEGER NOT NULL,
+                    section_json TEXT NOT NULL,
+                    markdown TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'pending'
+                        CHECK (status IN ('pending', 'completed', 'failed')),
+                    error_message TEXT,
+                    updated_at INTEGER NOT NULL,
+                    PRIMARY KEY (run_id, section_id)
+                 );
+                 CREATE INDEX IF NOT EXISTS note_pipeline_sections_order
+                    ON note_pipeline_sections(run_id, position);
+                 CREATE TABLE IF NOT EXISTS library_note_versions (
+                    id TEXT PRIMARY KEY,
+                    note_id TEXT NOT NULL REFERENCES library_notes(id) ON DELETE CASCADE,
+                    title TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    created_at INTEGER NOT NULL
+                 );
+                 CREATE INDEX IF NOT EXISTS library_note_versions_note
+                    ON library_note_versions(note_id, created_at DESC);
+                 CREATE TABLE IF NOT EXISTS note_edit_proposals (
+                    id TEXT PRIMARY KEY,
+                    note_id TEXT NOT NULL REFERENCES library_notes(id) ON DELETE CASCADE,
+                    conversation_id TEXT NOT NULL,
+                    source_message_id TEXT,
+                    expected_note_updated_at INTEGER NOT NULL,
+                    old_title TEXT NOT NULL,
+                    new_title TEXT NOT NULL,
+                    old_content TEXT NOT NULL,
+                    new_content TEXT NOT NULL,
+                    diff_text TEXT NOT NULL,
+                    sources_json TEXT NOT NULL DEFAULT '[]',
+                    status TEXT NOT NULL DEFAULT 'pending'
+                        CHECK (status IN ('pending', 'applied', 'rejected')),
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL
+                 );
+                 CREATE INDEX IF NOT EXISTS note_edit_proposals_note
+                    ON note_edit_proposals(note_id, created_at DESC);
+                 PRAGMA user_version = 6;
+                 COMMIT;",
+            )
+            .map_err(|error| format!("升级深度笔记任务与版本结构失败：{error}"))?;
+    }
     Ok(())
 }
 
@@ -1462,6 +2144,206 @@ fn note_summary_from_row(row: &Row<'_>) -> rusqlite::Result<LibraryNoteSummary> 
         created_at: i64_to_u64(row.get(7)?),
         updated_at: i64_to_u64(row.get(8)?),
     })
+}
+
+fn note_source_from_row(row: &Row<'_>) -> rusqlite::Result<Result<NoteSource, String>> {
+    let origin = row.get::<_, String>(3)?;
+    let id = row.get(0)?;
+    let note_id = row.get(1)?;
+    let section_id = row.get(2)?;
+    let conversation_id = row.get(4)?;
+    let message_id = row.get(5)?;
+    let summarized_until_message_id = row.get(6)?;
+    let created_at = row.get::<_, i64>(7)?;
+    Ok(NoteSourceOrigin::parse(&origin).map(|origin| NoteSource {
+        id,
+        note_id,
+        section_id,
+        origin,
+        conversation_id,
+        message_id,
+        summarized_until_message_id,
+        created_at: i64_to_u64(created_at),
+    }))
+}
+
+fn get_note_pipeline_run_with_connection(
+    connection: &Connection,
+    run_id: &str,
+) -> Result<Option<NotePipelineRun>, String> {
+    let raw = connection
+        .query_row(
+            "SELECT id, conversation_id, note_id, phase, outline_json,
+                    selected_section_ids_json, provider_id, model_id, max_output_tokens,
+                    thinking_enabled, retry_attempts, warnings_json, error_message,
+                    created_at, updated_at
+             FROM note_pipeline_runs WHERE id = ?",
+            params![run_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, i64>(8)?,
+                    row.get::<_, i64>(9)?,
+                    row.get::<_, i64>(10)?,
+                    row.get::<_, String>(11)?,
+                    row.get::<_, Option<String>>(12)?,
+                    row.get::<_, i64>(13)?,
+                    row.get::<_, i64>(14)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|error| format!("读取深度笔记任务失败：{error}"))?;
+    let Some(raw) = raw else { return Ok(None) };
+    let sections = get_note_pipeline_sections_with_connection(connection, &raw.0)?;
+    let completed_section_ids = sections
+        .iter()
+        .filter(|section| section.status == NotePipelineSectionStatus::Completed)
+        .map(|section| section.section_id.clone())
+        .collect();
+    let failed_section_ids = sections
+        .iter()
+        .filter(|section| section.status == NotePipelineSectionStatus::Failed)
+        .map(|section| section.section_id.clone())
+        .collect();
+    Ok(Some(NotePipelineRun {
+        id: raw.0,
+        conversation_id: raw.1,
+        note_id: raw.2,
+        phase: NotePipelinePhase::parse(&raw.3)?,
+        outline_json: raw.4,
+        selected_section_ids: serde_json::from_str(&raw.5)
+            .map_err(|error| format!("解析章节选择失败：{error}"))?,
+        provider_id: raw.6,
+        model_id: raw.7,
+        max_output_tokens: u32::try_from(raw.8)
+            .map_err(|_| "深度笔记 Token 上限无效。".to_string())?,
+        thinking_enabled: raw.9 != 0,
+        retry_attempts: u8::try_from(raw.10).map_err(|_| "深度笔记重试次数无效。".to_string())?,
+        completed_section_ids,
+        failed_section_ids,
+        warnings: serde_json::from_str(&raw.11)
+            .map_err(|error| format!("解析深度笔记检查提示失败：{error}"))?,
+        error_message: raw.12,
+        created_at: i64_to_u64(raw.13),
+        updated_at: i64_to_u64(raw.14),
+    }))
+}
+
+fn get_note_pipeline_sections_with_connection(
+    connection: &Connection,
+    run_id: &str,
+) -> Result<Vec<NotePipelineSection>, String> {
+    let mut statement = connection
+        .prepare(
+            "SELECT run_id, section_id, position, section_json, markdown, status,
+                    error_message, updated_at
+             FROM note_pipeline_sections WHERE run_id = ? ORDER BY position ASC",
+        )
+        .map_err(|error| format!("准备深度笔记章节查询失败：{error}"))?;
+    let rows = statement
+        .query_map(params![run_id], |row| {
+            let status = row.get::<_, String>(5)?;
+            let position = row.get::<_, i64>(2)?;
+            Ok(
+                NotePipelineSectionStatus::parse(&status).and_then(|status| {
+                    Ok(NotePipelineSection {
+                        run_id: row.get(0).map_err(|error| error.to_string())?,
+                        section_id: row.get(1).map_err(|error| error.to_string())?,
+                        position: usize::try_from(position)
+                            .map_err(|_| "深度笔记章节位置无效。".to_string())?,
+                        section_json: row.get(3).map_err(|error| error.to_string())?,
+                        markdown: row.get(4).map_err(|error| error.to_string())?,
+                        status,
+                        error_message: row.get(6).map_err(|error| error.to_string())?,
+                        updated_at: i64_to_u64(row.get(7).map_err(|error| error.to_string())?),
+                    })
+                }),
+            )
+        })
+        .map_err(|error| format!("查询深度笔记章节失败：{error}"))?;
+    let mut sections = Vec::new();
+    for row in rows {
+        sections.push(row.map_err(|error| format!("读取深度笔记章节失败：{error}"))??);
+    }
+    Ok(sections)
+}
+
+fn get_note_edit_proposal_with_connection(
+    connection: &Connection,
+    proposal_id: &str,
+) -> Result<Option<NoteEditProposal>, String> {
+    connection
+        .query_row(
+            "SELECT id, note_id, conversation_id, source_message_id,
+                    expected_note_updated_at, old_title, new_title, old_content,
+                    new_content, diff_text, created_at
+             FROM note_edit_proposals WHERE id = ? AND status = 'pending'",
+            params![proposal_id],
+            |row| {
+                Ok(NoteEditProposal {
+                    id: row.get(0)?,
+                    note_id: row.get(1)?,
+                    conversation_id: row.get(2)?,
+                    source_message_id: row.get(3)?,
+                    expected_note_updated_at: i64_to_u64(row.get(4)?),
+                    old_title: row.get(5)?,
+                    new_title: row.get(6)?,
+                    old_content: row.get(7)?,
+                    new_content: row.get(8)?,
+                    diff: row.get(9)?,
+                    created_at: i64_to_u64(row.get(10)?),
+                })
+            },
+        )
+        .optional()
+        .map_err(|error| format!("读取笔记修改提案失败：{error}"))
+}
+
+fn normalize_note_sources(sources: Vec<NoteSourceCreate>) -> Result<Vec<NoteSourceCreate>, String> {
+    if sources.len() > MAX_NOTE_SOURCES {
+        return Err(format!("单篇笔记最多允许 {MAX_NOTE_SOURCES} 条来源记录。"));
+    }
+    sources
+        .into_iter()
+        .map(NoteSourceCreate::normalize_and_validate)
+        .collect()
+}
+
+fn insert_note_sources(
+    connection: &Connection,
+    note_id: &str,
+    sources: Vec<NoteSourceCreate>,
+    created_at: i64,
+) -> Result<(), String> {
+    for source in sources {
+        connection
+            .execute(
+                "INSERT INTO note_sources (
+                    id, note_id, section_id, origin, conversation_id, message_id,
+                    summarized_until_message_id, created_at
+                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                params![
+                    Uuid::new_v4().to_string(),
+                    note_id,
+                    source.section_id,
+                    source.origin.as_str(),
+                    source.conversation_id,
+                    source.message_id,
+                    source.summarized_until_message_id,
+                    created_at,
+                ],
+            )
+            .map_err(|error| format!("写入笔记来源失败：{error}"))?;
+    }
+    Ok(())
 }
 
 fn build_item_filters(request: &LibraryListRequest) -> (String, Vec<Value>) {
@@ -1716,6 +2598,8 @@ mod tests {
         LibraryAnnotationColor, LibraryAnnotationCreate, LibraryAnnotationKind,
         LibraryAnnotationRect, LibraryAnnotationUpdate, LibraryItemUpdate, LibraryListRequest,
         LibraryNoteCreate, LibraryNoteUpdate, LibraryReadingStateUpdate, LibraryView,
+        NoteEditProposalCreate, NotePipelinePhase, NotePipelineRunCreate,
+        NotePipelineSectionCreate, NotePipelineSectionStatus, NoteSourceCreate, NoteSourceOrigin,
         MAX_PDF_RANGE_BYTES,
     };
 
@@ -2042,18 +2926,117 @@ mod tests {
         let version: i64 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 4);
+        assert_eq!(version, 6);
         let tables: i64 = connection
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master
                  WHERE type = 'table'
-                   AND name IN ('library_annotations', 'library_notes', 'library_note_groups')",
+                   AND name IN (
+                     'library_annotations', 'library_notes', 'library_note_groups', 'note_sources'
+                   )",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(tables, 3);
+        assert_eq!(tables, 4);
 
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn creates_lists_detaches_and_cascades_note_sources() {
+        let directory = test_directory("note-sources");
+        let repository = LibraryRepository::new(directory.clone());
+        let note = repository
+            .create_note_with_sources(
+                LibraryNoteCreate {
+                    item_id: None,
+                    title: "MVCC 深度笔记".to_string(),
+                    content: "# MVCC\n\n正文".to_string(),
+                    group_name: None,
+                },
+                vec![
+                    NoteSourceCreate {
+                        section_id: "sec-1".to_string(),
+                        origin: NoteSourceOrigin::Conversation,
+                        conversation_id: Some("conversation-1".to_string()),
+                        message_id: Some("message-1".to_string()),
+                        summarized_until_message_id: Some("message-1".to_string()),
+                    },
+                    NoteSourceCreate {
+                        section_id: "sec-2".to_string(),
+                        origin: NoteSourceOrigin::AiSupplement,
+                        conversation_id: None,
+                        message_id: None,
+                        summarized_until_message_id: None,
+                    },
+                ],
+            )
+            .unwrap();
+
+        let sources = repository.list_note_sources(&note.id).unwrap();
+        assert_eq!(sources.len(), 2);
+        let conversation_source = sources
+            .iter()
+            .find(|source| source.origin == NoteSourceOrigin::Conversation)
+            .unwrap();
+        assert_eq!(
+            conversation_source.conversation_id.as_deref(),
+            Some("conversation-1")
+        );
+        assert!(sources
+            .iter()
+            .any(|source| source.origin == NoteSourceOrigin::AiSupplement));
+
+        assert_eq!(
+            repository
+                .detach_note_sources_for_conversation("conversation-1")
+                .unwrap(),
+            1
+        );
+        let detached = repository.list_note_sources(&note.id).unwrap();
+        let detached_source = detached
+            .iter()
+            .find(|source| source.origin == NoteSourceOrigin::Conversation)
+            .unwrap();
+        assert!(detached_source.conversation_id.is_none());
+        assert!(detached_source.message_id.is_none());
+        assert!(detached_source.summarized_until_message_id.is_none());
+        assert_eq!(
+            repository.get_note(&note.id).unwrap().content,
+            "# MVCC\n\n正文"
+        );
+
+        assert!(repository.delete_note(&note.id).unwrap());
+        let connection = repository.open_connection().unwrap();
+        let remaining: i64 = connection
+            .query_row("SELECT COUNT(*) FROM note_sources", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(remaining, 0);
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn rejects_invalid_note_sources_without_persisting_note() {
+        let directory = test_directory("invalid-note-sources");
+        let repository = LibraryRepository::new(directory.clone());
+        let result = repository.create_note_with_sources(
+            LibraryNoteCreate {
+                item_id: None,
+                title: "Invalid".to_string(),
+                content: "# Invalid".to_string(),
+                group_name: None,
+            },
+            vec![NoteSourceCreate {
+                section_id: "sec-1".to_string(),
+                origin: NoteSourceOrigin::Conversation,
+                conversation_id: None,
+                message_id: Some("message-1".to_string()),
+                summarized_until_message_id: None,
+            }],
+        );
+        assert!(result.is_err());
+        assert!(repository.list_notes(None).unwrap().is_empty());
         let _ = fs::remove_dir_all(directory);
     }
 
@@ -2078,7 +3061,9 @@ mod tests {
         assert_eq!(note.group_name.as_deref(), Some("数据库"));
         assert_eq!(repository.list_note_groups().unwrap()[0].note_count, 1);
         assert_eq!(
-            repository.list_notes(None).unwrap()[0].group_name.as_deref(),
+            repository.list_notes(None).unwrap()[0]
+                .group_name
+                .as_deref(),
             Some("数据库"),
         );
 
@@ -2097,6 +3082,199 @@ mod tests {
         assert!(repository.get_note(&note.id).unwrap().group_name.is_none());
         assert!(!repository.delete_note_group("英语").unwrap());
 
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn persists_and_resumes_note_pipeline_sections() {
+        let directory = test_directory("note-pipeline");
+        let repository = LibraryRepository::new(directory.clone());
+        let run = repository
+            .create_note_pipeline_run(NotePipelineRunCreate {
+                id: "run-1".to_string(),
+                conversation_id: "conversation-1".to_string(),
+                provider_id: "provider-1".to_string(),
+                model_id: "model-1".to_string(),
+                max_output_tokens: 4_096,
+                thinking_enabled: true,
+                retry_attempts: 2,
+            })
+            .unwrap();
+        assert_eq!(run.phase, NotePipelinePhase::Analyzing);
+        assert!(repository
+            .create_note_pipeline_run(NotePipelineRunCreate {
+                id: "run-duplicate".to_string(),
+                conversation_id: "conversation-1".to_string(),
+                provider_id: "provider-1".to_string(),
+                model_id: "model-1".to_string(),
+                max_output_tokens: 4_096,
+                thinking_enabled: false,
+                retry_attempts: 1,
+            })
+            .is_err());
+
+        let outline = serde_json::json!({
+            "title": "T",
+            "summary": "S",
+            "weakPoints": [],
+            "sections": [
+                { "id": "sec-1", "heading": "A", "kind": "concept", "brief": "A brief" },
+                { "id": "sec-2", "heading": "B", "kind": "summary", "brief": "B brief" }
+            ]
+        })
+        .to_string();
+        let awaiting = repository
+            .save_note_pipeline_outline(
+                &run.id,
+                &outline,
+                vec![
+                    NotePipelineSectionCreate {
+                        section_id: "sec-1".to_string(),
+                        position: 0,
+                        section_json: serde_json::json!({ "id": "sec-1" }).to_string(),
+                    },
+                    NotePipelineSectionCreate {
+                        section_id: "sec-2".to_string(),
+                        position: 1,
+                        section_json: serde_json::json!({ "id": "sec-2" }).to_string(),
+                    },
+                ],
+            )
+            .unwrap();
+        assert_eq!(awaiting.phase, NotePipelinePhase::AwaitingOutline);
+        repository
+            .select_note_pipeline_sections(&run.id, vec!["sec-1".to_string()])
+            .unwrap();
+        repository
+            .save_note_pipeline_section(
+                &run.id,
+                "sec-1",
+                "## A\n\n正文",
+                NotePipelineSectionStatus::Completed,
+                None,
+            )
+            .unwrap();
+
+        let reopened = LibraryRepository::new(directory.clone());
+        let persisted = reopened.get_note_pipeline_run(&run.id).unwrap();
+        assert_eq!(persisted.phase, NotePipelinePhase::Drafting);
+        assert_eq!(persisted.selected_section_ids, vec!["sec-1"]);
+        assert_eq!(persisted.completed_section_ids, vec!["sec-1"]);
+        assert_eq!(
+            reopened.list_resumable_note_pipeline_runs().unwrap().len(),
+            1
+        );
+
+        reopened
+            .update_note_pipeline_phase(&run.id, NotePipelinePhase::Done, None, &[], None)
+            .unwrap();
+        assert!(reopened
+            .list_resumable_note_pipeline_runs()
+            .unwrap()
+            .is_empty());
+        assert!(reopened
+            .create_note_pipeline_run(NotePipelineRunCreate {
+                id: "run-2".to_string(),
+                conversation_id: "conversation-1".to_string(),
+                provider_id: "provider-1".to_string(),
+                model_id: "model-1".to_string(),
+                max_output_tokens: 4_096,
+                thinking_enabled: false,
+                retry_attempts: 1,
+            })
+            .is_ok());
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn note_edit_requires_confirmation_backs_up_and_rejects_stale_edits() {
+        let directory = test_directory("note-edit");
+        let repository = LibraryRepository::new(directory.clone());
+        let note = repository
+            .create_note(LibraryNoteCreate {
+                item_id: None,
+                title: "Old title".to_string(),
+                content: "# Old title\n\nOld body".to_string(),
+                group_name: None,
+            })
+            .unwrap();
+        let source = NoteSourceCreate {
+            section_id: "edit-1".to_string(),
+            origin: NoteSourceOrigin::Conversation,
+            conversation_id: Some("conversation-1".to_string()),
+            message_id: Some("message-2".to_string()),
+            summarized_until_message_id: Some("message-2".to_string()),
+        };
+        let proposal =
+            |id: &str, current: &crate::library::types::LibraryNote| NoteEditProposalCreate {
+                id: id.to_string(),
+                note_id: current.id.clone(),
+                conversation_id: "conversation-1".to_string(),
+                source_message_id: Some("message-2".to_string()),
+                expected_note_updated_at: current.updated_at,
+                old_title: current.title.clone(),
+                new_title: "New title".to_string(),
+                old_content: current.content.clone(),
+                new_content: "# New title\n\nNew body".to_string(),
+                diff: "--- old\n+++ new".to_string(),
+                sources: vec![source.clone()],
+            };
+
+        repository
+            .create_note_edit_proposal(proposal("proposal-reject", &note))
+            .unwrap();
+        assert!(repository
+            .resolve_note_edit_proposal("proposal-reject", false)
+            .unwrap()
+            .is_none());
+        assert_eq!(repository.get_note(&note.id).unwrap().content, note.content);
+
+        repository
+            .create_note_edit_proposal(proposal("proposal-apply", &note))
+            .unwrap();
+        let updated = repository
+            .resolve_note_edit_proposal("proposal-apply", true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.title, "New title");
+        assert_eq!(updated.content, "# New title\n\nNew body");
+        assert_eq!(repository.list_note_sources(&note.id).unwrap().len(), 1);
+        let connection = repository.open_connection().unwrap();
+        let version: (String, String, String) = connection
+            .query_row(
+                "SELECT title, content, reason FROM library_note_versions WHERE note_id = ?",
+                rusqlite::params![note.id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(version.0, "Old title");
+        assert_eq!(version.1, "# Old title\n\nOld body");
+        assert_eq!(version.2, "noteEdit");
+        drop(connection);
+
+        repository
+            .create_note_edit_proposal(proposal("proposal-stale", &updated))
+            .unwrap();
+        repository
+            .update_note(LibraryNoteUpdate {
+                note_id: note.id.clone(),
+                title: "Manual title".to_string(),
+                content: "Manual edit".to_string(),
+            })
+            .unwrap();
+        assert!(repository
+            .resolve_note_edit_proposal("proposal-stale", true)
+            .is_err());
+        assert_eq!(repository.get_note(&note.id).unwrap().title, "Manual title");
+        let connection = repository.open_connection().unwrap();
+        let versions: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM library_note_versions WHERE note_id = ?",
+                rusqlite::params![note.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(versions, 1);
         let _ = fs::remove_dir_all(directory);
     }
 }

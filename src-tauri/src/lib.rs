@@ -126,6 +126,8 @@ pub fn run() {
             commands::library::library_list_notes,
             commands::library::library_get_note,
             commands::library::library_create_note,
+            commands::library::library_create_note_with_sources,
+            commands::library::library_list_note_sources,
             commands::library::library_import_markdown_notes,
             commands::library::library_update_note,
             commands::library::library_delete_note,
@@ -142,6 +144,15 @@ pub fn run() {
             commands::memory::memory_clear,
             commands::memory::memory_get_directory,
             commands::memory::memory_open_directory,
+            commands::note_pipeline::note_pipeline_start,
+            commands::note_pipeline::note_pipeline_adjust,
+            commands::note_pipeline::note_pipeline_confirm,
+            commands::note_pipeline::note_pipeline_resume,
+            commands::note_pipeline::note_pipeline_cancel,
+            commands::note_pipeline::note_pipeline_list_resumable,
+            commands::note_pipeline::note_pipeline_get,
+            commands::note_pipeline::note_edit_prepare,
+            commands::note_pipeline::note_edit_resolve,
             commands::providers::fetch_provider_models,
             commands::providers::test_provider_connection,
             commands::settings::load_model_settings,
@@ -179,6 +190,8 @@ pub fn run() {
                 }
                 let state = app_handle.state::<state::AppState>();
                 let cancelled = tauri::async_runtime::block_on(state.cancel_all_chat_runs());
+                let cancelled_note_pipelines =
+                    tauri::async_runtime::block_on(state.cancel_all_note_pipeline_runs());
                 let approvals =
                     tauri::async_runtime::block_on(state.cancel_all_tool_approvals());
                 let cancelled_sync = tauri::async_runtime::block_on(state.cancel_sync_run());
@@ -187,6 +200,11 @@ pub fn run() {
                 tauri::async_runtime::block_on(state.discard_pending_signed_update());
                 if cancelled > 0 {
                     eprintln!("Cancelled {cancelled} active chat run(s) on application exit.");
+                }
+                if cancelled_note_pipelines > 0 {
+                    eprintln!(
+                        "Cancelled {cancelled_note_pipelines} active note pipeline run(s) on application exit."
+                    );
                 }
                 if approvals > 0 {
                     eprintln!("Cancelled {approvals} pending tool approval(s) on application exit.");
