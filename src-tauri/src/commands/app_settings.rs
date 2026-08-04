@@ -348,7 +348,10 @@ mod tests {
     use serde_json::json;
 
     use super::{validate_memory_text, MemoryLayer, SettingsBundleFile};
-    use crate::{settings::app_types::AppSettings, settings::types::ModelSettings};
+    use crate::{
+        settings::app_types::{AppSettings, ThemeColor, ThemePreset},
+        settings::types::ModelSettings,
+    };
 
     #[test]
     fn old_settings_bundle_without_memory_remains_importable() {
@@ -361,6 +364,26 @@ mod tests {
         assert_eq!(bundle.version, 2);
         assert!(bundle.memory.is_none());
         assert!(bundle.provider_api_keys.is_none());
+    }
+
+    #[test]
+    fn old_backup_theme_is_normalized_during_import() {
+        let mut app_settings = serde_json::to_value(AppSettings::default()).unwrap();
+        app_settings["version"] = json!(8);
+        app_settings["themePreset"] = json!("graphite");
+        app_settings["themeColor"] = json!("amber");
+        app_settings["fontSize"] = json!(17);
+        let value = json!({
+            "version": 2,
+            "appSettings": app_settings,
+            "modelSettings": ModelSettings::default()
+        });
+        let bundle: SettingsBundleFile = serde_json::from_value(value).unwrap();
+        let settings = bundle.app_settings.normalize_and_validate().unwrap();
+
+        assert_eq!(settings.theme_preset, ThemePreset::Mnemora);
+        assert_eq!(settings.theme_color, ThemeColor::Neutral);
+        assert_eq!(settings.font_size, 17);
     }
 
     #[test]

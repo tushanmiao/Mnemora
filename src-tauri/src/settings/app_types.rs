@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::memory::MemorySettings;
 
-pub const CURRENT_APP_SETTINGS_VERSION: u32 = 8;
+pub const CURRENT_APP_SETTINGS_VERSION: u32 = 9;
 pub const DEFAULT_GLOBAL_SYSTEM_PROMPT: &str = concat!(
     "你是 Mnemora 的学习与研究助手。\n",
     "优先直接回答问题，并根据复杂度使用清晰的标题、列表、表格或代码块。\n",
@@ -248,6 +248,16 @@ impl AppSettings {
         if source_version < 8 && self.system_prompt.trim().is_empty() {
             self.system_prompt = DEFAULT_GLOBAL_SYSTEM_PROMPT.to_string();
         }
+        self.theme_preset = match self.theme_preset {
+            ThemePreset::Paper => ThemePreset::Paper,
+            ThemePreset::HighContrast => ThemePreset::HighContrast,
+            ThemePreset::Mnemora
+            | ThemePreset::Forest
+            | ThemePreset::Ocean
+            | ThemePreset::Rose
+            | ThemePreset::Graphite => ThemePreset::Mnemora,
+        };
+        self.theme_color = ThemeColor::Neutral;
         self.version = CURRENT_APP_SETTINGS_VERSION;
         self.user_display_name = self.user_display_name.trim().to_string();
         self.user_avatar = self.user_avatar.trim().to_string();
@@ -408,7 +418,7 @@ fn validate_theme_background_css(value: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{AppSettings, ThemeMode, ThemePreset, CURRENT_APP_SETTINGS_VERSION};
+    use super::{AppSettings, ThemeColor, ThemeMode, ThemePreset, CURRENT_APP_SETTINGS_VERSION};
 
     #[test]
     fn defaults_are_versioned_and_streaming_is_enabled() {
@@ -511,5 +521,39 @@ mod tests {
             super::ChineseFontFamily::System
         );
         assert_eq!(settings.latin_font_family, super::LatinFontFamily::System);
+    }
+
+    #[test]
+    fn version_eight_theme_options_migrate_without_resetting_other_preferences() {
+        let value = serde_json::json!({
+            "version": 8,
+            "interfaceLanguage": "en",
+            "theme": "dark",
+            "themePreset": "forest",
+            "themeColor": "violet",
+            "themeBackground": {
+                "enabled": true,
+                "css": "linear-gradient(135deg, #111111, #222222)",
+                "surfaceOpacity": 88
+            },
+            "fontSize": 18,
+            "letterSpacing": 0.4,
+            "retryEnabled": true,
+            "retryAttempts": 4,
+            "maxOutputTokens": 65536
+        });
+        let settings: AppSettings = serde_json::from_value(value).unwrap();
+        let settings = settings.normalize_and_validate().unwrap();
+
+        assert_eq!(settings.version, CURRENT_APP_SETTINGS_VERSION);
+        assert_eq!(settings.theme, ThemeMode::Dark);
+        assert_eq!(settings.theme_preset, ThemePreset::Mnemora);
+        assert_eq!(settings.theme_color, ThemeColor::Neutral);
+        assert!(settings.theme_background.enabled);
+        assert_eq!(settings.theme_background.surface_opacity, 88);
+        assert_eq!(settings.font_size, 18);
+        assert_eq!(settings.letter_spacing, 0.4);
+        assert_eq!(settings.retry_attempts, 4);
+        assert_eq!(settings.max_output_tokens, 65_536);
     }
 }

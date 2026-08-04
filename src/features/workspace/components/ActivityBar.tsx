@@ -50,6 +50,7 @@ export function ActivityBar({
             <button
               key={view.id}
               className={`activity-bar-item${active ? " is-active" : ""}`}
+              data-workspace={view.id}
               type="button"
               ref={(element) => { viewButtonsRef.current[index] = element; }}
               title={t(view.labelKey)}
@@ -66,6 +67,7 @@ export function ActivityBar({
       <div className="activity-bar-footer">
         <button
           className={`activity-bar-item${settingsOpen ? " is-active" : ""}`}
+          data-workspace="settings"
           type="button"
           title={t("sidebar.settings")}
           aria-label={t("sidebar.settings")}

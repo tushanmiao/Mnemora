@@ -18,7 +18,6 @@ import {
 import type {
   AppSettings,
   SettingsBundle,
-  ThemeColor,
   ThemeMode,
   ThemePreset,
   FontPreset,
@@ -52,8 +51,7 @@ type GeneralSettingsPanelProps = {
 const TOKEN_OPTIONS = [4_096, 8_192, 16_384, 32_768, 65_536, 131_072];
 const MAX_AVATAR_BYTES = 2 * 1024 * 1024;
 const ACCEPTED_AVATAR_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
-const THEME_PRESETS: ThemePreset[] = ["mnemora", "forest", "ocean", "rose", "paper", "graphite", "highContrast"];
-const THEME_COLORS: ThemeColor[] = ["neutral", "warm", "cool", "rose", "amber", "violet"];
+const THEME_PRESETS: ThemePreset[] = ["mnemora", "paper", "highContrast"];
 
 export function GeneralSettingsPanel({
   settings,
@@ -106,7 +104,6 @@ export function GeneralSettingsPanel({
         key === "theme"
         || key === "interfaceLanguage"
         || key === "themePreset"
-        || key === "themeColor"
         || key === "fontSize"
         || key === "letterSpacing"
         || key === "fontPreset"
@@ -266,23 +263,6 @@ export function GeneralSettingsPanel({
                     <i /><i /><i />
                   </span>
                   <span>{themePresetLabel(value, t)}</span>
-                </button>
-              ))}
-            </div>
-          </SettingRow>
-          <SettingRow label={t("general.accent")}>
-            <div className="theme-color-options" role="radiogroup" aria-label={t("general.themeColors")}>
-              {THEME_COLORS.map((value) => (
-                <button
-                  className={`theme-color-option theme-color-${value}${draft.themeColor === value ? " theme-color-option-active" : ""}`}
-                  type="button"
-                  role="radio"
-                  aria-checked={draft.themeColor === value}
-                  key={value}
-                  onClick={() => updateDraft("themeColor", value)}
-                >
-                  <span className="theme-color-swatch" aria-hidden="true" />
-                  <span>{themeColorLabel(value, t)}</span>
                 </button>
               ))}
             </div>
@@ -665,22 +645,9 @@ export function GeneralSettingsPanel({
 }
 
 function themePresetLabel(value: ThemePreset, t: ReturnType<typeof useI18n>["t"]) {
-  if (value === "forest") return t("general.themeForest");
-  if (value === "ocean") return t("general.themeOcean");
-  if (value === "rose") return t("general.themeRose");
   if (value === "paper") return t("general.themePaper");
-  if (value === "graphite") return t("general.themeGraphite");
   if (value === "highContrast") return t("general.themeHighContrast");
   return "Mnemora";
-}
-
-function themeColorLabel(value: ThemeColor, t: ReturnType<typeof useI18n>["t"]) {
-  if (value === "warm") return t("general.colorWarm");
-  if (value === "cool") return t("general.colorCool");
-  if (value === "rose") return t("general.colorRose");
-  if (value === "amber") return t("general.colorAmber");
-  if (value === "violet") return t("general.colorViolet");
-  return t("general.colorNeutral");
 }
 
 function SettingRow({

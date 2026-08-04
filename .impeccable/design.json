@@ -1,0 +1,103 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-08-04T23:18:00+08:00",
+  "title": "Design System: Mnemora",
+  "extensions": {
+    "colorMeta": {
+      "overview": { "role": "primary", "displayName": "Overview Amber", "canonical": "#9a6500", "tonalRamp": ["#2f210b", "#574015", "#7b5818", "#9a6500", "#c08a25", "#e0aa45", "#f0cf8e", "#fbf1dc"] },
+      "chat": { "role": "secondary", "displayName": "Chat Teal", "canonical": "#0d6b5d", "tonalRamp": ["#082821", "#0a4439", "#0d5a4d", "#0d6b5d", "#2e8f7c", "#62bfa9", "#a6ddcf", "#e7f5f1"] },
+      "notes": { "role": "tertiary", "displayName": "Notes Coral", "canonical": "#b5473a", "tonalRamp": ["#351713", "#62271f", "#8e382e", "#b5473a", "#d46759", "#ef887c", "#f5bdb6", "#fbedeb"] },
+      "literature": { "role": "tertiary", "displayName": "Literature Blue", "canonical": "#2864b0", "tonalRamp": ["#0c203a", "#153b68", "#205493", "#2864b0", "#4a82c7", "#78a8e8", "#b7d0f0", "#edf4fc"] },
+      "english": { "role": "tertiary", "displayName": "English Green", "canonical": "#347a3b", "tonalRamp": ["#122a15", "#205027", "#2b6932", "#347a3b", "#55a05b", "#7bbc7a", "#b7ddb5", "#edf7ec"] },
+      "app-ground": { "role": "neutral", "displayName": "Mineral Ground", "canonical": "#f3f5f4", "tonalRamp": ["#171a18", "#303632", "#515a55", "#747f79", "#9da6a1", "#c4cbc7", "#e1e6e3", "#f3f5f4"] }
+    },
+    "typographyMeta": {
+      "headline": { "displayName": "Workspace Headline", "purpose": "Names the active workspace or primary continuation task." },
+      "body": { "displayName": "Reading Body", "purpose": "UI body at 14px; long-form areas may follow the user reading size." },
+      "label": { "displayName": "Utility Label", "purpose": "Compact controls, metadata, counts, and source kinds." }
+    },
+    "shadows": [
+      { "name": "menu", "value": "0 10px 28px rgb(35 48 40 / 14%)", "purpose": "Menus and dialogs only." },
+      { "name": "panel", "value": "-12px 0 28px rgb(35 48 40 / 14%)", "purpose": "Right-side context overlays below 1240px." },
+      { "name": "composer", "value": "0 6px 20px rgb(42 56 47 / 8%)", "purpose": "Separates a floating composer from reading content." }
+    ],
+    "motion": [
+      { "name": "fast", "value": "140ms", "purpose": "Hover, focus, and small state feedback." },
+      { "name": "standard", "value": "200ms", "purpose": "Panel and selection state changes." },
+      { "name": "ease-out", "value": "cubic-bezier(0.16, 1, 0.3, 1)", "purpose": "Short state transitions that settle quickly." }
+    ],
+    "breakpoints": [
+      { "name": "minimum-window", "value": "720px" },
+      { "name": "full-stage-panel", "value": "940px" },
+      { "name": "context-overlay", "value": "1240px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Workspace Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The active workspace color identifies the page's main command.",
+      "html": "<button class=\"ds-button-primary\">New chat</button>",
+      "css": ".ds-button-primary { height: 34px; padding: 0 12px; border: 1px solid var(--workspace-accent, #0d6b5d); border-radius: 5px; color: #fff; background: var(--workspace-accent, #0d6b5d); font: 600 12px/1.4 'Segoe UI', sans-serif; cursor: pointer; } .ds-button-primary:hover { filter: brightness(.9); } .ds-button-primary:focus-visible { outline: 2px solid var(--workspace-accent, #0d6b5d); outline-offset: 2px; }"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "Quiet raised command for adjacent actions.",
+      "html": "<button class=\"ds-button-secondary\">Open notes</button>",
+      "css": ".ds-button-secondary { height: 34px; padding: 0 12px; border: 1px solid var(--border-default, #d1d8d4); border-radius: 5px; color: var(--text-primary, #1d2420); background: var(--surface-raised, #fff); font: 600 12px/1.4 'Segoe UI', sans-serif; cursor: pointer; } .ds-button-secondary:hover { border-color: var(--workspace-accent, #0d6b5d); background: var(--workspace-accent-soft, #deeee9); } .ds-button-secondary:focus-visible { outline: 2px solid var(--workspace-accent, #0d6b5d); outline-offset: 2px; }"
+    },
+    {
+      "name": "Activity Item",
+      "kind": "nav",
+      "refersTo": "activity-item",
+      "description": "A fixed square navigation target with workspace identity.",
+      "html": "<button class=\"ds-activity-item\" aria-label=\"Overview\"><span>01</span></button>",
+      "css": ".ds-activity-item { display: grid; width: 38px; height: 38px; padding: 0; place-items: center; border: 0; border-radius: 6px; color: #9a6500; background: #f3ead7; font: 600 10px/1 'Segoe UI', sans-serif; cursor: pointer; } .ds-activity-item:hover { background: #e1e7e4; } .ds-activity-item:focus-visible { outline: 2px solid #9a6500; outline-offset: -2px; }"
+    },
+    {
+      "name": "Continuation Index Row",
+      "kind": "custom",
+      "description": "Chronological work entry with order, source, title, excerpt, kind, and time.",
+      "html": "<button class=\"ds-index-row\"><span class=\"ds-index-number\">01</span><span class=\"ds-index-source\"></span><span class=\"ds-index-copy\"><strong>Research thread</strong><small>Local source excerpt</small></span><time>09:42</time></button>",
+      "css": ".ds-index-row { display: grid; width: 100%; min-height: 66px; padding: 10px 6px 10px 0; grid-template-columns: 37px 28px minmax(0,1fr) auto; align-items: center; gap: 10px; border: 0; border-top: 1px solid var(--border-default, #d1d8d4); border-bottom: 1px solid var(--border-subtle, #dfe4e1); color: var(--text-primary, #1d2420); background: transparent; text-align: left; cursor: pointer; } .ds-index-number, .ds-index-row time { color: var(--text-muted, #6b7770); font: 400 10px/1.4 'Segoe UI', sans-serif; } .ds-index-source { width: 28px; height: 28px; border-radius: 5px; background: #deeee9; } .ds-index-copy { display: grid; gap: 4px; } .ds-index-copy strong { font: 640 13px/1.4 'Segoe UI', sans-serif; } .ds-index-copy small { color: var(--text-muted, #6b7770); font: 400 11px/1.4 'Segoe UI', sans-serif; } .ds-index-row:hover { background: var(--surface-hover, #e1e7e4); } .ds-index-row:focus-visible { outline: 2px solid #0d6b5d; outline-offset: 2px; }"
+    },
+    {
+      "name": "Text Field",
+      "kind": "input",
+      "description": "Compact raised field with semantic focus treatment.",
+      "html": "<input class=\"ds-text-field\" value=\"Local workspace\" aria-label=\"Workspace name\">",
+      "css": ".ds-text-field { height: 34px; padding: 0 10px; border: 1px solid var(--border-default, #d1d8d4); border-radius: 5px; color: var(--text-primary, #1d2420); background: var(--surface-raised, #fff); font: 400 12px/1.4 'Segoe UI', sans-serif; } .ds-text-field:hover { border-color: var(--text-muted, #6b7770); } .ds-text-field:focus-visible { outline: 2px solid var(--workspace-accent, #0d6b5d); outline-offset: 2px; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Memory Index Workstation.",
+    "overview": "Mnemora uses the visual logic of an index: narrow rails locate work, ordered rows preserve chronology, and workspace colors identify context without tinting whole pages. The surrounding shell stays quiet so conversation, notes, PDFs, and study material can carry the user's attention.",
+    "keyCharacteristics": [
+      "Neutral mineral surfaces with clear one-pixel boundaries.",
+      "Five stable workspace colors used for location, action, source, and real progress.",
+      "Compact navigation and controls around spacious content and reading fields.",
+      "Information-bearing rails, timestamps, source labels, and loading skeletons."
+    ],
+    "rules": [
+      { "name": "The Useful Structure Rule", "body": "A divider, index number, color, or rail must communicate location, order, source, status, or progress.", "section": "overview" },
+      { "name": "The Workspace Identity Rule", "body": "Use the active workspace color for the current navigation item, its primary action, source markers, index rails, and truthful progress. Do not spread it across the page background.", "section": "colors" },
+      { "name": "The Stable Chrome Rule", "body": "Reading preferences may change prose, but must not change navigation, controls, tables, labels, or panel geometry.", "section": "typography" },
+      { "name": "The Stable Geometry Rule", "body": "Fixed-format controls, rails, and panels keep explicit dimensions so loading, hover, long labels, and state changes cannot shift the shell.", "section": "layout" }
+    ],
+    "dos": [
+      "Do preserve the neutral shell and fixed five-color workspace mapping.",
+      "Do keep status meaning paired with text, icons, shape, or position.",
+      "Do use Lucide icons, visible focus states, bounded lists, and stable skeleton dimensions.",
+      "Do let long-form content breathe while keeping navigation and utilities compact."
+    ],
+    "donts": [
+      "Don't build card walls, nested cards, marketing heroes, glass surfaces, or decorative gradients.",
+      "Don't use workspace colors as success or failure colors.",
+      "Don't let reading font settings resize application chrome.",
+      "Don't add decorative animation, gamification, or color without information."
+    ]
+  }
+}

@@ -6,7 +6,7 @@
   flex-direction: column;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 0;
+  padding: 12px 0;
   border-right: 1px solid var(--color-border);
   background: var(--color-sidebar-layer);
 }
@@ -20,6 +20,9 @@
 }
 
 .activity-bar-item {
+  --activity-accent: var(--text-muted);
+  --activity-accent-soft: var(--surface-hover);
+
   position: relative;
   display: grid;
   width: 38px;
@@ -27,35 +30,63 @@
   padding: 0;
   place-items: center;
   border: 0;
-  border-radius: 8px;
+  border-radius: 6px;
   color: var(--color-muted);
   background: transparent;
   cursor: pointer;
 }
 
 .activity-bar-item:hover {
-  color: var(--color-text);
+  color: var(--activity-accent);
   background: var(--color-hover);
 }
 
 .activity-bar-item.is-active {
-  color: var(--color-accent);
-  background: var(--color-accent-soft);
+  color: var(--activity-accent);
+  background: var(--activity-accent-soft);
 }
 
-/* 左缘竖条激活指示，跟随各主题 accent 色。 */
 .activity-bar-item.is-active::before {
   position: absolute;
   top: 8px;
   bottom: 8px;
   left: -5px;
-  width: 3px;
-  border-radius: 0 2px 2px 0;
-  background: var(--color-accent);
+  width: 2px;
+  background: var(--activity-accent);
   content: "";
 }
 
+.activity-bar-item[data-workspace="overview"] {
+  --activity-accent: var(--workspace-overview);
+  --activity-accent-soft: var(--workspace-overview-soft);
+}
+
+.activity-bar-item[data-workspace="chat"] {
+  --activity-accent: var(--workspace-chat);
+  --activity-accent-soft: var(--workspace-chat-soft);
+}
+
+.activity-bar-item[data-workspace="notes"] {
+  --activity-accent: var(--workspace-notes);
+  --activity-accent-soft: var(--workspace-notes-soft);
+}
+
+.activity-bar-item[data-workspace="work"] {
+  --activity-accent: var(--workspace-work);
+  --activity-accent-soft: var(--workspace-work-soft);
+}
+
+.activity-bar-item[data-workspace="english"] {
+  --activity-accent: var(--workspace-english);
+  --activity-accent-soft: var(--workspace-english-soft);
+}
+
+.activity-bar-item[data-workspace="settings"] {
+  --activity-accent: var(--text-primary);
+  --activity-accent-soft: var(--surface-selected);
+}
+
 .activity-bar-item:focus-visible {
-  outline: 2px solid var(--color-accent);
+  outline: 2px solid var(--activity-accent);
   outline-offset: -2px;
 }

@@ -5,6 +5,7 @@ import {
   useState,
 } from "react";
 import { LoaderCircle } from "lucide-react";
+import "./styles/tokens.css";
 import "./styles/app.css";
 import "./styles/themes.css";
 import type { ModelSelectorGroup } from "./features/chat/components/ChatHeader";
@@ -467,6 +468,7 @@ function App() {
       data-theme={settings.resolvedTheme}
       data-theme-preset={settings.appSettings.themePreset}
       data-theme-color={settings.appSettings.themeColor}
+      data-active-workspace={activeView === "settings" ? "settings" : workspaceMode}
       data-custom-background={layout.hasCustomBackground ? "true" : "false"}
       style={layout.appThemeStyle}
       aria-label="Mnemora application"

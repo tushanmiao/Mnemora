@@ -64,7 +64,7 @@ export function useWorkspaceLayout(
 
   const customBackground = resolveThemeBackgroundCss(appSettings.themeBackground);
   const appThemeStyle = {
-    "--app-font-size": `${appSettings.fontSize}px`,
+    "--reading-font-size": `${appSettings.fontSize}px`,
     "--reading-letter-spacing": `${appSettings.letterSpacing}px`,
     "--reading-font-family": resolveReadingFontFamily(appSettings),
     "--app-custom-background": customBackground ?? "var(--color-app)",

@@ -40,8 +40,21 @@ export function WorkspaceViewHost({
       >
         <Suspense
           fallback={(
-            <div className="workspace-loading" role="status">
-              {t("view.loading", { view: viewLabel })}
+            <div
+              className="workspace-loading workspace-loading-index"
+              role="status"
+              aria-label={t("view.loading", { view: viewLabel })}
+            >
+              <div className="workspace-loading-rail" aria-hidden="true">
+                <span /><span /><span /><span />
+              </div>
+              <div className="workspace-loading-page" aria-hidden="true">
+                <span className="workspace-loading-title" />
+                <span className="workspace-loading-subtitle" />
+                <div className="workspace-loading-lines">
+                  <span /><span /><span /><span /><span />
+                </div>
+              </div>
             </div>
           )}
         >

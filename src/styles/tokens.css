@@ -1,0 +1,151 @@
+:root {
+  font-family: "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --radius-control: 5px;
+  --radius-panel: 7px;
+  --duration-fast: 140ms;
+  --duration-standard: 200ms;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.app-shell {
+  --ui-font-family: "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
+  --ui-font-size: 14px;
+  --reading-font-family: var(--ui-font-family);
+  --reading-font-size: 14px;
+  --reading-letter-spacing: 0px;
+
+  --surface-app: #f3f5f4;
+  --surface-content: #fafbfa;
+  --surface-raised: #ffffff;
+  --surface-sidebar: #e9eeec;
+  --surface-hover: #e1e7e4;
+  --surface-selected: #d9e2de;
+  --surface-user: #edf1ef;
+  --text-primary: #1d2420;
+  --text-secondary: #4b5650;
+  --text-muted: #6b7770;
+  --text-faint: #86908a;
+  --border-default: #d1d8d4;
+  --border-subtle: #dfe4e1;
+
+  --status-success: #287542;
+  --status-success-soft: #e2f1e7;
+  --status-success-border: #afd0b9;
+  --status-warning: #8a5a00;
+  --status-warning-soft: #f7edda;
+  --status-warning-border: #dfc48d;
+  --status-danger: #b13c3c;
+  --status-danger-soft: #f9e5e5;
+  --status-danger-border: #e1aaaa;
+  --status-info: #2864b0;
+  --status-info-soft: #e4edf8;
+  --status-info-border: #afc6e3;
+
+  --workspace-overview: #9a6500;
+  --workspace-overview-soft: #f3ead7;
+  --workspace-chat: #0d6b5d;
+  --workspace-chat-soft: #deeee9;
+  --workspace-notes: #b5473a;
+  --workspace-notes-soft: #f6e5e2;
+  --workspace-work: #2864b0;
+  --workspace-work-soft: #e3ecf7;
+  --workspace-english: #347a3b;
+  --workspace-english-soft: #e3efe3;
+  --workspace-accent: var(--workspace-chat);
+  --workspace-accent-strong: #07574c;
+  --workspace-accent-soft: var(--workspace-chat-soft);
+
+  --shadow-menu: 0 10px 28px rgb(35 48 40 / 14%);
+  --shadow-panel: -12px 0 28px rgb(35 48 40 / 14%);
+  --shadow-composer: 0 6px 20px rgb(42 56 47 / 8%);
+}
+
+.app-shell[data-active-workspace="overview"] {
+  --workspace-accent: var(--workspace-overview);
+  --workspace-accent-strong: #7c5100;
+  --workspace-accent-soft: var(--workspace-overview-soft);
+}
+
+.app-shell[data-active-workspace="chat"] {
+  --workspace-accent: var(--workspace-chat);
+  --workspace-accent-strong: #07574c;
+  --workspace-accent-soft: var(--workspace-chat-soft);
+}
+
+.app-shell[data-active-workspace="notes"] {
+  --workspace-accent: var(--workspace-notes);
+  --workspace-accent-strong: #94382f;
+  --workspace-accent-soft: var(--workspace-notes-soft);
+}
+
+.app-shell[data-active-workspace="work"] {
+  --workspace-accent: var(--workspace-work);
+  --workspace-accent-strong: #1e518f;
+  --workspace-accent-soft: var(--workspace-work-soft);
+}
+
+.app-shell[data-active-workspace="english"] {
+  --workspace-accent: var(--workspace-english);
+  --workspace-accent-strong: #28622e;
+  --workspace-accent-soft: var(--workspace-english-soft);
+}
+
+.app-shell[data-theme="dark"] {
+  --surface-app: #171a18;
+  --surface-content: #1c211e;
+  --surface-raised: #252b27;
+  --surface-sidebar: #202622;
+  --surface-hover: #2d3530;
+  --surface-selected: #35413a;
+  --surface-user: #29302b;
+  --text-primary: #edf1ee;
+  --text-secondary: #c5ccc7;
+  --text-muted: #a2ada6;
+  --text-faint: #818c85;
+  --border-default: #3a433d;
+  --border-subtle: #303833;
+
+  --status-success: #78c68b;
+  --status-success-soft: #24382a;
+  --status-success-border: #3d6647;
+  --status-warning: #e0b05a;
+  --status-warning-soft: #3a3223;
+  --status-warning-border: #6a5732;
+  --status-danger: #f08080;
+  --status-danger-soft: #402929;
+  --status-danger-border: #744343;
+  --status-info: #78a8e8;
+  --status-info-soft: #263649;
+  --status-info-border: #405f86;
+
+  --workspace-overview: #e0aa45;
+  --workspace-overview-soft: #3b3221;
+  --workspace-chat: #62bfa9;
+  --workspace-chat-soft: #233a35;
+  --workspace-notes: #ef887c;
+  --workspace-notes-soft: #402b29;
+  --workspace-work: #78a8e8;
+  --workspace-work-soft: #28384b;
+  --workspace-english: #7bbc7a;
+  --workspace-english-soft: #293b2a;
+
+  --shadow-menu: 0 12px 30px rgb(0 0 0 / 34%);
+  --shadow-panel: -12px 0 28px rgb(0 0 0 / 34%);
+  --shadow-composer: 0 8px 24px rgb(0 0 0 / 24%);
+}
+
+.app-shell[data-theme="dark"][data-active-workspace="overview"] { --workspace-accent-strong: #edbe66; }
+.app-shell[data-theme="dark"][data-active-workspace="chat"] { --workspace-accent-strong: #79cbb8; }
+.app-shell[data-theme="dark"][data-active-workspace="notes"] { --workspace-accent-strong: #f39b91; }
+.app-shell[data-theme="dark"][data-active-workspace="work"] { --workspace-accent-strong: #8bb6ee; }
+.app-shell[data-theme="dark"][data-active-workspace="english"] { --workspace-accent-strong: #91ca90; }
