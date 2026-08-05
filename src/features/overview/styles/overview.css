@@ -87,21 +87,13 @@
 
 .overview-actions .overview-action-primary {
   border-color: var(--color-accent);
-  color: #ffffff;
+  color: var(--color-on-accent);
   background: var(--color-accent);
 }
 
-.app-shell[data-theme="dark"] .overview-actions .overview-action-primary {
-  color: #14201b;
-}
-
 .overview-actions .overview-action-primary:hover {
-  color: #ffffff;
+  color: var(--color-on-accent);
   background: var(--color-accent-hover);
-}
-
-.app-shell[data-theme="dark"] .overview-actions .overview-action-primary:hover {
-  color: #14201b;
 }
 
 .overview-index {

@@ -51,7 +51,15 @@ type GeneralSettingsPanelProps = {
 const TOKEN_OPTIONS = [4_096, 8_192, 16_384, 32_768, 65_536, 131_072];
 const MAX_AVATAR_BYTES = 2 * 1024 * 1024;
 const ACCEPTED_AVATAR_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
-const THEME_PRESETS: ThemePreset[] = ["mnemora", "paper", "highContrast"];
+const THEME_PRESETS: ThemePreset[] = [
+  "mnemora",
+  "forest",
+  "ocean",
+  "rose",
+  "paper",
+  "graphite",
+  "highContrast",
+];
 
 export function GeneralSettingsPanel({
   settings,
@@ -225,6 +233,45 @@ export function GeneralSettingsPanel({
 
       <div className="general-settings-scroll">
         <section className="general-settings-section">
+          <h3>{t("general.profile")}</h3>
+          <SettingRow label={t("general.username")}>
+            <input
+              className="settings-input general-control"
+              value={draft.userDisplayName}
+              placeholder={t("common.optional")}
+              onChange={(event) => updateDraft("userDisplayName", event.target.value)}
+            />
+          </SettingRow>
+          <SettingRow label={t("general.avatar")} description={t("general.avatarDescription")} stack>
+            <div className="profile-avatar-row">
+              <div className="profile-avatar-preview" aria-hidden="true">
+                {draft.userAvatar ? <img src={draft.userAvatar} alt="" /> : (draft.userDisplayName.trim()[0] ?? "M").toUpperCase()}
+              </div>
+              <div className="profile-avatar-actions">
+                <button className="settings-button settings-button-secondary" type="button" onClick={() => avatarInputRef.current?.click()}>
+                  <ImageUp size={15} /><span>{t("general.chooseImage")}</span>
+                </button>
+                {draft.userAvatar ? (
+                  <button className="settings-button settings-button-secondary" type="button" onClick={() => updateDraft("userAvatar", "")}>
+                    <Trash2 size={15} /><span>{t("general.remove")}</span>
+                  </button>
+                ) : null}
+                <input
+                  ref={avatarInputRef}
+                  className="profile-avatar-input"
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp,image/gif"
+                  onChange={(event) => {
+                    handleAvatarFile(event.target.files?.[0]);
+                    event.target.value = "";
+                  }}
+                />
+              </div>
+            </div>
+          </SettingRow>
+        </section>
+
+        <section className="general-settings-section">
           <h3>{t("general.appearance")}</h3>
           <SettingRow label={t("general.interfaceLanguage")}>
             <select
@@ -261,6 +308,9 @@ export function GeneralSettingsPanel({
                 >
                   <span className="theme-preset-swatch" aria-hidden="true">
                     <i /><i /><i />
+                    <span className="theme-preset-palette">
+                      <b /><b /><b /><b /><b />
+                    </span>
                   </span>
                   <span>{themePresetLabel(value, t)}</span>
                 </button>
@@ -426,67 +476,6 @@ export function GeneralSettingsPanel({
         </section>
 
         <section className="general-settings-section">
-          <h3>{t("general.behavior")}</h3>
-          <SettingRow label={t("general.launchStartup")}>
-            <Toggle checked={draft.launchAtStartup} onChange={(value) => updateDraft("launchAtStartup", value)} />
-          </SettingRow>
-          <SettingRow label={t("general.retry")} description={t("general.retryDescription")}>
-            <Toggle checked={draft.retryEnabled} onChange={(value) => updateDraft("retryEnabled", value)} />
-          </SettingRow>
-          {draft.retryEnabled ? (
-            <SettingRow label={t("general.maxRetries")}>
-              <input
-                className="settings-input general-number-input"
-                type="number"
-                min={1}
-                max={5}
-                value={draft.retryAttempts}
-                onChange={(event) => updateDraft("retryAttempts", Number(event.target.value))}
-              />
-            </SettingRow>
-          ) : null}
-        </section>
-
-        <section className="general-settings-section">
-          <h3>{t("general.profile")}</h3>
-          <SettingRow label={t("general.username")}>
-            <input
-              className="settings-input general-control"
-              value={draft.userDisplayName}
-              placeholder={t("common.optional")}
-              onChange={(event) => updateDraft("userDisplayName", event.target.value)}
-            />
-          </SettingRow>
-          <SettingRow label={t("general.avatar")} description={t("general.avatarDescription")} stack>
-            <div className="profile-avatar-row">
-              <div className="profile-avatar-preview" aria-hidden="true">
-                {draft.userAvatar ? <img src={draft.userAvatar} alt="" /> : (draft.userDisplayName.trim()[0] ?? "M").toUpperCase()}
-              </div>
-              <div className="profile-avatar-actions">
-                <button className="settings-button settings-button-secondary" type="button" onClick={() => avatarInputRef.current?.click()}>
-                  <ImageUp size={15} /><span>{t("general.chooseImage")}</span>
-                </button>
-                {draft.userAvatar ? (
-                  <button className="settings-button settings-button-secondary" type="button" onClick={() => updateDraft("userAvatar", "")}>
-                    <Trash2 size={15} /><span>{t("general.remove")}</span>
-                  </button>
-                ) : null}
-                <input
-                  ref={avatarInputRef}
-                  className="profile-avatar-input"
-                  type="file"
-                  accept="image/png,image/jpeg,image/webp,image/gif"
-                  onChange={(event) => {
-                    handleAvatarFile(event.target.files?.[0]);
-                    event.target.value = "";
-                  }}
-                />
-              </div>
-            </div>
-          </SettingRow>
-        </section>
-
-        <section className="general-settings-section">
           <h3>{t("general.chatDefaults")}</h3>
           <SettingRow label={t("general.defaultModel")}>
             <select
@@ -632,6 +621,28 @@ export function GeneralSettingsPanel({
             </div>
           </div>
         </section>
+
+        <section className="general-settings-section">
+          <h3>{t("general.behavior")}</h3>
+          <SettingRow label={t("general.retry")} description={t("general.retryDescription")}>
+            <Toggle checked={draft.retryEnabled} onChange={(value) => updateDraft("retryEnabled", value)} />
+          </SettingRow>
+          {draft.retryEnabled ? (
+            <SettingRow label={t("general.maxRetries")}>
+              <input
+                className="settings-input general-number-input"
+                type="number"
+                min={1}
+                max={5}
+                value={draft.retryAttempts}
+                onChange={(event) => updateDraft("retryAttempts", Number(event.target.value))}
+              />
+            </SettingRow>
+          ) : null}
+          <SettingRow label={t("general.launchStartup")}>
+            <Toggle checked={draft.launchAtStartup} onChange={(value) => updateDraft("launchAtStartup", value)} />
+          </SettingRow>
+        </section>
       </div>
 
       {feedback ? (
@@ -645,7 +656,11 @@ export function GeneralSettingsPanel({
 }
 
 function themePresetLabel(value: ThemePreset, t: ReturnType<typeof useI18n>["t"]) {
+  if (value === "forest") return t("general.themeForest");
+  if (value === "ocean") return t("general.themeOcean");
+  if (value === "rose") return t("general.themeRose");
   if (value === "paper") return t("general.themePaper");
+  if (value === "graphite") return t("general.themeGraphite");
   if (value === "highContrast") return t("general.themeHighContrast");
   return "Mnemora";
 }

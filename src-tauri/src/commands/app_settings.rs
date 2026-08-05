@@ -367,7 +367,7 @@ mod tests {
     }
 
     #[test]
-    fn old_backup_theme_is_normalized_during_import() {
+    fn old_backup_theme_preset_is_preserved_during_import() {
         let mut app_settings = serde_json::to_value(AppSettings::default()).unwrap();
         app_settings["version"] = json!(8);
         app_settings["themePreset"] = json!("graphite");
@@ -381,7 +381,7 @@ mod tests {
         let bundle: SettingsBundleFile = serde_json::from_value(value).unwrap();
         let settings = bundle.app_settings.normalize_and_validate().unwrap();
 
-        assert_eq!(settings.theme_preset, ThemePreset::Mnemora);
+        assert_eq!(settings.theme_preset, ThemePreset::Graphite);
         assert_eq!(settings.theme_color, ThemeColor::Neutral);
         assert_eq!(settings.font_size, 17);
     }

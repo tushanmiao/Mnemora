@@ -89,7 +89,7 @@
 
 .settings-content-heading {
   display: flex;
-  width: min(1120px, 100%);
+  width: 100%;
   min-height: 44px;
   flex: 0 0 auto;
   align-items: center;
@@ -142,7 +142,7 @@
 
 .provider-workspace {
   display: grid;
-  width: min(1120px, 100%);
+  width: 100%;
   min-height: 0;
   flex: 1 1 auto;
   grid-template-columns: 216px minmax(0, 1fr);
@@ -522,7 +522,7 @@
 }
 
 .model-add-button {
-  color: #ffffff;
+  color: var(--color-on-accent);
   border-color: var(--color-accent);
   background: var(--color-accent);
 }
@@ -696,7 +696,7 @@
 
 .settings-feedback {
   display: flex;
-  width: min(1120px, 100%);
+  width: 100%;
   min-height: 40px;
   flex: 0 0 auto;
   padding: 9px 11px;
@@ -756,7 +756,7 @@
 
 .settings-button-primary {
   border-color: var(--color-accent);
-  color: #ffffff;
+  color: var(--color-on-accent);
   background: var(--color-accent);
 }
 

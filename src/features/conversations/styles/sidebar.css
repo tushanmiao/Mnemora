@@ -33,7 +33,7 @@
   flex: 0 0 28px;
   place-items: center;
   border-radius: 6px;
-  color: #ffffff;
+  color: var(--color-on-accent);
   background: var(--color-accent);
   font-size: 14px;
   font-weight: 700;

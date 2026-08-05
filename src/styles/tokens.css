@@ -23,20 +23,22 @@
   --reading-font-family: var(--ui-font-family);
   --reading-font-size: 14px;
   --reading-letter-spacing: 0px;
+  --on-accent: #ffffff;
 
-  --surface-app: #f3f5f4;
-  --surface-content: #fafbfa;
+  --surface-app: #ebeef8;
+  --surface-content: #fbfbff;
   --surface-raised: #ffffff;
-  --surface-sidebar: #e9eeec;
-  --surface-hover: #e1e7e4;
-  --surface-selected: #d9e2de;
-  --surface-user: #edf1ef;
-  --text-primary: #1d2420;
-  --text-secondary: #4b5650;
-  --text-muted: #6b7770;
-  --text-faint: #86908a;
-  --border-default: #d1d8d4;
-  --border-subtle: #dfe4e1;
+  --surface-sidebar: #e7e4f3;
+  --surface-rail: #2e2850;
+  --surface-hover: #e9e2f2;
+  --surface-selected: #dcd4ee;
+  --surface-user: #e1f1ee;
+  --text-primary: #23213a;
+  --text-secondary: #514e68;
+  --text-muted: #6d6985;
+  --text-faint: #89849d;
+  --border-default: #cbc7dc;
+  --border-subtle: #e2dfec;
 
   --status-success: #287542;
   --status-success-soft: #e2f1e7;
@@ -51,16 +53,18 @@
   --status-info-soft: #e4edf8;
   --status-info-border: #afc6e3;
 
-  --workspace-overview: #9a6500;
-  --workspace-overview-soft: #f3ead7;
-  --workspace-chat: #0d6b5d;
-  --workspace-chat-soft: #deeee9;
-  --workspace-notes: #b5473a;
-  --workspace-notes-soft: #f6e5e2;
-  --workspace-work: #2864b0;
-  --workspace-work-soft: #e3ecf7;
-  --workspace-english: #347a3b;
-  --workspace-english-soft: #e3efe3;
+  --workspace-overview: #ad6100;
+  --workspace-overview-soft: #ffedc7;
+  --workspace-chat: #00786f;
+  --workspace-chat-soft: #d7f1eb;
+  --workspace-notes: #c43b66;
+  --workspace-notes-soft: #fae0e8;
+  --workspace-work: #315fbd;
+  --workspace-work-soft: #dfe8ff;
+  --workspace-english: #477922;
+  --workspace-english-soft: #e3f0d5;
+  --workspace-settings: #6e4aaa;
+  --workspace-settings-soft: #eee6fb;
   --workspace-accent: var(--workspace-chat);
   --workspace-accent-strong: #07574c;
   --workspace-accent-soft: var(--workspace-chat-soft);
@@ -100,20 +104,28 @@
   --workspace-accent-soft: var(--workspace-english-soft);
 }
 
+.app-shell[data-active-workspace="settings"] {
+  --workspace-accent: var(--workspace-settings);
+  --workspace-accent-strong: #57378e;
+  --workspace-accent-soft: var(--workspace-settings-soft);
+}
+
 .app-shell[data-theme="dark"] {
-  --surface-app: #171a18;
-  --surface-content: #1c211e;
-  --surface-raised: #252b27;
-  --surface-sidebar: #202622;
-  --surface-hover: #2d3530;
-  --surface-selected: #35413a;
-  --surface-user: #29302b;
-  --text-primary: #edf1ee;
-  --text-secondary: #c5ccc7;
-  --text-muted: #a2ada6;
-  --text-faint: #818c85;
-  --border-default: #3a433d;
-  --border-subtle: #303833;
+  --on-accent: #17131f;
+  --surface-app: #181624;
+  --surface-content: #211f2d;
+  --surface-raised: #2c293b;
+  --surface-sidebar: #272338;
+  --surface-rail: #100e19;
+  --surface-hover: #342f48;
+  --surface-selected: #403956;
+  --surface-user: #203934;
+  --text-primary: #f7f4ff;
+  --text-secondary: #d0cbe0;
+  --text-muted: #aaa4bc;
+  --text-faint: #89839a;
+  --border-default: #49435e;
+  --border-subtle: #373247;
 
   --status-success: #78c68b;
   --status-success-soft: #24382a;
@@ -128,16 +140,18 @@
   --status-info-soft: #263649;
   --status-info-border: #405f86;
 
-  --workspace-overview: #e0aa45;
-  --workspace-overview-soft: #3b3221;
-  --workspace-chat: #62bfa9;
-  --workspace-chat-soft: #233a35;
-  --workspace-notes: #ef887c;
-  --workspace-notes-soft: #402b29;
-  --workspace-work: #78a8e8;
-  --workspace-work-soft: #28384b;
-  --workspace-english: #7bbc7a;
-  --workspace-english-soft: #293b2a;
+  --workspace-overview: #f1b54a;
+  --workspace-overview-soft: #43351f;
+  --workspace-chat: #59c9b7;
+  --workspace-chat-soft: #203d38;
+  --workspace-notes: #f07c9f;
+  --workspace-notes-soft: #462738;
+  --workspace-work: #82a9ff;
+  --workspace-work-soft: #293650;
+  --workspace-english: #9aca68;
+  --workspace-english-soft: #2c3d27;
+  --workspace-settings: #b89bed;
+  --workspace-settings-soft: #392d50;
 
   --shadow-menu: 0 12px 30px rgb(0 0 0 / 34%);
   --shadow-panel: -12px 0 28px rgb(0 0 0 / 34%);
@@ -149,3 +163,4 @@
 .app-shell[data-theme="dark"][data-active-workspace="notes"] { --workspace-accent-strong: #f39b91; }
 .app-shell[data-theme="dark"][data-active-workspace="work"] { --workspace-accent-strong: #8bb6ee; }
 .app-shell[data-theme="dark"][data-active-workspace="english"] { --workspace-accent-strong: #91ca90; }
+.app-shell[data-theme="dark"][data-active-workspace="settings"] { --workspace-accent-strong: #c7aff2; }

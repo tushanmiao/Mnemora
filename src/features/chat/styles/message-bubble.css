@@ -33,7 +33,7 @@
 }
 
 .message-avatar-assistant {
-  color: #ffffff;
+  color: var(--color-on-accent);
   background: var(--color-accent);
 }
 
@@ -164,7 +164,7 @@
 }
 
 .message-edit-save {
-  color: #ffffff;
+  color: var(--color-on-accent);
   background: var(--color-accent);
 }
 
@@ -354,7 +354,7 @@
 
 .message-tool-approval .message-tool-approve {
   border-color: var(--color-accent);
-  color: #ffffff;
+  color: var(--color-on-accent);
   background: var(--color-accent);
 }
 

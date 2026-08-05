@@ -341,7 +341,7 @@ export const zhTranslations = {
   "general.chineseFont": "中文字体",
   "general.latinFont": "英文字体",
   "general.resetAppearance": "恢复默认外观",
-  "general.behavior": "行为",
+  "general.behavior": "应用行为",
   "general.launchStartup": "开机启动",
   "general.retry": "Chat 自动重试",
   "general.retryDescription": "只允许在尚未产生回复文本前重试；手动连接测试永不重试。",

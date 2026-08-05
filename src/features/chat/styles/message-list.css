@@ -110,7 +110,7 @@
   gap: 8px;
   border: 0;
   border-radius: 6px;
-  color: #ffffff;
+  color: var(--color-on-accent);
   background: var(--color-accent);
   cursor: pointer;
   font-size: 13px;

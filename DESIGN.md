@@ -1,20 +1,23 @@
 ---
 name: Mnemora
-description: A neutral memory-index workstation with fixed workspace identity colors.
+description: A chromatic memory-index workstation with seven multi-color theme systems.
 colors:
-  app-ground: "#f3f5f4"
-  content-surface: "#fafbfa"
+  app-ground: "#ebeef8"
+  content-surface: "#fbfbff"
   raised-surface: "#ffffff"
-  sidebar-surface: "#e9eeec"
-  text-primary: "#1d2420"
-  text-secondary: "#4b5650"
-  text-muted: "#6b7770"
-  border-default: "#d1d8d4"
-  overview: "#9a6500"
-  chat: "#0d6b5d"
-  notes: "#b5473a"
-  literature: "#2864b0"
-  english: "#347a3b"
+  sidebar-surface: "#e7e4f3"
+  activity-rail: "#2e2850"
+  text-primary: "#23213a"
+  text-secondary: "#514e68"
+  text-muted: "#6d6985"
+  border-default: "#cbc7dc"
+  overview: "#ad6100"
+  chat: "#00786f"
+  notes: "#c43b66"
+  literature: "#315fbd"
+  english: "#477922"
+  settings: "#6e4aaa"
+  on-accent: "#ffffff"
   danger: "#b13c3c"
 typography:
   headline:
@@ -55,7 +58,7 @@ spacing:
 components:
   button-primary:
     backgroundColor: "{colors.chat}"
-    textColor: "{colors.raised-surface}"
+    textColor: "{colors.on-accent}"
     typography: "{typography.label}"
     rounded: "{rounded.control}"
     padding: "0 12px"
@@ -68,8 +71,8 @@ components:
     padding: "0 12px"
     height: "34px"
   activity-item:
-    backgroundColor: "{colors.sidebar-surface}"
-    textColor: "{colors.text-muted}"
+    backgroundColor: "{colors.activity-rail}"
+    textColor: "{colors.overview}"
     rounded: "6px"
     height: "38px"
     width: "38px"
@@ -77,12 +80,13 @@ components:
 
 ## Overview
 
-**Creative North Star: "The Memory Index Workstation."** Mnemora uses the visual logic of an index: narrow rails locate work, ordered rows preserve chronology, and workspace colors identify context without tinting whole pages. The surrounding shell stays quiet so conversation, notes, PDFs, and study material can carry the user's attention.
+**Creative North Star: "The Chromatic Memory Index."** Mnemora keeps the visual logic of an index, but its five workspaces remain visibly color-coded at all times. A dark ink activity rail holds the full spectrum while softly tinted sidebars and active states make context recognizable without turning dense work surfaces into decoration.
 
 **Key Characteristics:**
 
-- Neutral mineral surfaces with clear one-pixel boundaries.
-- Five stable workspace colors used for location, action, source, and real progress.
+- A dark ink activity rail with five persistent workspace colors.
+- Seven complete multi-color theme presets for different viewing moods.
+- Workspace-aware hover, selection, action, source, and progress color.
 - Compact navigation and controls around spacious content and reading fields.
 - Information-bearing rails, timestamps, source labels, and loading skeletons.
 
@@ -90,11 +94,11 @@ components:
 
 ## Colors
 
-The default shell is a cool neutral light system. Dark mode uses deep green-black surfaces rather than pure black. Paper and high-contrast presets replace surface and text roles while preserving workspace identity colors.
+The default shell pairs cool lavender surfaces with a deep aubergine activity rail. Forest, Ocean, Rose, Paper, Graphite, and High Contrast are full theme systems rather than monochrome tints. Each preset remaps surfaces and the full workspace spectrum together. Dark variants use composed dark surfaces and brighter workspace colors instead of mechanically inverting light values.
 
-Workspace color mapping is permanent: Overview amber, Chat teal, Notes coral, Literature blue, and English green. Each has a paired soft surface. Success, warning, danger, and information have independent foreground, soft, and border roles; workspace color never substitutes for status.
+Workspace meaning remains stable: Overview amber, Chat teal, Notes pink or coral, Literature blue, English green, and Settings violet. Exact values adapt to the selected theme. Each has a paired soft surface and a verified foreground for solid controls. Success, warning, danger, and information have independent foreground, soft, and border roles; workspace color never substitutes for status.
 
-**The Workspace Identity Rule.** Use the active workspace color for the current navigation item, its primary action, source markers, index rails, and truthful progress. Do not spread it across the page background.
+**The Workspace Identity Rule.** Show every workspace color in the activity rail, fill the active destination, and carry its color into primary actions, source markers, index rails, selection, and truthful progress. Large reading surfaces stay quiet.
 
 ## Typography
 
@@ -124,7 +128,7 @@ Controls use restrained 5-6px corners. Framed panels may use 7px. Circular shape
 
 ### Activity Navigation
 
-The activity rail is 48px wide with 38px square icon buttons. Inactive items remain neutral; hover and active states reveal that workspace's stable color and soft surface. The active item also carries a short physical rail marker, while tooltips and accessible names identify icons.
+The activity rail is 48px wide with 38px square icon buttons on a dark ink surface. Every destination keeps a tinted workspace tile; the active item becomes a solid workspace color with a short white rail marker. Tooltips and accessible names identify icons.
 
 ### Buttons
 
@@ -142,7 +146,8 @@ Workspace loading uses a fixed rail-and-page skeleton so lazy module loading doe
 
 ### Do:
 
-- **Do** preserve the neutral shell and fixed five-color workspace mapping.
+- **Do** keep all five workspace identities visible and theme them as one coordinated spectrum.
+- **Do** compose light and dark variants independently for every theme preset.
 - **Do** keep status meaning paired with text, icons, shape, or position.
 - **Do** use Lucide icons, visible focus states, bounded lists, and stable skeleton dimensions.
 - **Do** let long-form content breathe while keeping navigation and utilities compact.
@@ -152,4 +157,5 @@ Workspace loading uses a fixed rail-and-page skeleton so lazy module loading doe
 - **Don't** build card walls, nested cards, marketing heroes, glass surfaces, or decorative gradients.
 - **Don't** use workspace colors as success or failure colors.
 - **Don't** let reading font settings resize application chrome.
-- **Don't** add decorative animation, gamification, or color without information.
+- **Don't** collapse a theme preset into one hue or return inactive navigation to grayscale.
+- **Don't** add decorative animation, gamification, or color without hierarchy or context.

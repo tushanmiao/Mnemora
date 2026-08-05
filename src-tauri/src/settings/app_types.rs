@@ -248,15 +248,6 @@ impl AppSettings {
         if source_version < 8 && self.system_prompt.trim().is_empty() {
             self.system_prompt = DEFAULT_GLOBAL_SYSTEM_PROMPT.to_string();
         }
-        self.theme_preset = match self.theme_preset {
-            ThemePreset::Paper => ThemePreset::Paper,
-            ThemePreset::HighContrast => ThemePreset::HighContrast,
-            ThemePreset::Mnemora
-            | ThemePreset::Forest
-            | ThemePreset::Ocean
-            | ThemePreset::Rose
-            | ThemePreset::Graphite => ThemePreset::Mnemora,
-        };
         self.theme_color = ThemeColor::Neutral;
         self.version = CURRENT_APP_SETTINGS_VERSION;
         self.user_display_name = self.user_display_name.trim().to_string();
@@ -524,7 +515,7 @@ mod tests {
     }
 
     #[test]
-    fn version_eight_theme_options_migrate_without_resetting_other_preferences() {
+    fn version_eight_theme_preset_survives_without_resetting_other_preferences() {
         let value = serde_json::json!({
             "version": 8,
             "interfaceLanguage": "en",
@@ -547,7 +538,7 @@ mod tests {
 
         assert_eq!(settings.version, CURRENT_APP_SETTINGS_VERSION);
         assert_eq!(settings.theme, ThemeMode::Dark);
-        assert_eq!(settings.theme_preset, ThemePreset::Mnemora);
+        assert_eq!(settings.theme_preset, ThemePreset::Forest);
         assert_eq!(settings.theme_color, ThemeColor::Neutral);
         assert!(settings.theme_background.enabled);
         assert_eq!(settings.theme_background.surface_opacity, 88);

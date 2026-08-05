@@ -12,7 +12,7 @@
 .english-install-panel p { color: var(--color-text-secondary); line-height: 1.6; }
 .english-source-note { font-size: 12px; color: var(--color-muted) !important; }
 .english-install-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
-.english-install-actions button { display: inline-flex; align-items: center; gap: 7px; min-height: 36px; padding: 0 14px; border: 1px solid var(--color-accent); border-radius: 7px; color: #fff; background: var(--color-accent); cursor: pointer; }
+.english-install-actions button { display: inline-flex; align-items: center; gap: 7px; min-height: 36px; padding: 0 14px; border: 1px solid var(--color-accent); border-radius: 7px; color: var(--color-on-accent); background: var(--color-accent); cursor: pointer; }
 .english-install-actions button:disabled { opacity: .6; cursor: default; }
 .english-secondary-button { color: var(--color-text) !important; border-color: var(--color-border) !important; background: var(--color-surface-raised) !important; }
 .english-download-progress { display: grid; gap: 7px; margin-top: 15px; }
@@ -93,7 +93,7 @@
 .english-group-options small { color: var(--color-muted); }
 .english-plan-submit { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--color-border); color: var(--color-muted); font-size: 12px; }
 .english-plan-submit-actions, .english-settings-tool-actions { display: flex; flex-wrap: wrap; gap: 8px; }
-.english-plan-submit button, .english-settings-save button, .english-intro-actions button, .english-session-complete button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 36px; padding: 0 14px; border: 1px solid var(--color-accent); border-radius: 6px; color: #fff; background: var(--color-accent); cursor: pointer; }
+.english-plan-submit button, .english-settings-save button, .english-intro-actions button, .english-session-complete button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 36px; padding: 0 14px; border: 1px solid var(--color-accent); border-radius: 6px; color: var(--color-on-accent); background: var(--color-accent); cursor: pointer; }
 .english-plan-submit button:disabled { opacity: .55; cursor: default; }
 
 .english-dashboard { display: grid; gap: 28px; }
@@ -109,7 +109,7 @@
 .english-actions-section { display: grid; gap: 14px; }
 .english-primary-actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
 .english-primary-actions > button { display: flex; min-width: 0; min-height: 68px; align-items: center; gap: 11px; padding: 12px 14px; border: 1px solid var(--color-border); border-radius: 7px; color: var(--color-text); text-align: left; background: var(--color-surface-raised); cursor: pointer; }
-.english-primary-actions > button.is-primary { border-color: var(--color-accent); color: #fff; background: var(--color-accent); }
+.english-primary-actions > button.is-primary { border-color: var(--color-accent); color: var(--color-on-accent); background: var(--color-accent); }
 .english-primary-actions > button:disabled, .english-secondary-actions button:disabled { opacity: .45; cursor: default; }
 .english-primary-actions > button span { display: grid; min-width: 0; gap: 2px; }
 .english-primary-actions strong, .english-primary-actions small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -211,7 +211,7 @@
 .english-answer-form { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
 .english-answer-form input { min-width: 0; min-height: 44px; padding: 0 13px; border: 1px solid var(--color-border); border-radius: 6px; outline: 0; color: var(--color-text); background: var(--color-surface-raised); font-size: 15px; }
 .english-answer-form input:focus { border-color: var(--color-accent); box-shadow: 0 0 0 2px var(--color-accent-soft); }
-.english-answer-form button { display: inline-flex; align-items: center; gap: 7px; padding: 0 14px; border: 1px solid var(--color-accent); border-radius: 6px; color: #fff; background: var(--color-accent); cursor: pointer; }
+.english-answer-form button { display: inline-flex; align-items: center; gap: 7px; padding: 0 14px; border: 1px solid var(--color-accent); border-radius: 6px; color: var(--color-on-accent); background: var(--color-accent); cursor: pointer; }
 .english-hints { display: flex; flex-wrap: wrap; align-content: center; align-items: center; gap: 8px 16px; padding: 10px 0; color: var(--color-text-secondary); font-size: 12px; }
 .english-hints p { margin: 0; }
 .english-hints button { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; padding: 5px 8px; border: 0; color: var(--color-accent); background: transparent; cursor: pointer; }
