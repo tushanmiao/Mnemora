@@ -11,6 +11,11 @@ node_modules
 dist
 dist-ssr
 *.local
+.artifacts/
+
+# Local memory benchmark output may contain machine-specific measurements.
+benchmarks/memory/reports/*
+!benchmarks/memory/reports/.gitkeep
 
 # Tauri Updater private keys and locally generated release manifests
 *.key

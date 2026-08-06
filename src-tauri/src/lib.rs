@@ -2,6 +2,8 @@ mod ai;
 mod app_update;
 mod chat;
 mod commands;
+#[cfg(feature = "memory-diagnostics")]
+mod diagnostics;
 mod english;
 mod html_preview;
 mod library;
@@ -21,7 +23,7 @@ const AUTOSTART_ARG: &str = "--from-autostart";
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -67,7 +69,10 @@ pub fn run() {
                 });
             }
             Ok(())
-        })
+        });
+    #[cfg(feature = "memory-diagnostics")]
+    let builder = builder.plugin(diagnostics::plugin());
+    builder
         .invoke_handler(tauri::generate_handler![
             commands::app_settings::load_application_settings,
             commands::app_settings::save_application_settings,

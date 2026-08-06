@@ -91,6 +91,13 @@ function mergeConversationListItems(
 
 const initialConversation = createConversation();
 
+type PendingConversationSave = {
+  latest: Conversation;
+  requestedVersion: number;
+  persistedVersion: number;
+  promise: Promise<void>;
+};
+
 export function useConversations(onNavigateToChat: () => void) {
   const [conversations, setConversations] = useState<Conversation[]>(() => (
     STARTS_IN_TAURI ? [] : [initialConversation]
@@ -121,7 +128,7 @@ export function useConversations(onNavigateToChat: () => void) {
   const protectedConversationIdsRef = useRef(new Set<string>());
   const requestInFlightRef = useRef(false);
   const selectionVersionRef = useRef(0);
-  const conversationSaveChainsRef = useRef(new Map<string, Promise<void>>());
+  const pendingConversationSavesRef = useRef(new Map<string, PendingConversationSave>());
 
   const currentConversation = useMemo(
     () => conversations.find((item) => item.id === currentConversationId) ?? null,
@@ -187,21 +194,36 @@ export function useConversations(onNavigateToChat: () => void) {
 
   const saveStableConversation = useCallback((conversation: Conversation) => {
     if (!STARTS_IN_TAURI) return;
-    const previous = conversationSaveChainsRef.current.get(conversation.id) ?? Promise.resolve();
-    const operation = previous
-      .catch(() => undefined)
-      .then(() => persistConversation(conversation))
-      .then((summary) => {
-        if (!summary) return;
-        upsertConversationListItem(summary);
-      })
-      .catch((error) => console.error("保存会话失败", error));
-    conversationSaveChainsRef.current.set(conversation.id, operation);
-    void operation.finally(() => {
-      if (conversationSaveChainsRef.current.get(conversation.id) === operation) {
-        conversationSaveChainsRef.current.delete(conversation.id);
+    const pending = pendingConversationSavesRef.current.get(conversation.id);
+    if (pending) {
+      pending.latest = conversation;
+      pending.requestedVersion += 1;
+      return;
+    }
+    const entry = {
+      latest: conversation,
+      requestedVersion: 1,
+      persistedVersion: 0,
+      promise: Promise.resolve(),
+    } satisfies PendingConversationSave;
+    entry.promise = (async () => {
+      while (entry.persistedVersion < entry.requestedVersion) {
+        const target = entry.latest;
+        const targetVersion = entry.requestedVersion;
+        try {
+          const summary = await persistConversation(target);
+          if (summary) upsertConversationListItem(summary);
+        } catch (error) {
+          console.error("保存会话失败", error);
+        }
+        entry.persistedVersion = targetVersion;
+      }
+    })().finally(() => {
+      if (pendingConversationSavesRef.current.get(conversation.id) === entry) {
+        pendingConversationSavesRef.current.delete(conversation.id);
       }
     });
+    pendingConversationSavesRef.current.set(conversation.id, entry);
   }, [upsertConversationListItem]);
 
   const loadMoreConversations = useCallback(() => {
@@ -343,18 +365,13 @@ export function useConversations(onNavigateToChat: () => void) {
       }
     }
     if (!STARTS_IN_TAURI) return;
-    const previous = conversationSaveChainsRef.current.get(conversationId) ?? Promise.resolve();
+    const previous = pendingConversationSavesRef.current.get(conversationId)?.promise ?? Promise.resolve();
     const operation = previous
       .catch(() => undefined)
       .then(() => removeStoredConversation(conversationId))
       .then(() => undefined)
       .catch((error) => console.error("删除会话失败", error));
-    conversationSaveChainsRef.current.set(conversationId, operation);
-    void operation.finally(() => {
-      if (conversationSaveChainsRef.current.get(conversationId) === operation) {
-        conversationSaveChainsRef.current.delete(conversationId);
-      }
-    });
+    void operation;
   }, [
     conversationListItems,
     currentConversationId,
@@ -377,7 +394,8 @@ export function useConversations(onNavigateToChat: () => void) {
     setConversationListError("");
     setCurrentConversationId(null);
     if (!STARTS_IN_TAURI) return;
-    const pendingWrites = [...conversationSaveChainsRef.current.values()];
+    const pendingWrites = [...pendingConversationSavesRef.current.values()]
+      .map((entry) => entry.promise);
     void Promise.allSettled(pendingWrites)
       .then(() => clearStoredConversations())
       .catch((error) => console.error("清空会话失败", error));
@@ -396,7 +414,7 @@ export function useConversations(onNavigateToChat: () => void) {
       || protectedConversationIdsRef.current.has(conversationId)
     ) return false;
 
-    const pendingWrite = conversationSaveChainsRef.current.get(conversationId);
+    const pendingWrite = pendingConversationSavesRef.current.get(conversationId)?.promise;
     if (pendingWrite) await pendingWrite;
     if (STARTS_IN_TAURI) {
       const removed = await removeStoredConversation(conversationId);

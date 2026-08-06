@@ -53,6 +53,13 @@ pub struct PendingChatAttachment {
     pub height: Option<u32>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttachmentDisplaySource {
+    pub kind: &'static str,
+    pub value: String,
+}
+
 struct InspectedAttachment {
     kind: &'static str,
     name: String,
@@ -241,7 +248,7 @@ pub fn read_attachment_preview(
     path: &str,
     preview_path: Option<&str>,
     cancellation: Option<&CancellationToken>,
-) -> Result<String, String> {
+) -> Result<AttachmentDisplaySource, String> {
     ensure_not_cancelled(cancellation)?;
     if let (Some(conversation_id), Some(preview_path)) = (conversation_id, preview_path) {
         let full_path = repository.resolve_attachment_path(conversation_id, preview_path)?;
@@ -250,12 +257,11 @@ pub fn read_attachment_preview(
         if !metadata.is_file() || metadata.len() > MAX_THUMBNAIL_BYTES as u64 {
             return Err("附件缩略图无效。".to_string());
         }
-        let bytes = fs::read(&full_path).map_err(|error| format!("读取附件缩略图失败：{error}"))?;
         ensure_not_cancelled(cancellation)?;
-        return Ok(format!(
-            "data:image/jpeg;base64,{}",
-            general_purpose::STANDARD.encode(bytes)
-        ));
+        return Ok(AttachmentDisplaySource {
+            kind: "asset",
+            value: full_path.to_string_lossy().into_owned(),
+        });
     }
 
     let full_path = match conversation_id {
@@ -268,10 +274,13 @@ pub fn read_attachment_preview(
     }
     let thumbnail = create_thumbnail(&full_path, cancellation)?;
     ensure_not_cancelled(cancellation)?;
-    Ok(format!(
-        "data:image/jpeg;base64,{}",
-        general_purpose::STANDARD.encode(thumbnail.bytes)
-    ))
+    Ok(AttachmentDisplaySource {
+        kind: "data",
+        value: format!(
+            "data:image/jpeg;base64,{}",
+            general_purpose::STANDARD.encode(thumbnail.bytes)
+        ),
+    })
 }
 
 pub fn read_attachment_image(
@@ -279,7 +288,7 @@ pub fn read_attachment_image(
     conversation_id: &str,
     path: &str,
     cancellation: Option<&CancellationToken>,
-) -> Result<String, String> {
+) -> Result<AttachmentDisplaySource, String> {
     ensure_not_cancelled(cancellation)?;
     let full_path = repository.resolve_attachment_path(conversation_id, path)?;
     let inspected = inspect_source(&full_path)?;
@@ -294,13 +303,11 @@ pub fn read_attachment_image(
             MAX_IMAGE_BYTES / 1024 / 1024
         ));
     }
-    let bytes = fs::read(&full_path).map_err(|error| format!("读取图片附件失败：{error}"))?;
     ensure_not_cancelled(cancellation)?;
-    Ok(format!(
-        "data:{};base64,{}",
-        inspected.mime_type,
-        general_purpose::STANDARD.encode(bytes)
-    ))
+    Ok(AttachmentDisplaySource {
+        kind: "asset",
+        value: full_path.to_string_lossy().into_owned(),
+    })
 }
 
 pub fn load_model_image(
@@ -766,9 +773,10 @@ mod tests {
         )
         .unwrap();
 
-        let data_url =
+        let source =
             read_attachment_image(&repository, "conversation-1", &stored[0].path, None).unwrap();
-        assert!(data_url.starts_with("data:image/png;base64,"));
+        assert_eq!(source.kind, "asset");
+        assert!(Path::new(&source.value).is_file());
         assert!(read_attachment_image(
             &repository,
             "conversation-1",

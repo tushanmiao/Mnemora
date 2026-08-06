@@ -1,5 +1,6 @@
 import {
   useCallback,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -45,6 +46,9 @@ import { useChatReferences } from "./app/hooks/useChatReferences";
 import { useNoteActions } from "./app/hooks/useNoteActions";
 import { DeepNoteOutlineDialog } from "./features/chat/notePipeline/DeepNoteOutlineDialog";
 import { NoteEditDialog } from "./features/chat/notePipeline/NoteEditDialog";
+import { clearAttachmentPreviewCache } from "./features/chat/api/attachments";
+import { releaseBackgroundResources } from "./runtime/resources/ResourceRegistry";
+import { initializeWorkspaceLifecycle, subscribeWorkspaceLifecycle } from "./runtime/resources/WorkspaceLifecycle";
 function App() {
   const appShellRef = useRef<HTMLElement>(null);
   const navigation = useWorkspaceNavigation();
@@ -77,6 +81,19 @@ function App() {
   } = navigation;
   const [modelMenuRequest, setModelMenuRequest] = useState(0);
   const [composerFocusRequest, setComposerFocusRequest] = useState(0);
+
+  useEffect(() => {
+    const disposeLifecycle = initializeWorkspaceLifecycle();
+    const unsubscribe = subscribeWorkspaceLifecycle((state) => {
+      if (state === "active") return;
+      clearAttachmentPreviewCache();
+      releaseBackgroundResources();
+    });
+    return () => {
+      unsubscribe();
+      disposeLifecycle();
+    };
+  }, []);
 
   const settings = useAppSettings();
   const skills = useSkills();

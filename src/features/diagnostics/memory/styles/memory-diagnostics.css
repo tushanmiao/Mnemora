@@ -1,0 +1,19 @@
+.memory-diagnostics { display: grid; gap: 10px; padding: 14px; border-bottom: 1px solid var(--color-border); background: var(--color-surface); }
+.memory-diagnostics > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.memory-diagnostics > header > div:first-child { display: grid; gap: 3px; }
+.memory-diagnostics h2 { display: flex; margin: 0; align-items: center; gap: 7px; font-size: 13px; }
+.memory-diagnostics header span { color: var(--color-muted); font-size: 10px; }
+.memory-diagnostics-actions { display: flex; align-items: center; gap: 5px; }
+.memory-diagnostics-actions select { height: 30px; padding: 0 7px; border: 1px solid var(--color-border); border-radius: 5px; color: var(--color-text); background: var(--color-surface-raised); font-size: 11px; }
+.memory-diagnostics-summary { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 1px; overflow: hidden; border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-border-soft); }
+.memory-diagnostics-summary > div { display: grid; min-width: 0; padding: 9px 10px; gap: 4px; background: var(--color-surface-raised); }
+.memory-diagnostics-summary span, .memory-process-list small { color: var(--color-muted); font-size: 9px; }
+.memory-diagnostics-summary strong { overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.memory-process-list { display: grid; max-height: 154px; overflow: auto; border: 1px solid var(--color-border); border-radius: 6px; }
+.memory-process-list > div { display: flex; min-height: 36px; padding: 6px 10px; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--color-border-soft); font-size: 11px; }
+.memory-process-list > div:last-child { border-bottom: 0; }
+.memory-process-list span { display: grid; gap: 2px; }
+.memory-process-list span:last-child { text-align: right; }
+.memory-diagnostics-error, .memory-diagnostics-empty { margin: 0; color: var(--color-muted); font-size: 11px; }
+.memory-diagnostics-error { color: var(--color-danger); }
+@media (max-width: 1080px) { .memory-diagnostics-summary { grid-template-columns: repeat(3, minmax(0, 1fr)); } }

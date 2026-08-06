@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState, type RefObject } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { BookOpenText, ChevronRight, Files } from "lucide-react";
 import type { PDFDocumentProxy, PDFPageProxy, RenderTask } from "pdfjs-dist";
+import { Virtualizer } from "virtua";
 import { usePdfReaderBridge, type PdfOutlineEntry } from "../context/PdfReaderContext";
 import { useI18n } from "../../../i18n/I18nProvider";
 import "../styles/pdf-navigator.css";
@@ -12,6 +13,11 @@ export function PdfNavigatorPanel() {
   const { controller } = usePdfReaderBridge();
   const [mode, setMode] = useState<NavigatorMode>("outline");
   const scrollRef = useRef<HTMLDivElement>(null);
+  const thumbnailRows = useMemo(() => (
+    Array.from({ length: Math.ceil((controller?.pageCount ?? 0) / 2) }, (_, rowIndex) => (
+      [rowIndex * 2, rowIndex * 2 + 1].filter((pageIndex) => pageIndex < (controller?.pageCount ?? 0))
+    ))
+  ), [controller?.pageCount]);
 
   if (!controller) {
     return (
@@ -27,7 +33,6 @@ export function PdfNavigatorPanel() {
     const pageIndex = await resolveDestinationPage(controller.pdf, entry.dest);
     if (pageIndex !== null) controller.goToPage(pageIndex);
   };
-
   return (
     <section className="pdf-navigator" aria-label={t("pdf.navigation")}>
       <div className="pdf-navigator-tabs" role="tablist" aria-label={t("pdf.navigationMode")}>
@@ -70,16 +75,21 @@ export function PdfNavigatorPanel() {
           )
         ) : (
           <div className="pdf-thumbnail-list">
-            {Array.from({ length: controller.pageCount }, (_, pageIndex) => (
-              <PdfThumbnail
-                key={pageIndex}
-                pdf={controller.pdf}
-                pageIndex={pageIndex}
-                active={controller.currentPage === pageIndex + 1}
-                scrollRootRef={scrollRef}
-                onOpen={() => controller.goToPage(pageIndex)}
-              />
-            ))}
+            <Virtualizer data={thumbnailRows} scrollRef={scrollRef} bufferSize={220} itemSize={154}>
+              {(row) => (
+                <div className="pdf-thumbnail-row">
+                  {row.map((pageIndex) => (
+                    <PdfThumbnail
+                      key={pageIndex}
+                      pdf={controller.pdf}
+                      pageIndex={pageIndex}
+                      active={controller.currentPage === pageIndex + 1}
+                      onOpen={() => controller.goToPage(pageIndex)}
+                    />
+                  ))}
+                </div>
+              )}
+            </Virtualizer>
           </div>
         )}
       </div>
@@ -127,37 +137,18 @@ function PdfThumbnail({
   pdf,
   pageIndex,
   active,
-  scrollRootRef,
   onOpen,
 }: {
   pdf: PDFDocumentProxy;
   pageIndex: number;
   active: boolean;
-  scrollRootRef: RefObject<HTMLDivElement | null>;
   onOpen: () => void;
 }) {
   const { t } = useI18n();
   const wrapperRef = useRef<HTMLButtonElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [visible, setVisible] = useState(false);
 
   useEffect(() => {
-    const wrapper = wrapperRef.current;
-    if (!wrapper) return;
-    if (typeof IntersectionObserver === "undefined") {
-      setVisible(true);
-      return;
-    }
-    const observer = new IntersectionObserver(
-      ([entry]) => setVisible(entry.isIntersecting),
-      { root: scrollRootRef.current, rootMargin: "500px 0px", threshold: 0 },
-    );
-    observer.observe(wrapper);
-    return () => observer.disconnect();
-  }, [pdf, pageIndex, scrollRootRef]);
-
-  useEffect(() => {
-    if (!visible) return;
     let cancelled = false;
     let page: PDFPageProxy | null = null;
     let renderTask: RenderTask | null = null;
@@ -202,7 +193,7 @@ function PdfThumbnail({
       }
       if (page) page.cleanup();
     };
-  }, [pdf, pageIndex, visible]);
+  }, [pdf, pageIndex]);
 
   return (
     <button

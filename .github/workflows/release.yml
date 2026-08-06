@@ -45,6 +45,11 @@ jobs:
             throw "Missing GitHub Actions secret: TAURI_SIGNING_PRIVATE_KEY_PASSWORD"
           }
 
+      - name: Verify frontend tests and production build
+        run: |
+          npm test -- --run
+          npm run build
+
       - name: Build and publish signed updater
         uses: tauri-apps/tauri-action@v0
         env:

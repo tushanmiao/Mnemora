@@ -6,6 +6,7 @@ import {
   useState,
   type PointerEvent as ReactPointerEvent,
 } from "react";
+import { Virtualizer, type VirtualizerHandle } from "virtua";
 import { BookOpen, Highlighter, MessageCircleQuestion, Search, Underline, X } from "lucide-react";
 import {
   GlobalWorkerOptions,
@@ -38,6 +39,9 @@ import { PdfPage } from "./PdfPage";
 import { PdfReaderToolbar } from "./PdfReaderToolbar";
 import { usePdfResources } from "../hooks/usePdfResources";
 import { loadPdfDocument, type ReadingPosition } from "../runtime/pdfDocumentLoader";
+import { PdfCanvasBudget } from "../runtime/pdfCanvasBudget";
+import { PdfRenderScheduler } from "../runtime/pdfRenderScheduler";
+import { useWorkspaceLifecycle } from "../../../runtime/resources/useWorkspaceLifecycle";
 import "../styles/pdf-reader.css";
 
 GlobalWorkerOptions.workerSrc = workerUrl;
@@ -60,7 +64,7 @@ export function PdfReader({ item, onOpenExternal, onOpenNote, onAskSelection }: 
   const { t } = useI18n();
   const { register, unregister } = usePdfReaderBridge();
   const scrollContainerRef = useRef<HTMLDivElement>(null);
-  const pageRefs = useRef(new Map<number, HTMLDivElement>());
+  const virtualizerRef = useRef<VirtualizerHandle>(null);
   const saveTimerRef = useRef<number | null>(null);
   const scrollFrameRef = useRef<number | null>(null);
   const pageNavigationFrameRef = useRef<number | null>(null);
@@ -89,6 +93,17 @@ export function PdfReader({ item, onOpenExternal, onOpenNote, onAskSelection }: 
   const [selectionColorMenuOpen, setSelectionColorMenuOpen] = useState(false);
   const [focusedAnnotationId, setFocusedAnnotationId] = useState<string | null>(null);
   const resources = usePdfResources(item.id);
+  const lifecycleState = useWorkspaceLifecycle();
+  const canvasBudget = useMemo(() => new PdfCanvasBudget(), [pdf]);
+  const renderScheduler = useMemo(() => new PdfRenderScheduler(), [pdf]);
+  const pageIndexes = useMemo(
+    () => Array.from({ length: pageCount }, (_, pageIndex) => pageIndex),
+    [pageCount],
+  );
+  const estimatedPageSize = useMemo(() => {
+    const width = Math.max(280, Math.min(readerWidth - 76, 1100)) * zoom;
+    return width * (842 / 595) + 50;
+  }, [readerWidth, zoom]);
 
   const scheduleSave = useCallback((next: ReadingPosition) => {
     readingRef.current = next;
@@ -109,21 +124,10 @@ export function PdfReader({ item, onOpenExternal, onOpenNote, onAskSelection }: 
     void saveLibraryReadingState({ itemId: item.id, ...readingRef.current }).catch(() => undefined);
   }, [item.id]);
 
-  const registerPage = useCallback((pageIndex: number, element: HTMLDivElement | null) => {
-    if (element) pageRefs.current.set(pageIndex, element);
-    else pageRefs.current.delete(pageIndex);
-  }, []);
-
   const scrollToPage = useCallback((pageIndex: number, behavior: ScrollBehavior = "smooth") => {
-    const container = scrollContainerRef.current;
-    const page = pageRefs.current.get(Math.max(0, pageIndex));
-    if (!container || !page) return false;
-    const containerRect = container.getBoundingClientRect();
-    const pageRect = page.getBoundingClientRect();
-    container.scrollTo({
-      top: container.scrollTop + pageRect.top - containerRect.top - 20,
-      behavior,
-    });
+    const virtualizer = virtualizerRef.current;
+    if (!virtualizer) return false;
+    virtualizer.scrollToIndex(Math.max(0, pageIndex), { align: "start", smooth: behavior === "smooth" });
     return true;
   }, []);
 
@@ -214,45 +218,32 @@ export function PdfReader({ item, onOpenExternal, onOpenNote, onAskSelection }: 
   useEffect(() => {
     const position = pendingRestoreRef.current;
     if (!pdf || pageCount <= 0 || readerWidth <= 0 || !position) return;
+    const virtualizer = virtualizerRef.current;
+    if (!virtualizer) return;
     let cancelled = false;
     let frame: number | null = null;
-    let attempts = 0;
-
-    const restore = () => {
+    const pageIndex = Math.min(pageCount - 1, Math.max(0, position.pageIndex));
+    virtualizer.scrollToIndex(pageIndex, { align: "start", smooth: false });
+    frame = requestAnimationFrame(() => {
       if (cancelled) return;
-      const pageIndex = Math.min(pageCount - 1, Math.max(0, position.pageIndex));
-      const container = scrollContainerRef.current;
-      const page = pageRefs.current.get(pageIndex);
-      if (!container || !page || page.offsetHeight <= 0) {
-        attempts += 1;
-        if (attempts < 30) {
-          frame = requestAnimationFrame(restore);
-        } else {
-          pendingRestoreRef.current = null;
-          restoringRef.current = false;
-        }
-        return;
-      }
-
-      const containerRect = container.getBoundingClientRect();
-      const pageTop = page.getBoundingClientRect().top - containerRect.top + container.scrollTop;
-      const pageOffset = page.offsetHeight * Math.max(0, Math.min(1, position.scrollOffset));
-      container.scrollTo({
-        top: Math.max(0, pageTop - 20 + pageOffset),
-        behavior: "auto",
-      });
+      const offset = virtualizer.getItemOffset(pageIndex);
+      const size = virtualizer.getItemSize(pageIndex);
+      virtualizer.scrollTo(offset + size * Math.max(0, Math.min(1, position.scrollOffset)));
       readingRef.current = { ...position, pageIndex };
       setCurrentPage(pageIndex + 1);
       pendingRestoreRef.current = null;
       restoringRef.current = false;
-    };
-
-    frame = requestAnimationFrame(restore);
+    });
     return () => {
       cancelled = true;
       if (frame !== null) cancelAnimationFrame(frame);
     };
   }, [item.id, pageCount, pdf, readerWidth]);
+
+  useEffect(() => () => {
+    renderScheduler.dispose();
+    canvasBudget.releaseAll();
+  }, [canvasBudget, renderScheduler]);
 
   useEffect(() => () => {
     if (scrollFrameRef.current !== null) cancelAnimationFrame(scrollFrameRef.current);
@@ -262,36 +253,19 @@ export function PdfReader({ item, onOpenExternal, onOpenNote, onAskSelection }: 
 
   useEffect(() => () => flushReadingState(), [flushReadingState]);
 
-  const handleScroll = useCallback(() => {
+  const handleScroll = useCallback((nextOffset: number) => {
     if (scrollFrameRef.current !== null) return;
     if (textSelection) window.getSelection()?.removeAllRanges();
     setTextSelection(null);
     scrollFrameRef.current = requestAnimationFrame(() => {
       scrollFrameRef.current = null;
-      const container = scrollContainerRef.current;
-      if (!container || pageCount === 0) return;
-      const containerRect = container.getBoundingClientRect();
-      const target = containerRect.top + Math.min(180, container.clientHeight * 0.35);
-      let nearestPage = 0;
-      let nearestDistance = Number.POSITIVE_INFINITY;
-      for (const [pageIndex, element] of pageRefs.current) {
-        const rect = element.getBoundingClientRect();
-        const distance = target < rect.top
-          ? rect.top - target
-          : target > rect.bottom
-            ? target - rect.bottom
-            : 0;
-        if (distance < nearestDistance) {
-          nearestDistance = distance;
-          nearestPage = pageIndex;
-        }
-      }
-      const pageElement = pageRefs.current.get(nearestPage);
-      const pageTop = pageElement
-        ? pageElement.getBoundingClientRect().top - containerRect.top + container.scrollTop
-        : container.scrollTop;
-      const pageHeight = pageElement?.offsetHeight ?? container.clientHeight;
-      const scrollOffset = Math.max(0, Math.min(1, (container.scrollTop - pageTop) / Math.max(1, pageHeight)));
+      if (pageCount === 0) return;
+      const virtualizer = virtualizerRef.current;
+      if (!virtualizer) return;
+      const nearestPage = Math.max(0, Math.min(pageCount - 1, virtualizer.findItemIndex(nextOffset + virtualizer.viewportSize * 0.35)));
+      const pageTop = virtualizer.getItemOffset(nearestPage);
+      const pageHeight = virtualizer.getItemSize(nearestPage);
+      const scrollOffset = Math.max(0, Math.min(1, (nextOffset - pageTop) / Math.max(1, pageHeight)));
       setCurrentPage(nearestPage + 1);
       if (!restoringRef.current) {
         scheduleSave({ pageIndex: nearestPage, scrollOffset, zoom: readingRef.current.zoom });
@@ -656,7 +630,6 @@ export function PdfReader({ item, onOpenExternal, onOpenNote, onAskSelection }: 
       <div
         className="mnemora-pdf-reader-scroll"
         ref={scrollContainerRef}
-        onScroll={handleScroll}
         role="document"
         aria-label={status}
       >
@@ -667,24 +640,36 @@ export function PdfReader({ item, onOpenExternal, onOpenNote, onAskSelection }: 
           </div>
         ) : pdf ? (
           <div className="mnemora-pdf-page-list">
-            {Array.from({ length: pageCount }, (_, pageIndex) => (
-              <PdfPage
-                key={pageIndex}
-                pdf={pdf}
-                pageIndex={pageIndex}
-                zoom={zoom}
-                readerWidth={readerWidth}
-                annotations={annotationsByPage.get(pageIndex) ?? []}
-                annotationMode={annotationMode}
-                focusedAnnotationId={focusedAnnotationId}
-                scrollContainerRef={scrollContainerRef}
-                onRegister={registerPage}
-                onTextSelection={setTextSelection}
-                onAreaSelection={(targetPageIndex, rect) => {
-                  void createAreaAnnotation(targetPageIndex, rect);
-                }}
-              />
-            ))}
+            <Virtualizer
+              ref={virtualizerRef}
+              scrollRef={scrollContainerRef}
+              data={pageIndexes}
+              bufferSize={360}
+              itemSize={estimatedPageSize}
+              onScroll={handleScroll}
+            >
+              {(pageIndex) => (
+                <div className="mnemora-pdf-page-slot">
+                  <PdfPage
+                    pdf={pdf}
+                    pageIndex={pageIndex}
+                    zoom={zoom}
+                    readerWidth={readerWidth}
+                    annotations={annotationsByPage.get(pageIndex) ?? []}
+                    annotationMode={annotationMode}
+                    focusedAnnotationId={focusedAnnotationId}
+                    isCurrent={currentPage === pageIndex + 1}
+                    lifecycleState={lifecycleState}
+                    canvasBudget={canvasBudget}
+                    renderScheduler={renderScheduler}
+                    onTextSelection={setTextSelection}
+                    onAreaSelection={(targetPageIndex, rect) => {
+                      void createAreaAnnotation(targetPageIndex, rect);
+                    }}
+                  />
+                </div>
+              )}
+            </Virtualizer>
           </div>
         ) : (
           <div className="mnemora-pdf-reader-state" role="status">

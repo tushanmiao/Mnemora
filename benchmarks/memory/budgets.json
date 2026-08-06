@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "measurement": "processTreePrivateBytes",
+  "release": {
+    "idle": 230686720,
+    "chat": 293601280,
+    "pdf": 398458880,
+    "postHeavyResidual": 31457280
+  },
+  "stretchA": {
+    "idle": 199229440,
+    "chat": 251658240,
+    "pdf": 346030080
+  },
+  "stretchB": {
+    "idle": 178257920,
+    "chat": 230686720,
+    "pdf": 314572800
+  }
+}

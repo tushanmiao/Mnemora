@@ -8,7 +8,9 @@
     "build": "tsc && vite build",
     "test": "vitest run",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "memory:compare": "node scripts/memory/compare-memory-report.mjs",
+    "memory:isolation-review": "node scripts/memory/evaluate-isolation.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

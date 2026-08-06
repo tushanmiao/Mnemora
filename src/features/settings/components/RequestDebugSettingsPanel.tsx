@@ -1,9 +1,14 @@
-import { useCallback, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { AlertTriangle, Check, Copy, RefreshCw, Trash2 } from "lucide-react";
 import type { AppSettings } from "../../../types/appSettings";
 import type { RequestDebugRecord } from "../../../types/requestDebug";
 import { clearRequestDebugRecords, loadRequestDebugRecords } from "../api/requestDebug";
+import { MEMORY_DIAGNOSTICS_ENABLED } from "../../../runtime/buildFlags";
 import "../styles/request-debug-settings.css";
+
+const MemoryDiagnosticsPanel = MEMORY_DIAGNOSTICS_ENABLED
+  ? lazy(() => import("../../diagnostics/memory/components/MemoryDiagnosticsPanel"))
+  : null;
 
 type Props = {
   settings: AppSettings;
@@ -71,6 +76,9 @@ export function RequestDebugSettingsPanel({ settings, onSave }: Props) {
 
   return (
     <section className="settings-content debug-settings-content">
+      {MemoryDiagnosticsPanel ? (
+        <Suspense fallback={null}><MemoryDiagnosticsPanel /></Suspense>
+      ) : null}
       <div className="settings-content-heading">
         <div><h2>请求调试</h2><span>检查实际请求结构和标准化响应</span></div>
         <div className="settings-heading-actions">

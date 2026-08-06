@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useI18n } from "../../../i18n/I18nProvider";
+import { createManagedAudio, type ManagedAudio } from "../../../runtime/media/managedAudio";
 import {
   deleteEnglishDictionary,
   downloadEnglishDictionary,
@@ -164,15 +165,14 @@ export default function EnglishDictionary({ status, onStatusChange, onGroupsChan
 
 function EnglishEntry({ entry, hasPlan, addingWordId, onAddWord }: { entry: EnglishWordEntry | null; hasPlan: boolean; addingWordId: number | null; onAddWord: (wordId: number) => Promise<void> }) {
   const { t } = useI18n();
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-  useEffect(() => () => releaseAudio(audioRef.current), [entry?.id]);
+  const audioRef = useRef<ManagedAudio | null>(null);
+  useEffect(() => () => audioRef.current?.release(), [entry?.id]);
   if (!entry) return <section className="english-entry english-entry-empty">{t("english.selectWord")}</section>;
   const play = (url: string) => {
-    releaseAudio(audioRef.current);
-    const audio = new Audio(url);
-    audio.preload = "none";
-    audioRef.current = audio;
-    void audio.play().catch(() => undefined);
+    audioRef.current?.release();
+    const managed = createManagedAudio(url, `english-entry:${entry.id}`);
+    audioRef.current = managed;
+    void managed.audio.play().catch(() => undefined);
   };
   return <section className="english-entry">
     <div className="english-entry-header"><div><h2>{entry.word}</h2><p>/{entry.pronunciation}/</p></div><div className="english-audio-actions">{hasPlan ? <button type="button" onClick={() => void onAddWord(entry.id)} disabled={addingWordId !== null} title="加入当前词书" aria-label="加入当前词书">{addingWordId === entry.id ? <LoaderCircle className="english-spinner" size={16} /> : <Plus size={16} />}</button> : null}{entry.britishAudio ? <button type="button" onClick={() => play(entry.britishAudio)} title={t("english.britishAudio")}><Headphones size={16} />UK</button> : null}{entry.americanAudio ? <button type="button" onClick={() => play(entry.americanAudio)} title={t("english.americanAudio")}><Headphones size={16} />US</button> : null}</div></div>
@@ -192,6 +192,5 @@ function EnglishDownloadProgressView({ progress }: { progress: EnglishDownloadPr
 }
 
 function DetailSection({ title, children }: { title: string; children: React.ReactNode }) { return <div className="english-detail"><h3>{title}</h3>{children}</div>; }
-function releaseAudio(audio: HTMLAudioElement | null) { if (!audio) return; audio.pause(); audio.removeAttribute("src"); audio.load(); }
 function formatSize(bytes: number) { return bytes < 1024 * 1024 ? `${Math.round(bytes / 1024)} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`; }
 function formatError(error: unknown) { return error instanceof Error ? error.message : String(error); }

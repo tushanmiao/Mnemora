@@ -261,6 +261,14 @@ const MarkdownBlock = memo(function MarkdownBlock({
     [allowedMermaidOffsets, literatureReferences, onLiteratureReferenceOpen],
   );
   const mathEnabled = containsMath(content);
+  const remarkPlugins = useMemo(
+    () => (isStreamingTail ? [] : createMarkdownRemarkPlugins(literatureReferences)),
+    [isStreamingTail, literatureReferences],
+  );
+  const rehypePlugins = useMemo(
+    () => (isStreamingTail ? [] : createMarkdownRehypePlugins(messageId)),
+    [isStreamingTail, messageId],
+  );
   if (mathEnabled && !isStreamingTail) {
     return (
       <Suspense fallback={<span className="markdown-math-loading">{content}</span>}>
@@ -275,8 +283,8 @@ const MarkdownBlock = memo(function MarkdownBlock({
   }
   return (
     <ReactMarkdown
-      remarkPlugins={isStreamingTail ? [] : createMarkdownRemarkPlugins(literatureReferences)}
-      rehypePlugins={isStreamingTail ? [] : createMarkdownRehypePlugins(messageId)}
+      remarkPlugins={remarkPlugins}
+      rehypePlugins={rehypePlugins}
       components={isStreamingTail ? streamingComponents : components}
       urlTransform={isStreamingTail ? safeMarkdownUrlTransform : safeMarkdownContentUrlTransform}
     >

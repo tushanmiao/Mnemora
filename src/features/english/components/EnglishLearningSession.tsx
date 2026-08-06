@@ -10,6 +10,7 @@ import {
   type EnglishVerdict,
 } from "../api/learning";
 import { judgeEnglishAnswer, suggestEnglishRating } from "../utils/answerNormalization";
+import { createManagedAudio, type ManagedAudio } from "../../../runtime/media/managedAudio";
 
 type Props = {
   item: EnglishQueueItem;
@@ -38,7 +39,7 @@ export default function EnglishLearningSession({ item, position, total, settings
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const inputRef = useRef<HTMLInputElement | null>(null);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const audioRef = useRef<ManagedAudio | null>(null);
   const audioRequestRef = useRef(0);
   const composingRef = useRef(false);
   const submittedAnswerRef = useRef("");
@@ -53,7 +54,7 @@ export default function EnglishLearningSession({ item, position, total, settings
   const playAudio = async (rate = settings.playbackRate) => {
     if (!audioUrl) return;
     const request = ++audioRequestRef.current;
-    releaseAudio(audioRef.current);
+    audioRef.current?.release();
     let playableUrl = audioUrl;
     try {
       playableUrl = await resolveEnglishAudio(audioUrl);
@@ -61,10 +62,10 @@ export default function EnglishLearningSession({ item, position, total, settings
       playableUrl = audioUrl;
     }
     if (request !== audioRequestRef.current) return;
-    const audio = new Audio(playableUrl);
-    audio.preload = "none";
+    const managed = createManagedAudio(playableUrl, `english-session:${item.progressId}`);
+    const audio = managed.audio;
     audio.playbackRate = rate;
-    audioRef.current = audio;
+    audioRef.current = managed;
     void audio.play().catch(() => setError("音频暂时无法播放，可以继续使用非音频提示。"));
   };
 
@@ -86,7 +87,7 @@ export default function EnglishLearningSession({ item, position, total, settings
     }
     return () => {
       audioRequestRef.current += 1;
-      releaseAudio(audioRef.current);
+      audioRef.current?.release();
       audioRef.current = null;
     };
   }, [item.progressId]);
@@ -270,12 +271,6 @@ export default function EnglishLearningSession({ item, position, total, settings
   );
 }
 
-function releaseAudio(audio: HTMLAudioElement | null) {
-  if (!audio) return;
-  audio.pause();
-  audio.removeAttribute("src");
-  audio.load();
-}
 
 function exerciseLabel(kind: EnglishQueueItem["exerciseKind"]) {
   return ({ meaning_recall: "释义回忆", spelling: "释义拼写", dictation: "听音拼写" } as const)[kind];

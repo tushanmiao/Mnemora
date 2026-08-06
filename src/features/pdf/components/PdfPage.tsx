@@ -3,13 +3,15 @@ import {
   useRef,
   useState,
   type PointerEvent as ReactPointerEvent,
-  type RefObject,
 } from "react";
 import { TextLayer, type PDFDocumentProxy, type PDFPageProxy, type RenderTask } from "pdfjs-dist";
 import type { LibraryAnnotation, LibraryAnnotationRect } from "../../library/types";
 import type { PdfTextSelection } from "../types";
 import { resolvePdfCanvasScale, resolvePdfPageDisplaySize } from "../utils/pdfViewport";
 import { useI18n } from "../../../i18n/I18nProvider";
+import type { WorkspaceLifecycleState } from "../../../runtime/resources/WorkspaceLifecycle";
+import type { PdfCanvasBudget, PdfCanvasLease } from "../runtime/pdfCanvasBudget";
+import type { PdfRenderScheduler } from "../runtime/pdfRenderScheduler";
 
 type PdfPageProps = {
   pdf: PDFDocumentProxy;
@@ -19,8 +21,10 @@ type PdfPageProps = {
   annotations: LibraryAnnotation[];
   annotationMode: "text" | "area";
   focusedAnnotationId: string | null;
-  scrollContainerRef: RefObject<HTMLDivElement | null>;
-  onRegister: (pageIndex: number, element: HTMLDivElement | null) => void;
+  isCurrent: boolean;
+  lifecycleState: WorkspaceLifecycleState;
+  canvasBudget: PdfCanvasBudget;
+  renderScheduler: PdfRenderScheduler;
   onTextSelection: (selection: PdfTextSelection) => void;
   onAreaSelection: (pageIndex: number, rect: LibraryAnnotationRect) => void;
 };
@@ -36,8 +40,10 @@ export function PdfPage({
   annotations,
   annotationMode,
   focusedAnnotationId,
-  scrollContainerRef,
-  onRegister,
+  isCurrent,
+  lifecycleState,
+  canvasBudget,
+  renderScheduler,
   onTextSelection,
   onAreaSelection,
 }: PdfPageProps) {
@@ -45,7 +51,6 @@ export function PdfPage({
   const shellRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const textLayerRef = useRef<HTMLDivElement>(null);
-  const [active, setActive] = useState(false);
   const [pageSize, setPageSize] = useState({
     width: DEFAULT_PAGE_WIDTH,
     height: DEFAULT_PAGE_HEIGHT,
@@ -56,28 +61,7 @@ export function PdfPage({
   const areaStartRef = useRef<{ x: number; y: number } | null>(null);
 
   useEffect(() => {
-    onRegister(pageIndex, shellRef.current);
-    return () => onRegister(pageIndex, null);
-  }, [onRegister, pageIndex]);
-
-  useEffect(() => {
-    const shell = shellRef.current;
-    if (!shell) return;
-    if (typeof IntersectionObserver === "undefined") {
-      setActive(true);
-      return;
-    }
-    const root = scrollContainerRef.current;
-    const observer = new IntersectionObserver(
-      ([entry]) => setActive(entry.isIntersecting),
-      { root, rootMargin: "600px 0px", threshold: 0 },
-    );
-    observer.observe(shell);
-    return () => observer.disconnect();
-  }, [scrollContainerRef, pageIndex, pdf]);
-
-  useEffect(() => {
-    if (!active || readerWidth <= 0) {
+    if (lifecycleState !== "active" || readerWidth <= 0) {
       setStatus("idle");
       setRenderedSize(null);
       return;
@@ -86,6 +70,7 @@ export function PdfPage({
     let page: PDFPageProxy | null = null;
     let renderTask: RenderTask | null = null;
     let textLayer: TextLayer | null = null;
+    let canvasLease: PdfCanvasLease | null = null;
     const canvas = canvasRef.current;
     const textLayerContainer = textLayerRef.current;
 
@@ -99,12 +84,12 @@ export function PdfPage({
       if (textLayerContainer) textLayerContainer.replaceChildren();
     };
 
-    const renderPage = async () => {
+    const renderPage = async (signal: AbortSignal) => {
       if (!canvas || !textLayerContainer) return;
       setStatus("loading");
       try {
         page = await pdf.getPage(pageIndex + 1);
-        if (cancelled) return;
+        if (cancelled || signal.aborted) return;
         const baseViewport = page.getViewport({ scale: 1 });
         setPageSize({ width: baseViewport.width, height: baseViewport.height });
         const displaySize = resolvePdfPageDisplaySize(
@@ -116,11 +101,30 @@ export function PdfPage({
         const scale = displaySize.width / baseViewport.width;
         const viewport = page.getViewport({ scale });
         setRenderedSize({ width: viewport.width, height: viewport.height });
-        const canvasScale = resolvePdfCanvasScale(
+        const requestedScale = resolvePdfCanvasScale(
           viewport.width,
           viewport.height,
-          window.devicePixelRatio || 1,
+          isCurrent ? window.devicePixelRatio || 1 : Math.min(window.devicePixelRatio || 1, 1),
         );
+        canvasLease = canvasBudget.reserve({
+          owner: `pdf-page:${pageIndex}`,
+          width: viewport.width,
+          height: viewport.height,
+          requestedScale,
+          priority: isCurrent ? 0 : 10,
+          onEvict: () => {
+            renderTask?.cancel();
+            textLayer?.cancel();
+            clearLayers();
+            if (!cancelled) setStatus("idle");
+          },
+        });
+        if (!canvasLease || cancelled || signal.aborted) {
+          canvasLease?.release();
+          canvasLease = null;
+          return;
+        }
+        const canvasScale = canvasLease.scale;
         canvas.width = Math.max(1, Math.floor(viewport.width * canvasScale));
         canvas.height = Math.max(1, Math.floor(viewport.height * canvasScale));
         canvas.style.width = `${viewport.width}px`;
@@ -138,10 +142,19 @@ export function PdfPage({
             ? undefined
             : [canvasScale, 0, 0, canvasScale, 0, 0],
         });
+        const cancelRender = () => {
+          renderTask?.cancel();
+          textLayer?.cancel();
+        };
+        signal.addEventListener("abort", cancelRender, { once: true });
         await renderTask.promise;
-        if (cancelled) return;
+        if (cancelled || signal.aborted) return;
+        if (!isCurrent) {
+          setStatus("ready");
+          return;
+        }
         const textContent = await page.getTextContent();
-        if (cancelled) return;
+        if (cancelled || signal.aborted) return;
         textLayer = new TextLayer({
           textContentSource: textContent,
           container: textLayerContainer,
@@ -151,6 +164,9 @@ export function PdfPage({
         if (!cancelled) setStatus("ready");
       } catch (error) {
         if (cancelled || (error instanceof Error && error.name === "RenderingCancelledException")) {
+          canvasLease?.release();
+          canvasLease = null;
+          clearLayers();
           return;
         }
         clearLayers();
@@ -159,15 +175,24 @@ export function PdfPage({
       }
     };
 
-    void renderPage();
+    const scheduled = renderScheduler.schedule(
+      `pdf-page:${pageIndex}`,
+      isCurrent ? 0 : 10,
+      renderPage,
+    );
+    void scheduled.promise.catch(() => {
+      if (!cancelled) setStatus("error");
+    });
     return () => {
       cancelled = true;
+      scheduled.cancel();
       renderTask?.cancel();
       textLayer?.cancel();
+      canvasLease?.release();
       clearLayers();
       if (page) page.cleanup();
     };
-  }, [active, pdf, pageIndex, readerWidth, zoom]);
+  }, [canvasBudget, isCurrent, lifecycleState, pdf, pageIndex, readerWidth, renderScheduler, zoom]);
 
   useEffect(() => {
     areaStartRef.current = null;
@@ -284,7 +309,7 @@ export function PdfPage({
         style={{ width: displaySize.width, height: displaySize.height }}
       >
         <canvas className="mnemora-pdf-page-canvas" ref={canvasRef} />
-        {active ? (
+        {lifecycleState === "active" ? (
           <div className="mnemora-pdf-annotation-layer" aria-hidden="true">
             {annotations.flatMap((annotation) => annotation.rects.map((rect, rectIndex) => (
               <span
@@ -305,7 +330,7 @@ export function PdfPage({
           ref={textLayerRef}
           onMouseUp={handleTextSelection}
         />
-        {active && annotationMode === "area" ? (
+        {lifecycleState === "active" && annotationMode === "area" ? (
           <div
             className="mnemora-pdf-area-selector"
             onPointerDown={handleAreaPointerDown}

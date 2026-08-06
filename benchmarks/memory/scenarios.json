@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "stabilizeSeconds": 30,
+  "postExitSamplesSeconds": [5, 15, 30, 60],
+  "runsPerScenario": 3,
+  "scenarios": [
+    { "id": "idle", "label": "空闲 Release", "budgetKey": "idle" },
+    { "id": "chat", "label": "普通 Chat", "budgetKey": "chat" },
+    { "id": "pdf", "label": "单 PDF", "budgetKey": "pdf" },
+    { "id": "english", "label": "English 学习", "budgetKey": null },
+    { "id": "settings", "label": "设置页", "budgetKey": null }
+  ]
+}

@@ -95,6 +95,18 @@ export function MessageList({
   const [activeNavigatorNodeId, setActiveNavigatorNodeId] = useState<string | null>(null);
   const [messageUiState, setMessageUiState] = useState<Record<string, MessageBubbleUiState>>({});
   const navigatorNodes = useMemo(() => buildMessageNavigatorNodes(messages), [messages]);
+  const citationReferencesByMessageId = useMemo(() => {
+    const result = new Map<string, readonly LiteratureReference[]>();
+    let latestUserReferences: readonly LiteratureReference[] = [];
+    for (const message of messages) {
+      if (message.role === "assistant") {
+        result.set(message.id, latestUserReferences);
+      } else {
+        latestUserReferences = message.literatureReferences ?? [];
+      }
+    }
+    return result;
+  }, [messages]);
   const suggestions = useMemo(() => [
     { icon: Lightbulb, title: t("chat.suggestionIdea"), description: t("chat.suggestionIdeaDescription") },
     { icon: BookOpenText, title: t("chat.suggestionLiterature"), description: t("chat.suggestionLiteratureDescription") },
@@ -238,17 +250,15 @@ export function MessageList({
         onQuote={onQuoteMessage}
         onSaveAsNote={onSaveMessageAsNote}
         onLiteratureReferenceOpen={onLiteratureReferenceOpen}
-        citationReferences={message.role === "assistant"
-          ? [...messages.slice(0, index)].reverse().find((item) => item.role === "user")?.literatureReferences ?? []
-          : []}
+        citationReferences={citationReferencesByMessageId.get(message.id) ?? []}
       />
     </div>
   ), [
     actionsDisabled,
     canRegenerate,
+    citationReferencesByMessageId,
     messageUiState,
     messages.length,
-    messages,
     onDeleteMessage,
     onEditMessage,
     onRegenerateMessage,
@@ -367,6 +377,8 @@ export function MessageList({
               ref={virtualizerRef}
               scrollRef={listRef}
               onScroll={handleScroll}
+              bufferSize={160}
+              keepMounted={messages.length > 0 ? [messages.length - 1] : []}
               data={messages}
             >
               {renderMessage}

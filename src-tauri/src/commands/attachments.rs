@@ -89,7 +89,7 @@ pub async fn read_chat_attachment_preview(
     conversation_id: Option<String>,
     path: String,
     preview_path: Option<String>,
-) -> Result<String, String> {
+) -> Result<crate::chat::attachments::AttachmentDisplaySource, String> {
     let cancellation = state.register_attachment_task(request_id.clone())?;
     let permit = match state.attachment_preview_gate.acquire().await {
         Ok(permit) => permit,
@@ -120,7 +120,7 @@ pub async fn read_chat_attachment_image(
     request_id: String,
     conversation_id: String,
     path: String,
-) -> Result<String, String> {
+) -> Result<crate::chat::attachments::AttachmentDisplaySource, String> {
     let cancellation = state.register_attachment_task(request_id.clone())?;
     let permit = match state.attachment_preview_gate.acquire().await {
         Ok(permit) => permit,

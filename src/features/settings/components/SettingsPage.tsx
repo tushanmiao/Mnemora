@@ -4,14 +4,11 @@ import { RootErrorBoundary } from "../../../bootstrap/RootErrorBoundary";
 import type { AppSettings, SettingsBundle } from "../../../types/appSettings";
 import type { ModelSettings, ProviderApiKeyUpdate } from "../../../types/modelSettings";
 import type { useSkills } from "../../skills/hooks/useSkills";
-import { AboutSettingsPanel } from "./AboutSettingsPanel";
 import { useI18n } from "../../../i18n/I18nProvider";
-import { GeneralSettingsPanel } from "./GeneralSettingsPanel";
-import { ModelSettingsPanel } from "./ModelSettingsPanel";
-import { RequestDebugSettingsPanel } from "./RequestDebugSettingsPanel";
-import { UsageSettingsPanel } from "./UsageSettingsPanel";
 import "../styles/settings-page.css";
 
+const GeneralSettingsPanel = lazy(() => import("./GeneralSettingsPanel").then((module) => ({ default: module.GeneralSettingsPanel })));
+const ModelSettingsPanel = lazy(() => import("./ModelSettingsPanel").then((module) => ({ default: module.ModelSettingsPanel })));
 const SkillSettingsPanel = lazy(() => import("./SkillSettingsPanel").then((module) => ({
   default: module.SkillSettingsPanel,
 })));
@@ -21,6 +18,9 @@ const MemorySettingsPanel = lazy(() => import("./MemorySettingsPanel").then((mod
 const SyncSettingsPanel = lazy(() => import("./SyncSettingsPanel").then((module) => ({
   default: module.SyncSettingsPanel,
 })));
+const UsageSettingsPanel = lazy(() => import("./UsageSettingsPanel").then((module) => ({ default: module.UsageSettingsPanel })));
+const RequestDebugSettingsPanel = lazy(() => import("./RequestDebugSettingsPanel").then((module) => ({ default: module.RequestDebugSettingsPanel })));
+const AboutSettingsPanel = lazy(() => import("./AboutSettingsPanel").then((module) => ({ default: module.AboutSettingsPanel })));
 
 export type SettingsCategory = "general" | "models" | "skills" | "memory" | "sync" | "usage" | "debug" | "about";
 

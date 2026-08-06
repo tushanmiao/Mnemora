@@ -1,10 +1,12 @@
-import { invoke, isTauri } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke, isTauri } from "@tauri-apps/api/core";
 import type { ChatAttachment, PendingChatAttachment } from "../../../types/attachment";
+import { registerResource } from "../../../runtime/resources/ResourceRegistry";
 
 const MAX_PREVIEW_CACHE_ITEMS = 32;
 const MAX_PREVIEW_CACHE_BYTES = 8 * 1024 * 1024;
 
-type PreviewCacheEntry = { dataUrl: string; bytes: number };
+type AttachmentDisplaySource = { kind: "asset" | "data"; value: string };
+type PreviewCacheEntry = { src: string; bytes: number; registration: ReturnType<typeof registerResource> };
 type PreviewRequest = {
   requestId: string;
   promise: Promise<string>;
@@ -31,23 +33,55 @@ function readCachedPreview(key: string) {
   if (!cached) return null;
   previewCache.delete(key);
   previewCache.set(key, cached);
-  return cached.dataUrl;
+  cached.registration.touch();
+  return cached.src;
 }
 
-function cachePreview(key: string, dataUrl: string) {
-  const bytes = dataUrl.length * 2;
+function cachePreview(key: string, source: AttachmentDisplaySource) {
+  // Pending previews are still Data URLs and must not remain in a global cache.
+  if (source.kind === "data") return toRenderableSource(source);
+  const src = toRenderableSource(source);
+  const bytes = src.length * 2;
   if (bytes > MAX_PREVIEW_CACHE_BYTES) return;
   const previous = previewCache.get(key);
-  if (previous) previewCacheBytes -= previous.bytes;
+  if (previous) {
+    previewCacheBytes -= previous.bytes;
+    previous.registration.release();
+  }
   previewCache.delete(key);
-  previewCache.set(key, { dataUrl, bytes });
+  const registration = registerResource({
+    owner: `attachment-preview:${key}`,
+    kind: "cache",
+    estimatedBytes: bytes,
+    backgroundReleasable: true,
+    release: () => removeCachedPreview(key),
+  });
+  previewCache.set(key, { src, bytes, registration });
   previewCacheBytes += bytes;
   while (previewCache.size > MAX_PREVIEW_CACHE_ITEMS || previewCacheBytes > MAX_PREVIEW_CACHE_BYTES) {
     const oldest = previewCache.entries().next().value as [string, PreviewCacheEntry] | undefined;
     if (!oldest) break;
     previewCache.delete(oldest[0]);
     previewCacheBytes -= oldest[1].bytes;
+    oldest[1].registration.release();
   }
+  return src;
+}
+
+function removeCachedPreview(key: string) {
+  const cached = previewCache.get(key);
+  if (!cached) return;
+  previewCache.delete(key);
+  previewCacheBytes = Math.max(0, previewCacheBytes - cached.bytes);
+  cached.registration.release();
+}
+
+function toRenderableSource(source: AttachmentDisplaySource) {
+  return source.kind === "asset" ? convertFileSrc(source.value) : source.value;
+}
+
+export function clearAttachmentPreviewCache() {
+  for (const key of [...previewCache.keys()]) removeCachedPreview(key);
 }
 
 export function inspectChatAttachments(paths: string[]) {
@@ -113,14 +147,14 @@ export function loadChatAttachmentPreview(
   let request = previewRequests.get(key);
   if (!request) {
     const requestId = crypto.randomUUID();
-    const promise = invoke<string>("read_chat_attachment_preview", {
+    const promise = invoke<AttachmentDisplaySource>("read_chat_attachment_preview", {
       requestId,
       path,
       previewPath: previewPath ?? null,
       conversationId: conversationId ?? null,
-    }).then((dataUrl) => {
-      cachePreview(key, dataUrl);
-      return dataUrl;
+    }).then((source) => {
+      const cachedSource = cachePreview(key, source);
+      return cachedSource ?? toRenderableSource(source);
     }).finally(() => {
       previewRequests.delete(key);
     });
@@ -155,11 +189,11 @@ export function loadChatAttachmentImage(
   const requestId = crypto.randomUUID();
   let released = false;
   return {
-    promise: invoke<string>("read_chat_attachment_image", {
+    promise: invoke<AttachmentDisplaySource>("read_chat_attachment_image", {
       requestId,
       conversationId,
       path,
-    }),
+    }).then(toRenderableSource),
     release: () => {
       if (released) return;
       released = true;

@@ -36,10 +36,22 @@ export function estimateConversationTextBytes(conversation: Conversation) {
       characters += message.modelSnapshot.displayName.length;
       characters += message.modelSnapshot.providerName.length;
     }
+    characters += message.agentRunId?.length ?? 0;
+    for (const skill of message.activatedSkills ?? []) {
+      characters += skill.id.length + skill.name.length + skill.version.length;
+      characters += skill.contentHash.length + skill.activation.length;
+    }
+    for (const trace of message.toolTraces ?? []) {
+      characters += trace.callId.length + trace.name.length + trace.status.length + trace.risk.length;
+      characters += trace.argumentSummary.length + (trace.preview?.length ?? 0);
+      characters += (trace.errorKind?.length ?? 0) + (trace.approvalId?.length ?? 0);
+    }
+    if (message.workflowSummary) characters += 96;
+    if (message.usage) characters += 192;
   }
 
-  // JS 字符串通常使用一到两个字节表示字符；按 UTF-16 上界估算，并给对象结构留固定余量。
-  return characters * 2 + conversation.messages.length * 256 + 1_024;
+  // 按 UTF-16 上界估算字符串，并为引用、工具轨迹及运行投影保留对象结构余量。
+  return characters * 2 + conversation.messages.length * 512 + 2_048;
 }
 
 type TrimConversationCacheOptions = {
