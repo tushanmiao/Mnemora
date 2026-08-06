@@ -44,6 +44,10 @@ struct ResolvedTarget {
     pricing: Option<ModelPricing>,
     /// 是否支持图片输入：用户覆盖优先，其次内置模型数据库；`None` 表示未知（放行）。
     supports_vision: Option<bool>,
+    /// 是否支持结构化 Tool Calling；未知采用保守 false。
+    supports_tools: bool,
+    /// 是否支持独立 reasoning/thinking；未知不强制关闭普通生成。
+    supports_reasoning: Option<bool>,
 }
 
 struct PreparedCall {
@@ -295,10 +299,55 @@ pub async fn stream(
         .map_err(|error| ModelError::provider(format!("无法发送流式结束事件：{error}")))
 }
 
-const MAX_AGENT_ROUNDS: u32 = 8;
-const MAX_TOOL_CALLS_PER_ROUND: usize = 8;
-const MAX_PARALLEL_SAFE_TOOLS: usize = 4;
+const DEFAULT_MAX_AGENT_ROUNDS: u16 = 20;
+const MAX_TOOL_CALLS_PER_ROUND: usize = 12;
+const MAX_TOOL_CALLS_PER_RUN: usize = 100;
+const MAX_PARALLEL_SAFE_TOOLS: usize = 12;
 const TOOL_APPROVAL_TIMEOUT: Duration = Duration::from_secs(300);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ToolBatchBudget {
+    Execute { next_business_total: usize },
+    Finalize,
+}
+
+fn is_final_agent_call(call_index: u16, max_agent_rounds: u16) -> bool {
+    call_index == max_agent_rounds
+}
+
+fn agent_call_slots(max_agent_rounds: u16) -> usize {
+    usize::from(max_agent_rounds).saturating_add(1)
+}
+
+fn evaluate_tool_batch(
+    calls: &[ModelToolCall],
+    current_business_total: usize,
+) -> Result<ToolBatchBudget, ModelError> {
+    if calls.len() > MAX_TOOL_CALLS_PER_ROUND {
+        return Err(ModelError::invalid_configuration(format!(
+            "单轮工具调用不能超过 {MAX_TOOL_CALLS_PER_ROUND} 个。"
+        )));
+    }
+    let business_calls = calls
+        .iter()
+        .filter(|call| is_business_tool(&call.name))
+        .count();
+    let next_business_total = current_business_total.saturating_add(business_calls);
+    if next_business_total > MAX_TOOL_CALLS_PER_RUN {
+        Ok(ToolBatchBudget::Finalize)
+    } else {
+        Ok(ToolBatchBudget::Execute {
+            next_business_total,
+        })
+    }
+}
+
+fn append_agent_runtime_prompt(request: &mut ModelRequest, max_agent_rounds: u16) {
+    let prompt = request.system_prompt.get_or_insert_with(String::new);
+    prompt.push_str(&format!(
+        "\n\n<mnemora_agent_runtime>\n你可以在任务确实需要时使用已披露的 Tool 和 Skill。复杂任务按“规划 -> 执行 -> 观察结果 -> 反思 -> 必要时重规划”的循环推进；每一步都必须以真实工具结果为依据，不要假装已经执行。信息足够时应尽早结束并给出正文，不要为了用工具而用工具。本次最多有 {max_agent_rounds} 个可执行工具的 Agent 轮次，单轮最多 {MAX_TOOL_CALLS_PER_ROUND} 个工具，整次运行最多 {MAX_TOOL_CALLS_PER_RUN} 个业务工具；运行层还会保留一次不含工具的最终汇总调用。\n</mnemora_agent_runtime>"
+    ));
+}
 
 async fn execute_parallel_safe_tools(
     state: &AppState,
@@ -381,7 +430,12 @@ async fn run_agent_complete(
     if tool_context.permission_mode
         == crate::chat::conversation_types::AiPermissionMode::AskEveryTime
     {
-        request.tools.retain(|tool| tool.name == "skill");
+        request.tools.retain(|tool| {
+            matches!(
+                tool.name.as_str(),
+                "skill" | "search_tools" | "search_skills"
+            )
+        });
     }
     let cancellation = CancellationToken::new();
     let run_id = uuid::Uuid::new_v4().to_string();
@@ -392,14 +446,21 @@ async fn run_agent_complete(
     let mut skill_cache = SkillRunCache::default();
     let mut activated_skill_ids = Vec::new();
     let mut tool_traces = Vec::new();
+    let max_agent_rounds = agent_round_limit(state);
+    let mut tool_call_total = 0usize;
+    let mut force_final_answer = false;
 
-    for round_index in 0..MAX_AGENT_ROUNDS {
-        if round_index == MAX_AGENT_ROUNDS - 1 && !request.tools.is_empty() {
+    // `max_agent_rounds` counts rounds that may execute tools. The inclusive final slot is
+    // deliberately tool-free so a budget boundary still yields a useful answer.
+    for call_index in 0..=max_agent_rounds {
+        let round_index = u32::from(call_index);
+        let final_call = force_final_answer || is_final_agent_call(call_index, max_agent_rounds);
+        if final_call && !request.tools.is_empty() {
             request.tools.clear();
             request
                 .system_prompt
                 .get_or_insert_with(String::new)
-                .push_str("\n\n工具轮数已用尽，请直接根据已有结果给出最终回答。");
+                .push_str("\n\nAgent 运行预算已用尽。不要再请求工具，请直接根据已有结果给出最终回答，并明确说明仍缺少的信息。");
         }
         let created_at_ms = usage::now_ms();
         let started_at = Instant::now();
@@ -471,10 +532,19 @@ async fn run_agent_complete(
                 tool_traces,
             });
         }
-        if response.tool_calls.len() > MAX_TOOL_CALLS_PER_ROUND {
-            return Err(ModelError::invalid_configuration(format!(
-                "单轮工具调用不能超过 {MAX_TOOL_CALLS_PER_ROUND} 个。"
-            )));
+        if final_call {
+            return Err(ModelError::invalid_response(
+                "最终汇总调用仍返回了工具请求，无法安全继续执行。",
+            ));
+        }
+        match evaluate_tool_batch(&response.tool_calls, tool_call_total)? {
+            ToolBatchBudget::Execute {
+                next_business_total,
+            } => tool_call_total = next_business_total,
+            ToolBatchBudget::Finalize => {
+                force_final_answer = true;
+                continue;
+            }
         }
         let tool_calls = response.tool_calls;
         request.messages.push(ModelMessage {
@@ -552,6 +622,7 @@ async fn run_agent_complete(
                     activated_skill_ids.push(skill_id.clone());
                 }
             }
+            agent::apply_tool_disclosures(&mut request, &call, &execution);
             request.messages.push(ModelMessage {
                 role: ModelRole::Tool,
                 content: String::new(),
@@ -566,9 +637,7 @@ async fn run_agent_complete(
             });
         }
     }
-    Err(ModelError::provider(
-        "Agent 达到最大轮数，未能生成最终回答。",
-    ))
+    Err(ModelError::provider("Agent 未能在运行预算内生成最终回答。"))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -585,19 +654,34 @@ async fn run_agent_stream(
     message_id: &str,
     response_preview: &mut String,
 ) -> Result<ModelStreamOutcome, ModelError> {
+    if tool_context.permission_mode
+        == crate::chat::conversation_types::AiPermissionMode::AskEveryTime
+    {
+        request.tools.retain(|tool| {
+            matches!(
+                tool.name.as_str(),
+                "skill" | "search_tools" | "search_skills"
+            )
+        });
+    }
     let mut run_usage = ModelUsage {
         call_count: 0,
         ..ModelUsage::default()
     };
     let mut skill_cache = SkillRunCache::default();
     let mut activated_skill_ids = Vec::<String>::new();
+    let max_agent_rounds = agent_round_limit(state);
+    let mut tool_call_total = 0usize;
+    let mut force_final_answer = false;
 
-    for round_index in 0..MAX_AGENT_ROUNDS {
-        if round_index == MAX_AGENT_ROUNDS - 1 && !request.tools.is_empty() {
+    for call_index in 0..=max_agent_rounds {
+        let round_index = u32::from(call_index);
+        let final_call = force_final_answer || is_final_agent_call(call_index, max_agent_rounds);
+        if final_call && !request.tools.is_empty() {
             request.tools.clear();
             let prompt = request.system_prompt.get_or_insert_with(String::new);
             prompt.push_str(
-                "\n\n本次 Agent 已达到工具轮数上限。不要再请求工具，请根据已有结果给出最终回答，并明确说明仍缺少的信息。",
+                "\n\n本次 Agent 已达到运行预算。不要再请求工具，请根据已有结果给出最终回答，并明确说明仍缺少的信息。",
             );
         }
         let call_started_at_ms = usage::now_ms();
@@ -672,10 +756,19 @@ async fn run_agent_stream(
             summary.usage = (run_usage.call_count > 0).then_some(run_usage);
             return Ok(ModelStreamOutcome::Completed(summary));
         }
-        if summary.tool_calls.len() > MAX_TOOL_CALLS_PER_ROUND {
-            return Err(ModelError::invalid_configuration(format!(
-                "单轮工具调用不能超过 {MAX_TOOL_CALLS_PER_ROUND} 个。"
-            )));
+        if final_call {
+            return Err(ModelError::invalid_response(
+                "最终汇总调用仍返回了工具请求，无法安全继续执行。",
+            ));
+        }
+        match evaluate_tool_batch(&summary.tool_calls, tool_call_total)? {
+            ToolBatchBudget::Execute {
+                next_business_total,
+            } => tool_call_total = next_business_total,
+            ToolBatchBudget::Finalize => {
+                force_final_answer = true;
+                continue;
+            }
         }
 
         let tool_calls = summary.tool_calls;
@@ -768,6 +861,7 @@ async fn run_agent_stream(
                     )?;
                 }
             }
+            agent::apply_tool_disclosures(&mut request, &call, &result);
             request.messages.push(ModelMessage {
                 role: ModelRole::Tool,
                 content: String::new(),
@@ -782,9 +876,7 @@ async fn run_agent_stream(
             });
         }
     }
-    Err(ModelError::provider(
-        "Agent 达到最大轮数，未能生成最终回答。",
-    ))
+    Err(ModelError::provider("Agent 未能在运行预算内生成最终回答。"))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1087,7 +1179,7 @@ async fn stream_inner(
 
 async fn prepare_call(
     state: &AppState,
-    request: ChatCompletionRequest,
+    mut request: ChatCompletionRequest,
 ) -> Result<PreparedCall, ModelError> {
     let provider_id = request.provider_id.trim().to_string();
     let model_id = request.model_id.trim().to_string();
@@ -1113,7 +1205,27 @@ async fn prepare_call(
     }
 
     let api_model = target.api_model.clone();
-    let use_agent_tools = !request.is_auxiliary_operation();
+    let is_auxiliary_operation = request.is_auxiliary_operation();
+    let requested_skill =
+        !request.activated_skill_ids.is_empty() || request.slash_skill_id.is_some();
+    let requested_document_attachment = request
+        .messages
+        .iter()
+        .flat_map(|message| message.attachments.iter())
+        .any(|attachment| attachment.kind != "image");
+    let use_agent_tools = !is_auxiliary_operation && target.supports_tools;
+    if !use_agent_tools && requested_skill {
+        request.system_prompt.push_str(
+            "\n\n当前模型配置不支持结构化工具调用，因此本轮没有加载或执行用户指定的 Skill。请直接回答可以仅凭对话上下文回答的部分，并明确说明无法执行该 Skill。",
+        );
+        request.activated_skill_ids.clear();
+        request.slash_skill_id = None;
+    }
+    if !use_agent_tools && requested_document_attachment {
+        request.system_prompt.push_str(
+            "\n\n当前模型配置不支持结构化工具调用，因此本轮没有读取用户附带的文档。请不要推测文档内容；直接说明当前模型缺少工具能力，并只回答不依赖该文档的部分。",
+        );
+    }
     let memory_settings = state
         .app_settings
         .read()
@@ -1144,6 +1256,9 @@ async fn prepare_call(
             target.display_name
         )));
     }
+    if target.supports_reasoning == Some(false) {
+        model_request.options.thinking_enabled = false;
+    }
     if use_agent_tools {
         let l1_memory = if memory_settings.enabled
             && memory_settings.inject_l1
@@ -1162,6 +1277,7 @@ async fn prepare_call(
             None
         };
         agent::configure_model_request(&mut model_request, &tool_context, l1_memory.as_deref());
+        append_agent_runtime_prompt(&mut model_request, agent_round_limit(state));
     }
     Ok(PreparedCall {
         target,
@@ -1335,6 +1451,18 @@ fn retry_policy(state: &AppState) -> RetryPolicy {
         .unwrap_or(RetryPolicy { max_retries: 0 })
 }
 
+fn agent_round_limit(state: &AppState) -> u16 {
+    state
+        .app_settings
+        .read()
+        .map(|settings| settings.agent_max_rounds)
+        .unwrap_or(DEFAULT_MAX_AGENT_ROUNDS)
+}
+
+fn is_business_tool(name: &str) -> bool {
+    !matches!(name, "search_tools" | "search_skills")
+}
+
 fn should_retry(error: &ModelError) -> bool {
     matches!(
         error.kind,
@@ -1390,6 +1518,16 @@ fn resolve_target(
         .capabilities
         .and_then(|capabilities| capabilities.vision)
         .or_else(|| crate::ai::model::resolve_supports_vision(&model.api_model));
+    // Tool 能力：用户覆盖 → 数据库；未知模型保守关闭，由用户在中转商配置中显式开启。
+    let supports_tools = model
+        .capabilities
+        .and_then(|capabilities| capabilities.function_calling)
+        .or_else(|| crate::ai::model::database_supports_function_calling(&model.api_model))
+        .unwrap_or(false);
+    let supports_reasoning = model
+        .capabilities
+        .and_then(|capabilities| capabilities.reasoning)
+        .or_else(|| crate::ai::model::database_supports_reasoning(&model.api_model));
 
     Ok(ResolvedTarget {
         provider_id: provider.id.clone(),
@@ -1403,6 +1541,8 @@ fn resolve_target(
         display_name: model.display_name.clone(),
         pricing,
         supports_vision,
+        supports_tools,
+        supports_reasoning,
     })
 }
 
@@ -1412,7 +1552,7 @@ mod tests {
 
     use crate::ai::{
         error::{ModelError, ModelErrorKind},
-        types::{ModelUsage, UsageSource},
+        types::{ModelToolCall, ModelUsage, UsageSource},
     };
     use crate::settings::types::{
         ModelCapabilities, ModelSettings, ProviderKind, ProviderModelConfig,
@@ -1432,6 +1572,48 @@ mod tests {
         });
     }
 
+    fn tool_calls(name: &str, count: usize) -> Vec<ModelToolCall> {
+        (0..count)
+            .map(|index| ModelToolCall {
+                id: format!("call-{index}"),
+                name: name.to_string(),
+                arguments: serde_json::json!({}),
+                provider_signature: None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn agent_round_budget_reserves_one_tool_free_final_call() {
+        assert_eq!(super::agent_call_slots(20), 21);
+        assert!((0..20).all(|index| !super::is_final_agent_call(index, 20)));
+        assert!(super::is_final_agent_call(20, 20));
+    }
+
+    #[test]
+    fn thirteenth_tool_in_one_round_is_rejected() {
+        let error = super::evaluate_tool_batch(&tool_calls("memory_read", 13), 0)
+            .expect_err("the thirteenth call must be rejected");
+        assert!(error.message.contains("12"));
+    }
+
+    #[test]
+    fn hundred_and_first_business_tool_forces_finalization() {
+        let decision = super::evaluate_tool_batch(&tool_calls("memory_read", 1), 100).unwrap();
+        assert_eq!(decision, super::ToolBatchBudget::Finalize);
+    }
+
+    #[test]
+    fn tool_search_does_not_consume_the_business_tool_budget() {
+        let decision = super::evaluate_tool_batch(&tool_calls("search_tools", 12), 100).unwrap();
+        assert_eq!(
+            decision,
+            super::ToolBatchBudget::Execute {
+                next_business_total: 100,
+            }
+        );
+    }
+
     #[test]
     fn vision_resolves_from_database_when_no_override() {
         let mut settings = ModelSettings::default();
@@ -1446,6 +1628,7 @@ mod tests {
         push_model(&mut settings, "gpt-5.5");
         settings.providers[0].models[0].capabilities = Some(ModelCapabilities {
             vision: Some(false),
+            ..ModelCapabilities::default()
         });
         let target = super::resolve_target(&settings, "official-openai", "model-1").unwrap();
         assert_eq!(target.supports_vision, Some(false));
@@ -1457,6 +1640,40 @@ mod tests {
         push_model(&mut settings, "totally-unknown-model-xyz");
         let target = super::resolve_target(&settings, "official-openai", "model-1").unwrap();
         assert_eq!(target.supports_vision, None);
+    }
+
+    #[test]
+    fn tool_and_reasoning_capabilities_resolve_without_switching_models() {
+        let mut settings = ModelSettings::default();
+        push_model(&mut settings, "gpt-5.5");
+        let target = super::resolve_target(&settings, "official-openai", "model-1").unwrap();
+        assert!(target.supports_tools);
+        assert_eq!(target.supports_reasoning, Some(true));
+
+        settings.providers[0].models[0].capabilities = Some(ModelCapabilities {
+            function_calling: Some(false),
+            reasoning: Some(false),
+            ..ModelCapabilities::default()
+        });
+        let target = super::resolve_target(&settings, "official-openai", "model-1").unwrap();
+        assert!(!target.supports_tools);
+        assert_eq!(target.supports_reasoning, Some(false));
+        assert_eq!(target.api_model, "gpt-5.5");
+    }
+
+    #[test]
+    fn unknown_models_require_explicit_tool_override() {
+        let mut settings = ModelSettings::default();
+        push_model(&mut settings, "unknown-relay-model");
+        let target = super::resolve_target(&settings, "official-openai", "model-1").unwrap();
+        assert!(!target.supports_tools);
+
+        settings.providers[0].models[0].capabilities = Some(ModelCapabilities {
+            function_calling: Some(true),
+            ..ModelCapabilities::default()
+        });
+        let target = super::resolve_target(&settings, "official-openai", "model-1").unwrap();
+        assert!(target.supports_tools);
     }
 
     #[test]

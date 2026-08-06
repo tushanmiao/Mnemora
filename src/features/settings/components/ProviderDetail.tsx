@@ -11,19 +11,40 @@ import {
 import type {
   ApiProtocol,
   AuthScheme,
+  ModelCapabilities,
   ProviderConfig,
   ProviderKind,
   ProviderModelConfig,
 } from "../../../types/modelSettings";
-import { matchModelDefaults, resolveSupportsVision } from "../../../data/modelMatching";
+import {
+  matchModelDefaults,
+  resolveSupportsFunctionCalling,
+  resolveSupportsReasoning,
+  resolveSupportsVision,
+} from "../../../data/modelMatching";
 
 const CAPABILITY_BADGES = [
-  ["reasoning", "推理"],
-  ["functionCalling", "工具"],
   ["webSearch", "联网"],
   ["imageGeneration", "生图"],
   ["embedding", "嵌入"],
 ] as const;
+
+type CapabilityOverrideKey = "vision" | "functionCalling" | "reasoning";
+
+function capabilityPatch(
+  model: ProviderModelConfig,
+  key: CapabilityOverrideKey,
+  value: string,
+): Pick<ProviderModelConfig, "capabilities"> {
+  const capabilities: ModelCapabilities = { ...(model.capabilities ?? {}) };
+  if (value === "auto") delete capabilities[key];
+  else capabilities[key] = value === "on";
+  return {
+    capabilities: Object.values(capabilities).every((item) => item === undefined)
+      ? undefined
+      : capabilities,
+  };
+}
 
 const PROVIDER_KIND_LABELS: Record<ProviderKind, string> = {
   openai: "OpenAI 官方",
@@ -437,9 +458,27 @@ export function ProviderDetail(props: ProviderDetailProps) {
                 {(() => {
                   const capabilities = matchModelDefaults(model.apiModel)?.capabilities;
                   const vision = resolveSupportsVision(model.apiModel, model.capabilities?.vision);
+                  const tools = resolveSupportsFunctionCalling(
+                    model.apiModel,
+                    model.capabilities?.functionCalling,
+                  );
+                  const reasoning = resolveSupportsReasoning(
+                    model.apiModel,
+                    model.capabilities?.reasoning,
+                  );
                   const badges: Array<{ key: string; label: string; tone: "on" | "off" }> = [];
                   if (vision === true) badges.push({ key: "vision", label: "视觉", tone: "on" });
                   if (vision === false) badges.push({ key: "vision", label: "不支持图片", tone: "off" });
+                  badges.push({
+                    key: "functionCalling",
+                    label: tools ? "工具" : "无工具",
+                    tone: tools ? "on" : "off",
+                  });
+                  if (reasoning !== undefined) badges.push({
+                    key: "reasoning",
+                    label: reasoning ? "推理" : "无推理",
+                    tone: reasoning ? "on" : "off",
+                  });
                   for (const [key, label] of CAPABILITY_BADGES) {
                     if (capabilities?.[key]) badges.push({ key, label, tone: "on" });
                   }
@@ -461,36 +500,56 @@ export function ProviderDetail(props: ProviderDetailProps) {
                           <span className="model-badge model-badge-unknown">能力未收录</span>
                         )}
                       </div>
-                      <label className="model-vision-override" htmlFor={`vision-${model.id}`}>
-                        <span>图片能力</span>
-                        <select
-                          id={`vision-${model.id}`}
-                          className="settings-input settings-select"
-                          value={model.capabilities?.vision === undefined
-                            ? "auto"
-                            : model.capabilities.vision
-                              ? "on"
-                              : "off"}
-                          onChange={(event) => {
-                            const value = event.target.value;
-                            onUpdateModel(model.id, {
-                              capabilities: value === "auto"
-                                ? undefined
-                                : { vision: value === "on" },
-                            });
-                          }}
-                        >
-                          <option value="auto">
-                            {resolveSupportsVision(model.apiModel) === true
-                              ? "自动（支持）"
-                              : resolveSupportsVision(model.apiModel) === false
-                                ? "自动（不支持）"
-                                : "自动（未收录，放行）"}
-                          </option>
-                          <option value="on">支持图片</option>
-                          <option value="off">不支持图片</option>
-                        </select>
-                      </label>
+                      <div className="model-capability-overrides" aria-label="模型能力覆盖">
+                        {([
+                          {
+                            key: "vision",
+                            label: "图片",
+                            automatic: resolveSupportsVision(model.apiModel),
+                          },
+                          {
+                            key: "functionCalling",
+                            label: "工具",
+                            automatic: resolveSupportsFunctionCalling(model.apiModel),
+                          },
+                          {
+                            key: "reasoning",
+                            label: "推理",
+                            automatic: resolveSupportsReasoning(model.apiModel),
+                          },
+                        ] as const).map((capability) => (
+                          <label
+                            className="model-capability-override"
+                            htmlFor={`${capability.key}-${model.id}`}
+                            key={capability.key}
+                          >
+                            <span>{capability.label}</span>
+                            <select
+                              id={`${capability.key}-${model.id}`}
+                              className="settings-input settings-select"
+                              value={model.capabilities?.[capability.key] === undefined
+                                ? "auto"
+                                : model.capabilities[capability.key]
+                                  ? "on"
+                                  : "off"}
+                              onChange={(event) => onUpdateModel(
+                                model.id,
+                                capabilityPatch(model, capability.key, event.target.value),
+                              )}
+                            >
+                              <option value="auto">
+                                {capability.automatic === true
+                                  ? "自动：支持"
+                                  : capability.automatic === false
+                                    ? "自动：不支持"
+                                    : "自动：未收录"}
+                              </option>
+                              <option value="on">支持</option>
+                              <option value="off">不支持</option>
+                            </select>
+                          </label>
+                        ))}
+                      </div>
                     </div>
                   );
                 })()}

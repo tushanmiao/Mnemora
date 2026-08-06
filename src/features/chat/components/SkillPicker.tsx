@@ -2,16 +2,17 @@ import { useEffect, useRef, useState } from "react";
 import { Check, Sparkles, X } from "lucide-react";
 import type { SkillSummary } from "../../../types/skill";
 
-const MAX_SELECTED_SKILLS = 3;
+const MAX_SELECTED_SKILLS = 12;
 
 type Props = {
   skills: SkillSummary[];
   selectedSkillIds: string[];
   disabled?: boolean;
+  disabledReason?: string;
   onChange: (skillIds: string[]) => void;
 };
 
-export function SkillPicker({ skills, selectedSkillIds, disabled = false, onChange }: Props) {
+export function SkillPicker({ skills, selectedSkillIds, disabled = false, disabledReason, onChange }: Props) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const enabledSkills = skills.filter((skill) => skill.enabled);
@@ -42,8 +43,8 @@ export function SkillPicker({ skills, selectedSkillIds, disabled = false, onChan
       <button
         className={`icon-button${selectedCount > 0 ? " skill-picker-active" : ""}`}
         type="button"
-        title="选择技能"
-        aria-label="选择技能"
+        title={disabled && disabledReason ? disabledReason : "选择技能"}
+        aria-label={disabled && disabledReason ? disabledReason : "选择技能"}
         aria-expanded={open}
         disabled={disabled || enabledSkills.length === 0}
         onClick={() => setOpen((value) => !value)}

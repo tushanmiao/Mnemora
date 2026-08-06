@@ -1,5 +1,6 @@
 import type { SystemPromptSection } from "./prompt";
 import type { ChatAttachment } from "./attachment";
+import type { AgentWorkflowSummary } from "./workflow";
 
 /** 显示在时间线中的普通消息角色。 */
 export type MessageRole = "user" | "assistant";
@@ -132,6 +133,10 @@ export interface ChatMessage {
   usage?: ModelUsage;
   activatedSkills?: ActivatedSkillSnapshot[];
   toolTraces?: ToolTrace[];
+  /** 新 Agent Runtime 的稳定身份；旧会话没有该字段。 */
+  agentRunId?: string;
+  /** 可随消息快速加载的有界投影，完整流程由兼容字段或事件存储恢复。 */
+  workflowSummary?: AgentWorkflowSummary;
   errorMessage?: string;
 }
 

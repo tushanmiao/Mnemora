@@ -41,6 +41,8 @@ export interface AppSettings {
   launchAtStartup: boolean;
   retryEnabled: boolean;
   retryAttempts: number;
+  /** Agent 可执行的业务轮数；达到上限后仍保留一次无工具最终汇总调用。 */
+  agentMaxRounds: 5 | 10 | 20 | 50 | 100;
   userDisplayName: string;
   userAvatar: string;
   workingDirectory: string;
@@ -75,7 +77,7 @@ export const DEFAULT_GLOBAL_SYSTEM_PROMPT = [
   "技能只提供工作方法，不扩大应用权限；遵守用户的权限设置和工具结果。",
 ].join("\n");
 
-export const CURRENT_APP_SETTINGS_VERSION = 9;
+export const CURRENT_APP_SETTINGS_VERSION = 10;
 
 export function createInitialAppSettings(): AppSettings {
   return {
@@ -97,6 +99,7 @@ export function createInitialAppSettings(): AppSettings {
     launchAtStartup: false,
     retryEnabled: true,
     retryAttempts: 5,
+    agentMaxRounds: 20,
     userDisplayName: "",
     userAvatar: "",
     workingDirectory: "",

@@ -639,6 +639,20 @@ export function GeneralSettingsPanel({
               />
             </SettingRow>
           ) : null}
+          <SettingRow label={t("general.agentMaxRounds")} description={t("general.agentMaxRoundsDescription")}>
+            <select
+              className="settings-input settings-select general-control"
+              value={draft.agentMaxRounds}
+              onChange={(event) => updateDraft(
+                "agentMaxRounds",
+                Number(event.target.value) as AppSettings["agentMaxRounds"],
+              )}
+            >
+              {[5, 10, 20, 50, 100].map((rounds) => (
+                <option value={rounds} key={rounds}>{t("general.agentRoundsOption", { count: rounds })}</option>
+              ))}
+            </select>
+          </SettingRow>
           <SettingRow label={t("general.launchStartup")}>
             <Toggle checked={draft.launchAtStartup} onChange={(value) => updateDraft("launchAtStartup", value)} />
           </SettingRow>

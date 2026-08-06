@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   heuristicSupportsVision,
   matchModelDefaults,
+  resolveSupportsFunctionCalling,
+  resolveSupportsReasoning,
   resolveSupportsVision,
 } from "./modelMatching";
 
@@ -10,6 +12,8 @@ describe("matchModelDefaults", () => {
     const defaults = matchModelDefaults("gpt-5.5");
     expect(defaults).not.toBeNull();
     expect(defaults?.supportsVision).toBe(true);
+    expect(defaults?.supportsFunctionCalling).toBe(true);
+    expect(defaults?.supportsReasoning).toBe(true);
     expect(defaults?.contextWindowTokens).toBeGreaterThan(0);
     expect(defaults?.pricing?.currency).toBe("USD");
   });
@@ -87,5 +91,25 @@ describe("resolveSupportsVision", () => {
 
   it("两层都未知保持 undefined（放行）", () => {
     expect(resolveSupportsVision("mystery-chat-model")).toBeUndefined();
+  });
+});
+
+describe("resolveSupportsFunctionCalling", () => {
+  it("用户覆盖优先于数据库", () => {
+    expect(resolveSupportsFunctionCalling("gpt-5.5", false)).toBe(false);
+    expect(resolveSupportsFunctionCalling("unknown-relay-model", true)).toBe(true);
+  });
+
+  it("数据库命中时启用，未知模型保守关闭", () => {
+    expect(resolveSupportsFunctionCalling("gpt-5.5")).toBe(true);
+    expect(resolveSupportsFunctionCalling("unknown-relay-model")).toBe(false);
+  });
+});
+
+describe("resolveSupportsReasoning", () => {
+  it("解析数据库并允许用户覆盖", () => {
+    expect(resolveSupportsReasoning("gpt-5.5")).toBe(true);
+    expect(resolveSupportsReasoning("gpt-5.5", false)).toBe(false);
+    expect(resolveSupportsReasoning("unknown-relay-model")).toBeUndefined();
   });
 });

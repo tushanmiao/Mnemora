@@ -13,6 +13,7 @@ use super::types::ToolRisk;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ToolNamespace {
+    Discovery,
     Skill,
     Attachment,
     Document,
@@ -29,6 +30,8 @@ pub enum ToolResourceCost {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolHandler {
+    SearchTools,
+    SearchSkills,
     Skill,
     ReadAttachmentText,
     ReadPdfPages,
@@ -63,6 +66,8 @@ pub struct ToolEntry {
 }
 
 const DEFAULT_OUTPUT_LIMIT: usize = 20_000;
+pub(super) const MAX_DISCOVERY_QUERY_CHARS: usize = 200;
+pub(super) const MAX_DISCOVERY_RESULTS: usize = 12;
 pub(super) const MAX_SKILL_ARGUMENT_CHARS: usize = 2_000;
 pub(super) const DEFAULT_ATTACHMENT_READ_BYTES: usize = 8_000;
 pub(super) const MAX_ATTACHMENT_READ_BYTES: usize = 32_000;
@@ -79,6 +84,18 @@ impl ToolEntry {
             input_schema: (self.input_schema)(),
         }
     }
+}
+
+fn discovery_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "query": { "type": "string", "minLength": 1, "maxLength": MAX_DISCOVERY_QUERY_CHARS },
+            "limit": { "type": "integer", "minimum": 1, "maximum": MAX_DISCOVERY_RESULTS }
+        },
+        "required": ["query"],
+        "additionalProperties": false
+    })
 }
 
 fn skill_schema() -> Value {
@@ -201,6 +218,32 @@ fn memory_modify_schema() -> Value {
 
 pub static TOOL_ENTRIES: &[ToolEntry] = &[
     ToolEntry {
+        name: "search_tools",
+        description: "按任务关键词搜索当前会话可用工具的轻量目录；命中后具体工具契约会在下一轮按需披露。",
+        input_schema: discovery_schema,
+        namespace: ToolNamespace::Discovery,
+        handler: ToolHandler::SearchTools,
+        risk: ToolRisk::BuiltinRead,
+        read_only: true,
+        parallel_safe: false,
+        approval: ToolApprovalPolicy::Never,
+        resource_cost: ToolResourceCost::Low,
+        max_output_chars: DEFAULT_OUTPUT_LIMIT,
+    },
+    ToolEntry {
+        name: "search_skills",
+        description: "按任务关键词搜索当前工作区可用 Skill 的名称和说明；只返回目录，不加载 Skill 正文。",
+        input_schema: discovery_schema,
+        namespace: ToolNamespace::Discovery,
+        handler: ToolHandler::SearchSkills,
+        risk: ToolRisk::BuiltinRead,
+        read_only: true,
+        parallel_safe: false,
+        approval: ToolApprovalPolicy::Never,
+        resource_cost: ToolResourceCost::Low,
+        max_output_chars: DEFAULT_OUTPUT_LIMIT,
+    },
+    ToolEntry {
         name: "skill",
         description: "按 ID 加载一个可用技能的完整工作说明；同一运行无需重复加载。",
         input_schema: skill_schema,
@@ -317,7 +360,8 @@ pub fn assert_valid_registry() {
     debug_assert!(TOOL_ENTRIES.iter().all(|entry| {
         matches!(
             entry.namespace,
-            ToolNamespace::Skill
+            ToolNamespace::Discovery
+                | ToolNamespace::Skill
                 | ToolNamespace::Attachment
                 | ToolNamespace::Document
                 | ToolNamespace::Memory

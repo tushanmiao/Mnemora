@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::memory::MemorySettings;
 
-pub const CURRENT_APP_SETTINGS_VERSION: u32 = 9;
+pub const CURRENT_APP_SETTINGS_VERSION: u32 = 10;
 pub const DEFAULT_GLOBAL_SYSTEM_PROMPT: &str = concat!(
     "你是 Mnemora 的学习与研究助手。\n",
     "优先直接回答问题，并根据复杂度使用清晰的标题、列表、表格或代码块。\n",
@@ -156,6 +156,9 @@ pub struct AppSettings {
     pub retry_enabled: bool,
     #[serde(default = "default_retry_attempts")]
     pub retry_attempts: u8,
+    /// Agent 业务轮数；达到上限后运行层仍保留一次无工具最终汇总调用。
+    #[serde(default = "default_agent_max_rounds")]
+    pub agent_max_rounds: u16,
     #[serde(default)]
     pub user_display_name: String,
     #[serde(default)]
@@ -190,6 +193,10 @@ fn default_retry_attempts() -> u8 {
     5
 }
 
+fn default_agent_max_rounds() -> u16 {
+    20
+}
+
 fn default_font_size() -> u8 {
     14
 }
@@ -219,6 +226,7 @@ impl Default for AppSettings {
             launch_at_startup: false,
             retry_enabled: true,
             retry_attempts: 5,
+            agent_max_rounds: 20,
             user_display_name: String::new(),
             user_avatar: String::new(),
             working_directory: String::new(),
@@ -304,6 +312,9 @@ impl AppSettings {
         }
         if !(1..=5).contains(&self.retry_attempts) {
             return Err("Retry attempts must be between 1 and 5".to_string());
+        }
+        if !matches!(self.agent_max_rounds, 5 | 10 | 20 | 50 | 100) {
+            return Err("Agent maximum rounds must be one of 5, 10, 20, 50, or 100".to_string());
         }
         if !(256..=131_072).contains(&self.max_output_tokens) {
             return Err("Maximum output tokens must be between 256 and 131072".to_string());
@@ -420,12 +431,35 @@ mod tests {
         assert!(settings.stream_enabled);
         assert!(!settings.request_debug_enabled);
         assert_eq!(settings.retry_attempts, 5);
+        assert_eq!(settings.agent_max_rounds, 20);
         assert_eq!(settings.font_size, 14);
         assert_eq!(settings.letter_spacing, 0.0);
         assert_eq!(settings.font_preset, super::FontPreset::System);
         assert_eq!(settings.theme_background.surface_opacity, 92);
         assert!(!settings.memory.enabled);
         assert!(!settings.memory.allow_model_write);
+    }
+
+    #[test]
+    fn agent_rounds_accept_only_documented_presets() {
+        for rounds in [5, 10, 20, 50, 100] {
+            let settings = AppSettings {
+                agent_max_rounds: rounds,
+                ..AppSettings::default()
+            };
+            assert!(settings.normalize_and_validate().is_ok(), "preset {rounds}");
+        }
+
+        for rounds in [0, 1, 19, 21, 101] {
+            let settings = AppSettings {
+                agent_max_rounds: rounds,
+                ..AppSettings::default()
+            };
+            assert!(
+                settings.normalize_and_validate().is_err(),
+                "invalid {rounds}"
+            );
+        }
     }
 
     #[test]

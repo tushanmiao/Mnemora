@@ -45,6 +45,10 @@ export interface ModelDefaults {
   contextWindowTokens?: number;
   /** 是否支持图片输入；undefined 表示数据库未收录。 */
   supportsVision?: boolean;
+  /** 是否支持结构化 Tool Calling；undefined 表示数据库未收录。 */
+  supportsFunctionCalling?: boolean;
+  /** 是否支持独立 reasoning；undefined 表示数据库未收录。 */
+  supportsReasoning?: boolean;
   /** 数据库记录的完整能力集合（设置页徽章展示用）。 */
   capabilities?: ModelCapabilityDefaults;
   pricing?: ModelPricing;
@@ -145,6 +149,8 @@ export function matchModelDefaults(apiModel: string): ModelDefaults | null {
         ? entry.contextWindow
         : undefined,
     supportsVision: entry.capabilities?.vision,
+    supportsFunctionCalling: entry.capabilities?.functionCalling,
+    supportsReasoning: entry.capabilities?.reasoning,
     capabilities: entry.capabilities
       ? {
           vision: entry.capabilities.vision,
@@ -212,4 +218,25 @@ export function resolveSupportsVision(
     matchModelDefaults(apiModel)?.supportsVision ??
     heuristicSupportsVision(apiModel)
   );
+}
+
+/**
+ * 解析模型的有效 Tool Calling 能力。未知模型采用保守 false；用户可在模型设置中
+ * 显式开启中转商改名或数据库尚未收录的模型。
+ */
+export function resolveSupportsFunctionCalling(
+  apiModel: string,
+  override?: boolean,
+): boolean {
+  if (override !== undefined) return override;
+  return matchModelDefaults(apiModel)?.supportsFunctionCalling === true;
+}
+
+/** 解析 reasoning 能力；未知保持 undefined，只影响 thinking 参数和界面提示。 */
+export function resolveSupportsReasoning(
+  apiModel: string,
+  override?: boolean,
+): boolean | undefined {
+  if (override !== undefined) return override;
+  return matchModelDefaults(apiModel)?.supportsReasoning;
 }

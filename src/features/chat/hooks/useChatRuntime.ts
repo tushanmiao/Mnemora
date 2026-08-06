@@ -32,6 +32,7 @@ import {
   type SelectedModel,
 } from "../runtime/generationHelpers";
 import { useStreamingRun } from "./useStreamingRun";
+import { workflowSummaryForMessage } from "../agent/projections/workflowProjection";
 
 export type { SelectedModel } from "../runtime/generationHelpers";
 
@@ -168,9 +169,9 @@ export function useChatRuntime({
         });
         const completedConversation: Conversation = {
           ...conversation,
-          messages: conversation.messages.map((message) => (
-            message.id === assistantMessageId
-              ? {
+          messages: conversation.messages.map((message) => {
+            if (message.id !== assistantMessageId) return message;
+            const completedMessage: ChatMessage = {
                   ...message,
                   content: response.text,
                   reasoning: response.reasoning,
@@ -181,12 +182,15 @@ export function useChatRuntime({
                     ...modelActivatedSkills.filter((skill) => (
                       !message.activatedSkills?.some((current) => current.id === skill.id)
                     )),
-                  ].slice(0, 3),
+                  ].slice(0, 12),
                   toolTraces: response.toolTraces,
                   updatedAt: completedAt,
-                }
-              : message
-          )),
+                };
+            return {
+              ...completedMessage,
+              workflowSummary: workflowSummaryForMessage(completedMessage),
+            };
+          }),
           updatedAt: completedAt,
         };
         cacheConversation(completedConversation);

@@ -26,8 +26,8 @@ use super::{
     catalog::{
         assert_valid_registry, find_tool, ToolApprovalPolicy, ToolHandler,
         DEFAULT_ATTACHMENT_READ_BYTES, DEFAULT_MEMORY_READ_BYTES, MAX_ATTACHMENT_READ_BYTES,
-        MAX_MEMORY_MODIFY_BYTES, MAX_MEMORY_READ_BYTES, MAX_PDF_PAGES_PER_CALL,
-        MAX_SKILL_ARGUMENT_CHARS,
+        MAX_DISCOVERY_QUERY_CHARS, MAX_DISCOVERY_RESULTS, MAX_MEMORY_MODIFY_BYTES,
+        MAX_MEMORY_READ_BYTES, MAX_PDF_PAGES_PER_CALL, MAX_SKILL_ARGUMENT_CHARS,
     },
     documents::{
         read_docx_blocks, read_xlsx_rows, MAX_DOCX_BLOCKS_PER_CALL, MAX_XLSX_ROWS_PER_CALL,
@@ -38,13 +38,15 @@ use super::{
 const MAX_TOOL_PREVIEW_CHARS: usize = 2_000;
 const MAX_TEXT_FILE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_TEXT_LINES: usize = 2_000;
-const MAX_ACTIVE_SKILLS_PER_RUN: usize = 3;
+const MAX_ACTIVE_SKILLS_PER_RUN: usize = 12;
 
 #[derive(Clone)]
 pub struct ToolRuntimeContext {
     pub conversation_id: String,
     pub permission_mode: AiPermissionMode,
     pub attachments: Vec<StoredChatAttachment>,
+    /** 当前请求真正具备的业务工具；完整 Schema 只在搜索命中后加入模型请求。 */
+    pub available_tool_names: Vec<String>,
     pub model_skills: Vec<SkillSummary>,
     pub max_model_skill_activations: usize,
     pub memory_settings: MemorySettings,
@@ -57,6 +59,7 @@ impl ToolRuntimeContext {
             conversation_id: String::new(),
             permission_mode,
             attachments: Vec::new(),
+            available_tool_names: Vec::new(),
             model_skills: Vec::new(),
             max_model_skill_activations: 0,
             memory_settings: MemorySettings::default(),
@@ -138,10 +141,16 @@ pub fn build_runtime_context(
                     .all(|tool| available_tools.contains(tool.as_str()))
         })
         .collect();
+    let mut available_tool_names = available_tools
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    available_tool_names.sort();
     Ok(ToolRuntimeContext {
         conversation_id,
         permission_mode: request.permission_mode,
         attachments,
+        available_tool_names,
         model_skills,
         max_model_skill_activations: MAX_ACTIVE_SKILLS_PER_RUN.saturating_sub(manual.len()),
         memory_settings,
@@ -193,38 +202,22 @@ pub fn configure_model_request(
         );
     }
     if context.max_model_skill_activations > 0 && !context.model_skills.is_empty() {
-        push_registered_tool(&mut tools, "skill");
-        let catalog = context
-            .model_skills
-            .iter()
-            .map(|skill| format!("- `{}`：{}", skill.id, skill.description))
-            .collect::<Vec<_>>()
-            .join("\n");
+        push_registered_tool(&mut tools, "search_skills");
         append_system_prompt(
             request,
-            &format!(
-                "<mnemora_skill_catalog>\n以下技能仅提供轻量目录。只有任务确实需要时才调用 skill 工具加载正文；不要重复加载。\n{catalog}\n</mnemora_skill_catalog>"
-            ),
+            "<mnemora_skill_discovery>\n当前工作区存在可按需使用的 Skill。只有任务确实需要专门工作方法时，先调用 search_skills；搜索命中后再调用 skill 加载正文。同一 Skill 不要重复加载。\n</mnemora_skill_discovery>",
         );
     }
-    if context.attachments.iter().any(is_text_attachment) {
-        push_registered_tool(&mut tools, "read_attachment_text");
-    }
-    if context.attachments.iter().any(is_pdf_attachment) {
-        push_registered_tool(&mut tools, "read_pdf_pages");
-    }
-    if context.attachments.iter().any(is_docx_attachment) {
-        push_registered_tool(&mut tools, "read_docx_blocks");
-    }
-    if context.attachments.iter().any(is_xlsx_attachment) {
-        push_registered_tool(&mut tools, "read_xlsx_rows");
-    }
-    if context.memory_settings.enabled && context.memory_settings.allow_model_read {
-        push_registered_tool(&mut tools, "memory_read");
-        push_registered_tool(&mut tools, "memory_search");
-    }
-    if context.memory_settings.enabled && context.memory_settings.allow_model_write {
-        push_registered_tool(&mut tools, "memory_modify");
+    if context
+        .available_tool_names
+        .iter()
+        .any(|name| name != "skill")
+    {
+        push_registered_tool(&mut tools, "search_tools");
+        append_system_prompt(
+            request,
+            "<mnemora_tool_discovery>\n当前会话存在可按需使用的工具。先调用 search_tools 搜索与任务直接相关的能力；命中的完整工具契约会在下一轮披露。不要猜测未披露的工具名称或参数。\n</mnemora_tool_discovery>",
+        );
     }
     let readable_attachments = context
         .attachments
@@ -258,8 +251,49 @@ pub fn configure_model_request(
 }
 
 fn push_registered_tool(tools: &mut Vec<ModelTool>, name: &str) {
+    if tools.iter().any(|tool| tool.name == name) {
+        return;
+    }
     let entry = find_tool(name).expect("内部工具必须先注册");
     tools.push(entry.model_tool());
+}
+
+/** Tool/Skill 搜索结果只披露命中的下一层契约，不把完整 Catalog 注入首轮上下文。 */
+pub fn apply_tool_disclosures(
+    request: &mut ModelRequest,
+    call: &ModelToolCall,
+    execution: &ToolExecution,
+) {
+    if execution.is_error {
+        return;
+    }
+    if call.name == "search_skills" {
+        let has_results = serde_json::from_str::<Value>(&execution.content)
+            .ok()
+            .and_then(|value| value.get("skills").and_then(Value::as_array).cloned())
+            .is_some_and(|skills| !skills.is_empty());
+        if has_results {
+            push_registered_tool(&mut request.tools, "skill");
+        }
+        return;
+    }
+    if call.name != "search_tools" {
+        return;
+    }
+    let Some(tools) = serde_json::from_str::<Value>(&execution.content)
+        .ok()
+        .and_then(|value| value.get("tools").and_then(Value::as_array).cloned())
+    else {
+        return;
+    };
+    for name in tools
+        .iter()
+        .filter_map(|tool| tool.get("name").and_then(Value::as_str))
+    {
+        if !matches!(name, "search_tools" | "search_skills") {
+            push_registered_tool(&mut request.tools, name);
+        }
+    }
 }
 
 pub fn tool_risk(call: &ModelToolCall) -> ToolRisk {
@@ -310,6 +344,8 @@ pub async fn execute_tool(
     })?;
     validate_tool_arguments(call, entry.handler)?;
     let result = match entry.handler {
+        ToolHandler::SearchTools => execute_tool_search(call, context),
+        ToolHandler::SearchSkills => execute_skill_search(call, context),
         ToolHandler::Skill => execute_skill(call, context, skills, skill_cache),
         ToolHandler::ReadAttachmentText => {
             let path = resolve_attachment(call, context, repository, is_text_attachment)?;
@@ -431,6 +467,23 @@ pub async fn execute_tool(
 /** 对固定工具支持的 JSON Schema 子集执行严格校验，不引入常驻 Schema 引擎。 */
 fn validate_tool_arguments(call: &ModelToolCall, handler: ToolHandler) -> Result<(), ModelError> {
     match handler {
+        ToolHandler::SearchTools | ToolHandler::SearchSkills => {
+            ensure_object_keys(&call.arguments, &["query", "limit"])?;
+            let query = required_string(&call.arguments, "query")?;
+            if query.chars().count() > MAX_DISCOVERY_QUERY_CHARS {
+                return Err(ModelError::invalid_configuration(format!(
+                    "搜索词不能超过 {MAX_DISCOVERY_QUERY_CHARS} 个字符。"
+                )));
+            }
+            validate_optional_positive_integer(&call.arguments, "limit")?;
+            if optional_u64(&call.arguments, "limit")
+                .is_some_and(|limit| limit > MAX_DISCOVERY_RESULTS as u64)
+            {
+                return Err(ModelError::invalid_configuration(format!(
+                    "搜索最多返回 {MAX_DISCOVERY_RESULTS} 项。"
+                )));
+            }
+        }
         ToolHandler::Skill => {
             ensure_object_keys(&call.arguments, &["id", "arguments"])?;
             required_string(&call.arguments, "id")?;
@@ -584,6 +637,148 @@ fn validate_tool_arguments(call: &ModelToolCall, handler: ToolHandler) -> Result
         }
     }
     Ok(())
+}
+
+fn execute_tool_search(
+    call: &ModelToolCall,
+    context: &ToolRuntimeContext,
+) -> Result<ToolExecution, ModelError> {
+    let query = required_string(&call.arguments, "query")?;
+    let limit = optional_u64(&call.arguments, "limit")
+        .unwrap_or(6)
+        .min(MAX_DISCOVERY_RESULTS as u64) as usize;
+    let available = context
+        .available_tool_names
+        .iter()
+        .filter_map(|name| find_tool(name))
+        .filter(|entry| entry.name != "skill")
+        .collect::<Vec<_>>();
+    let selected = ranked_matches(
+        query,
+        available,
+        |entry| format!("{} {} {:?}", entry.name, entry.description, entry.namespace),
+        limit,
+    );
+    let tools = selected
+        .into_iter()
+        .map(|entry| {
+            json!({
+                "name": entry.name,
+                "description": entry.description,
+                "namespace": entry.namespace,
+                "readOnly": entry.read_only,
+                "risk": entry.risk,
+                "resourceCost": entry.resource_cost,
+            })
+        })
+        .collect::<Vec<_>>();
+    let content = json!({ "tools": tools }).to_string();
+    let names = serde_json::from_str::<Value>(&content)
+        .ok()
+        .and_then(|value| value.get("tools").and_then(Value::as_array).cloned())
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|tool| tool.get("name").and_then(Value::as_str))
+        .collect::<Vec<_>>()
+        .join("、");
+    Ok(ToolExecution {
+        output_chars: content.chars().count(),
+        content,
+        preview: if names.is_empty() {
+            "没有找到与当前上下文匹配的工具。".to_string()
+        } else {
+            format!("已披露工具：{names}")
+        },
+        is_error: false,
+        activated_skill_id: None,
+        output_truncated: false,
+    })
+}
+
+fn execute_skill_search(
+    call: &ModelToolCall,
+    context: &ToolRuntimeContext,
+) -> Result<ToolExecution, ModelError> {
+    let query = required_string(&call.arguments, "query")?;
+    let limit = optional_u64(&call.arguments, "limit")
+        .unwrap_or(6)
+        .min(MAX_DISCOVERY_RESULTS as u64) as usize;
+    let selected = ranked_matches(
+        query,
+        context.model_skills.iter().collect::<Vec<_>>(),
+        |skill| format!("{} {} {}", skill.id, skill.name, skill.description),
+        limit,
+    );
+    let skills = selected
+        .into_iter()
+        .map(|skill| {
+            json!({
+                "id": skill.id,
+                "name": skill.name,
+                "description": skill.description,
+                "version": skill.version,
+                "requiredTools": skill.required_tools,
+            })
+        })
+        .collect::<Vec<_>>();
+    let content = json!({ "skills": skills }).to_string();
+    let names = serde_json::from_str::<Value>(&content)
+        .ok()
+        .and_then(|value| value.get("skills").and_then(Value::as_array).cloned())
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|skill| skill.get("name").and_then(Value::as_str))
+        .collect::<Vec<_>>()
+        .join("、");
+    Ok(ToolExecution {
+        output_chars: content.chars().count(),
+        content,
+        preview: if names.is_empty() {
+            "没有找到匹配的 Skill。".to_string()
+        } else {
+            format!("已找到 Skill：{names}")
+        },
+        is_error: false,
+        activated_skill_id: None,
+        output_truncated: false,
+    })
+}
+
+fn ranked_matches<T, F>(query: &str, values: Vec<T>, text: F, limit: usize) -> Vec<T>
+where
+    F: Fn(&T) -> String,
+{
+    let query = query.trim().to_lowercase();
+    let terms = query
+        .split(|character: char| character.is_whitespace() || ",，;；/|".contains(character))
+        .filter(|term| !term.is_empty())
+        .collect::<Vec<_>>();
+    let mut ranked = values
+        .into_iter()
+        .enumerate()
+        .map(|(index, value)| {
+            let haystack = text(&value).to_lowercase();
+            let score = if haystack.contains(&query) {
+                terms.len().saturating_add(2)
+            } else {
+                terms
+                    .iter()
+                    .filter(|term| haystack.contains(**term))
+                    .count()
+            };
+            (score, index, value)
+        })
+        .collect::<Vec<_>>();
+    let has_match = ranked.iter().any(|(score, _, _)| *score > 0);
+    if has_match {
+        ranked.retain(|(score, _, _)| *score > 0);
+    }
+    ranked.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
+    ranked
+        .into_iter()
+        .take(limit)
+        .map(|(_, _, value)| value)
+        .collect()
 }
 
 fn validate_optional_positive_integer(value: &Value, key: &str) -> Result<(), ModelError> {
@@ -1024,11 +1219,12 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        execute_skill, parallel_safe, read_pdf, render_skill_arguments, requires_approval,
+        apply_tool_disclosures, configure_model_request, execute_skill, execute_skill_search,
+        execute_tool_search, parallel_safe, read_pdf, render_skill_arguments, requires_approval,
         truncate_head_tail, truncate_utf8_bytes, validate_tool_arguments, SkillRunCache,
         ToolRuntimeContext,
     };
-    use crate::ai::types::ModelToolCall;
+    use crate::ai::types::{ModelOptions, ModelRequest, ModelToolCall};
     use crate::chat::agent::catalog::find_tool;
     use crate::chat::conversation_types::AiPermissionMode;
     use crate::memory::MemorySettings;
@@ -1060,6 +1256,48 @@ mod tests {
         assert!(context.attachments.is_empty());
         assert!(context.model_skills.is_empty());
         assert_eq!(context.max_model_skill_activations, 0);
+    }
+
+    #[test]
+    fn tool_contracts_are_disclosed_only_after_catalog_search() {
+        let context = ToolRuntimeContext {
+            conversation_id: "conversation-1".to_string(),
+            permission_mode: AiPermissionMode::AskSensitive,
+            attachments: Vec::new(),
+            available_tool_names: vec!["read_pdf_pages".to_string(), "memory_search".to_string()],
+            model_skills: Vec::new(),
+            max_model_skill_activations: 0,
+            memory_settings: MemorySettings::default(),
+        };
+        let mut request = ModelRequest {
+            model: "test-model".to_string(),
+            system_prompt: None,
+            messages: Vec::new(),
+            options: ModelOptions::default(),
+            tools: Vec::new(),
+        };
+        configure_model_request(&mut request, &context, None);
+        assert_eq!(
+            request
+                .tools
+                .iter()
+                .map(|tool| tool.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["search_tools"]
+        );
+
+        let call = tool_call("search_tools", json!({ "query": "PDF 页面", "limit": 3 }));
+        let execution = execute_tool_search(&call, &context).unwrap();
+        assert!(execution.content.contains("read_pdf_pages"));
+        apply_tool_disclosures(&mut request, &call, &execution);
+        assert!(request
+            .tools
+            .iter()
+            .any(|tool| tool.name == "read_pdf_pages"));
+        assert!(!request
+            .tools
+            .iter()
+            .any(|tool| tool.name == "memory_search"));
     }
 
     #[test]
@@ -1143,10 +1381,35 @@ mod tests {
             conversation_id: "conversation-1".to_string(),
             permission_mode: AiPermissionMode::AskSensitive,
             attachments: Vec::new(),
+            available_tool_names: vec!["skill".to_string()],
             model_skills,
             max_model_skill_activations: 1,
             memory_settings: MemorySettings::default(),
         };
+        let mut discovery_request = ModelRequest {
+            model: "test-model".to_string(),
+            system_prompt: None,
+            messages: Vec::new(),
+            options: ModelOptions::default(),
+            tools: Vec::new(),
+        };
+        configure_model_request(&mut discovery_request, &context, None);
+        assert_eq!(
+            discovery_request
+                .tools
+                .iter()
+                .map(|tool| tool.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["search_skills"]
+        );
+        let search = tool_call("search_skills", json!({ "query": "first" }));
+        let search_result = execute_skill_search(&search, &context).unwrap();
+        apply_tool_disclosures(&mut discovery_request, &search, &search_result);
+        assert!(discovery_request
+            .tools
+            .iter()
+            .any(|tool| tool.name == "skill"));
+
         let mut cache = SkillRunCache::default();
         let first = ModelToolCall {
             id: "call-1".to_string(),

@@ -17,7 +17,7 @@ use super::{
 };
 
 const STATE_VERSION: u32 = 1;
-const MAX_ACTIVATED_SKILLS: usize = 3;
+const MAX_ACTIVATED_SKILLS: usize = 12;
 const MAX_ACTIVATED_PROMPT_BYTES: usize = 192 * 1024;
 const MAX_DETAIL_FILES: usize = 512;
 const MAX_DETAIL_DEPTH: usize = 8;

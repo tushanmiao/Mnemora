@@ -25,7 +25,7 @@ const MAX_OUTPUT_TOKENS: u32 = 131_072;
 const MAX_ATTACHMENTS_PER_MESSAGE: usize = 8;
 const MAX_MODEL_IMAGES: usize = 4;
 const MAX_MODEL_IMAGE_BYTES: u64 = 16 * 1024 * 1024;
-const MAX_ACTIVATED_SKILLS: usize = 3;
+const MAX_ACTIVATED_SKILLS: usize = 12;
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]

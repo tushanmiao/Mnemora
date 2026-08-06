@@ -2,7 +2,7 @@ import type { ActivatedSkillSnapshot } from "../../../types/chat";
 import type { SkillActivationSelection, SkillSummary } from "../../../types/skill";
 import { RESERVED_SLASH_TRIGGERS } from "../commands/slashCommands";
 
-const MAX_ACTIVE_SKILLS = 3;
+const MAX_ACTIVE_SKILLS = 12;
 
 /**
  * Slash Trigger 只负责把技能加入本轮选择；原始消息仍会持久化，Rust 在请求边界移除触发词。

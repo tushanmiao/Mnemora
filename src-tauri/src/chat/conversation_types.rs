@@ -39,6 +39,33 @@ pub enum MessageStatus {
     Error,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentRunStatus {
+    Preparing,
+    Running,
+    WaitingApproval,
+    WaitingUser,
+    Paused,
+    Checkpointing,
+    Finalizing,
+    Completed,
+    Failed,
+    Stopped,
+    BudgetExhausted,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentWorkflowSummary {
+    pub status: AgentRunStatus,
+    pub step_count: u32,
+    pub tool_call_count: u32,
+    pub skill_count: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum AiPermissionMode {
@@ -242,6 +269,10 @@ pub struct StoredChatMessage {
     pub activated_skills: Vec<ActivatedSkillSnapshot>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_traces: Vec<crate::chat::agent::ToolTraceSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_summary: Option<AgentWorkflowSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_message: Option<String>,
 }
@@ -445,8 +476,8 @@ impl StoredConversation {
                 validate_stable_id("Snapshot model ID", &snapshot.id)?;
                 validate_stable_id("Snapshot provider ID", &snapshot.provider_id)?;
             }
-            if message.activated_skills.len() > 3 {
-                return Err("Chat message cannot activate more than 3 skills".to_string());
+            if message.activated_skills.len() > 12 {
+                return Err("Chat message cannot activate more than 12 skills".to_string());
             }
             for skill in &message.activated_skills {
                 crate::skills::validate_skill_id(&skill.id)?;
@@ -458,8 +489,19 @@ impl StoredConversation {
                     return Err("Chat message contains an invalid skill snapshot".to_string());
                 }
             }
-            if message.tool_traces.len() > 64 {
-                return Err("Chat message cannot contain more than 64 tool traces".to_string());
+            if message.tool_traces.len() > 128 {
+                return Err("Chat message cannot contain more than 128 tool traces".to_string());
+            }
+            if let Some(run_id) = message.agent_run_id.as_deref() {
+                validate_stable_id("Agent Run ID", run_id)?;
+            }
+            if let Some(summary) = message.workflow_summary.as_ref() {
+                if summary.step_count > 10_000
+                    || summary.tool_call_count > 10_000
+                    || summary.skill_count > 10_000
+                {
+                    return Err("Chat message workflow summary exceeds its bounds".to_string());
+                }
             }
             if message.tool_traces.iter().any(|trace| {
                 trace.argument_summary.chars().count() > 500
@@ -561,6 +603,8 @@ mod tests {
                 usage: None,
                 activated_skills: Vec::new(),
                 tool_traces: Vec::new(),
+                agent_run_id: None,
+                workflow_summary: None,
                 error_message: None,
             }],
             assistant_id: None,

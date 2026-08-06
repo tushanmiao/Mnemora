@@ -3,7 +3,6 @@ import {
   AlertCircle,
   Bot,
   BookOpenText,
-  BrainCircuit,
   Check,
   ChevronDown,
   ChevronUp,
@@ -14,8 +13,6 @@ import {
   Pencil,
   Quote,
   RefreshCcw,
-  Sparkles,
-  Wrench,
   Trash2,
   UserRound,
   X,
@@ -24,8 +21,8 @@ import type { ChatMessage, LiteratureReference } from "../../../types/chat";
 import { MarkdownMessage } from "./MarkdownMessage";
 import { ChatAttachments } from "./ChatAttachments";
 import { useStreamingMessage } from "../stores/streamingStore";
-import { resolveToolApproval } from "../api/chat";
 import { useI18n } from "../../../i18n/I18nProvider";
+import { AgentWorkflow } from "../agent/components/AgentWorkflow";
 import "../styles/message-bubble.css";
 
 const LONG_USER_MESSAGE_CHARACTERS = 420;
@@ -55,7 +52,8 @@ type MessageBubbleProps = {
 };
 
 export type MessageBubbleUiState = {
-  reasoningOpen: boolean;
+  workflowOpen: boolean;
+  workflowInteracted: boolean;
   userExpanded: boolean;
   editing: boolean;
   editDraft: string;
@@ -108,17 +106,11 @@ export const MessageBubble = memo(function MessageBubble({
   const attachments = message.attachments ?? [];
   const literatureReferences = message.literatureReferences ?? [];
   const noteReferences = message.noteReferences ?? [];
-  const activatedSkills = message.activatedSkills ?? [];
   const toolTraces = message.toolTraces ?? [];
   const hasAttachments = attachments.length > 0;
   const hasLiteratureReferences = (message.literatureReferences?.length ?? 0) > 0;
   const hasNoteReferences = noteReferences.length > 0;
   const hasReasoning = displayedReasoning.trim().length > 0;
-  const isWaiting = isAssistant
-    && message.status === "pending"
-    && !hasContent
-    && !hasReasoning
-    && toolTraces.length === 0;
   const isStopped = message.status === "stopped";
   const isError = message.status === "error";
   const showFooter = !isStreaming && message.status !== "pending";
@@ -126,11 +118,10 @@ export const MessageBubble = memo(function MessageBubble({
     Array.from(displayedContent).length > LONG_USER_MESSAGE_CHARACTERS
     || displayedContent.split(/\r?\n/).length > LONG_USER_MESSAGE_LINES
   );
-  const { reasoningOpen, userExpanded, editing } = uiState;
+  const { workflowOpen, workflowInteracted, userExpanded, editing } = uiState;
   const editDraft = uiState.editDraft;
   const [copied, setCopied] = useState(false);
   const [noteState, setNoteState] = useState<"idle" | "saving" | "saved">("idle");
-  const [resolvingApprovalId, setResolvingApprovalId] = useState<string | null>(null);
   const copyResetTimerRef = useRef<number | null>(null);
   const noteResetTimerRef = useRef<number | null>(null);
   const quoteHostRef = useRef<HTMLDivElement | null>(null);
@@ -178,13 +169,29 @@ export const MessageBubble = memo(function MessageBubble({
   }, [quoteAnchor]);
 
   useEffect(() => {
-    if (!isStreaming) return;
-    if (isStreaming && hasReasoning && !hasContent) {
-      onUiStateChange(message.id, { reasoningOpen: true });
-    } else if (hasContent) {
-      onUiStateChange(message.id, { reasoningOpen: false });
+    if (!isAssistant) return;
+    const needsAttention = message.status === "error"
+      || message.status === "stopped"
+      || toolTraces.some((trace) => trace.status === "awaitingApproval");
+    if (needsAttention && !workflowOpen) {
+      onUiStateChange(message.id, { workflowOpen: true });
+      return;
     }
-  }, [hasContent, hasReasoning, isStreaming, message.id, onUiStateChange]);
+    if (workflowInteracted) return;
+    const shouldOpen = isStreaming || message.status === "pending" || message.status === "streaming";
+    if (workflowOpen !== shouldOpen) {
+      onUiStateChange(message.id, { workflowOpen: shouldOpen });
+    }
+  }, [
+    isAssistant,
+    isStreaming,
+    message.id,
+    message.status,
+    onUiStateChange,
+    toolTraces,
+    workflowInteracted,
+    workflowOpen,
+  ]);
 
   useEffect(() => () => {
     if (copyResetTimerRef.current !== null) window.clearTimeout(copyResetTimerRef.current);
@@ -222,16 +229,6 @@ export const MessageBubble = memo(function MessageBubble({
     setNoteState("saved");
     if (noteResetTimerRef.current !== null) window.clearTimeout(noteResetTimerRef.current);
     noteResetTimerRef.current = window.setTimeout(() => setNoteState("idle"), 1_500);
-  };
-
-  const resolveApproval = async (approvalId: string, approved: boolean) => {
-    if (resolvingApprovalId) return;
-    setResolvingApprovalId(approvalId);
-    try {
-      await resolveToolApproval(approvalId, approved);
-    } finally {
-      setResolvingApprovalId(null);
-    }
   };
 
   const submitEdit = (event: FormEvent<HTMLFormElement>) => {
@@ -287,79 +284,19 @@ export const MessageBubble = memo(function MessageBubble({
                 </button>
               </div>
             </form>
-          ) : isWaiting ? (
-            <p className="message-status" role="status">
-              <LoaderCircle className="message-spin" size={16} />
-              <span>{t("chat.waiting")}</span>
-            </p>
           ) : (
             <>
-              {isAssistant && activatedSkills.length > 0 ? (
-                <div className="message-skills" aria-label={t("chat.enabledSkills")}>
-                  {activatedSkills.map((skill) => (
-                    <span
-                      key={skill.id}
-                      title={`${skill.name} · v${skill.version} · ${skill.activation === "slash" ? "Slash 激活" : skill.activation === "model" ? "模型激活" : "手动激活"}`}
-                    >
-                      <Sparkles size={12} />
-                      {skill.name}
-                    </span>
-                  ))}
-                </div>
-              ) : null}
-              {isAssistant && toolTraces.length > 0 ? (
-                <div className="message-tools" aria-label={t("chat.toolTrace")}>
-                  {toolTraces.map((trace) => (
-                    <details className={`message-tool message-tool-${trace.status}`} key={trace.callId} open={trace.status === "awaitingApproval"}>
-                      <summary>
-                        <Wrench size={13} />
-                        <strong>{toolNameLabel(trace.name, language)}</strong>
-                        <span>{toolStatusLabel(trace.status, language)}</span>
-                        {trace.durationMs !== undefined ? <small>{formatCompactDuration(trace.durationMs)}</small> : null}
-                      </summary>
-                      <div className="message-tool-detail">
-                        <code>{trace.argumentSummary}</code>
-                        {trace.preview ? <p>{trace.preview}</p> : null}
-                        {trace.status === "awaitingApproval" && trace.approvalId ? (
-                          <div className="message-tool-approval">
-                            <button
-                              type="button"
-                              disabled={resolvingApprovalId !== null}
-                              onClick={() => void resolveApproval(trace.approvalId!, false)}
-                            >
-                              {t("chat.reject")}
-                            </button>
-                            <button
-                              className="message-tool-approve"
-                              type="button"
-                              disabled={resolvingApprovalId !== null}
-                              onClick={() => void resolveApproval(trace.approvalId!, true)}
-                            >
-                              {t("chat.allowOnce")}
-                            </button>
-                          </div>
-                        ) : null}
-                      </div>
-                    </details>
-                  ))}
-                </div>
-              ) : null}
-              {hasReasoning ? (
-                <section className={`message-reasoning${reasoningOpen ? " is-open" : ""}`}>
-                  <button
-                    className="message-reasoning-toggle"
-                    type="button"
-                    aria-expanded={reasoningOpen}
-                    onClick={() => onUiStateChange(message.id, { reasoningOpen: !reasoningOpen })}
-                  >
-                    <BrainCircuit size={15} />
-                    <span>{isStreaming && !hasContent ? t("chat.thinking") : t("chat.reasoning")}</span>
-                    <ChevronDown className="message-reasoning-chevron" size={15} />
-                  </button>
-                  {reasoningOpen ? (
-                    <div className="message-reasoning-content">{displayedReasoning}</div>
-                  ) : null}
-                </section>
+              {isAssistant ? (
+                <AgentWorkflow
+                  message={message}
+                  reasoning={displayedReasoning}
+                  streaming={isStreaming}
+                  open={workflowOpen}
+                  onOpenChange={(open) => onUiStateChange(message.id, {
+                    workflowOpen: open,
+                    workflowInteracted: true,
+                  })}
+                />
               ) : null}
               {hasAttachments ? (
                 <ChatAttachments
@@ -566,21 +503,6 @@ export const MessageBubble = memo(function MessageBubble({
     </article>
   );
 });
-
-function toolNameLabel(name: string, language: "zh" | "en") {
-  if (name === "skill") return language === "en" ? "Load skill" : "加载技能";
-  if (name === "read_attachment_text") return language === "en" ? "Read text attachment" : "读取文本附件";
-  if (name === "read_pdf_pages") return language === "en" ? "Read PDF pages" : "读取 PDF 页面";
-  return name;
-}
-
-function toolStatusLabel(status: string, language: "zh" | "en") {
-  if (status === "awaitingApproval") return language === "en" ? "Awaiting approval" : "等待确认";
-  if (status === "running") return language === "en" ? "Running" : "执行中";
-  if (status === "completed") return language === "en" ? "Completed" : "已完成";
-  if (status === "rejected") return language === "en" ? "Rejected" : "已拒绝";
-  return language === "en" ? "Failed" : "失败";
-}
 
 function formatCompactDuration(value: number) {
   return value < 1_000 ? `${Math.round(value)} ms` : `${(value / 1_000).toFixed(1)} s`;

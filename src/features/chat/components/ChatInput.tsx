@@ -48,6 +48,8 @@ type ChatInputProps = {
   contextWindowTokens: number | null;
   /** 当前模型是否支持图片输入；false 时禁止添加图片附件，null 表示未知（放行）。 */
   supportsVision?: boolean | null;
+  /** false 时保持普通 Chat，并禁止选择本轮 Skill。 */
+  supportsTools?: boolean | null;
   /** Work 模式才显示文献入口；普通 Chat 不展示未实现的文献选择控件。 */
   showLiteraturePicker?: boolean;
   /** 从助手回答中选中的引用片段；发送时作为引用上下文并入消息。 */
@@ -130,6 +132,7 @@ export function ChatInput({
   contextUsage,
   contextWindowTokens,
   supportsVision = null,
+  supportsTools = null,
   showLiteraturePicker = false,
   quotes = [],
   onQuoteRemove,
@@ -219,17 +222,19 @@ export function ChatInput({
   }, []);
 
   const addAttachments = (incoming: PendingChatAttachment[]) => {
-    // 图片门禁：当前模型明确不支持视觉时，图片附件在入口处拒绝（与后端拦截一致）。
-    let accepted = incoming;
-    let visionError = "";
-    if (supportsVision === false) {
-      const rejectedImages = incoming.filter((attachment) => attachment.kind === "image");
-      if (rejectedImages.length > 0) {
-        accepted = incoming.filter((attachment) => attachment.kind !== "image");
-        visionError = t("chat.visionUnsupportedDetail");
-        discardPendingAttachments(rejectedImages);
-      }
+    const rejected = incoming.filter((attachment) => (
+      (attachment.kind === "image" && supportsVision === false)
+      || (attachment.kind !== "image" && supportsTools === false)
+    ));
+    const accepted = incoming.filter((attachment) => !rejected.includes(attachment));
+    const capabilityErrors: string[] = [];
+    if (rejected.some((attachment) => attachment.kind === "image")) {
+      capabilityErrors.push(t("chat.visionUnsupportedDetail"));
     }
+    if (rejected.some((attachment) => attachment.kind !== "image")) {
+      capabilityErrors.push(t("chat.toolsUnsupportedDetail"));
+    }
+    discardPendingAttachments(rejected);
     const current = attachmentsRef.current;
     const existing = new Set(current.map((attachment) => attachment.path));
     const duplicates: PendingChatAttachment[] = [];
@@ -249,7 +254,7 @@ export function ChatInput({
         void discardStagedChatAttachment(attachment.path);
       }
     } else {
-      setAttachmentError(visionError);
+      setAttachmentError(capabilityErrors.join(" "));
     }
     const next = [...current, ...unique.slice(0, available)];
     attachmentsRef.current = next;
@@ -602,13 +607,17 @@ export function ChatInput({
               <button
                 className={supportsVision === false ? "icon-button icon-button-document-only" : "icon-button"}
                 type="button"
-                title={supportsVision === false
+                title={supportsVision === false && supportsTools === false
+                  ? t("chat.attachmentsUnsupported")
+                  : supportsVision === false
                   ? t("chat.visionUnsupported")
                   : t("chat.addAttachment")}
-                aria-label={supportsVision === false
+                aria-label={supportsVision === false && supportsTools === false
+                  ? t("chat.attachmentsUnsupported")
+                  : supportsVision === false
                   ? `${t("chat.addAttachment")} (${t("chat.visionUnsupported")})`
                   : t("chat.addAttachment")}
-                disabled={inputDisabled}
+                disabled={inputDisabled || (supportsVision === false && supportsTools === false)}
                 onClick={() => void openAttachmentPicker()}
               >
                 <Paperclip size={18} />
@@ -624,7 +633,8 @@ export function ChatInput({
               <SkillPicker
                 skills={skills}
                 selectedSkillIds={selectedSkillIds}
-                disabled={inputDisabled}
+                disabled={inputDisabled || supportsTools === false}
+                disabledReason={supportsTools === false ? t("chat.toolsUnsupported") : undefined}
                 onChange={onSelectedSkillsChange}
               />
               <button className="icon-button" type="button" title={t("chat.options")} disabled={inputDisabled}>

@@ -10,7 +10,7 @@ pub mod registry;
 pub mod types;
 
 pub use registry::{
-    argument_summary, build_runtime_context, configure_model_request, execute_tool, parallel_safe,
-    requires_approval, tool_risk, SkillRunCache, ToolRuntimeContext,
+    apply_tool_disclosures, argument_summary, build_runtime_context, configure_model_request,
+    execute_tool, parallel_safe, requires_approval, tool_risk, SkillRunCache, ToolRuntimeContext,
 };
 pub use types::{ToolExecution, ToolTraceSnapshot, ToolTraceStatus};

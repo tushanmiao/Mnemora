@@ -43,6 +43,16 @@ export interface ModelPricing {
 export interface ModelCapabilities {
   /** 是否支持图片输入（视觉）。false 时发送图片会在请求前被拦截。 */
   vision?: boolean;
+  /** 是否支持结构化函数/工具调用。未知时按不支持处理，避免试探性执行。 */
+  functionCalling?: boolean;
+  /** 是否支持独立 reasoning/thinking 输出。 */
+  reasoning?: boolean;
+  /** 是否支持流式响应；保留为模型能力快照。 */
+  streaming?: boolean;
+  /** 当前模型与供应商组合是否支持原生 Tool Search。 */
+  nativeToolSearch?: boolean;
+  /** 当前模型与供应商组合是否支持原生上下文压缩。 */
+  nativeCompaction?: boolean;
 }
 
 /** 一个供应商下的模型映射。 */
@@ -105,7 +115,7 @@ export type ProviderApiKeyUpdate =
   | { providerId: string; action: "set"; apiKey: string }
   | { providerId: string; action: "delete" };
 
-export const CURRENT_MODEL_SETTINGS_VERSION = 5;
+export const CURRENT_MODEL_SETTINGS_VERSION = 6;
 
 /** 创建首次启动时的三家官方供应商配置。 */
 export function createInitialModelSettings(): ModelSettings {

@@ -53,7 +53,9 @@ function prefersReducedMotion() {
 
 function defaultMessageUiState(message: ChatMessage): MessageBubbleUiState {
   return {
-    reasoningOpen: false,
+    workflowOpen: message.role === "assistant"
+      && (message.status === "pending" || message.status === "streaming"),
+    workflowInteracted: false,
     userExpanded: false,
     editing: false,
     editDraft: message.content,
@@ -117,7 +119,8 @@ export function MessageList({
       const previous = current[messageId] ?? defaultMessageUiState(message);
       const next = { ...previous, ...patch };
       if (
-        previous.reasoningOpen === next.reasoningOpen
+        previous.workflowOpen === next.workflowOpen
+        && previous.workflowInteracted === next.workflowInteracted
         && previous.userExpanded === next.userExpanded
         && previous.editing === next.editing
         && previous.editDraft === next.editDraft

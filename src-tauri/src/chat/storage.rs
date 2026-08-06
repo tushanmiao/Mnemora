@@ -489,6 +489,8 @@ mod tests {
             usage: None,
             activated_skills: Vec::new(),
             tool_traces: Vec::new(),
+            agent_run_id: None,
+            workflow_summary: None,
             error_message: None,
         };
         conversation.messages = vec![message("message-1"), message("message-2")];

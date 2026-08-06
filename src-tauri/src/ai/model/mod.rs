@@ -1,7 +1,7 @@
 //! 内置模型元数据库（参考 Kivio 的 model_metadata 设计）。
 //!
 //! 数据源是 `src/data/modelDatabase.json`，前端与 Rust 通过 `include_str!` 共享同一份。
-//! 按模型名提供能力（视觉）、上下文窗口、最大输出与默认定价查询；解析优先级由调用方
+//! 按模型名提供能力（视觉、工具、reasoning）、上下文窗口、最大输出与默认定价查询；解析优先级由调用方
 //! 决定（用户在设置里的显式配置优先，本库只提供"数据库默认值"）。
 //!
 //! 匹配策略（对齐 Kivio）：
@@ -108,10 +108,24 @@ fn database_entry(api_model: &str) -> Option<&'static Value> {
 
 /// 数据库中该模型是否支持图片输入。`None` 表示未收录（调用方应保持宽松默认）。
 pub fn database_supports_vision(api_model: &str) -> Option<bool> {
+    database_capability(api_model, "vision")
+}
+
+fn database_capability(api_model: &str, capability: &str) -> Option<bool> {
     database_entry(api_model)?
         .get("capabilities")
-        .and_then(|capabilities| capabilities.get("vision"))
+        .and_then(|capabilities| capabilities.get(capability))
         .and_then(Value::as_bool)
+}
+
+/// 数据库中该模型是否支持结构化函数/工具调用。
+pub fn database_supports_function_calling(api_model: &str) -> Option<bool> {
+    database_capability(api_model, "functionCalling")
+}
+
+/// 数据库中该模型是否支持独立 reasoning/thinking 输出。
+pub fn database_supports_reasoning(api_model: &str) -> Option<bool> {
+    database_capability(api_model, "reasoning")
 }
 
 /// 名称家族启发式（参考 cherry-studio 的 vision 白/黑名单设计）：数据库未命中时
@@ -205,6 +219,8 @@ mod tests {
     #[test]
     fn exact_match_resolves_vision() {
         assert_eq!(database_supports_vision("gpt-5.5"), Some(true));
+        assert_eq!(database_supports_function_calling("gpt-5.5"), Some(true));
+        assert_eq!(database_supports_reasoning("gpt-5.5"), Some(true));
     }
 
     #[test]
@@ -248,6 +264,10 @@ mod tests {
     #[test]
     fn unknown_model_returns_none() {
         assert_eq!(database_supports_vision("totally-unknown-model-xyz"), None);
+        assert_eq!(
+            database_supports_function_calling("totally-unknown-model-xyz"),
+            None
+        );
         assert_eq!(database_pricing("totally-unknown-model-xyz"), None);
         assert_eq!(
             database_context_window_tokens("totally-unknown-model-xyz"),

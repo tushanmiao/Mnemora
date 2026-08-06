@@ -10,7 +10,7 @@ use std::collections::HashSet;
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 
-pub const CURRENT_MODEL_SETTINGS_VERSION: u32 = 5;
+pub const CURRENT_MODEL_SETTINGS_VERSION: u32 = 6;
 const MAX_PROVIDERS: usize = 100;
 const MAX_MODELS_PER_PROVIDER: usize = 2_000;
 
@@ -68,11 +68,28 @@ pub struct ModelCapabilities {
     /// 是否支持图片输入（视觉）。`Some(false)` 时发送图片会在请求前被拦截。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vision: Option<bool>,
+    /// 是否支持结构化函数/工具调用。未知时运行层按不支持处理。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub function_calling: Option<bool>,
+    /// 是否支持独立 reasoning/thinking 输出。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub streaming: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_tool_search: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_compaction: Option<bool>,
 }
 
 impl ModelCapabilities {
     pub fn is_empty(&self) -> bool {
         self.vision.is_none()
+            && self.function_calling.is_none()
+            && self.reasoning.is_none()
+            && self.streaming.is_none()
+            && self.native_tool_search.is_none()
+            && self.native_compaction.is_none()
     }
 }
 

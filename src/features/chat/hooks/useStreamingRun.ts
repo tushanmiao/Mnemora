@@ -15,6 +15,7 @@ import {
   resetAllStreamingMessages,
   startStreamingMessage,
 } from "../stores/streamingStore";
+import { workflowSummaryForMessage } from "../agent/projections/workflowProjection";
 
 type ActiveStreamRun = {
   runId: string;
@@ -54,20 +55,21 @@ export function useStreamingRun({
     const updatedAt = Date.now();
     const nextConversation: Conversation = {
       ...conversation,
-      messages: conversation.messages.map((message) => (
-        message.id === run.messageId
-          ? {
-              ...message,
-              content: streamedMessage?.content ?? message.content,
-              reasoning: streamedMessage?.reasoning || message.reasoning,
-              status: terminal.status,
-              usage: terminal.usage ?? message.usage,
-              toolTraces: message.toolTraces?.map(({ approvalId: _approvalId, ...trace }) => trace),
-              errorMessage: terminal.errorMessage,
-              updatedAt,
-            }
-          : message
-      )),
+      messages: conversation.messages.map((message) => {
+        if (message.id !== run.messageId) return message;
+        const finalized: ChatMessage = {
+          ...message,
+          content: streamedMessage?.content ?? message.content,
+          reasoning: streamedMessage?.reasoning || message.reasoning,
+          status: terminal.status,
+          usage: terminal.usage ?? message.usage,
+          toolTraces: message.toolTraces?.map(({ approvalId: _approvalId, ...trace }) => trace),
+          agentRunId: run.runId,
+          errorMessage: terminal.errorMessage,
+          updatedAt,
+        };
+        return { ...finalized, workflowSummary: workflowSummaryForMessage(finalized) };
+      }),
       updatedAt,
     };
     cacheConversation(nextConversation);

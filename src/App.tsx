@@ -27,7 +27,7 @@ import {
 } from "./features/layout/hooks/useLayoutPreferences";
 import type { AiPermissionMode } from "./types/chat";
 import { resolveConversationModel } from "./types/modelSettings";
-import { resolveSupportsVision } from "./data/modelMatching";
+import { resolveSupportsFunctionCalling, resolveSupportsVision } from "./data/modelMatching";
 import type { WorkLibraryView } from "./features/workspace/types";
 import { findWorkspaceView } from "./features/workspace/viewRegistry";
 import { ActivityBar } from "./features/workspace/components/ActivityBar";
@@ -232,7 +232,7 @@ function App() {
     );
     conversations.updateCurrentConversation((conversation) => ({
       ...conversation,
-      enabledSkillIds: [...new Set(enabledSkillIds.filter((id) => available.has(id)))].slice(0, 3),
+      enabledSkillIds: [...new Set(enabledSkillIds.filter((id) => available.has(id)))].slice(0, 12),
       updatedAt: Date.now(),
     }));
   }, [conversations, skills.skills]);
@@ -315,6 +315,12 @@ function App() {
               currentModel.model.apiModel,
               currentModel.model.capabilities?.vision,
             ) ?? null
+          : null,
+        supportsTools: currentModel
+          ? resolveSupportsFunctionCalling(
+              currentModel.model.apiModel,
+              currentModel.model.capabilities?.functionCalling,
+            )
           : null,
         showLiteraturePicker: workspaceMode === "work",
         quotes: references.quotes,
