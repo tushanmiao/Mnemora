@@ -9,6 +9,7 @@ import {
 import {
   BookOpenText,
   Lightbulb,
+  LoaderCircle,
   ListTodo,
   MessageCircleQuestion,
   MessageSquarePlus,
@@ -32,6 +33,7 @@ type MessageListProps = {
   messages: ChatMessage[];
   conversationId: string | null;
   hasConversation: boolean;
+  conversationLoading?: boolean;
   actionsDisabled?: boolean;
   canRegenerate?: boolean;
   suggestionsDisabled?: boolean;
@@ -66,6 +68,7 @@ export function MessageList({
   messages,
   conversationId,
   hasConversation,
+  conversationLoading = false,
   actionsDisabled = false,
   canRegenerate = false,
   suggestionsDisabled = false,
@@ -114,6 +117,12 @@ export function MessageList({
   ], [t]);
   navigatorNodesRef.current = navigatorNodes;
   const showNavigator = navigatorNodes.length >= 4;
+  const keepMountedMessageIndexes = useMemo(() => {
+    const index = messages.length - 1;
+    if (index < 0) return [];
+    const status = messages[index].status;
+    return status === "pending" || status === "streaming" ? [index] : [];
+  }, [messages]);
 
   const updateActiveNavigatorNode = useCallback((nodeId: string | null) => {
     if (activeNavigatorNodeIdRef.current === nodeId) return;
@@ -328,7 +337,12 @@ export function MessageList({
           if (event.deltaY < 0) isPinnedToBottomRef.current = false;
         }}
       >
-        {!hasConversation ? (
+        {conversationLoading ? (
+          <div className="empty-chat-state" role="status">
+            <LoaderCircle className="message-spin" size={24} />
+            <span>{t("common.loading")}</span>
+          </div>
+        ) : !hasConversation ? (
           <div className="empty-chat-state">
             <div className="empty-chat-mark" aria-hidden="true">
               <MessageCircleQuestion size={28} />
@@ -378,7 +392,7 @@ export function MessageList({
               scrollRef={listRef}
               onScroll={handleScroll}
               bufferSize={160}
-              keepMounted={messages.length > 0 ? [messages.length - 1] : []}
+              keepMounted={keepMountedMessageIndexes}
               data={messages}
             >
               {renderMessage}

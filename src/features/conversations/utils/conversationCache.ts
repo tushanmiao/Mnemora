@@ -1,7 +1,7 @@
 import type { Conversation } from "../../../types/conversation";
 
-export const MAX_CACHED_CONVERSATIONS = 4;
-export const MAX_CACHED_TEXT_BYTES = 8 * 1024 * 1024;
+export const MAX_CACHED_CONVERSATIONS = 2;
+export const MAX_CACHED_TEXT_BYTES = 4 * 1024 * 1024;
 
 /**
  * 估算会话在前端缓存中的主要文本体积。

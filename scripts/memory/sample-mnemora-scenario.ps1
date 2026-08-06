@@ -2,7 +2,7 @@ param(
   [Parameter(Mandatory = $true)]
   [int]$RootPid,
   [Parameter(Mandatory = $true)]
-  [ValidateSet("idle", "chat", "pdf", "english", "settings", "postHeavyResidual")]
+  [ValidateSet("idle", "chat", "pdf", "english", "settings", "postHeavyResidual", "current")]
   [string]$Scene,
   [int]$Samples = 6,
   [int]$IntervalSeconds = 5,
@@ -39,7 +39,6 @@ if ($OutputPath) {
   $resolvedOutputPath = [System.IO.Path]::GetFullPath($OutputPath)
   $parent = Split-Path -Parent $resolvedOutputPath
   if (-not (Test-Path -LiteralPath $parent -PathType Container)) { throw "Output directory does not exist: $parent" }
-  Set-Content -LiteralPath $resolvedOutputPath -Value $json -Encoding UTF8
+  [System.IO.File]::WriteAllText($resolvedOutputPath, $json, [System.Text.UTF8Encoding]::new($false))
 }
 $json
-

@@ -1,4 +1,5 @@
 import {
+  startTransition,
   useCallback,
   useEffect,
   useMemo,
@@ -25,7 +26,7 @@ import {
   isLibraryRuntime,
   saveLibraryReadingState,
 } from "../../library/api/library";
-import type { PdfOutlineEntry } from "../context/PdfReaderContext";
+import type { PdfOutlineEntry, PdfReaderController } from "../context/PdfReaderContext";
 import { usePdfReaderBridge } from "../context/PdfReaderContext";
 import { PDF_ANNOTATION_COLORS, type PdfTextSelection } from "../types";
 import type { LiteratureReference } from "../../../types/chat";
@@ -67,6 +68,8 @@ export function PdfReader({ item, onOpenExternal, onOpenNote, onAskSelection }: 
   const virtualizerRef = useRef<VirtualizerHandle>(null);
   const saveTimerRef = useRef<number | null>(null);
   const scrollFrameRef = useRef<number | null>(null);
+  const readerResizeFrameRef = useRef<number | null>(null);
+  const pendingReaderWidthRef = useRef(0);
   const pageNavigationFrameRef = useRef<number | null>(null);
   const searchGenerationRef = useRef(0);
   const focusTimerRef = useRef<number | null>(null);
@@ -94,8 +97,8 @@ export function PdfReader({ item, onOpenExternal, onOpenNote, onAskSelection }: 
   const [focusedAnnotationId, setFocusedAnnotationId] = useState<string | null>(null);
   const resources = usePdfResources(item.id);
   const lifecycleState = useWorkspaceLifecycle();
-  const canvasBudget = useMemo(() => new PdfCanvasBudget(), [pdf]);
-  const renderScheduler = useMemo(() => new PdfRenderScheduler(), [pdf]);
+  const canvasBudget = useMemo(() => new PdfCanvasBudget(), [item.id]);
+  const renderScheduler = useMemo(() => new PdfRenderScheduler(), [item.id]);
   const pageIndexes = useMemo(
     () => Array.from({ length: pageCount }, (_, pageIndex) => pageIndex),
     [pageCount],
@@ -166,12 +169,37 @@ export function PdfReader({ item, onOpenExternal, onOpenNote, onAskSelection }: 
   useEffect(() => {
     const container = scrollContainerRef.current;
     if (!container) return;
-    const updateWidth = () => setReaderWidth(Math.round(container.clientWidth));
+    const updateWidth = () => {
+      const nextWidth = Math.round(container.clientWidth);
+      if (nextWidth <= 0) return;
+      pendingReaderWidthRef.current = nextWidth;
+      if (readerResizeFrameRef.current !== null) return;
+      readerResizeFrameRef.current = requestAnimationFrame(() => {
+        readerResizeFrameRef.current = null;
+        const width = pendingReaderWidthRef.current;
+        startTransition(() => {
+          setReaderWidth((current) => current === width ? current : width);
+        });
+      });
+    };
     updateWidth();
     const observer = new ResizeObserver(updateWidth);
     observer.observe(container);
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      if (readerResizeFrameRef.current !== null) {
+        cancelAnimationFrame(readerResizeFrameRef.current);
+        readerResizeFrameRef.current = null;
+      }
+    };
   }, []);
+
+  useEffect(() => {
+    return () => {
+      renderScheduler.dispose();
+      canvasBudget.releaseAll();
+    };
+  }, [canvasBudget, renderScheduler]);
 
   useEffect(() => {
     let cancelled = false;
@@ -211,7 +239,9 @@ export function PdfReader({ item, onOpenExternal, onOpenNote, onAskSelection }: 
     return () => {
       cancelled = true;
       searchGenerationRef.current += 1;
-      handle.dispose();
+      // Canvas eviction runs first. The zero-delay task lets cancelled page
+      // render promises settle before pdf.js destroys its worker and caches.
+      window.setTimeout(() => handle.dispose(), 0);
     };
   }, [item.id, item.file.fileSize, t]);
 
@@ -239,11 +269,6 @@ export function PdfReader({ item, onOpenExternal, onOpenNote, onAskSelection }: 
       if (frame !== null) cancelAnimationFrame(frame);
     };
   }, [item.id, pageCount, pdf, readerWidth]);
-
-  useEffect(() => () => {
-    renderScheduler.dispose();
-    canvasBudget.releaseAll();
-  }, [canvasBudget, renderScheduler]);
 
   useEffect(() => () => {
     if (scrollFrameRef.current !== null) cancelAnimationFrame(scrollFrameRef.current);
@@ -441,12 +466,9 @@ export function PdfReader({ item, onOpenExternal, onOpenNote, onAskSelection }: 
     window.getSelection()?.removeAllRanges();
   }, []);
 
-  useEffect(() => {
-    if (!pdf) {
-      unregister(item.id);
-      return;
-    }
-    register({
+  const readerController = useMemo<PdfReaderController | null>(() => {
+    if (!pdf) return null;
+    return {
       itemId: item.id,
       pdf,
       pageCount,
@@ -474,7 +496,7 @@ export function PdfReader({ item, onOpenExternal, onOpenNote, onAskSelection }: 
       updateNote: resources.updateNote,
       deleteNote: resources.deleteNote,
       openNote: onOpenNote,
-    });
+    };
   }, [
     annotationColor,
     annotationMode,
@@ -486,13 +508,31 @@ export function PdfReader({ item, onOpenExternal, onOpenNote, onAskSelection }: 
     outline,
     pageCount,
     pdf,
-    register,
     readPageText,
-    resources,
+    resources.annotationError,
+    resources.annotations,
+    resources.annotationsLoading,
+    resources.createNote,
+    resources.deleteAnnotation,
+    resources.deleteNote,
+    resources.loadNotes,
+    resources.noteError,
+    resources.notes,
+    resources.notesLoaded,
+    resources.notesLoading,
+    resources.updateAnnotation,
+    resources.updateNote,
     setReaderAnnotationMode,
-    unregister,
     zoom,
   ]);
+
+  useEffect(() => {
+    if (!readerController) {
+      unregister(item.id);
+      return;
+    }
+    register(readerController);
+  }, [item.id, readerController, register, unregister]);
 
   const status = loading
     ? t("pdf.loading")
@@ -644,7 +684,7 @@ export function PdfReader({ item, onOpenExternal, onOpenNote, onAskSelection }: 
               ref={virtualizerRef}
               scrollRef={scrollContainerRef}
               data={pageIndexes}
-              bufferSize={360}
+              bufferSize={180}
               itemSize={estimatedPageSize}
               onScroll={handleScroll}
             >

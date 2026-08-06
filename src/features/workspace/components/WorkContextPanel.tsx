@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   BookOpenText,
   Check,
@@ -29,13 +29,15 @@ import {
   type PanelResizeHandleProps,
 } from "../../layout/components/PanelResizeHandle";
 import type { WorkContextView } from "../types";
-import { PdfNotesPanel } from "../../notes/components/PdfNotesPanel";
-import { PdfAnnotationsPanel } from "../../pdf/components/PdfAnnotationsPanel";
-import { PdfNavigatorPanel } from "../../pdf/components/PdfNavigatorPanel";
 import { usePdfReaderBridge } from "../../pdf/context/PdfReaderContext";
 import { createLiteratureReference, MAX_LINKED_LIBRARY_ITEMS } from "../../chat/utils/literatureReferences";
 import type { WorkPdfDocument } from "../types";
+import { useI18n } from "../../../i18n/I18nProvider";
 import "../styles/work-context-panel.css";
+
+const PdfNavigatorPanel = lazy(() => import("../../pdf/components/PdfNavigatorPanel"));
+const PdfAnnotationsPanel = lazy(() => import("../../pdf/components/PdfAnnotationsPanel"));
+const PdfNotesPanel = lazy(() => import("../../notes/components/PdfNotesPanel"));
 
 export type WorkContextPanelProps = {
   activeView: WorkContextView;
@@ -139,11 +141,17 @@ export function WorkContextPanel({
             />
           )
         ) : activeView === "navigator" ? (
-          <PdfNavigatorPanel />
+          <Suspense fallback={<ContextToolLoading />}>
+            <PdfNavigatorPanel />
+          </Suspense>
         ) : activeView === "annotations" ? (
-          <PdfAnnotationsPanel />
+          <Suspense fallback={<ContextToolLoading />}>
+            <PdfAnnotationsPanel />
+          </Suspense>
         ) : activeView === "notes" ? (
-          <PdfNotesPanel />
+          <Suspense fallback={<ContextToolLoading />}>
+            <PdfNotesPanel />
+          </Suspense>
         ) : (
           <InfoPanel
             resourceLabel={resourceLabel}
@@ -217,6 +225,16 @@ export function WorkContextPanel({
         </div>
       </nav>
     </aside>
+  );
+}
+
+function ContextToolLoading() {
+  const { t } = useI18n();
+  return (
+    <div className="work-context-loading" role="status">
+      <LoaderCircle size={18} aria-hidden="true" />
+      <span>{t("common.loading")}</span>
+    </div>
   );
 }
 

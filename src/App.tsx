@@ -178,6 +178,32 @@ function App() {
     releaseConversation: conversations.releaseConversation,
   });
 
+  const chatSurfaceVisible = activeView === "workspace" && (
+    workspaceMode === "chat"
+    || (workspaceMode === "work" && workContextPanelOpen && workContextView === "chat")
+    || (workspaceMode === "notes" && notesContextPanelOpen)
+  );
+
+  useEffect(() => {
+    if (chatSurfaceVisible) {
+      void conversations.ensureCurrentConversationLoaded();
+      return;
+    }
+    if (chatRuntime.requestInFlight) return;
+    // 给视图切换留出短暂回退窗口；用户快速返回时不触发读盘和布局重建。
+    const releaseTimer = window.setTimeout(() => {
+      conversations.releaseCurrentConversation();
+    }, 900);
+    return () => window.clearTimeout(releaseTimer);
+  }, [
+    activeView,
+    chatRuntime.requestInFlight,
+    chatSurfaceVisible,
+    conversations.currentConversationId,
+    conversations.ensureCurrentConversationLoaded,
+    conversations.releaseCurrentConversation,
+  ]);
+
   const handleSlashCommand = useCallback(async (
     command: LocalSlashCommand,
     argumentsValue: string,
@@ -300,6 +326,7 @@ function App() {
         messages: conversations.currentConversation?.messages ?? [],
         conversationId: conversations.currentConversationId,
         hasConversation: conversations.currentConversation !== null,
+        conversationLoading: conversations.currentConversationLoading,
         actionsDisabled: chatRuntime.requestInFlight,
         canRegenerate: Boolean(currentModel),
         suggestionsDisabled: !currentModel || chatRuntime.requestInFlight,
@@ -374,7 +401,13 @@ function App() {
               changeWorkspaceMode("chat");
             },
             onToggleChat: () => {
-              if (!conversations.currentConversation) conversations.createNewConversation();
+              if (!conversations.currentConversation) {
+                if (conversations.currentConversationId) {
+                  void conversations.ensureCurrentConversationLoaded();
+                } else {
+                  conversations.createNewConversation();
+                }
+              }
               setNotesContextPanelOpen((open) => !open);
             },
             onAskSelection: references.addNoteReference,

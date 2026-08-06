@@ -6,13 +6,19 @@ if (!reportPath || !budgetsPath) {
   process.exit(2);
 }
 
-const report = JSON.parse(fs.readFileSync(reportPath, "utf8"));
-const budgets = JSON.parse(fs.readFileSync(budgetsPath, "utf8"));
+const readJson = (path) => JSON.parse(fs.readFileSync(path, "utf8").replace(/^\uFEFF/, ""));
+const report = readJson(reportPath);
+const budgets = readJson(budgetsPath);
 const samples = Array.isArray(report.samples) ? report.samples : [];
 const release = budgets.release ?? {};
+const residualScene = "postHeavyResidual";
+const idleSamples = samples.filter((sample) => sample?.scene === "idle");
+const baselineByRole = peakByRole(idleSamples);
 const byScene = new Map();
 for (const sample of samples) {
-  const privateBytes = sample?.process?.totalPrivateBytes;
+  const privateBytes = sample?.scene === residualScene && baselineByRole.size
+    ? positiveRoleDelta(sample, baselineByRole)
+    : sample?.process?.totalPrivateBytes;
   if (typeof privateBytes !== "number") continue;
   const current = byScene.get(sample.scene) ?? { peak: 0, count: 0 };
   current.peak = Math.max(current.peak, privateBytes);
@@ -33,3 +39,31 @@ if (byScene.size === 0) {
   process.exit(2);
 }
 process.exit(failed ? 1 : 0);
+
+function peakByRole(sceneSamples) {
+  const peaks = new Map();
+  for (const sample of sceneSamples) {
+    const current = sumByRole(sample?.process?.processes ?? []);
+    for (const [role, value] of current) {
+      peaks.set(role, Math.max(peaks.get(role) ?? 0, value));
+    }
+  }
+  return peaks;
+}
+
+function positiveRoleDelta(sample, baseline) {
+  let delta = 0;
+  for (const [role, current] of sumByRole(sample?.process?.processes ?? [])) {
+    delta += Math.max(0, current - (baseline.get(role) ?? 0));
+  }
+  return delta;
+}
+
+function sumByRole(processes) {
+  const values = new Map();
+  for (const process of processes) {
+    if (typeof process?.privateBytes !== "number") continue;
+    values.set(process.role, (values.get(process.role) ?? 0) + process.privateBytes);
+  }
+  return values;
+}

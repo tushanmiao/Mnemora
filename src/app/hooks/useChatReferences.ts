@@ -90,6 +90,13 @@ export function useChatReferences({
     setWorkContextPanelOpen(true);
     setWorkContextView("chat");
     if (!conversations.currentConversation) {
+      if (conversations.currentConversationId) {
+        void conversations.ensureCurrentConversationLoaded().then((loaded) => {
+          if (loaded) addLiteratureReference(reference);
+          else setLiteratureReferenceError("恢复当前对话失败，请重新选择对话。");
+        });
+        return;
+      }
       setLiteratureReferenceError("请先新建或选择一个对话，再加入文献引用。");
       return;
     }
@@ -127,6 +134,12 @@ export function useChatReferences({
 
   const addNoteReference = useCallback((reference: NoteReference) => {
     if (!conversations.currentConversation) {
+      if (conversations.currentConversationId) {
+        void conversations.ensureCurrentConversationLoaded().then((loaded) => {
+          if (loaded) addNoteReference(reference);
+        });
+        return;
+      }
       preserveNoteReferencesRef.current = true;
       conversations.createNewConversation();
     }

@@ -122,12 +122,14 @@ export function useConversations(onNavigateToChat: () => void) {
   const [currentConversationId, setCurrentConversationId] = useState<string | null>(
     STARTS_IN_TAURI ? null : initialConversation.id,
   );
+  const [currentConversationLoading, setCurrentConversationLoading] = useState(false);
   const currentConversationIdRef = useRef<string | null>(
     STARTS_IN_TAURI ? null : initialConversation.id,
   );
   const protectedConversationIdsRef = useRef(new Set<string>());
   const requestInFlightRef = useRef(false);
   const selectionVersionRef = useRef(0);
+  const activeConversationLoadRef = useRef<{ id: string; promise: Promise<boolean> } | null>(null);
   const pendingConversationSavesRef = useRef(new Map<string, PendingConversationSave>());
 
   const currentConversation = useMemo(
@@ -190,6 +192,71 @@ export function useConversations(onNavigateToChat: () => void) {
     ) return;
     conversationsRef.current = nextCache;
     setConversations(nextCache);
+  }, []);
+
+  const ensureCurrentConversationLoaded = useCallback(() => {
+    const conversationId = currentConversationIdRef.current;
+    if (!STARTS_IN_TAURI || !conversationId) return Promise.resolve(false);
+    if (conversationsRef.current.some((conversation) => conversation.id === conversationId)) {
+      setCurrentConversationLoading(false);
+      return Promise.resolve(true);
+    }
+    const activeLoad = activeConversationLoadRef.current;
+    if (activeLoad?.id === conversationId) return activeLoad.promise;
+
+    const version = ++selectionVersionRef.current;
+    setCurrentConversationLoading(true);
+    const pendingWrite = pendingConversationSavesRef.current.get(conversationId)?.promise;
+    const promise = (pendingWrite ?? Promise.resolve())
+      .then(() => loadStoredConversation(conversationId))
+      .then((conversation) => {
+        if (
+          version !== selectionVersionRef.current
+          || currentConversationIdRef.current !== conversationId
+        ) return false;
+        cacheConversation(conversation, false);
+        setCurrentConversationLoading(false);
+        return true;
+      })
+      .catch((error) => {
+        if (
+          version === selectionVersionRef.current
+          && currentConversationIdRef.current === conversationId
+        ) {
+          setCurrentConversationLoading(false);
+          console.error("恢复会话失败", error);
+        }
+        return false;
+      });
+    activeConversationLoadRef.current = { id: conversationId, promise };
+    void promise.finally(() => {
+      if (activeConversationLoadRef.current?.promise === promise) {
+        activeConversationLoadRef.current = null;
+      }
+    });
+    return promise;
+  }, [cacheConversation]);
+
+  /** 离开 Chat/AI 面板后释放当前消息正文；持久化索引和当前 ID 仍保留。 */
+  const releaseCurrentConversation = useCallback(() => {
+    const conversationId = currentConversationIdRef.current;
+    if (
+      !STARTS_IN_TAURI
+      || !conversationId
+      || requestInFlightRef.current
+      || protectedConversationIdsRef.current.has(conversationId)
+    ) return false;
+    const current = conversationsRef.current.find((conversation) => conversation.id === conversationId);
+    // 空白会话可能还没有落盘，保留它可以避免返回时读取竞态。
+    if (!current || current.messages.length === 0) return false;
+    selectionVersionRef.current += 1;
+    activeConversationLoadRef.current = null;
+    conversationsRef.current = conversationsRef.current.filter(
+      (conversation) => conversation.id !== conversationId,
+    );
+    setConversations(conversationsRef.current);
+    setCurrentConversationLoading(false);
+    return true;
   }, []);
 
   const saveStableConversation = useCallback((conversation: Conversation) => {
@@ -313,6 +380,9 @@ export function useConversations(onNavigateToChat: () => void) {
 
   const createNewConversation = useCallback(() => {
     const conversation = createConversation();
+    selectionVersionRef.current += 1;
+    activeConversationLoadRef.current = null;
+    setCurrentConversationLoading(false);
     currentConversationIdRef.current = conversation.id;
     cacheConversation(conversation);
     setCurrentConversationId(conversation.id);
@@ -321,22 +391,19 @@ export function useConversations(onNavigateToChat: () => void) {
   }, [cacheConversation, onNavigateToChat, saveStableConversation]);
 
   const selectConversation = useCallback((conversationId: string) => {
+    selectionVersionRef.current += 1;
+    activeConversationLoadRef.current = null;
     currentConversationIdRef.current = conversationId;
     setCurrentConversationId(conversationId);
     onNavigateToChat();
     const cached = conversationsRef.current.find((item) => item.id === conversationId);
     if (cached) {
       cacheConversation(cached, false);
+      setCurrentConversationLoading(false);
       return;
     }
-    if (!STARTS_IN_TAURI) return;
-    const version = ++selectionVersionRef.current;
-    void loadStoredConversation(conversationId)
-      .then((conversation) => {
-        if (version === selectionVersionRef.current) cacheConversation(conversation, false);
-      })
-      .catch((error) => console.error("加载会话失败", error));
-  }, [cacheConversation, onNavigateToChat]);
+    void ensureCurrentConversationLoaded();
+  }, [cacheConversation, ensureCurrentConversationLoaded, onNavigateToChat]);
 
   const deleteConversation = useCallback((conversationId: string) => {
     if (
@@ -362,6 +429,7 @@ export function useConversations(onNavigateToChat: () => void) {
       else {
         currentConversationIdRef.current = null;
         setCurrentConversationId(null);
+        setCurrentConversationLoading(false);
       }
     }
     if (!STARTS_IN_TAURI) return;
@@ -383,6 +451,8 @@ export function useConversations(onNavigateToChat: () => void) {
 
   const clearConversations = useCallback(() => {
     if (requestInFlightRef.current) return;
+    selectionVersionRef.current += 1;
+    activeConversationLoadRef.current = null;
     conversationsRef.current = [];
     currentConversationIdRef.current = null;
     protectedConversationIdsRef.current.clear();
@@ -393,6 +463,7 @@ export function useConversations(onNavigateToChat: () => void) {
     updateConversationListHasMore(false);
     setConversationListError("");
     setCurrentConversationId(null);
+    setCurrentConversationLoading(false);
     if (!STARTS_IN_TAURI) return;
     const pendingWrites = [...pendingConversationSavesRef.current.values()]
       .map((entry) => entry.promise);
@@ -414,6 +485,8 @@ export function useConversations(onNavigateToChat: () => void) {
       || protectedConversationIdsRef.current.has(conversationId)
     ) return false;
 
+    selectionVersionRef.current += 1;
+    activeConversationLoadRef.current = null;
     const pendingWrite = pendingConversationSavesRef.current.get(conversationId)?.promise;
     if (pendingWrite) await pendingWrite;
     if (STARTS_IN_TAURI) {
@@ -432,6 +505,7 @@ export function useConversations(onNavigateToChat: () => void) {
     setConversations(conversationsRef.current);
     currentConversationIdRef.current = null;
     setCurrentConversationId(null);
+    setCurrentConversationLoading(false);
     return true;
   }, [
     replaceConversationListItems,
@@ -464,6 +538,9 @@ export function useConversations(onNavigateToChat: () => void) {
     saveStableConversation,
     protectConversation,
     releaseConversation,
+    ensureCurrentConversationLoaded,
+    releaseCurrentConversation,
+    currentConversationLoading,
     createNewConversation,
     selectConversation,
     deleteConversation,

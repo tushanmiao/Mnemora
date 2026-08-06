@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { Conversation } from "../../../types/conversation";
 import {
   estimateConversationTextBytes,
+  MAX_CACHED_CONVERSATIONS,
+  MAX_CACHED_TEXT_BYTES,
   trimConversationCache,
 } from "./conversationCache";
 
@@ -37,6 +39,11 @@ function conversation(id: string, content = id): Conversation {
 }
 
 describe("trimConversationCache", () => {
+  it("uses a small default cache for inactive conversations", () => {
+    expect(MAX_CACHED_CONVERSATIONS).toBe(2);
+    expect(MAX_CACHED_TEXT_BYTES).toBe(4 * 1024 * 1024);
+  });
+
   it("keeps the current conversation and applies the count limit", () => {
     const candidates = Array.from({ length: 5 }, (_, index) => conversation(`c${index}`));
     const result = trimConversationCache(candidates, {

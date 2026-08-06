@@ -29,3 +29,29 @@ node .\scripts\memory\compare-memory-report.mjs `
 Capture `postHeavyResidual` only after leaving a heavy scene. The isolation
 review threshold is the `postHeavyResidual` budget; it is an investigation
 signal, not permission to move a module into another WebView by itself.
+
+Use `current` for an unclassified diagnostic sample when the visible scene has
+not been verified. It is intentionally excluded from the release budgets and
+must not be reported as idle, Chat, or PDF acceptance data.
+
+## Synthetic chat pressure tests
+
+Synthetic conversations are repeatable UI stress data, not a replacement for
+real Release acceptance scenes. The generator writes only files with IDs tracked
+in a manifest and leaves existing conversations untouched:
+
+~~~powershell
+node .\scripts\memory\seed-synthetic-conversations.mjs `
+  --app-data-dir "$env:APPDATA\com.mnemora.app" `
+  --profile heavy
+~~~
+
+Restart Mnemora, open the generated conversation, and sample it as `chat` only
+when the generated scene is intentionally being measured. Available profiles
+are `normal`, `heavy`, `max`, and `sidebar`. Remove only generated files with:
+
+~~~powershell
+node .\scripts\memory\seed-synthetic-conversations.mjs `
+  --app-data-dir "$env:APPDATA\com.mnemora.app" `
+  --cleanup
+~~~

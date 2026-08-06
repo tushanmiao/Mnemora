@@ -1,6 +1,9 @@
 import { registerResource } from "../../../runtime/resources/ResourceRegistry";
 
-export const PDF_CANVAS_BUDGET_BYTES = 64 * 1024 * 1024;
+// 32 MiB covers one typical A4 page at DPR 2 plus a low-resolution neighbour.
+// Keeping this below WebView2's previous GPU high-water mark improves memory
+// recovery after leaving the reader while preserving normal reading quality.
+export const PDF_CANVAS_BUDGET_BYTES = 32 * 1024 * 1024;
 
 type CanvasReservation = {
   owner: string;

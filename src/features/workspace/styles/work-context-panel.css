@@ -7,6 +7,7 @@
   overflow: hidden;
   border-left: 1px solid var(--color-border);
   background: var(--color-surface-layer);
+  contain: layout paint style;
 }
 
 .work-context-body,
@@ -19,6 +20,20 @@
 
 .work-context-body {
   position: relative;
+  contain: layout paint style;
+}
+
+.work-context-loading {
+  display: grid;
+  height: 100%;
+  place-content: center;
+  place-items: center;
+  gap: 8px;
+  color: var(--color-muted);
+}
+
+.work-context-loading svg {
+  animation: work-context-spin 900ms linear infinite;
 }
 
 .work-context-chat {

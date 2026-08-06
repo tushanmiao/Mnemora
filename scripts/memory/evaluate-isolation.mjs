@@ -6,10 +6,11 @@ if (!reportPath || !budgetsPath) {
   process.exit(2);
 }
 
-const report = JSON.parse(fs.readFileSync(reportPath, "utf8"));
-const budgets = JSON.parse(fs.readFileSync(budgetsPath, "utf8"));
+const readJson = (path) => JSON.parse(fs.readFileSync(path, "utf8").replace(/^\uFEFF/, ""));
+const report = readJson(reportPath);
+const budgets = readJson(budgetsPath);
 const samples = Array.isArray(report.samples) ? report.samples : [];
-const baseline = samples.find((sample) => sample?.scene === "idle")?.process?.processes ?? [];
+const baseline = samples.filter((sample) => sample?.scene === "idle");
 const residual = samples.filter((sample) => sample?.scene === "postHeavyResidual");
 const threshold = budgets.release?.postHeavyResidual;
 if (!baseline.length || !residual.length || typeof threshold !== "number") {
@@ -18,20 +19,16 @@ if (!baseline.length || !residual.length || typeof threshold !== "number") {
 }
 
 const baselineByRole = new Map();
-for (const process of baseline) {
-  const value = process?.privateBytes;
-  if (typeof value !== "number") continue;
-  baselineByRole.set(process.role, (baselineByRole.get(process.role) ?? 0) + value);
+for (const sample of baseline) {
+  const currentByRole = sumByRole(sample?.process?.processes ?? []);
+  for (const [role, value] of currentByRole) {
+    baselineByRole.set(role, Math.max(baselineByRole.get(role) ?? 0, value));
+  }
 }
 
 let peakDelta = 0;
 for (const sample of residual) {
-  const currentByRole = new Map();
-  for (const process of sample.process?.processes ?? []) {
-    const value = process?.privateBytes;
-    if (typeof value !== "number") continue;
-    currentByRole.set(process.role, (currentByRole.get(process.role) ?? 0) + value);
-  }
+  const currentByRole = sumByRole(sample.process?.processes ?? []);
   let delta = 0;
   for (const [role, current] of currentByRole) {
     delta += Math.max(0, current - (baselineByRole.get(role) ?? 0));
@@ -44,3 +41,12 @@ console.log(`postHeavyResidualDeltaBytes\t${peakDelta}`);
 console.log(`budgetBytes\t${threshold}`);
 console.log(`result\t${pass ? "PASS" : "REVIEW"}`);
 process.exit(pass ? 0 : 1);
+
+function sumByRole(processes) {
+  const values = new Map();
+  for (const process of processes) {
+    if (typeof process?.privateBytes !== "number") continue;
+    values.set(process.role, (values.get(process.role) ?? 0) + process.privateBytes);
+  }
+  return values;
+}

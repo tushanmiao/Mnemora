@@ -5,6 +5,22 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+function Get-Role {
+  param([bool]$IsRoot, [string]$Name, [string]$CommandLine)
+  if ($IsRoot) { return "mnemora" }
+  $lowerName = $Name.ToLowerInvariant()
+  $lowerCommand = $CommandLine.ToLowerInvariant()
+  if ($lowerName.Contains("crashpad")) { return "crashpad" }
+  if (-not $lowerName.Contains("msedgewebview2")) { return "other" }
+  if ($lowerCommand.Contains("--type=renderer")) { return "webview-renderer" }
+  if ($lowerCommand.Contains("--type=gpu-process")) { return "webview-gpu" }
+  if ($lowerCommand.Contains("network.mojom.networkservice")) { return "webview-network" }
+  if ($lowerCommand.Contains("audio.mojom.audioservice")) { return "webview-audio" }
+  if ($lowerCommand.Contains("storage.mojom.storageservice")) { return "webview-storage" }
+  if ($lowerCommand.Contains("--type=utility")) { return "webview-utility" }
+  return "webview-browser"
+}
+
 if ($RootPid -le 0) {
   $candidate = Get-Process -Name "mnemora" -ErrorAction SilentlyContinue |
     Sort-Object StartTime -Descending |
@@ -55,22 +71,6 @@ if ($OutputPath) {
   $resolvedOutputPath = [System.IO.Path]::GetFullPath($OutputPath)
   $parent = Split-Path -Parent $resolvedOutputPath
   if (-not (Test-Path -LiteralPath $parent -PathType Container)) { throw "Output directory does not exist: $parent" }
-  Set-Content -LiteralPath $resolvedOutputPath -Value $json -Encoding UTF8
+  [System.IO.File]::WriteAllText($resolvedOutputPath, $json, [System.Text.UTF8Encoding]::new($false))
 }
 $json
-
-function Get-Role {
-  param([bool]$IsRoot, [string]$Name, [string]$CommandLine)
-  if ($IsRoot) { return "mnemora" }
-  $lowerName = $Name.ToLowerInvariant()
-  $lowerCommand = $CommandLine.ToLowerInvariant()
-  if ($lowerName.Contains("crashpad")) { return "crashpad" }
-  if (-not $lowerName.Contains("msedgewebview2")) { return "other" }
-  if ($lowerCommand.Contains("--type=renderer")) { return "webview-renderer" }
-  if ($lowerCommand.Contains("--type=gpu-process")) { return "webview-gpu" }
-  if ($lowerCommand.Contains("network.mojom.networkservice")) { return "webview-network" }
-  if ($lowerCommand.Contains("audio.mojom.audioservice")) { return "webview-audio" }
-  if ($lowerCommand.Contains("storage.mojom.storageservice")) { return "webview-storage" }
-  if ($lowerCommand.Contains("--type=utility")) { return "webview-utility" }
-  return "webview-browser"
-}
