@@ -13,6 +13,28 @@ type ProjectionOptions = {
   language?: "zh" | "en";
 };
 
+export function agentWorkflowNeedsAttention(
+  message: ChatMessage,
+  streaming = false,
+  reasoning = message.reasoning ?? "",
+) {
+  if (!hasAgentActivity(message, reasoning)) return false;
+  return streaming
+    || message.status === "pending"
+    || message.status === "streaming"
+    || message.status === "error"
+    || message.status === "stopped"
+    || message.toolTraces?.some((trace) => trace.status === "awaitingApproval") === true;
+}
+
+export function hasAgentActivity(message: ChatMessage, reasoning = message.reasoning ?? "") {
+  return message.role === "assistant" && (
+    reasoning.trim().length > 0
+    || (message.activatedSkills?.length ?? 0) > 0
+    || (message.toolTraces?.length ?? 0) > 0
+  );
+}
+
 function runStatus(message: ChatMessage, streaming: boolean): AgentRunStatus {
   if (message.toolTraces?.some((trace) => trace.status === "awaitingApproval")) {
     return "waitingApproval";
@@ -31,26 +53,13 @@ function stepStatus(status: ToolTraceStatus): WorkflowStepStatus {
   return "failed";
 }
 
-function terminalStepStatus(status: AgentRunStatus, hasContent: boolean): WorkflowStepStatus {
-  if (status === "completed") return "completed";
-  if (status === "failed") return hasContent ? "completed" : "failed";
-  if (status === "stopped") return hasContent ? "completed" : "stopped";
-  if (status === "budgetExhausted") return hasContent ? "completed" : "failed";
-  if (status === "finalizing" || hasContent) return "running";
-  return "pending";
-}
-
 function labels(language: "zh" | "en") {
   return language === "en"
     ? {
-        prepare: "Preparing the workflow",
         reasoning: "Model reasoning",
-        final: "Compose final answer",
       }
     : {
-        prepare: "准备工作流",
-        reasoning: "模型推理",
-        final: "整理最终回答",
+        reasoning: "模型思考",
       };
 }
 
@@ -69,21 +78,7 @@ export function projectAgentWorkflow(
   const status = runStatus(message, streaming);
   const tools = message.toolTraces ?? [];
   const skills = message.activatedSkills ?? [];
-  const hasContent = message.content.trim().length > 0;
   const steps: WorkflowStep[] = [];
-
-  if ((status === "preparing" || status === "running")
-    && reasoning.trim().length === 0
-    && skills.length === 0
-    && tools.length === 0
-    && !hasContent) {
-    steps.push({
-      id: `${message.id}:prepare`,
-      kind: "prepare",
-      status: "running",
-      title: copy.prepare,
-    });
-  }
 
   if (reasoning.trim()) {
     steps.push({
@@ -116,13 +111,6 @@ export function projectAgentWorkflow(
       tool,
     });
   }
-
-  steps.push({
-    id: `${message.id}:final`,
-    kind: "final",
-    status: terminalStepStatus(status, hasContent),
-    title: copy.final,
-  });
 
   const durationMs = message.workflowSummary?.durationMs
     ?? (message.status === "completed" || message.status === "error" || message.status === "stopped"

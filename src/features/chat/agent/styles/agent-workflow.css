@@ -1,9 +1,7 @@
 .agent-workflow {
-  --workflow-prepare: #2b78a0;
   --workflow-reasoning: #a56612;
   --workflow-skill: #7a4dad;
   --workflow-tool: #19726b;
-  --workflow-final: #2f7d46;
   width: min(100%, 760px);
   margin: 0 0 12px;
   border-radius: 7px;
@@ -42,13 +40,13 @@
   height: 24px;
   place-items: center;
   border-radius: 50%;
-  color: var(--workflow-prepare);
-  background: color-mix(in srgb, var(--workflow-prepare) 13%, transparent);
+  color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 13%, transparent);
 }
 
 .agent-workflow-completed .agent-workflow-status-icon {
-  color: var(--workflow-final);
-  background: color-mix(in srgb, var(--workflow-final) 13%, transparent);
+  color: var(--color-success);
+  background: color-mix(in srgb, var(--color-success) 13%, transparent);
 }
 
 .agent-workflow-waitingApproval .agent-workflow-status-icon,
@@ -131,14 +129,13 @@
   height: 23px;
   place-items: center;
   border-radius: 50%;
-  color: var(--workflow-prepare);
+  color: var(--color-accent);
   background: var(--color-surface-raised);
 }
 
 .agent-workflow-step-reasoning .agent-workflow-node { color: var(--workflow-reasoning); }
 .agent-workflow-step-skill .agent-workflow-node { color: var(--workflow-skill); }
 .agent-workflow-step-tool .agent-workflow-node { color: var(--workflow-tool); }
-.agent-workflow-step-final .agent-workflow-node { color: var(--workflow-final); }
 .agent-workflow-step-failed .agent-workflow-node,
 .agent-workflow-step-rejected .agent-workflow-node,
 .agent-workflow-step-stopped .agent-workflow-node { color: var(--color-danger); }
@@ -199,6 +196,7 @@
 }
 
 .agent-workflow-detail pre,
+.agent-workflow-reasoning pre,
 .agent-workflow-tool-detail code,
 .agent-workflow-tool-detail p {
   margin: 0;
@@ -207,7 +205,8 @@
   overflow-wrap: anywhere;
 }
 
-.agent-workflow-detail pre {
+.agent-workflow-detail pre,
+.agent-workflow-reasoning pre {
   max-height: 280px;
   margin-top: 5px;
   padding: 8px;

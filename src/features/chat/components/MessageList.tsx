@@ -23,6 +23,7 @@ import {
 } from "../utils/messageNavigator";
 import { MessageBubble, type MessageBubbleUiState } from "./MessageBubble";
 import { MessageNavigator } from "./MessageNavigator";
+import { agentWorkflowNeedsAttention } from "../agent/projections/workflowProjection";
 import { useI18n } from "../../../i18n/I18nProvider";
 import "../styles/message-list.css";
 
@@ -55,8 +56,7 @@ function prefersReducedMotion() {
 
 function defaultMessageUiState(message: ChatMessage): MessageBubbleUiState {
   return {
-    workflowOpen: message.role === "assistant"
-      && (message.status === "pending" || message.status === "streaming"),
+    workflowOpen: agentWorkflowNeedsAttention(message),
     workflowInteracted: false,
     userExpanded: false,
     editing: false,
@@ -89,6 +89,7 @@ export function MessageList({
   const atBottomRef = useRef(true);
   const lastScrollOffsetRef = useRef(0);
   const scrollFrameRef = useRef<number | null>(null);
+  const lastThreadHeightRef = useRef(0);
   const previousMessageCountRef = useRef(0);
   const navigatorNodesRef = useRef<MessageNavigatorNode[]>([]);
   const activeNavigatorNodeIdRef = useRef<string | null>(null);
@@ -177,12 +178,6 @@ export function MessageList({
       scrollFrameRef.current = null;
       if (!isPinnedToBottomRef.current) return;
       scrollToBottom(smooth);
-      // virtua 会在内容提交后继续测量动态高度。下一帧再校正一次，
-      // 避免长 Markdown 或流式尾部扩高时停在旧的底部位置。
-      scrollFrameRef.current = requestAnimationFrame(() => {
-        scrollFrameRef.current = null;
-        if (isPinnedToBottomRef.current) scrollToBottom(false);
-      });
     });
   }, [scrollToBottom]);
 
@@ -314,13 +309,23 @@ export function MessageList({
   useEffect(() => {
     const thread = threadRef.current;
     if (!thread || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(() => {
+    lastThreadHeightRef.current = 0;
+    const observer = new ResizeObserver(([entry]) => {
       const list = listRef.current;
       if (list && list.scrollLeft !== 0) list.scrollLeft = 0;
+      const height = entry?.contentRect.height ?? thread.getBoundingClientRect().height;
+      const previousHeight = lastThreadHeightRef.current;
+      lastThreadHeightRef.current = height;
+      // Virtua also emits resize notifications while correcting its own
+      // measurements. Follow only actual content growth to avoid a scroll loop.
+      if (height <= previousHeight + 0.5) return;
       if (isPinnedToBottomRef.current) requestScrollToBottom();
     });
     observer.observe(thread);
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      lastThreadHeightRef.current = 0;
+    };
   }, [hasConversation, requestScrollToBottom]);
 
   useLayoutEffect(() => () => {

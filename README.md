@@ -6,11 +6,11 @@ Mnemora 是一个面向个人学习与知识工作的桌面 AI 工作台，用�
 
 ## 下载
 
-当前版本：**0.1.7**
+当前版本：**0.1.8**
 
 [下载最新版本](https://github.com/tushanmiao/Mnemora/releases/latest)
 
-- 推荐使用 `Mnemora_0.1.7_x64-setup.exe`
+- 推荐使用 `Mnemora_0.1.8_x64-setup.exe`
 - MSI 安装包可用于备用安装
 - 应用内更新使用 Tauri 签名校验
 

@@ -2,12 +2,9 @@ import { useMemo, useState } from "react";
 import {
   AlertCircle,
   BrainCircuit,
-  Check,
   CheckCircle2,
   ChevronDown,
-  Circle,
   CircleStop,
-  Clock3,
   LoaderCircle,
   ShieldAlert,
   Sparkles,
@@ -44,7 +41,7 @@ export function AgentWorkflow({
   }), [language, message, reasoning, streaming]);
   const { summary } = projection;
   const summaryParts = [
-    t("chat.workflowSteps", { count: summary.stepCount }),
+    projection.steps.length > 0 ? t("chat.workflowSteps", { count: summary.stepCount }) : null,
     summary.toolCallCount > 0 ? t("chat.workflowTools", { count: summary.toolCallCount }) : null,
     summary.skillCount > 0 ? t("chat.workflowSkills", { count: summary.skillCount }) : null,
     summary.durationMs !== undefined ? formatDuration(summary.durationMs) : null,
@@ -75,7 +72,7 @@ export function AgentWorkflow({
           <WorkflowStatusIcon status={projection.status} />
         </span>
         <span className="agent-workflow-summary-copy">
-          <strong>{workflowStatusLabel(projection.status, language)}</strong>
+          <strong>{activityStatusLabel(projection, language)}</strong>
           <small>{summaryParts.join(" · ")}</small>
         </span>
         <ChevronDown className="agent-workflow-chevron" size={15} aria-hidden="true" />
@@ -134,10 +131,9 @@ function WorkflowStepRow({
         ) : null}
 
         {step.kind === "reasoning" && step.reasoning ? (
-          <details className="agent-workflow-detail">
-            <summary>{t("chat.workflowRawReasoning")}</summary>
+          <div className="agent-workflow-reasoning">
             <pre>{step.reasoning}</pre>
-          </details>
+          </div>
         ) : null}
 
         {tool ? (
@@ -202,39 +198,55 @@ function WorkflowStatusIcon({ status }: { status: AgentRunStatus }) {
 function StepIcon({ step }: { step: WorkflowStep }) {
   if (step.kind === "reasoning") return <BrainCircuit size={14} />;
   if (step.kind === "skill") return <Sparkles size={14} />;
-  if (step.kind === "tool") return <Wrench size={14} />;
-  if (step.kind === "final") return step.status === "completed" ? <Check size={14} /> : <Clock3 size={14} />;
-  return step.status === "running" ? <LoaderCircle className="agent-workflow-spin" size={14} /> : <Circle size={14} />;
+  return <Wrench size={14} />;
 }
 
-function workflowStatusLabel(status: AgentRunStatus, language: "zh" | "en") {
+function activityStatusLabel(projection: ReturnType<typeof projectAgentWorkflow>, language: "zh" | "en") {
+  const { status, steps } = projection;
+  const latestActiveStep = [...steps].reverse().find((step) => step.status === "running" || step.status === "pending");
+  if (status === "running" || status === "preparing" || status === "checkpointing") {
+    if (latestActiveStep?.kind === "reasoning") return language === "en" ? "Thinking" : "正在思考";
+    if (latestActiveStep?.kind === "skill") return language === "en" ? `Using skill: ${latestActiveStep.title}` : `正在使用技能：${latestActiveStep.title}`;
+    if (latestActiveStep?.kind === "tool") {
+      const name = toolNameLabel(latestActiveStep.title, language);
+      return language === "en" ? `Calling: ${name}` : `正在调用：${name}`;
+    }
+  }
+  if (status === "completed") {
+    const kinds = new Set(steps.map((step) => step.kind));
+    if (kinds.size === 1 && kinds.has("reasoning")) return language === "en" ? "Thinking completed" : "思考已完成";
+    if (kinds.size === 1 && kinds.has("skill")) return language === "en" ? "Skills completed" : "技能使用已完成";
+    if (kinds.size === 1 && kinds.has("tool")) return language === "en" ? "Tool calls completed" : "工具调用已完成";
+    return language === "en" ? "Thinking and calls completed" : "思考与调用已完成";
+  }
+  const statusValue = status;
   const english: Record<AgentRunStatus, string> = {
-    preparing: "Workflow preparing",
-    running: "Workflow running",
+    preparing: "Processing",
+    running: "Thinking and using tools",
     waitingApproval: "Approval required",
     waitingUser: "Waiting for input",
-    paused: "Workflow paused",
+    paused: "Processing paused",
     checkpointing: "Saving checkpoint",
-    finalizing: "Finalizing answer",
-    completed: "Workflow completed",
-    failed: "Workflow failed",
-    stopped: "Workflow stopped",
-    budgetExhausted: "Budget exhausted",
+    finalizing: "Preparing the answer",
+    completed: "Thinking completed",
+    failed: "Processing failed",
+    stopped: "Processing stopped",
+    budgetExhausted: "Processing limit reached",
   };
   const chinese: Record<AgentRunStatus, string> = {
-    preparing: "工作流准备中",
-    running: "工作流执行中",
-    waitingApproval: "工作流需要确认",
-    waitingUser: "工作流等待输入",
-    paused: "工作流已暂停",
+    preparing: "处理中",
+    running: "正在思考与调用",
+    waitingApproval: "需要确认",
+    waitingUser: "等待输入",
+    paused: "处理已暂停",
     checkpointing: "正在保存检查点",
     finalizing: "正在整理回答",
-    completed: "工作流已完成",
-    failed: "工作流失败",
-    stopped: "工作流已停止",
-    budgetExhausted: "工作流预算已用尽",
+    completed: "思考已完成",
+    failed: "处理失败",
+    stopped: "处理已停止",
+    budgetExhausted: "处理次数已用尽",
   };
-  return language === "en" ? english[status] : chinese[status];
+  return language === "en" ? english[statusValue] : chinese[statusValue];
 }
 
 function stepStatusLabel(step: WorkflowStep, language: "zh" | "en") {

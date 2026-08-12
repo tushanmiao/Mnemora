@@ -23,6 +23,7 @@ import { ChatAttachments } from "./ChatAttachments";
 import { useStreamingMessage } from "../stores/streamingStore";
 import { useI18n } from "../../../i18n/I18nProvider";
 import { AgentWorkflow } from "../agent/components/AgentWorkflow";
+import { agentWorkflowNeedsAttention, hasAgentActivity } from "../agent/projections/workflowProjection";
 import "../styles/message-bubble.css";
 
 const LONG_USER_MESSAGE_CHARACTERS = 420;
@@ -106,11 +107,11 @@ export const MessageBubble = memo(function MessageBubble({
   const attachments = message.attachments ?? [];
   const literatureReferences = message.literatureReferences ?? [];
   const noteReferences = message.noteReferences ?? [];
-  const toolTraces = message.toolTraces ?? [];
   const hasAttachments = attachments.length > 0;
   const hasLiteratureReferences = (message.literatureReferences?.length ?? 0) > 0;
   const hasNoteReferences = noteReferences.length > 0;
   const hasReasoning = displayedReasoning.trim().length > 0;
+  const showAgentActivity = hasAgentActivity(message, displayedReasoning);
   const isStopped = message.status === "stopped";
   const isError = message.status === "error";
   const showFooter = !isStreaming && message.status !== "pending";
@@ -169,26 +170,18 @@ export const MessageBubble = memo(function MessageBubble({
   }, [quoteAnchor]);
 
   useEffect(() => {
-    if (!isAssistant) return;
-    const needsAttention = message.status === "error"
-      || message.status === "stopped"
-      || toolTraces.some((trace) => trace.status === "awaitingApproval");
-    if (needsAttention && !workflowOpen) {
-      onUiStateChange(message.id, { workflowOpen: true });
-      return;
-    }
-    if (workflowInteracted) return;
-    const shouldOpen = isStreaming || message.status === "pending" || message.status === "streaming";
+    if (!isAssistant || workflowInteracted) return;
+    const shouldOpen = agentWorkflowNeedsAttention(message, isStreaming, displayedReasoning);
     if (workflowOpen !== shouldOpen) {
       onUiStateChange(message.id, { workflowOpen: shouldOpen });
     }
   }, [
     isAssistant,
     isStreaming,
+    displayedReasoning,
     message.id,
     message.status,
     onUiStateChange,
-    toolTraces,
     workflowInteracted,
     workflowOpen,
   ]);
@@ -286,7 +279,7 @@ export const MessageBubble = memo(function MessageBubble({
             </form>
           ) : (
             <>
-              {isAssistant ? (
+              {isAssistant && showAgentActivity ? (
                 <AgentWorkflow
                   message={message}
                   reasoning={displayedReasoning}

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ChatMessage } from "../../../../types/chat";
-import { projectAgentWorkflow } from "./workflowProjection";
+import { agentWorkflowNeedsAttention, projectAgentWorkflow } from "./workflowProjection";
 
 function message(patch: Partial<ChatMessage> = {}): ChatMessage {
   return {
@@ -40,10 +40,9 @@ describe("projectAgentWorkflow", () => {
       "reasoning",
       "skill",
       "tool",
-      "final",
     ]);
     expect(projection.summary).toMatchObject({
-      stepCount: 4,
+      stepCount: 3,
       toolCallCount: 1,
       skillCount: 1,
       durationMs: 800,
@@ -80,5 +79,24 @@ describe("projectAgentWorkflow", () => {
     expect(approval.needsAttention).toBe(true);
     expect(projectAgentWorkflow(message({ status: "error" })).needsAttention).toBe(true);
     expect(projectAgentWorkflow(message({ status: "stopped" })).needsAttention).toBe(true);
+  });
+
+  it("仅让运行中或需要处理的助手工作流自动展开", () => {
+    expect(agentWorkflowNeedsAttention(message({ status: "completed" }))).toBe(false);
+    expect(agentWorkflowNeedsAttention(message({ status: "error", reasoning: "失败前的思考" }))).toBe(true);
+    expect(agentWorkflowNeedsAttention(message({ status: "stopped", reasoning: "停止前的思考" }))).toBe(true);
+    expect(agentWorkflowNeedsAttention(message({ status: "pending", content: "" }))).toBe(false);
+    expect(agentWorkflowNeedsAttention(message({ status: "pending", content: "", reasoning: "分析中" }))).toBe(true);
+    expect(agentWorkflowNeedsAttention(message({ role: "user", status: "error", reasoning: "不可见" }))).toBe(false);
+  });
+
+  it("普通聊天没有真实过程事件时不生成虚拟步骤", () => {
+    const projection = projectAgentWorkflow(message());
+    expect(projection.steps).toEqual([]);
+    expect(projection.summary).toMatchObject({
+      stepCount: 0,
+      toolCallCount: 0,
+      skillCount: 0,
+    });
   });
 });
