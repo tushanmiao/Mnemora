@@ -155,18 +155,23 @@ fn redact_memory_sections(value: &str) -> String {
 pub fn success_response(
     status_code: Option<u16>,
     text: &str,
+    reasoning: Option<&str>,
     finish_reason: Option<&str>,
     usage: Option<&ModelUsage>,
 ) -> RequestDebugResponse {
     let (text, body_truncated) = truncate_chars(text, MAX_RESPONSE_PREVIEW_CHARS);
+    let (reasoning, reasoning_truncated) = reasoning
+        .map(|value| truncate_chars(value, MAX_RESPONSE_PREVIEW_CHARS))
+        .unwrap_or_default();
     RequestDebugResponse {
         status_code,
         body: Some(json!({
             "text": text,
+            "reasoning": (!reasoning.is_empty()).then_some(reasoning),
             "finishReason": finish_reason,
             "usage": usage,
         })),
-        body_truncated,
+        body_truncated: body_truncated || reasoning_truncated,
     }
 }
 
@@ -262,7 +267,8 @@ fn truncate_chars(value: &str, max_chars: usize) -> (String, bool) {
 #[cfg(test)]
 mod tests {
     use super::{
-        append_preview, redact_memory_sections, truncate_chars, MAX_RESPONSE_PREVIEW_CHARS,
+        append_preview, redact_memory_sections, success_response, truncate_chars,
+        MAX_RESPONSE_PREVIEW_CHARS,
     };
 
     #[test]
@@ -278,6 +284,27 @@ mod tests {
         append_preview(&mut preview, "xyz");
         assert_eq!(preview.chars().count(), MAX_RESPONSE_PREVIEW_CHARS);
         assert!(preview.ends_with('x'));
+    }
+
+    #[test]
+    fn successful_debug_response_keeps_provider_visible_reasoning() {
+        let response = success_response(
+            Some(200),
+            "Answer",
+            Some("Visible reasoning summary"),
+            Some("stop"),
+            None,
+        );
+
+        assert_eq!(
+            response
+                .body
+                .as_ref()
+                .and_then(|body| body.get("reasoning"))
+                .and_then(serde_json::Value::as_str),
+            Some("Visible reasoning summary")
+        );
+        assert!(!response.body_truncated);
     }
 
     #[test]

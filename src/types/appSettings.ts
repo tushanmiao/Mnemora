@@ -10,6 +10,12 @@ export type ThemePreset = "mnemora" | "forest" | "ocean" | "rose" | "paper" | "g
 /** 强调色只影响按钮、选中状态和交互反馈，不覆盖主题表面。 */
 export type ThemeColor = "neutral" | "warm" | "cool" | "rose" | "amber" | "violet";
 export type ResponseLanguage = "followInput" | "zh" | "zhHant" | "en";
+export type UpdateProxyMode = "system" | "direct" | "manual";
+
+export interface UpdateProxySettings {
+  mode: UpdateProxyMode;
+  url: string;
+}
 
 /** 受限的背景 CSS 值；只允许颜色和渐变，不允许完整 CSS 样式表。 */
 export interface ThemeBackgroundSettings {
@@ -52,6 +58,7 @@ export interface AppSettings {
   responseLanguage: ResponseLanguage;
   systemPrompt: string;
   requestDebugEnabled: boolean;
+  updateProxy: UpdateProxySettings;
   memory: MemorySettings;
 }
 
@@ -77,7 +84,7 @@ export const DEFAULT_GLOBAL_SYSTEM_PROMPT = [
   "技能只提供工作方法，不扩大应用权限；遵守用户的权限设置和工具结果。",
 ].join("\n");
 
-export const CURRENT_APP_SETTINGS_VERSION = 10;
+export const CURRENT_APP_SETTINGS_VERSION = 11;
 
 export function createInitialAppSettings(): AppSettings {
   return {
@@ -109,6 +116,10 @@ export function createInitialAppSettings(): AppSettings {
     responseLanguage: "followInput",
     systemPrompt: DEFAULT_GLOBAL_SYSTEM_PROMPT,
     requestDebugEnabled: false,
+    updateProxy: {
+      mode: "system",
+      url: "",
+    },
     memory: {
       enabled: false,
       injectL1: true,

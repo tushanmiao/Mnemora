@@ -63,6 +63,7 @@ where
     let mut finish_reason = None;
     let mut usage = None;
     let mut pending_tool_calls = Vec::<PendingToolCall>::new();
+    let mut streamed_reasoning = String::new();
     let outcome = send_sse_request(
         request_builder.json(&body),
         context.api_key,
@@ -88,6 +89,7 @@ where
                 {
                     if let Some(delta) = value.get("delta").and_then(Value::as_str) {
                         if !delta.is_empty() {
+                            streamed_reasoning.push_str(delta);
                             on_chunk(ModelStreamChunk::ReasoningDelta(delta.to_string()))?;
                         }
                     }
@@ -160,6 +162,14 @@ where
                 }
                 "response.completed" | "response.incomplete" => {
                     let response = value.get("response").unwrap_or(&value);
+                    if request.options.thinking_enabled {
+                        if let Some(reasoning) = extract_reasoning(response) {
+                            if let Some(delta) = reasoning_suffix(&streamed_reasoning, &reasoning) {
+                                streamed_reasoning.push_str(delta);
+                                on_chunk(ModelStreamChunk::ReasoningDelta(delta.to_string()))?;
+                            }
+                        }
+                    }
                     finish_reason = response
                         .pointer("/incomplete_details/reason")
                         .and_then(Value::as_str)
@@ -266,16 +276,18 @@ pub(crate) fn request_body(request: &ModelRequest) -> Value {
     if let Some(max_output_tokens) = request.options.max_output_tokens {
         body.insert("max_output_tokens".to_string(), json!(max_output_tokens));
     }
-    if request.options.thinking_enabled && supports_reasoning(&request.model) {
+    if request.options.thinking_enabled {
         let effort = request
             .options
             .reasoning_effort
             .as_deref()
-            .unwrap_or("medium");
-        body.insert(
-            "reasoning".to_string(),
-            json!({ "effort": effort, "summary": "auto" }),
-        );
+            .or_else(|| supports_reasoning(&request.model).then_some("medium"));
+        if let Some(effort) = effort {
+            body.insert(
+                "reasoning".to_string(),
+                json!({ "effort": effort, "summary": "auto" }),
+            );
+        }
     }
     if !request.tools.is_empty() {
         body.insert(
@@ -448,6 +460,21 @@ fn extract_reasoning(value: &Value) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join(""))
 }
 
+fn reasoning_suffix<'a>(streamed: &str, completed: &'a str) -> Option<&'a str> {
+    if completed.is_empty() || completed == streamed {
+        return None;
+    }
+    if let Some(suffix) = completed.strip_prefix(streamed) {
+        return (!suffix.is_empty()).then_some(suffix);
+    }
+    // Compatible gateways sometimes stream only a short summary title and place the full
+    // provider-visible reasoning in the completed response. Avoid duplicating the title.
+    if completed.contains(streamed) {
+        return None;
+    }
+    Some(completed)
+}
+
 fn supports_reasoning(model: &str) -> bool {
     let model = model.trim().to_ascii_lowercase();
     model.starts_with("gpt-5")
@@ -597,6 +624,37 @@ mod tests {
         .unwrap();
         assert_eq!(response.text, "Answer");
         assert_eq!(response.reasoning.as_deref(), Some("Plan first."));
+    }
+
+    #[test]
+    fn completed_reasoning_only_emits_the_unseen_suffix() {
+        assert_eq!(
+            super::reasoning_suffix("Plan", "Plan first."),
+            Some(" first.")
+        );
+        assert_eq!(super::reasoning_suffix("Plan first.", "Plan first."), None);
+        assert_eq!(
+            super::reasoning_suffix("Plan first.", "Detailed reasoning."),
+            Some("Detailed reasoning.")
+        );
+    }
+
+    #[test]
+    fn sends_explicit_reasoning_effort_for_custom_model_alias() {
+        let body = super::request_body(&ModelRequest {
+            model: "provider-gpt-reasoning-alias".to_string(),
+            system_prompt: None,
+            messages: Vec::new(),
+            options: ModelOptions {
+                thinking_enabled: true,
+                reasoning_effort: Some("xhigh".to_string()),
+                ..ModelOptions::default()
+            },
+            tools: Vec::new(),
+        });
+
+        assert_eq!(body["reasoning"]["effort"], "xhigh");
+        assert_eq!(body["reasoning"]["summary"], "auto");
     }
 
     #[test]

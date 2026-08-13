@@ -4,7 +4,9 @@
 //! 后续接入 Tauri Updater 时，签名下载与安装仍由独立命令负责。
 
 mod github;
+mod proxy;
 mod types;
 
 pub use github::check_latest_release;
+pub use proxy::{build_update_client, configure_signed_updater};
 pub use types::UpdateCheckResult;

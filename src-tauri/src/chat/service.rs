@@ -136,6 +136,7 @@ pub async fn complete(
                     request_debug::success_response(
                         Some(200),
                         &result.response.text,
+                        result.response.reasoning.as_deref(),
                         result.response.finish_reason.as_deref(),
                         result.response.usage.as_ref(),
                     ),
@@ -213,6 +214,7 @@ pub async fn stream(
     let created_at_ms = usage::now_ms();
     let started_at = Instant::now();
     let mut response_preview = String::new();
+    let mut reasoning_preview = String::new();
     let result = run_agent_stream(
         state,
         &context,
@@ -225,6 +227,7 @@ pub async fn stream(
         &conversation_id,
         &message_id,
         &mut response_preview,
+        &mut reasoning_preview,
     )
     .await;
     state.active_chat_runs.lock().await.remove(&run_id);
@@ -239,6 +242,7 @@ pub async fn stream(
             request_debug::success_response(
                 Some(200),
                 &response_preview,
+                (!reasoning_preview.is_empty()).then_some(reasoning_preview.as_str()),
                 summary.finish_reason.as_deref(),
                 summary.usage.as_ref(),
             ),
@@ -653,6 +657,7 @@ async fn run_agent_stream(
     conversation_id: &str,
     message_id: &str,
     response_preview: &mut String,
+    reasoning_preview: &mut String,
 ) -> Result<ModelStreamOutcome, ModelError> {
     if tool_context.permission_mode
         == crate::chat::conversation_types::AiPermissionMode::AskEveryTime
@@ -697,6 +702,7 @@ async fn run_agent_stream(
             conversation_id,
             message_id,
             response_preview,
+            reasoning_preview,
             &mut round_text,
         )
         .await;
@@ -1120,6 +1126,7 @@ async fn stream_inner(
     conversation_id: &str,
     message_id: &str,
     response_preview: &mut String,
+    reasoning_preview: &mut String,
     round_text: &mut String,
 ) -> Result<ModelStreamOutcome, ModelError> {
     let retry_policy = retry_policy(state);
@@ -1142,6 +1149,7 @@ async fn stream_inner(
                 Ok(())
             }
             ModelStreamChunk::ReasoningDelta(delta) => {
+                request_debug::append_preview(reasoning_preview, &delta);
                 on_event
                     .send(ModelStreamEvent::ReasoningDelta {
                         run_id: run_id.to_string(),

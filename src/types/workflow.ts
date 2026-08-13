@@ -39,6 +39,7 @@ export interface WorkflowStep {
   title: string;
   detail?: string;
   reasoning?: string;
+  reasoningLabel?: "reasoning" | "summary";
   skill?: ActivatedSkillSnapshot;
   tool?: ToolTrace;
 }

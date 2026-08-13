@@ -5,13 +5,13 @@ import {
   BookOpenText,
   Command,
   Brain,
+  Check,
   FileText,
   LoaderCircle,
   NotebookPen,
   Paperclip,
   Download,
   Quote,
-  SlidersHorizontal,
   Square,
   X,
 } from "lucide-react";
@@ -46,6 +46,14 @@ import { formatChatQuotes, MAX_CHAT_QUOTES } from "../utils/quotes";
 import "../styles/chat-input.css";
 
 const MAX_ATTACHMENTS = 8;
+
+const REASONING_EFFORT_LABEL_KEYS = {
+  low: "chat.reasoningEffort.low",
+  medium: "chat.reasoningEffort.medium",
+  high: "chat.reasoningEffort.high",
+  xhigh: "chat.reasoningEffort.xhigh",
+  max: "chat.reasoningEffort.max",
+} as const;
 
 type ChatInputProps = {
   conversationId: string | null;
@@ -222,6 +230,8 @@ export function ChatInput({
   const [selectedCommandIndex, setSelectedCommandIndex] = useState(0);
   const preparingAttachmentsRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const reasoningControlRef = useRef<HTMLDivElement>(null);
+  const noteControlRef = useRef<HTMLDivElement>(null);
   const attachmentsRef = useRef(attachments);
   const attachmentSessionRef = useRef(0);
   const activeAttachmentTaskRef = useRef<string | null>(null);
@@ -233,6 +243,9 @@ export function ChatInput({
   const inputDisabled = disabled || busy || preparingAttachments || commandRunning;
   const reasoningAvailable = supportsReasoning === true;
   const effectiveEfforts = reasoningEfforts.filter((effort) => ["low", "medium", "high", "xhigh", "max"].includes(effort));
+  const reasoningEffortLabel = reasoningEffort
+    ? t(REASONING_EFFORT_LABEL_KEYS[reasoningEffort])
+    : t("chat.reasoningAuto");
   const canSend = !inputDisabled && (
     draft.trim().length > 0
     || attachments.length > 0
@@ -252,6 +265,26 @@ export function ChatInput({
     setSelectedCommandIndex(0);
     setUnknownSlashConfirmation(null);
   }, [draft]);
+
+  useEffect(() => {
+    if (!reasoningMenuOpen && !noteMenuOpen) return;
+    const closeMenus = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (!reasoningControlRef.current?.contains(target)) setReasoningMenuOpen(false);
+      if (!noteControlRef.current?.contains(target)) setNoteMenuOpen(false);
+    };
+    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setReasoningMenuOpen(false);
+      setNoteMenuOpen(false);
+    };
+    document.addEventListener("mousedown", closeMenus);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("mousedown", closeMenus);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [noteMenuOpen, reasoningMenuOpen]);
 
   const discardPendingAttachments = (items: readonly PendingChatAttachment[]) => {
     for (const attachment of items) {
@@ -804,7 +837,7 @@ export function ChatInput({
                 disabledReason={supportsTools !== true ? t("chat.toolsUnsupported") : undefined}
                 onChange={onSelectedSkillsChange}
               />
-              <div className="composer-note-control">
+              <div className="composer-note-control" ref={noteControlRef}>
                 <button className="icon-button" type="button" title={t("chat.noteActions")} aria-label={t("chat.noteActions")} aria-expanded={noteMenuOpen} disabled={inputDisabled || !hasMessages} onClick={() => { setNoteMenuOpen((value) => !value); setReasoningMenuOpen(false); }}>
                   <NotebookPen size={18} />
                 </button>
@@ -820,21 +853,37 @@ export function ChatInput({
                   </div>
                 ) : null}
               </div>
-              <div className="composer-reasoning-control">
-                <button className={`icon-button${thinkingEnabled ? " skill-picker-active" : ""}`} type="button" title={reasoningAvailable ? t("chat.reasoningSettings") : t("chat.reasoningUnsupported")} aria-label={t("chat.reasoningSettings")} aria-expanded={reasoningMenuOpen} disabled={inputDisabled || !reasoningAvailable} onClick={() => { setReasoningMenuOpen((value) => !value); setNoteMenuOpen(false); }}>
+              <div className="composer-reasoning-control" ref={reasoningControlRef}>
+                <button className={`icon-button composer-reasoning-trigger${thinkingEnabled ? " skill-picker-active" : ""}`} type="button" title={reasoningAvailable ? `${t("chat.reasoningSettings")}：${reasoningEffortLabel}` : t("chat.reasoningUnsupported")} aria-label={reasoningAvailable ? `${t("chat.reasoningSettings")}：${reasoningEffortLabel}` : t("chat.reasoningUnsupported")} aria-expanded={reasoningMenuOpen} disabled={inputDisabled || !reasoningAvailable} onClick={() => { setReasoningMenuOpen((value) => !value); setNoteMenuOpen(false); }}>
                   <Brain size={18} />
+                  {thinkingEnabled ? <span className="composer-reasoning-trigger-label">{reasoningEffortLabel}</span> : null}
                 </button>
                 {reasoningMenuOpen && reasoningAvailable ? (
                   <div className="composer-reasoning-menu" role="menu" aria-label={t("chat.reasoningSettings")}>
                     <label className="composer-toggle-row"><span>{t("general.thinking")}</span><input type="checkbox" checked={thinkingEnabled} onChange={(event) => onThinkingChange?.(event.target.checked)} /></label>
-                    {effectiveEfforts.length > 0 ? <div className="composer-reasoning-options">
-                      {effectiveEfforts.map((effort) => <button type="button" role="menuitemradio" aria-checked={reasoningEffort === effort} className={reasoningEffort === effort ? "composer-reasoning-selected" : ""} key={effort} disabled={!thinkingEnabled} onClick={() => onReasoningEffortChange?.(effort)}>{effort}</button>)}
-                      <button type="button" role="menuitemradio" aria-checked={reasoningEffort === null} disabled={!thinkingEnabled} onClick={() => onReasoningEffortChange?.(null)}>{t("chat.reasoningAuto")}</button>
-                    </div> : null}
+                    {effectiveEfforts.length > 0 ? (
+                      <div className="composer-reasoning-effort-group">
+                        <span className="composer-reasoning-effort-label">{t("chat.reasoningEffort")}</span>
+                        <div className="composer-reasoning-options">
+                          {effectiveEfforts.map((effort) => {
+                            const selected = reasoningEffort === effort;
+                            return (
+                              <button type="button" role="menuitemradio" aria-checked={selected} className={selected ? "composer-reasoning-selected" : ""} key={effort} disabled={!thinkingEnabled} onClick={() => onReasoningEffortChange?.(effort)}>
+                                <span>{t(REASONING_EFFORT_LABEL_KEYS[effort])}</span>
+                                {selected ? <Check size={12} /> : null}
+                              </button>
+                            );
+                          })}
+                          <button type="button" role="menuitemradio" aria-checked={reasoningEffort === null} className={reasoningEffort === null ? "composer-reasoning-selected" : ""} disabled={!thinkingEnabled} onClick={() => onReasoningEffortChange?.(null)}>
+                            <span>{t("chat.reasoningAuto")}</span>
+                            {reasoningEffort === null ? <Check size={12} /> : null}
+                          </button>
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
                 ) : null}
               </div>
-              <button className="icon-button" type="button" title={t("chat.options")} disabled={inputDisabled}><SlidersHorizontal size={18} /></button>
             </div>
 
             <div className="composer-actions">

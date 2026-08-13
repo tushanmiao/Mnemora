@@ -8,13 +8,16 @@ import {
   Database,
   ExternalLink,
   FileText,
+  Gauge,
   LoaderCircle,
   RefreshCw,
+  Save,
   ShieldCheck,
   Sparkles,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useI18n } from "../../../i18n/I18nProvider";
+import type { AppSettings, UpdateProxyMode } from "../../../types/appSettings";
 import type { SignedUpdateInfo, UpdateCheckResult } from "../../../types/appUpdate";
 import {
   checkApplicationUpdate,
@@ -40,7 +43,12 @@ const PROJECT_URL = "https://github.com/tushanmiao/Mnemora";
 const RELEASE_URL = PROJECT_URL + "/releases";
 const ISSUES_URL = PROJECT_URL + "/issues";
 
-export function AboutSettingsPanel() {
+type AboutSettingsPanelProps = {
+  settings: AppSettings;
+  onSaveSettings: (settings: AppSettings) => Promise<AppSettings>;
+};
+
+export function AboutSettingsPanel({ settings, onSaveSettings }: AboutSettingsPanelProps) {
   const { t } = useI18n();
   const [metadata, setMetadata] = useState<AppMetadata>(FALLBACK_METADATA);
   const [metadataLoading, setMetadataLoading] = useState(true);
@@ -52,6 +60,15 @@ export function AboutSettingsPanel() {
   const [downloadProgress, setDownloadProgress] = useState(0);
   const [downloadedBytes, setDownloadedBytes] = useState(0);
   const [downloadTotal, setDownloadTotal] = useState<number | null>(null);
+  const [proxyMode, setProxyMode] = useState<UpdateProxyMode>(settings.updateProxy.mode);
+  const [proxyUrl, setProxyUrl] = useState(settings.updateProxy.url);
+  const [proxySaving, setProxySaving] = useState(false);
+  const [proxyFeedback, setProxyFeedback] = useState<{ kind: "success" | "error"; message: string } | null>(null);
+
+  useEffect(() => {
+    setProxyMode(settings.updateProxy.mode);
+    setProxyUrl(settings.updateProxy.url);
+  }, [settings.updateProxy.mode, settings.updateProxy.url]);
 
   useEffect(() => () => {
     void discardSignedApplicationUpdate();
@@ -100,6 +117,37 @@ export function AboutSettingsPanel() {
     ? "Tauri 2"
     : "Tauri " + metadata.tauriVersion;
 
+  const proxyDirty = proxyMode !== settings.updateProxy.mode || proxyUrl.trim() !== settings.updateProxy.url;
+  const proxyValidationKey = proxyMode === "manual" ? validateProxyUrl(proxyUrl) : null;
+  const proxyValidationError = proxyValidationKey ? t(proxyValidationKey) : null;
+
+  const saveProxySettings = async () => {
+    if (proxyValidationError) {
+      setProxyFeedback({ kind: "error", message: proxyValidationError });
+      throw new Error(proxyValidationError);
+    }
+    setProxySaving(true);
+    setProxyFeedback(null);
+    try {
+      const saved = await onSaveSettings({
+        ...settings,
+        updateProxy: { mode: proxyMode, url: proxyUrl.trim() },
+      });
+      setProxyMode(saved.updateProxy.mode);
+      setProxyUrl(saved.updateProxy.url);
+      setProxyFeedback({ kind: "success", message: t("about.proxySaved") });
+      await discardSignedApplicationUpdate();
+      setSignedUpdate(null);
+      return saved;
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : String(reason);
+      setProxyFeedback({ kind: "error", message });
+      throw reason;
+    } finally {
+      setProxySaving(false);
+    }
+  };
+
   const checkUpdate = async () => {
     setUpdateStatus("checking");
     setUpdateError("");
@@ -108,6 +156,7 @@ export function AboutSettingsPanel() {
     setDownloadedBytes(0);
     setDownloadTotal(null);
     try {
+      if (proxyDirty) await saveProxySettings();
       const result = await checkApplicationUpdate();
       setUpdateInfo(result);
       if (result.available) {
@@ -155,7 +204,7 @@ export function AboutSettingsPanel() {
     }
   };
 
-  const updateBusy = updateStatus === "checking" || updateStatus === "downloading" || updateStatus === "installing";
+  const updateBusy = proxySaving || updateStatus === "checking" || updateStatus === "downloading" || updateStatus === "installing";
 
   return (
     <section className="settings-content about-settings-content" aria-label="关于 Mnemora">
@@ -212,6 +261,73 @@ export function AboutSettingsPanel() {
             </button>
           </div>
           <p className="about-section-description">{t("about.updateDescription")}</p>
+          <div className="about-proxy-settings" aria-labelledby="about-proxy-heading">
+            <div className="about-proxy-copy">
+              <div className="about-proxy-title">
+                <Gauge size={15} />
+                <strong id="about-proxy-heading">{t("about.proxyTitle")}</strong>
+              </div>
+              <span>{t(`about.proxyDescription.${proxyMode}`)}</span>
+            </div>
+            <div className="about-proxy-controls">
+              <div className="settings-segmented about-proxy-modes" aria-label={t("about.proxyMode")}>
+                {(["system", "direct", "manual"] as const).map((mode) => (
+                  <button
+                    className={proxyMode === mode ? "settings-segmented-active" : ""}
+                    type="button"
+                    key={mode}
+                    aria-pressed={proxyMode === mode}
+                    disabled={updateBusy}
+                    onClick={() => {
+                      setProxyMode(mode);
+                      if (mode !== "manual" && validateProxyUrl(proxyUrl)) setProxyUrl("");
+                      setProxyFeedback(null);
+                    }}
+                  >
+                    {t(`about.proxyMode.${mode}`)}
+                  </button>
+                ))}
+              </div>
+              {proxyMode === "manual" ? (
+                <div className="about-proxy-address">
+                  <label htmlFor="about-update-proxy-url">{t("about.proxyAddress")}</label>
+                  <input
+                    id="about-update-proxy-url"
+                    className={`settings-input${proxyValidationError ? " settings-input-error" : ""}`}
+                    type="url"
+                    inputMode="url"
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    spellCheck={false}
+                    value={proxyUrl}
+                    placeholder="http://127.0.0.1:7890"
+                    disabled={updateBusy}
+                    aria-invalid={Boolean(proxyValidationError)}
+                    aria-describedby={proxyValidationError ? "about-update-proxy-error" : undefined}
+                    onChange={(event) => {
+                      setProxyUrl(event.target.value);
+                      setProxyFeedback(null);
+                    }}
+                  />
+                  {proxyValidationError ? <span id="about-update-proxy-error" className="settings-field-error">{proxyValidationError}</span> : null}
+                </div>
+              ) : null}
+              <button
+                className="settings-button settings-button-secondary about-proxy-save"
+                type="button"
+                disabled={updateBusy || !proxyDirty || Boolean(proxyValidationError)}
+                onClick={() => void saveProxySettings().catch(() => undefined)}
+              >
+                {proxySaving ? <LoaderCircle className="settings-spin" size={15} /> : <Save size={15} />}
+                <span>{proxySaving ? t("common.saving") : t("about.saveProxy")}</span>
+              </button>
+            </div>
+          </div>
+          {proxyFeedback ? (
+            <div className={`settings-feedback settings-feedback-${proxyFeedback.kind} about-proxy-feedback`} role="status">
+              <span>{proxyFeedback.message}</span>
+            </div>
+          ) : null}
           {updateInfo && updateStatus !== "checking" && updateStatus !== "error" ? (
             <div className={`about-update-result${updateInfo.available ? " about-update-available" : ""}`}>
               <div className="about-update-result-heading">
@@ -348,6 +464,32 @@ function formatFileSize(bytes: number) {
   if (bytes < 1024 * 1024) return `${Math.max(0, bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
+
+function validateProxyUrl(value: string): ProxyValidationKey | null {
+  const trimmed = value.trim();
+  if (!trimmed) return "about.proxyError.required";
+  if (trimmed.length > 2048) return "about.proxyError.tooLong";
+  const normalized = trimmed.includes("://") ? trimmed : `http://${trimmed}`;
+  try {
+    const url = new URL(normalized);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return "about.proxyError.scheme";
+    if (!url.hostname) return "about.proxyError.host";
+    if (url.username || url.password) return "about.proxyError.credentials";
+    if (url.search || url.hash) return "about.proxyError.parameters";
+    return null;
+  } catch {
+    return "about.proxyError.invalid";
+  }
+}
+
+type ProxyValidationKey =
+  | "about.proxyError.required"
+  | "about.proxyError.tooLong"
+  | "about.proxyError.scheme"
+  | "about.proxyError.host"
+  | "about.proxyError.credentials"
+  | "about.proxyError.parameters"
+  | "about.proxyError.invalid";
 
 function MetadataItem({
   label,

@@ -583,7 +583,28 @@ mod tests {
                 .required_tools,
             vec!["read_xlsx_rows"]
         );
-        assert_eq!(skills.len(), 12);
+        assert_eq!(skills.len(), 13);
+        assert!(skills.iter().any(|skill| {
+            skill.id == "question-framing"
+                && skill.enabled
+                && skill.default_enabled
+                && skill.required_tools.is_empty()
+        }));
+        assert!(skills.iter().any(|skill| {
+            skill.id == "code-explanation"
+                && skill.enabled
+                && skill.default_enabled
+                && skill.supported_modes.len() == 3
+        }));
+        assert!(skills.iter().any(|skill| {
+            skill.id == "beginner-teaching"
+                && skill.enabled
+                && skill.default_enabled
+                && skill.supported_modes.len() == 3
+        }));
+        assert!(!skills
+            .iter()
+            .any(|skill| skill.id == "code-review-excellence"));
         for skill in &skills {
             assert!(skill
                 .license

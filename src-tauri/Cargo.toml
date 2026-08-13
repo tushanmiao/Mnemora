@@ -1,6 +1,6 @@
 [package]
 name = "mnemora"
-version = "0.1.9"
+version = "0.1.10"
 description = "Mnemora desktop application"
 authors = ["tushanmiao"]
 edition = "2021"
@@ -53,6 +53,7 @@ tauri-plugin-updater = "2"
 sysinfo = { version = "0.33", optional = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
+windows-registry = "0.6"
 windows-sys = { version = "0.59", optional = true, features = [
   "Win32_Foundation",
   "Win32_System_ProcessStatus",

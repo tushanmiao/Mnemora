@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::memory::MemorySettings;
 
-pub const CURRENT_APP_SETTINGS_VERSION: u32 = 10;
+pub const CURRENT_APP_SETTINGS_VERSION: u32 = 11;
 pub const DEFAULT_GLOBAL_SYSTEM_PROMPT: &str = concat!(
     "你是 Mnemora 的学习与研究助手。\n",
     "优先直接回答问题，并根据复杂度使用清晰的标题、列表、表格或代码块。\n",
@@ -125,6 +125,58 @@ pub enum ResponseLanguage {
     En,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum UpdateProxyMode {
+    #[default]
+    System,
+    Direct,
+    Manual,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateProxySettings {
+    #[serde(default)]
+    pub mode: UpdateProxyMode,
+    #[serde(default)]
+    pub url: String,
+}
+
+impl UpdateProxySettings {
+    pub fn manual_url(&self) -> Result<Url, String> {
+        let value = self.url.trim();
+        if value.is_empty() {
+            return Err("Manual update proxy URL is required".to_string());
+        }
+        if value.len() > 2_048 {
+            return Err("Update proxy URL is too long".to_string());
+        }
+        let normalized = if value.contains("://") {
+            value.to_string()
+        } else {
+            format!("http://{value}")
+        };
+        let url = Url::parse(&normalized)
+            .map_err(|error| format!("Invalid update proxy URL: {error}"))?;
+        if !matches!(url.scheme(), "http" | "https") {
+            return Err("Update proxy must use HTTP or HTTPS".to_string());
+        }
+        if url.host_str().is_none() {
+            return Err("Update proxy URL must include a host".to_string());
+        }
+        if !url.username().is_empty() || url.password().is_some() {
+            return Err(
+                "Update proxy credentials cannot be stored in application settings".to_string(),
+            );
+        }
+        if url.query().is_some() || url.fragment().is_some() {
+            return Err("Update proxy URL cannot include a query or fragment".to_string());
+        }
+        Ok(url)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
@@ -177,6 +229,8 @@ pub struct AppSettings {
     pub system_prompt: String,
     #[serde(default)]
     pub request_debug_enabled: bool,
+    #[serde(default)]
+    pub update_proxy: UpdateProxySettings,
     #[serde(default)]
     pub memory: MemorySettings,
 }
@@ -236,6 +290,7 @@ impl Default for AppSettings {
             response_language: ResponseLanguage::FollowInput,
             system_prompt: DEFAULT_GLOBAL_SYSTEM_PROMPT.to_string(),
             request_debug_enabled: false,
+            update_proxy: UpdateProxySettings::default(),
             memory: MemorySettings::default(),
         }
     }
@@ -263,6 +318,7 @@ impl AppSettings {
         self.working_directory = self.working_directory.trim().to_string();
         self.system_prompt = self.system_prompt.trim().to_string();
         self.theme_background.css = self.theme_background.css.trim().to_string();
+        self.update_proxy.url = self.update_proxy.url.trim().to_string();
 
         if self.user_display_name.chars().count() > 100 {
             return Err("User display name is too long".to_string());
@@ -321,6 +377,11 @@ impl AppSettings {
         }
         if self.system_prompt.len() > 256 * 1024 {
             return Err("System Prompt is too long".to_string());
+        }
+        if !self.update_proxy.url.is_empty() {
+            self.update_proxy.url = self.update_proxy.manual_url()?.to_string();
+        } else if self.update_proxy.mode == UpdateProxyMode::Manual {
+            return Err("Manual update proxy URL is required".to_string());
         }
         Ok(self)
     }
@@ -420,7 +481,10 @@ fn validate_theme_background_css(value: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{AppSettings, ThemeColor, ThemeMode, ThemePreset, CURRENT_APP_SETTINGS_VERSION};
+    use super::{
+        AppSettings, ThemeColor, ThemeMode, ThemePreset, UpdateProxyMode,
+        CURRENT_APP_SETTINGS_VERSION,
+    };
 
     #[test]
     fn defaults_are_versioned_and_streaming_is_enabled() {
@@ -438,6 +502,8 @@ mod tests {
         assert_eq!(settings.theme_background.surface_opacity, 92);
         assert!(!settings.memory.enabled);
         assert!(!settings.memory.allow_model_write);
+        assert_eq!(settings.update_proxy.mode, UpdateProxyMode::System);
+        assert!(settings.update_proxy.url.is_empty());
     }
 
     #[test]
@@ -580,5 +646,34 @@ mod tests {
         assert_eq!(settings.letter_spacing, 0.4);
         assert_eq!(settings.retry_attempts, 4);
         assert_eq!(settings.max_output_tokens, 65_536);
+    }
+
+    #[test]
+    fn normalizes_and_validates_update_proxy() {
+        let settings = AppSettings {
+            update_proxy: super::UpdateProxySettings {
+                mode: UpdateProxyMode::Manual,
+                url: " 127.0.0.1:7890 ".to_string(),
+            },
+            ..AppSettings::default()
+        }
+        .normalize_and_validate()
+        .unwrap();
+        assert_eq!(settings.update_proxy.url, "http://127.0.0.1:7890/");
+
+        for url in [
+            "socks5://127.0.0.1:7890",
+            "http://user:password@127.0.0.1:7890",
+            "http://127.0.0.1:7890?token=secret",
+        ] {
+            let settings = AppSettings {
+                update_proxy: super::UpdateProxySettings {
+                    mode: UpdateProxyMode::Manual,
+                    url: url.to_string(),
+                },
+                ..AppSettings::default()
+            };
+            assert!(settings.normalize_and_validate().is_err(), "invalid {url}");
+        }
     }
 }

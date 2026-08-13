@@ -57,6 +57,7 @@ export function createAssistantMessage(
       displayName: selectedModel.model.displayName,
       providerId: selectedModel.provider.id,
       providerName: selectedModel.provider.name,
+      protocol: selectedModel.provider.protocol,
     },
     activatedSkills,
   };

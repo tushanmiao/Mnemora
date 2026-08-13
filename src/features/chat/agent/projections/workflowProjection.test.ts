@@ -99,4 +99,22 @@ describe("projectAgentWorkflow", () => {
       skillCount: 0,
     });
   });
+  it("labels OpenAI Responses reasoning as a provider summary", () => {
+    const projection = projectAgentWorkflow(message({
+      reasoning: "**Explaining the transaction model**",
+      modelSnapshot: {
+        id: "gpt-5",
+        providerId: "openai",
+        displayName: "GPT-5",
+        apiModel: "gpt-5",
+        protocol: "openAiResponses",
+        providerName: "OpenAI",
+      },
+    }), { language: "en" });
+
+    expect(projection.steps[0]).toMatchObject({
+      title: "Reasoning summary",
+      reasoningLabel: "summary",
+    });
+  });
 });

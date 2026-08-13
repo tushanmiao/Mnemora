@@ -133,6 +133,13 @@ function WorkflowStepRow({
         {step.kind === "reasoning" && step.reasoning ? (
           <div className="agent-workflow-reasoning">
             <pre>{step.reasoning}</pre>
+            {step.reasoningLabel === "summary" ? (
+              <small className="agent-workflow-reasoning-note">
+                {language === "en"
+                  ? "The provider exposed a reasoning summary, not its hidden reasoning tokens."
+                  : "该协议返回的是供应商提供的思考摘要，不是模型内部隐藏的完整推理 Token。"}
+              </small>
+            ) : null}
           </div>
         ) : null}
 

@@ -83,6 +83,8 @@ pub struct ModelSnapshot {
     pub display_name: String,
     pub provider_id: String,
     pub provider_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<crate::settings::types::ApiProtocol>,
 }
 
 /** 助手消息生成时实际激活的 Skill 版本快照，不复制完整技能正文。 */

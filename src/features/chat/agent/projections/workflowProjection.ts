@@ -57,9 +57,11 @@ function labels(language: "zh" | "en") {
   return language === "en"
     ? {
         reasoning: "Model reasoning",
+        reasoningSummary: "Reasoning summary",
       }
     : {
         reasoning: "模型思考",
+        reasoningSummary: "思考摘要",
       };
 }
 
@@ -81,12 +83,16 @@ export function projectAgentWorkflow(
   const steps: WorkflowStep[] = [];
 
   if (reasoning.trim()) {
+    const reasoningLabel = message.modelSnapshot?.protocol === "openAiResponses"
+      ? "summary"
+      : "reasoning";
     steps.push({
       id: `${message.id}:reasoning`,
       kind: "reasoning",
       status: status === "preparing" || status === "running" ? "running" : "completed",
-      title: copy.reasoning,
+      title: reasoningLabel === "summary" ? copy.reasoningSummary : copy.reasoning,
       reasoning,
+      reasoningLabel,
     });
   }
 

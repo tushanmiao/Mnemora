@@ -227,6 +227,74 @@
   background: var(--color-surface-raised);
 }
 
+.about-proxy-settings {
+  display: grid;
+  margin-top: 12px;
+  padding: 12px 0;
+  grid-template-columns: minmax(180px, 1fr) minmax(300px, auto);
+  align-items: start;
+  gap: 18px;
+  border-top: 1px solid var(--color-border-soft);
+  border-bottom: 1px solid var(--color-border-soft);
+}
+
+.about-proxy-copy {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.about-proxy-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--color-text);
+  font-size: 12px;
+}
+
+.about-proxy-title svg {
+  flex: 0 0 auto;
+  color: var(--color-accent);
+}
+
+.about-proxy-copy > span {
+  max-width: 520px;
+  color: var(--color-muted);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.about-proxy-controls {
+  display: grid;
+  min-width: 0;
+  justify-items: end;
+  gap: 8px;
+}
+
+.about-proxy-modes {
+  max-width: 100%;
+}
+
+.about-proxy-address {
+  display: grid;
+  width: min(420px, 100%);
+  gap: 6px;
+}
+
+.about-proxy-address label {
+  color: var(--color-muted);
+  font-size: 11px;
+}
+
+.about-proxy-save {
+  min-width: 112px;
+}
+
+.about-proxy-feedback {
+  width: min(640px, 100%);
+  margin-top: 10px;
+}
+
 .about-update-signature-warning {
   display: flex;
   min-width: 0;
@@ -255,7 +323,6 @@
   position: absolute;
   inset: 0 auto 0 0;
   background: color-mix(in srgb, var(--color-accent) 28%, transparent);
-  transition: width 120ms linear;
 }
 
 .about-update-progress > small {
@@ -339,6 +406,14 @@
   .about-fact-list {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .about-proxy-settings {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .about-proxy-controls {
+    justify-items: start;
+  }
 }
 
 @media (max-width: 560px) {
@@ -367,5 +442,21 @@
 
   .about-fact-list {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .about-proxy-modes {
+    display: grid;
+    width: 100%;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .about-proxy-modes button {
+    min-width: 0;
+    padding: 0 6px;
+  }
+
+  .about-proxy-address,
+  .about-proxy-save {
+    width: 100%;
   }
 }

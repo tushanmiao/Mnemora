@@ -13,12 +13,13 @@ Mnemora 的内置 Skill 是经过适配的工作说明，不代表上游项目�
 | 科学证据分析 | `K-Dense-AI/scientific-agent-skills` | `831d49eb77eed3c792be2970921b46764012ef00` | MIT |
 | Markdown 笔记 | `kepano/obsidian-skills` | `a1dc48e68138490d522c04cbf5822214c6eb1202` | MIT |
 | 知识整理 | `openai/skills` / Notion Labs | `49f948faa9258a0c61caceaf225e179651397431` | MIT |
-| 代码审查 | `wshobson/agents` | `c4b82b0ad771190355eb8e204b1329732a18449a` | MIT |
 | 系统化调试 | `obra/superpowers` | `d884ae04edebef577e82ff7c4e143debd0bbec99` | MIT |
 | 图片证据分析 | `github/awesome-copilot` | `786bdcfc65b669faee10803db460a7218858ad21` | MIT |
 | Word 文档阅读 | `github/awesome-copilot` | `786bdcfc65b669faee10803db460a7218858ad21` | MIT |
 | Excel 表格分析 | `github/awesome-copilot` | `786bdcfc65b669faee10803db460a7218858ad21` | MIT |
-| 代码解读 | `github/awesome-copilot` | `786bdcfc65b669faee10803db460a7218858ad21` | MIT |
+| 代码与技术解读 | `github/awesome-copilot` | `786bdcfc65b669faee10803db460a7218858ad21` | MIT |
+| 问题框定 | `Nandansai08/skillz` | `6571a300abb8e49e7c7520896041734aede52c91` | MIT |
+| 小白讲解 | `pjt222/agent-almanac` | `6345ef3b26a9ef4b3745a8e3875a0a8eb56b3a18` | MIT |
 
 ## 未纳入的候选
 

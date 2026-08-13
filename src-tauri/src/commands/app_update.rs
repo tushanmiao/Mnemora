@@ -10,8 +10,15 @@ pub async fn check_application_update(
     state: State<'_, AppState>,
 ) -> Result<app_update::UpdateCheckResult, String> {
     let _operation_guard = state.update_operations.lock().await;
+    let proxy_settings = state
+        .app_settings
+        .read()
+        .map_err(|_| "应用设置暂时不可用。".to_string())?
+        .update_proxy
+        .clone();
+    let client = app_update::build_update_client(&proxy_settings)?;
     let cancellation = state.start_update_check().await;
-    let check = app_update::check_latest_release(&state.http);
+    let check = app_update::check_latest_release(&client);
     let result = tokio::select! {
         result = check => result,
         _ = cancellation.cancelled() => Err("更新检查已取消。".to_string()),
@@ -45,9 +52,14 @@ pub async fn check_signed_application_update(
 ) -> Result<Option<SignedUpdateInfo>, String> {
     let _operation_guard = state.update_operations.lock().await;
     state.discard_pending_signed_update().await;
-    let updater = app
-        .updater_builder()
-        .timeout(Duration::from_secs(120))
+    let proxy_settings = state
+        .app_settings
+        .read()
+        .map_err(|_| "应用设置暂时不可用。".to_string())?
+        .update_proxy
+        .clone();
+    let updater_builder = app.updater_builder().timeout(Duration::from_secs(120));
+    let updater = app_update::configure_signed_updater(updater_builder, &proxy_settings)?
         .build()
         .map_err(|error| format!("无法初始化签名更新检查：{error}"))?;
     let cancellation = state.start_update_check().await;

@@ -1,6 +1,7 @@
 import type { SystemPromptSection } from "./prompt";
 import type { ChatAttachment } from "./attachment";
 import type { AgentWorkflowSummary } from "./workflow";
+import type { ApiProtocol } from "./modelSettings";
 
 /** 显示在时间线中的普通消息角色。 */
 export type MessageRole = "user" | "assistant";
@@ -18,6 +19,7 @@ export interface ModelSnapshot {
   displayName: string;
   providerId: string;
   providerName: string;
+  protocol?: ApiProtocol;
 }
 
 /** 一条助手消息实际使用的 Skill 版本快照。 */

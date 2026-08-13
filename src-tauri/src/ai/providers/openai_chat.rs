@@ -201,16 +201,18 @@ pub(crate) fn request_body(request: &ModelRequest) -> Value {
             json!(max_output_tokens),
         );
     }
-    if request.options.thinking_enabled && supports_reasoning_effort(&request.model) {
+    if request.options.thinking_enabled {
         let effort = request
             .options
             .reasoning_effort
             .as_deref()
-            .unwrap_or("medium");
-        body.insert(
-            "reasoning_effort".to_string(),
-            Value::String(effort.to_string()),
-        );
+            .or_else(|| supports_reasoning_effort(&request.model).then_some("medium"));
+        if let Some(effort) = effort {
+            body.insert(
+                "reasoning_effort".to_string(),
+                Value::String(effort.to_string()),
+            );
+        }
     }
     if !request.tools.is_empty() {
         body.insert(
@@ -575,6 +577,23 @@ mod tests {
         .unwrap();
         assert_eq!(response.text, "Answer");
         assert_eq!(response.reasoning.as_deref(), Some("Plan first."));
+    }
+
+    #[test]
+    fn sends_explicit_reasoning_effort_for_custom_model_alias() {
+        let body = super::request_body(&ModelRequest {
+            model: "provider-gpt-reasoning-alias".to_string(),
+            system_prompt: None,
+            messages: Vec::new(),
+            options: ModelOptions {
+                thinking_enabled: true,
+                reasoning_effort: Some("high".to_string()),
+                ..ModelOptions::default()
+            },
+            tools: Vec::new(),
+        });
+
+        assert_eq!(body["reasoning_effort"], "high");
     }
 
     #[test]

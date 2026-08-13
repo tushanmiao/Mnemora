@@ -150,7 +150,10 @@ export function SettingsPage(props: SettingsPageProps) {
             ) : activeCategory === "debug" ? (
               <RequestDebugSettingsPanel settings={props.appSettings} onSave={props.onSaveAppSettings} />
             ) : (
-              <AboutSettingsPanel />
+              <AboutSettingsPanel
+                settings={props.appSettings}
+                onSaveSettings={props.onSaveAppSettings}
+              />
             )}
           </Suspense>
         </RootErrorBoundary>

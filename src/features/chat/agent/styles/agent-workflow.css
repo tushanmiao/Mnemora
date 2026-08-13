@@ -226,6 +226,14 @@
   background: var(--color-app);
 }
 
+.agent-workflow-reasoning-note {
+  display: block;
+  margin-top: 6px;
+  color: var(--color-muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
 .agent-workflow-tool-detail section {
   display: grid;
   min-width: 0;

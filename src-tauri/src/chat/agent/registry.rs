@@ -179,9 +179,7 @@ fn skill_matches_current_context(
         "docx-reading" => attachments.iter().any(is_docx_attachment),
         "spreadsheet-analysis" => attachments.iter().any(is_xlsx_attachment),
         "visual-evidence-analysis" => attachments.iter().any(is_image_attachment),
-        "code-review-excellence" | "code-explanation" | "systematic-debugging" => {
-            attachments.iter().any(is_text_attachment)
-        }
+        "systematic-debugging" => attachments.iter().any(is_text_attachment),
         _ => true,
     }
 }
