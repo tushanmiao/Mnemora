@@ -2,9 +2,13 @@ import type { TranslationKey } from "./translations";
 
 // Loaded only when English is selected, keeping the default Chinese startup lean.
 export const enTranslations: Record<TranslationKey, string> = {
-  "chat.toolsUnsupported": "This model does not support tool calls. This turn will use plain Chat.",
-  "chat.toolsUnsupportedDetail": "This model does not support tool calls, so it cannot read document attachments. You can continue in plain Chat or enable tool support in model capabilities.",
-  "chat.attachmentsUnsupported": "This model supports neither image input nor document attachment tools.",
+  "chat.toolsUnsupported": "This model does not support tool calls, so Skills and document attachments are unavailable. Plain Chat remains available.",
+  "chat.toolsUnsupportedDetail": "This model does not support tool calls, so document attachments cannot be added. Switch to a tool-capable model, or enable Function Calling in model capabilities after confirming provider support.",
+  "chat.attachmentsUnsupported": "This model supports neither image input nor tool calls, so attachments cannot be added.",
+  "chat.attachmentFormatUnsupported": "This file format has no corresponding safe reader and cannot be added as a chat attachment.",
+  "chat.imageOnly": "Images only",
+  "chat.imageOnlyDetail": "This model does not support tool calls; image attachments only.",
+  "chat.supportedAttachments": "Attachments supported by this model",
   "sync.feishuAppIdRequired": "Enter the Feishu App ID first.",
   "sync.feishu": "Feishu", "sync.feishuAppId": "Feishu App ID", "sync.feishuAppIdDescription": "Use the App ID from a Feishu custom app.", "sync.feishuFolderToken": "Document folder token (optional)", "sync.feishuFolderTokenDescription": "Leave empty to use the app-accessible root. With tenant_access_token, the folder must be created by the app.", "sync.feishuSecretRequired": "Enter the Feishu App Secret.", "sync.feishuSecretSaved": "The Feishu App Secret was saved to the system credential manager.", "sync.feishuSecretDeleted": "The Feishu App Secret was deleted.", "sync.feishuSecretDescription": "The Secret stays in the OS credential manager and is never written to sync-settings JSON.", "sync.replaceFeishuSecret": "Enter a new Secret to replace the saved credential", "sync.saveFeishuSecret": "Save Secret", "sync.deleteFeishuSecret": "Delete Feishu App Secret", "sync.deleteFeishuSecretConfirm": "Delete the saved Feishu App Secret?", "sync.feishuOnDemandTitle": "On-demand sync", "sync.feishuOnDemandDescription": "Mnemora connects to Feishu only after you click Sync all notes. The connection, token, and background task are released when the sync ends.",
   "common.cancel": "Cancel", "common.save": "Save", "common.saving": "Saving", "common.delete": "Delete", "common.rename": "Rename", "common.restore": "Restore", "common.loading": "Loading", "common.close": "Close", "common.search": "Search", "common.copy": "Copy", "common.settings": "Settings", "common.today": "Today", "common.items": "{count} items",

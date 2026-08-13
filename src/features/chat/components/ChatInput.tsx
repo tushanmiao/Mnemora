@@ -27,6 +27,11 @@ import type { ChatMessage, ChatQuote, LiteratureReference, NoteReference } from 
 import type { LocalSlashCommand, SlashCommandExecutionResult } from "../commands/slashCommands";
 import { buildSlashSuggestions, parseSlashInput } from "../commands/slashCommands";
 import { resolveSkillActivation } from "../utils/skillActivation";
+import {
+  allowedAttachmentExtensions,
+  attachmentCapabilityError,
+  classifyAttachment,
+} from "../utils/attachmentCapabilities";
 import { ChatAttachments } from "./ChatAttachments";
 import { ContextUsageIndicator } from "./ContextUsageIndicator";
 import { ActiveSkillTags, SkillPicker } from "./SkillPicker";
@@ -48,7 +53,7 @@ type ChatInputProps = {
   contextWindowTokens: number | null;
   /** 当前模型是否支持图片输入；false 时禁止添加图片附件，null 表示未知（放行）。 */
   supportsVision?: boolean | null;
-  /** false 时保持普通 Chat，并禁止选择本轮 Skill。 */
+  /** 只有 true 才允许文档附件和 Skill；false/null 均保持普通 Chat。 */
   supportsTools?: boolean | null;
   /** Work 模式才显示文献入口；普通 Chat 不展示未实现的文献选择控件。 */
   showLiteraturePicker?: boolean;
@@ -170,8 +175,11 @@ export function ChatInput({
   const attachmentsRef = useRef(attachments);
   const attachmentSessionRef = useRef(0);
   const activeAttachmentTaskRef = useRef<string | null>(null);
+  const attachmentCapabilitiesRef = useRef({ supportsVision, supportsTools });
+  const previousAttachmentCapabilitiesRef = useRef({ supportsVision, supportsTools });
   const previousConversationIdRef = useRef(conversationId);
   attachmentsRef.current = attachments;
+  attachmentCapabilitiesRef.current = { supportsVision, supportsTools };
   const inputDisabled = disabled || busy || preparingAttachments || commandRunning;
   const canSend = !inputDisabled && (
     draft.trim().length > 0
@@ -199,6 +207,23 @@ export function ChatInput({
     }
   };
 
+  const capabilityErrorFor = (attachment: Pick<PendingChatAttachment, "kind" | "name" | "mimeType">) => {
+    const capabilities = attachmentCapabilitiesRef.current;
+    return attachmentCapabilityError(
+      attachment,
+      capabilities.supportsVision,
+      capabilities.supportsTools,
+    );
+  };
+
+  const capabilityErrorText = (reason: ReturnType<typeof capabilityErrorFor>) => (
+    reason === "vision"
+      ? t("chat.visionUnsupportedDetail")
+      : reason === "tools"
+        ? t("chat.toolsUnsupportedDetail")
+        : t("chat.attachmentFormatUnsupported")
+  );
+
   useEffect(() => {
     if (previousConversationIdRef.current === conversationId) return;
     previousConversationIdRef.current = conversationId;
@@ -221,18 +246,53 @@ export function ChatInput({
     discardPendingAttachments(attachmentsRef.current);
   }, []);
 
+  useEffect(() => {
+    const previous = previousAttachmentCapabilitiesRef.current;
+    const capabilityChanged = previous.supportsVision !== supportsVision
+      || previous.supportsTools !== supportsTools;
+    previousAttachmentCapabilitiesRef.current = { supportsVision, supportsTools };
+    if (capabilityChanged) {
+      attachmentSessionRef.current += 1;
+      const activeTask = activeAttachmentTaskRef.current;
+      activeAttachmentTaskRef.current = null;
+      if (activeTask) void cancelChatAttachmentTask(activeTask);
+      setAttachmentError("");
+    }
+    const current = attachmentsRef.current;
+    const rejected = current.filter((attachment) => (
+      capabilityErrorFor(attachment) !== null
+    ));
+    if (rejected.length === 0) return;
+    const next = current.filter((attachment) => !rejected.includes(attachment));
+    attachmentsRef.current = next;
+    setAttachments(next);
+    discardPendingAttachments(rejected);
+    const capabilityErrors = new Set(rejected.map((attachment) => (
+      capabilityErrorFor(attachment)
+    )));
+    if (capabilityErrors.has("vision")) {
+      setAttachmentError(t("chat.visionUnsupportedDetail"));
+    } else if (capabilityErrors.has("tools")) {
+      setAttachmentError(t("chat.toolsUnsupportedDetail"));
+    } else {
+      setAttachmentError(t("chat.attachmentFormatUnsupported"));
+    }
+  }, [supportsTools, supportsVision, t]);
+
   const addAttachments = (incoming: PendingChatAttachment[]) => {
     const rejected = incoming.filter((attachment) => (
-      (attachment.kind === "image" && supportsVision === false)
-      || (attachment.kind !== "image" && supportsTools === false)
+      capabilityErrorFor(attachment) !== null
     ));
     const accepted = incoming.filter((attachment) => !rejected.includes(attachment));
     const capabilityErrors: string[] = [];
-    if (rejected.some((attachment) => attachment.kind === "image")) {
+    if (rejected.some((attachment) => capabilityErrorFor(attachment) === "vision")) {
       capabilityErrors.push(t("chat.visionUnsupportedDetail"));
     }
-    if (rejected.some((attachment) => attachment.kind !== "image")) {
+    if (rejected.some((attachment) => capabilityErrorFor(attachment) === "tools")) {
       capabilityErrors.push(t("chat.toolsUnsupportedDetail"));
+    }
+    if (rejected.some((attachment) => capabilityErrorFor(attachment) === "format")) {
+      capabilityErrors.push(t("chat.attachmentFormatUnsupported"));
     }
     discardPendingAttachments(rejected);
     const current = attachmentsRef.current;
@@ -263,9 +323,22 @@ export function ChatInput({
 
   const openAttachmentPicker = async () => {
     if (inputDisabled) return;
+    const capabilities = attachmentCapabilitiesRef.current;
+    const extensions = allowedAttachmentExtensions(
+      capabilities.supportsVision,
+      capabilities.supportsTools,
+    );
+    if (extensions.length === 0) {
+      setAttachmentError(t("chat.attachmentsUnsupported"));
+      return;
+    }
     const session = attachmentSessionRef.current;
     try {
-      const selected = await open({ multiple: true, directory: false });
+      const selected = await open({
+        multiple: true,
+        directory: false,
+        filters: [{ name: t("chat.supportedAttachments"), extensions: [...extensions] }],
+      });
       const paths = Array.isArray(selected) ? selected : selected ? [selected] : [];
       if (paths.length === 0) return;
       const inspected = await inspectChatAttachments(paths);
@@ -291,6 +364,13 @@ export function ChatInput({
 
   const submitMessage = async () => {
     if (!canSend || !conversationId || preparingAttachmentsRef.current) return;
+    const invalidAttachment = attachmentsRef.current.find((attachment) => (
+      capabilityErrorFor(attachment) !== null
+    ));
+    if (invalidAttachment) {
+      setAttachmentError(capabilityErrorText(capabilityErrorFor(invalidAttachment)));
+      return;
+    }
     const parsedCommand = parseSlashInput(draft, skills);
     if (parsedCommand?.kind === "unknown") {
       if (unknownSlashConfirmation !== draft) {
@@ -361,6 +441,14 @@ export function ChatInput({
         if (storedAttachments.length > 0) {
           await discardImportedChatAttachments(targetConversationId, storedAttachments);
         }
+        return;
+      }
+      const invalidStoredAttachment = storedAttachments.find((attachment) => (
+        capabilityErrorFor(attachment) !== null
+      ));
+      if (invalidStoredAttachment) {
+        await discardImportedChatAttachments(targetConversationId, storedAttachments);
+        setAttachmentError(capabilityErrorText(capabilityErrorFor(invalidStoredAttachment)));
         return;
       }
       // 每条引用独立成块，避免多条选区在 Markdown 中互相粘连。
@@ -434,6 +522,17 @@ export function ChatInput({
     if (files.length === 0) return;
     event.preventDefault();
     setAttachmentError("");
+    const rejectedReason = files
+      .map((file, index) => capabilityErrorFor({
+        name: attachmentName(file, index),
+        mimeType: file.type || "application/octet-stream",
+        kind: classifyAttachment(file.name, file.type) === "image" ? "image" : "file",
+      }))
+      .find((reason) => reason !== null);
+    if (rejectedReason) {
+      setAttachmentError(capabilityErrorText(rejectedReason));
+      return;
+    }
     const session = attachmentSessionRef.current;
     const pasted: PendingChatAttachment[] = [];
     try {
@@ -460,6 +559,17 @@ export function ChatInput({
       }
     }
   };
+
+  const attachmentButtonTitle = supportsVision === false
+    ? supportsTools === true
+      ? t("chat.visionUnsupported")
+      : t("chat.attachmentsUnsupported")
+    : supportsTools === true
+      ? t("chat.addAttachment")
+      : t("chat.imageOnlyDetail");
+  const attachmentBadge = supportsVision === false
+    ? supportsTools === true ? t("chat.documentOnly") : null
+    : supportsTools === true ? null : t("chat.imageOnly");
 
   return (
     <footer className="composer-area">
@@ -605,24 +715,16 @@ export function ChatInput({
           <div className="composer-toolbar">
             <div className="composer-tools">
               <button
-                className={supportsVision === false ? "icon-button icon-button-document-only" : "icon-button"}
+                className={attachmentBadge ? "icon-button icon-button-attachment-limited" : "icon-button"}
                 type="button"
-                title={supportsVision === false && supportsTools === false
-                  ? t("chat.attachmentsUnsupported")
-                  : supportsVision === false
-                  ? t("chat.visionUnsupported")
-                  : t("chat.addAttachment")}
-                aria-label={supportsVision === false && supportsTools === false
-                  ? t("chat.attachmentsUnsupported")
-                  : supportsVision === false
-                  ? `${t("chat.addAttachment")} (${t("chat.visionUnsupported")})`
-                  : t("chat.addAttachment")}
-                disabled={inputDisabled || (supportsVision === false && supportsTools === false)}
+                title={attachmentButtonTitle}
+                aria-label={attachmentButtonTitle}
+                disabled={inputDisabled || (supportsVision === false && supportsTools !== true)}
                 onClick={() => void openAttachmentPicker()}
               >
                 <Paperclip size={18} />
-                {supportsVision === false ? (
-                  <span className="document-only-badge" aria-hidden="true">{t("chat.documentOnly")}</span>
+                {attachmentBadge ? (
+                  <span className="attachment-capability-badge" aria-hidden="true">{attachmentBadge}</span>
                 ) : null}
               </button>
               {showLiteraturePicker ? (
@@ -633,8 +735,8 @@ export function ChatInput({
               <SkillPicker
                 skills={skills}
                 selectedSkillIds={selectedSkillIds}
-                disabled={inputDisabled || supportsTools === false}
-                disabledReason={supportsTools === false ? t("chat.toolsUnsupported") : undefined}
+                disabled={inputDisabled || supportsTools !== true}
+                disabledReason={supportsTools !== true ? t("chat.toolsUnsupported") : undefined}
                 onChange={onSelectedSkillsChange}
               />
               <button className="icon-button" type="button" title={t("chat.options")} disabled={inputDisabled}>

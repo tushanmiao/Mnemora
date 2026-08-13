@@ -1177,6 +1177,48 @@ async fn stream_inner(
     }
 }
 
+fn unanswered_tail_attachment_flags(request: &ChatCompletionRequest) -> (bool, bool) {
+    let last_assistant_index = request
+        .messages
+        .iter()
+        .rposition(|message| message.role == ModelRole::Assistant);
+    request
+        .messages
+        .iter()
+        .enumerate()
+        .filter(|(index, message)| {
+            message.role == ModelRole::User
+                && last_assistant_index.is_none_or(|assistant_index| *index > assistant_index)
+        })
+        .flat_map(|(_, message)| message.attachments.iter())
+        .fold((false, false), |(has_image, has_document), attachment| {
+            (
+                has_image || attachment.kind == "image",
+                has_document || attachment.kind != "image",
+            )
+        })
+}
+
+fn validate_attachment_capabilities(
+    request: &ChatCompletionRequest,
+    supports_vision: Option<bool>,
+    supports_tools: bool,
+    display_name: &str,
+) -> Result<(), ModelError> {
+    let (has_image, has_document) = unanswered_tail_attachment_flags(request);
+    if supports_vision == Some(false) && has_image {
+        return Err(ModelError::invalid_configuration(format!(
+            "当前模型 {display_name} 不支持图片输入，不能接收本轮图片附件。请移除图片、切换到支持视觉的模型，或在确认中转商确实支持后于模型能力设置中开启视觉能力。"
+        )));
+    }
+    if !supports_tools && has_document {
+        return Err(ModelError::invalid_configuration(format!(
+            "当前模型 {display_name} 不支持工具调用，不能接收或读取本轮文档附件。请移除文档、切换到支持工具的模型，或在确认中转商确实支持后于模型能力设置中开启 Function Calling。"
+        )));
+    }
+    Ok(())
+}
+
 async fn prepare_call(
     state: &AppState,
     mut request: ChatCompletionRequest,
@@ -1190,6 +1232,12 @@ async fn prepare_call(
             .map_err(|_| ModelError::provider("模型设置暂时不可用，请重新启动应用后再试。"))?;
         resolve_target(&settings, &provider_id, &model_id)?
     };
+    validate_attachment_capabilities(
+        &request,
+        target.supports_vision,
+        target.supports_tools,
+        &target.display_name,
+    )?;
 
     let secrets = state.secrets;
     let provider_id_for_store = provider_id.clone();
@@ -1208,11 +1256,6 @@ async fn prepare_call(
     let is_auxiliary_operation = request.is_auxiliary_operation();
     let requested_skill =
         !request.activated_skill_ids.is_empty() || request.slash_skill_id.is_some();
-    let requested_document_attachment = request
-        .messages
-        .iter()
-        .flat_map(|message| message.attachments.iter())
-        .any(|attachment| attachment.kind != "image");
     let use_agent_tools = !is_auxiliary_operation && target.supports_tools;
     if !use_agent_tools && requested_skill {
         request.system_prompt.push_str(
@@ -1220,11 +1263,6 @@ async fn prepare_call(
         );
         request.activated_skill_ids.clear();
         request.slash_skill_id = None;
-    }
-    if !use_agent_tools && requested_document_attachment {
-        request.system_prompt.push_str(
-            "\n\n当前模型配置不支持结构化工具调用，因此本轮没有读取用户附带的文档。请不要推测文档内容；直接说明当前模型缺少工具能力，并只回答不依赖该文档的部分。",
-        );
     }
     let memory_settings = state
         .app_settings
@@ -1243,19 +1281,6 @@ async fn prepare_call(
     })
     .await
     .map_err(|error| ModelError::provider(format!("读取聊天附件任务失败：{error}")))??;
-    // 图片门禁：确定不支持视觉的模型不允许发送图片，避免中转站/模型胡乱响应污染会话。
-    // 只拦截 Some(false)；未收录的模型（None）保持放行，不误伤新模型。
-    if target.supports_vision == Some(false)
-        && model_request
-            .messages
-            .iter()
-            .any(|message| !message.images.is_empty())
-    {
-        return Err(ModelError::invalid_configuration(format!(
-            "当前模型 {} 不支持图片输入。请切换到支持视觉的模型，或移除本条消息中的图片附件；也可以在设置的模型能力中手动开启视觉。",
-            target.display_name
-        )));
-    }
     if target.supports_reasoning == Some(false) {
         model_request.options.thinking_enabled = false;
     }
@@ -1552,7 +1577,11 @@ mod tests {
 
     use crate::ai::{
         error::{ModelError, ModelErrorKind},
-        types::{ModelToolCall, ModelUsage, UsageSource},
+        types::{ModelOptions, ModelRole, ModelToolCall, ModelUsage, UsageSource},
+    };
+    use crate::chat::{
+        conversation_types::{AiPermissionMode, StoredChatAttachment},
+        types::{ChatCompletionRequest, ChatModelMessage, ChatWorkspaceMode},
     };
     use crate::settings::types::{
         ModelCapabilities, ModelSettings, ProviderKind, ProviderModelConfig,
@@ -1581,6 +1610,111 @@ mod tests {
                 provider_signature: None,
             })
             .collect()
+    }
+
+    fn attachment(id: &str, kind: &str, name: &str, mime_type: &str) -> StoredChatAttachment {
+        StoredChatAttachment {
+            id: id.to_string(),
+            kind: kind.to_string(),
+            name: name.to_string(),
+            mime_type: mime_type.to_string(),
+            size_bytes: 128,
+            path: format!("{id}_{name}"),
+            preview_path: None,
+            width: (kind == "image").then_some(8),
+            height: (kind == "image").then_some(6),
+        }
+    }
+
+    fn attachment_request(messages: Vec<ChatModelMessage>) -> ChatCompletionRequest {
+        ChatCompletionRequest {
+            provider_id: "provider-1".to_string(),
+            model_id: "model-1".to_string(),
+            conversation_id: Some("conversation-1".to_string()),
+            message_id: Some("message-1".to_string()),
+            operation: Some("chatComplete".to_string()),
+            system_prompt: String::new(),
+            activated_skill_ids: Vec::new(),
+            slash_skill_id: None,
+            permission_mode: AiPermissionMode::AskSensitive,
+            workspace_mode: ChatWorkspaceMode::Chat,
+            messages,
+            options: ModelOptions::default(),
+        }
+    }
+
+    #[test]
+    fn attachment_capability_gate_ignores_answered_history() {
+        let request = attachment_request(vec![
+            ChatModelMessage {
+                role: ModelRole::User,
+                content: "读取旧文档".to_string(),
+                attachments: vec![attachment(
+                    "old-document",
+                    "file",
+                    "old.pdf",
+                    "application/pdf",
+                )],
+            },
+            ChatModelMessage {
+                role: ModelRole::Assistant,
+                content: "旧回答".to_string(),
+                attachments: Vec::new(),
+            },
+            ChatModelMessage {
+                role: ModelRole::User,
+                content: "新的纯文本问题".to_string(),
+                attachments: Vec::new(),
+            },
+        ]);
+
+        assert_eq!(
+            super::unanswered_tail_attachment_flags(&request),
+            (false, false)
+        );
+        super::validate_attachment_capabilities(&request, Some(false), false, "Text Model")
+            .expect("answered historical attachments must not block a new text turn");
+    }
+
+    #[test]
+    fn attachment_capability_gate_rejects_current_unsupported_inputs() {
+        let document_request = attachment_request(vec![ChatModelMessage {
+            role: ModelRole::User,
+            content: "读取文档".to_string(),
+            attachments: vec![attachment(
+                "new-document",
+                "file",
+                "current.docx",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )],
+        }]);
+        let error = super::validate_attachment_capabilities(
+            &document_request,
+            Some(true),
+            false,
+            "Vision Only",
+        )
+        .expect_err("a model without tools must reject current document attachments");
+        assert_eq!(error.kind, ModelErrorKind::InvalidConfiguration);
+        assert!(error.message.contains("文档附件"));
+
+        let image_request = attachment_request(vec![ChatModelMessage {
+            role: ModelRole::User,
+            content: "查看图片".to_string(),
+            attachments: vec![attachment("new-image", "image", "current.png", "image/png")],
+        }]);
+        let error = super::validate_attachment_capabilities(
+            &image_request,
+            Some(false),
+            true,
+            "Document Only",
+        )
+        .expect_err("a model without vision must reject current image attachments");
+        assert_eq!(error.kind, ModelErrorKind::InvalidConfiguration);
+        assert!(error.message.contains("图片附件"));
+
+        super::validate_attachment_capabilities(&image_request, None, false, "Unknown Vision")
+            .expect("unknown vision follows the existing pass-through policy");
     }
 
     #[test]

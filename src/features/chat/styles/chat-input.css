@@ -169,7 +169,7 @@
   padding: 8px;
 }
 
-.chat-workspace-panel .document-only-badge {
+.chat-workspace-panel .attachment-capability-badge {
   display: none;
 }
 
@@ -182,8 +182,8 @@
   opacity: 0.45;
 }
 
-/* 当前模型不支持图片时，附件按钮进入"仅文档"模式（参考 cherry-studio 的入口级提示）。 */
-.composer-tools .icon-button-document-only {
+/* 附件入口直接展示当前模型可接受的附件类别。 */
+.composer-tools .icon-button-attachment-limited {
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -191,7 +191,7 @@
   padding: 0 8px;
 }
 
-.document-only-badge {
+.attachment-capability-badge {
   font-size: 11px;
   line-height: 1;
   color: var(--color-muted);
@@ -380,7 +380,7 @@
   padding: 6px 10px;
   align-items: flex-start;
   gap: 7px;
-  border-left: 3px solid var(--color-accent);
+  border: 1px solid var(--color-border);
   border-radius: 6px;
   color: var(--color-muted);
   background: var(--color-surface-raised);
@@ -514,7 +514,6 @@
   align-items: center;
   gap: 6px;
   border: 1px solid var(--color-border);
-  border-left: 3px solid var(--color-accent);
   border-radius: 6px;
   background: var(--color-surface);
 }
