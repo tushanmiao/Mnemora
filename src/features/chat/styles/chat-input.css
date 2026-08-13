@@ -149,6 +149,67 @@
   color: var(--color-muted);
 }
 
+.composer-model-control,
+.composer-note-control,
+.composer-reasoning-control { position: relative; }
+.composer-model-button {
+  display: flex;
+  height: 30px;
+  max-width: 190px;
+  padding: 0 8px;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--color-border);
+  border-radius: 5px;
+  color: var(--color-text-secondary);
+  background: var(--color-surface-raised);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 650;
+}
+.composer-model-button:hover { background: var(--color-hover); color: var(--color-text); }
+.composer-model-button:disabled { cursor: not-allowed; opacity: .5; }
+.composer-model-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.composer-model-menu { top: auto; right: auto; bottom: 38px; left: 0; }
+.composer-note-menu,
+.composer-reasoning-menu {
+  position: absolute;
+  bottom: 38px;
+  left: 0;
+  z-index: 45;
+  min-width: 190px;
+  padding: 6px;
+  border: 1px solid var(--color-border);
+  border-radius: 7px;
+  background: var(--color-surface-raised);
+  box-shadow: var(--shadow-menu);
+}
+.composer-note-menu button,
+.composer-reasoning-menu button {
+  display: flex;
+  width: 100%;
+  min-height: 32px;
+  padding: 0 8px;
+  align-items: center;
+  gap: 7px;
+  border: 0;
+  border-radius: 4px;
+  color: var(--color-text-secondary);
+  background: transparent;
+  cursor: pointer;
+  font-size: 11px;
+  text-align: left;
+}
+.composer-note-menu button:hover,
+.composer-reasoning-menu button:hover,
+.composer-reasoning-selected { color: var(--color-text); background: var(--color-hover); }
+.composer-note-menu button:disabled,
+.composer-reasoning-menu button:disabled { cursor: not-allowed; opacity: .45; }
+.composer-menu-divider { height: 1px; margin: 5px 2px; background: var(--color-border-soft); }
+.composer-toggle-row { display: flex; min-height: 32px; padding: 0 8px; align-items: center; justify-content: space-between; gap: 18px; color: var(--color-text-secondary); font-size: 11px; }
+.composer-reasoning-options { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; margin-top: 3px; }
+.composer-reasoning-options button { justify-content: center; padding-inline: 4px; }
+
 .composer-actions {
   display: flex;
   min-width: 0;

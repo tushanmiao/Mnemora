@@ -439,11 +439,18 @@ pub struct NoteSourceCreate {
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum NotePipelinePhase {
+    Preflight,
     Analyzing,
     AwaitingOutline,
+    Compiling,
+    Queued,
     Drafting,
+    Validating,
+    Replanning,
     Assembling,
     Persisting,
+    Paused,
+    Blocked,
     Done,
     Cancelled,
     Error,
@@ -452,11 +459,18 @@ pub enum NotePipelinePhase {
 impl NotePipelinePhase {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Preflight => "preflight",
             Self::Analyzing => "analyzing",
             Self::AwaitingOutline => "awaiting_outline",
+            Self::Compiling => "compiling",
+            Self::Queued => "queued",
             Self::Drafting => "drafting",
+            Self::Validating => "validating",
+            Self::Replanning => "replanning",
             Self::Assembling => "assembling",
             Self::Persisting => "persisting",
+            Self::Paused => "paused",
+            Self::Blocked => "blocked",
             Self::Done => "done",
             Self::Cancelled => "cancelled",
             Self::Error => "error",
@@ -465,11 +479,18 @@ impl NotePipelinePhase {
 
     pub fn parse(value: &str) -> Result<Self, String> {
         match value {
+            "preflight" => Ok(Self::Preflight),
             "analyzing" => Ok(Self::Analyzing),
             "awaiting_outline" => Ok(Self::AwaitingOutline),
+            "compiling" => Ok(Self::Compiling),
+            "queued" => Ok(Self::Queued),
             "drafting" => Ok(Self::Drafting),
+            "validating" => Ok(Self::Validating),
+            "replanning" => Ok(Self::Replanning),
             "assembling" => Ok(Self::Assembling),
             "persisting" => Ok(Self::Persisting),
+            "paused" => Ok(Self::Paused),
+            "blocked" => Ok(Self::Blocked),
             "done" => Ok(Self::Done),
             "cancelled" => Ok(Self::Cancelled),
             "error" => Ok(Self::Error),
@@ -480,11 +501,18 @@ impl NotePipelinePhase {
     pub fn is_resumable(self) -> bool {
         matches!(
             self,
-            Self::Analyzing
+            Self::Preflight
+                | Self::Analyzing
                 | Self::AwaitingOutline
+                | Self::Compiling
+                | Self::Queued
                 | Self::Drafting
+                | Self::Validating
+                | Self::Replanning
                 | Self::Assembling
                 | Self::Persisting
+                | Self::Paused
+                | Self::Blocked
                 | Self::Error
         )
     }
@@ -494,24 +522,45 @@ impl NotePipelinePhase {
 #[serde(rename_all = "camelCase")]
 pub enum NotePipelineSectionStatus {
     Pending,
+    Ready,
+    InProgress,
     Completed,
+    NeedsReview,
+    NeedsRevision,
     Failed,
+    Blocked,
+    Skipped,
+    Interrupted,
 }
 
 impl NotePipelineSectionStatus {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Pending => "pending",
+            Self::Ready => "ready",
+            Self::InProgress => "in_progress",
             Self::Completed => "completed",
+            Self::NeedsReview => "needs_review",
+            Self::NeedsRevision => "needs_revision",
             Self::Failed => "failed",
+            Self::Blocked => "blocked",
+            Self::Skipped => "skipped",
+            Self::Interrupted => "interrupted",
         }
     }
 
     pub fn parse(value: &str) -> Result<Self, String> {
         match value {
             "pending" => Ok(Self::Pending),
+            "ready" => Ok(Self::Ready),
+            "in_progress" => Ok(Self::InProgress),
             "completed" => Ok(Self::Completed),
+            "needs_review" => Ok(Self::NeedsReview),
+            "needs_revision" => Ok(Self::NeedsRevision),
             "failed" => Ok(Self::Failed),
+            "blocked" => Ok(Self::Blocked),
+            "skipped" => Ok(Self::Skipped),
+            "interrupted" => Ok(Self::Interrupted),
             _ => Err("深度笔记章节状态无效。".to_string()),
         }
     }
@@ -531,6 +580,13 @@ pub struct NotePipelineRun {
     pub max_output_tokens: u32,
     pub thinking_enabled: bool,
     pub retry_attempts: u8,
+    pub input_snapshot_hash: String,
+    pub current_plan_version: u32,
+    pub execution_version: u32,
+    pub budget_json: String,
+    pub preflight_json: String,
+    pub sidecar_json: String,
+    pub idempotency_key: String,
     pub completed_section_ids: Vec<String>,
     pub failed_section_ids: Vec<String>,
     pub warnings: Vec<String>,
@@ -548,6 +604,10 @@ pub struct NotePipelineRunCreate {
     pub max_output_tokens: u32,
     pub thinking_enabled: bool,
     pub retry_attempts: u8,
+    pub input_snapshot_hash: String,
+    pub budget_json: String,
+    pub preflight_json: String,
+    pub idempotency_key: String,
 }
 
 #[derive(Debug, Clone)]
@@ -558,6 +618,11 @@ pub struct NotePipelineSection {
     pub section_json: String,
     pub markdown: String,
     pub status: NotePipelineSectionStatus,
+    pub attempt_count: u8,
+    pub revision_count: u8,
+    pub evidence_ids: Vec<String>,
+    pub validation_json: String,
+    pub input_hash: String,
     pub error_message: Option<String>,
     pub updated_at: u64,
 }
@@ -567,6 +632,7 @@ pub struct NotePipelineSectionCreate {
     pub section_id: String,
     pub position: usize,
     pub section_json: String,
+    pub input_hash: String,
 }
 
 #[derive(Debug, Clone, Serialize)]

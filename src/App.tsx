@@ -9,7 +9,7 @@ import { LoaderCircle } from "lucide-react";
 import "./styles/tokens.css";
 import "./styles/app.css";
 import "./styles/themes.css";
-import type { ModelSelectorGroup } from "./features/chat/components/ChatHeader";
+import type { ModelSelectorGroup } from "./features/chat/components/ModelSelector";
 import { ChatWorkspace } from "./features/chat/components/ChatWorkspace";
 import type { LocalSlashCommand, SlashCommandExecutionResult } from "./features/chat/commands/slashCommands";
 import { useChatRuntime } from "./features/chat/hooks/useChatRuntime";
@@ -28,7 +28,7 @@ import {
 } from "./features/layout/hooks/useLayoutPreferences";
 import type { AiPermissionMode } from "./types/chat";
 import { resolveConversationModel } from "./types/modelSettings";
-import { resolveSupportsFunctionCalling, resolveSupportsVision } from "./data/modelMatching";
+import { matchModelDefaults, resolveSupportsFunctionCalling, resolveSupportsReasoning, resolveSupportsVision } from "./data/modelMatching";
 import type { WorkLibraryView } from "./features/workspace/types";
 import { findWorkspaceView } from "./features/workspace/viewRegistry";
 import { ActivityBar } from "./features/workspace/components/ActivityBar";
@@ -37,6 +37,7 @@ import { ChatViewRuntimeProvider } from "./features/workspace/runtime/ChatViewRu
 import { NotesViewRuntimeProvider } from "./features/workspace/runtime/NotesViewRuntime";
 import { WorkViewRuntimeProvider } from "./features/workspace/runtime/WorkViewRuntime";
 import { OverviewViewRuntimeProvider } from "./features/workspace/runtime/OverviewViewRuntime";
+import { DeepNoteViewRuntimeProvider } from "./features/workspace/runtime/DeepNoteViewRuntime";
 import type { OverviewRecentItem } from "./features/overview/types";
 import { I18nProvider } from "./i18n/I18nProvider";
 import { ImageViewerProvider } from "./features/chat/image-viewer/ImageViewerContext";
@@ -44,7 +45,6 @@ import { useWorkspaceNavigation } from "./app/hooks/useWorkspaceNavigation";
 import { useWorkspaceLayout } from "./app/hooks/useWorkspaceLayout";
 import { useChatReferences } from "./app/hooks/useChatReferences";
 import { useNoteActions } from "./app/hooks/useNoteActions";
-import { DeepNoteOutlineDialog } from "./features/chat/notePipeline/DeepNoteOutlineDialog";
 import { NoteEditDialog } from "./features/chat/notePipeline/NoteEditDialog";
 import { clearAttachmentPreviewCache } from "./features/chat/api/attachments";
 import { releaseBackgroundResources } from "./runtime/resources/ResourceRegistry";
@@ -133,6 +133,12 @@ function App() {
     appSettings: settings.appSettings,
   });
 
+  useEffect(() => {
+    if (noteActions.deepNoteActive || noteActions.deepNoteReview) {
+      changeWorkspaceMode("deepNote");
+    }
+  }, [changeWorkspaceMode, noteActions.deepNoteActive, noteActions.deepNoteReview]);
+
   const modelGroups = useMemo<ModelSelectorGroup[]>(() => (
     settings.modelSettings.providers
       .filter((provider) => provider.enabled)
@@ -145,6 +151,7 @@ function App() {
             id: model.id,
             displayName: model.displayName,
             apiModel: model.apiModel,
+            reasoningEfforts: matchModelDefaults(model.apiModel)?.reasoningEfforts,
             isDefault: settings.modelSettings.defaultProviderId === provider.id
               && settings.modelSettings.defaultModelId === model.id,
           })),
@@ -264,6 +271,12 @@ function App() {
       ...conversation,
       providerId: provider.id,
       modelId: model.id,
+      reasoningEffort: (() => {
+        const efforts = matchModelDefaults(model.apiModel)?.reasoningEfforts ?? [];
+        return conversation.reasoningEffort && efforts.includes(conversation.reasoningEffort)
+          ? conversation.reasoningEffort
+          : null;
+      })(),
       updatedAt: Date.now(),
     }));
   }, [conversations, settings.modelSettings.providers]);
@@ -303,22 +316,9 @@ function App() {
       inputKey={conversations.currentConversation?.id ?? "no-conversation"}
       header={{
         title: conversations.currentConversation?.title ?? "未选择对话",
-        modelLabel: currentModel
-          ? `${currentModel.provider.name} · ${currentModel.model.displayName}`
-          : "配置模型",
-        modelTitle: currentModel
-          ? `${currentModel.provider.name} / ${currentModel.model.apiModel}`
-          : "模型设置",
-        modelConfigured: Boolean(currentModel),
-        modelGroups,
-        selectedProviderId: currentModel?.provider.id ?? null,
-        selectedModelId: currentModel?.model.id ?? null,
-        modelSelectionDisabled: !conversations.currentConversation || chatRuntime.requestInFlight,
-        modelMenuRequest,
         permission: conversations.currentConversation?.permissionMode ?? "askSensitive",
         permissionDisabled: !conversations.currentConversation,
         theme: settings.resolvedTheme,
-        onModelChange: handleModelChange,
         onPermissionChange: handlePermissionChange,
         onToggleTheme: settings.toggleTheme,
       }}
@@ -354,6 +354,29 @@ function App() {
         focusRequest: composerFocusRequest,
         contextUsage,
         contextWindowTokens: currentModel?.model.contextWindowTokens ?? null,
+        supportsReasoning: currentModel
+          ? resolveSupportsReasoning(currentModel.model.apiModel, currentModel.model.capabilities?.reasoning) ?? null
+          : null,
+        reasoningEfforts: currentModel ? (matchModelDefaults(currentModel.model.apiModel)?.reasoningEfforts ?? []) : [],
+        thinkingEnabled: conversations.currentConversation?.thinkingEnabled ?? settings.appSettings.thinkingEnabled,
+        reasoningEffort: conversations.currentConversation?.reasoningEffort ?? null,
+        modelLabel: currentModel ? `${currentModel.provider.name} · ${currentModel.model.displayName}` : "配置模型",
+        modelTitle: currentModel ? `${currentModel.provider.name} / ${currentModel.model.apiModel}` : "模型设置",
+        modelConfigured: Boolean(currentModel),
+        modelGroups,
+        selectedProviderId: currentModel?.provider.id ?? null,
+        selectedModelId: currentModel?.model.id ?? null,
+        modelMenuRequest,
+        modelSelectionDisabled: !conversations.currentConversation || chatRuntime.requestInFlight,
+        onModelChange: handleModelChange,
+        onThinkingChange: (enabled) => conversations.updateCurrentConversation((conversation) => ({ ...conversation, thinkingEnabled: enabled, updatedAt: Date.now() })),
+        onReasoningEffortChange: (effort) => conversations.updateCurrentConversation((conversation) => ({ ...conversation, reasoningEffort: effort, updatedAt: Date.now() })),
+        hasMessages: (conversations.currentConversation?.messages.length ?? 0) > 0,
+        onSaveConversationAsNote: conversations.currentConversationId ? () => noteActions.saveConversationAsNote(conversations.currentConversationId!) : undefined,
+        onSummarizeConversationToNote: conversations.currentConversationId ? () => { void noteActions.summarizeConversationAsNote(conversations.currentConversationId!); } : undefined,
+        onGenerateDeepNote: conversations.currentConversationId ? () => { void noteActions.startDeepNote(conversations.currentConversationId!); } : undefined,
+        onUpdateExistingNote: conversations.currentConversationId ? () => { void noteActions.openConversationNoteEdit(conversations.currentConversationId!); } : undefined,
+        onExportConversation: conversations.currentConversationId ? (format) => { void exportStoredConversation(conversations.currentConversationId!, conversations.currentConversation?.title ?? "Mnemora 会话", format); } : undefined,
         supportsVision: currentModel
           ? resolveSupportsVision(
               currentModel.model.apiModel,
@@ -634,15 +657,29 @@ function App() {
           <NotesViewRuntimeProvider value={notesViewRuntime}>
             <WorkViewRuntimeProvider value={workViewRuntime}>
               <OverviewViewRuntimeProvider value={overviewViewRuntime}>
-                <WorkspaceViewHost
-                  mode={workspaceMode}
-                  contextOpen={workspaceMode === "work"
-                    ? workContextPanelOpen
-                    : workspaceMode === "notes"
-                      ? notesContextPanelOpen
-                      : false}
-                  onReturnToChat={() => changeWorkspaceMode("chat")}
-                />
+                <DeepNoteViewRuntimeProvider value={{
+                  detail: noteActions.deepNoteDetail,
+                  review: noteActions.deepNoteReview,
+                  busy: noteActions.deepNoteReviewBusy,
+                  onAdjust: (requirement) => {
+                    void noteActions.adjustDeepNoteOutline(requirement);
+                  },
+                  onConfirm: (selectedSectionIds) => {
+                    void noteActions.confirmDeepNoteOutline(selectedSectionIds);
+                  },
+                  onCancel: noteActions.cancelDeepNote,
+                  onReturn: () => changeWorkspaceMode("chat"),
+                }}>
+                  <WorkspaceViewHost
+                    mode={workspaceMode}
+                    contextOpen={workspaceMode === "work"
+                      ? workContextPanelOpen
+                      : workspaceMode === "notes"
+                        ? notesContextPanelOpen
+                        : false}
+                    onReturnToChat={() => changeWorkspaceMode("chat")}
+                  />
+                </DeepNoteViewRuntimeProvider>
               </OverviewViewRuntimeProvider>
             </WorkViewRuntimeProvider>
           </NotesViewRuntimeProvider>
@@ -650,15 +687,6 @@ function App() {
       )}
       </ImageViewerProvider>
 
-      {noteActions.deepNoteReview ? (
-        <DeepNoteOutlineDialog
-          outline={noteActions.deepNoteReview.outline}
-          busy={noteActions.deepNoteReviewBusy}
-          onCancel={noteActions.cancelDeepNote}
-          onAdjust={(requirement) => void noteActions.adjustDeepNoteOutline(requirement)}
-          onConfirm={(selectedSectionIds) => void noteActions.confirmDeepNoteOutline(selectedSectionIds)}
-        />
-      ) : null}
 
       {noteActions.noteEditRequest || noteActions.noteEditResult ? (
         <NoteEditDialog

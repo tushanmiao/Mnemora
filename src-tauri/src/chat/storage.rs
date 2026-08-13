@@ -392,6 +392,8 @@ mod tests {
             assistant_id: None,
             provider_id: None,
             model_id: None,
+            thinking_enabled: None,
+            reasoning_effort: None,
             system_prompt: String::new(),
             context_summary: String::new(),
             compressed_until_message_id: None,

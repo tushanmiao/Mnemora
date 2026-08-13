@@ -1,6 +1,6 @@
 import { useRef, type KeyboardEvent } from "react";
 import { Settings } from "lucide-react";
-import { SORTED_WORKSPACE_VIEWS } from "../viewRegistry";
+import { ACTIVITY_BAR_WORKSPACE_VIEWS } from "../viewRegistry";
 import type { WorkspaceMode } from "../types";
 import { useI18n } from "../../../i18n/I18nProvider";
 import "../styles/activity-bar.css";
@@ -29,21 +29,21 @@ export function ActivityBar({
   const moveFocus = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
     if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
     event.preventDefault();
-    const lastIndex = SORTED_WORKSPACE_VIEWS.length - 1;
+    const lastIndex = ACTIVITY_BAR_WORKSPACE_VIEWS.length - 1;
     const nextIndex = event.key === 'Home'
       ? 0
       : event.key === 'End'
         ? lastIndex
         : event.key === 'ArrowDown'
-          ? (index + 1) % SORTED_WORKSPACE_VIEWS.length
-          : (index - 1 + SORTED_WORKSPACE_VIEWS.length) % SORTED_WORKSPACE_VIEWS.length;
+          ? (index + 1) % ACTIVITY_BAR_WORKSPACE_VIEWS.length
+          : (index - 1 + ACTIVITY_BAR_WORKSPACE_VIEWS.length) % ACTIVITY_BAR_WORKSPACE_VIEWS.length;
     viewButtonsRef.current[nextIndex]?.focus();
   };
 
   return (
     <nav className="activity-bar" aria-label={t("view.activityBar")}>
       <div className="activity-bar-views">
-        {SORTED_WORKSPACE_VIEWS.map((view, index) => {
+        {ACTIVITY_BAR_WORKSPACE_VIEWS.map((view, index) => {
           const active = !settingsOpen && activeView === view.id;
           const Icon = view.icon;
           return (

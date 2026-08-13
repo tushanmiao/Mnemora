@@ -267,9 +267,14 @@ pub(crate) fn request_body(request: &ModelRequest) -> Value {
         body.insert("max_output_tokens".to_string(), json!(max_output_tokens));
     }
     if request.options.thinking_enabled && supports_reasoning(&request.model) {
+        let effort = request
+            .options
+            .reasoning_effort
+            .as_deref()
+            .unwrap_or("medium");
         body.insert(
             "reasoning".to_string(),
-            json!({ "effort": "medium", "summary": "auto" }),
+            json!({ "effort": effort, "summary": "auto" }),
         );
     }
     if !request.tools.is_empty() {

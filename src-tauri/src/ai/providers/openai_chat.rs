@@ -202,9 +202,14 @@ pub(crate) fn request_body(request: &ModelRequest) -> Value {
         );
     }
     if request.options.thinking_enabled && supports_reasoning_effort(&request.model) {
+        let effort = request
+            .options
+            .reasoning_effort
+            .as_deref()
+            .unwrap_or("medium");
         body.insert(
             "reasoning_effort".to_string(),
-            Value::String("medium".to_string()),
+            Value::String(effort.to_string()),
         );
     }
     if !request.tools.is_empty() {

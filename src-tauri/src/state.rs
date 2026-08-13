@@ -186,6 +186,9 @@ impl AppState {
         cancellation: CancellationToken,
     ) -> bool {
         let mut runs = self.active_note_pipeline_runs.lock().await;
+        if !runs.is_empty() && !runs.contains_key(&run_id) {
+            return false;
+        }
         if runs.contains_key(&run_id) {
             return false;
         }

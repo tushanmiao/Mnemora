@@ -1,5 +1,5 @@
 import type { ComponentType, LazyExoticComponent } from "react";
-import { BookOpenText, Languages, LayoutDashboard, MessageCircle, NotebookPen, type LucideIcon } from "lucide-react";
+import { BookOpenText, BrainCircuit, Languages, LayoutDashboard, MessageCircle, NotebookPen, type LucideIcon } from "lucide-react";
 import { retryLazy } from "../../bootstrap/retryLazy";
 import type { WorkspaceMode } from "./types";
 import type { TranslationKey } from "../../i18n/translations";
@@ -23,6 +23,7 @@ export type WorkspaceViewDefinition = {
   contextSidebar: boolean;
   /** AI 能力形态：primary=视图本体就是对话；panel=右侧按需 AI 面板。 */
   aiPanel: "primary" | "panel";
+  showInActivityBar?: boolean;
 };
 
 export const WORKSPACE_VIEWS: readonly WorkspaceViewDefinition[] = [
@@ -54,6 +55,16 @@ export const WORKSPACE_VIEWS: readonly WorkspaceViewDefinition[] = [
     aiPanel: "panel",
   },
   {
+    id: "deepNote",
+    labelKey: "view.deepNote",
+    icon: BrainCircuit,
+    order: 3.5,
+    component: retryLazy(() => import("./views/DeepNoteView")),
+    contextSidebar: false,
+    aiPanel: "panel",
+    showInActivityBar: false,
+  },
+  {
     id: "work",
     labelKey: "view.work",
     icon: BookOpenText,
@@ -75,6 +86,10 @@ export const WORKSPACE_VIEWS: readonly WorkspaceViewDefinition[] = [
 
 export const SORTED_WORKSPACE_VIEWS = [...WORKSPACE_VIEWS].sort(
   (left, right) => left.order - right.order,
+);
+
+export const ACTIVITY_BAR_WORKSPACE_VIEWS = SORTED_WORKSPACE_VIEWS.filter(
+  (view) => view.showInActivityBar !== false,
 );
 
 export function findWorkspaceView(id: WorkspaceMode): WorkspaceViewDefinition | undefined {

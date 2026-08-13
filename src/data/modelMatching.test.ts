@@ -47,6 +47,28 @@ describe("matchModelDefaults", () => {
     expect(capabilities?.reasoning).toBe(true);
     expect(capabilities?.functionCalling).toBe(true);
   });
+
+  it("识别 DeepSeek V4 和 Grok 4.6 的最新官方能力", () => {
+    const flash = matchModelDefaults("deepseek-v4-flash");
+    expect(flash?.contextWindowTokens).toBe(1_048_576);
+    expect(flash?.supportsVision).toBe(false);
+    expect(flash?.supportsFunctionCalling).toBe(true);
+    expect(flash?.supportsReasoning).toBe(true);
+    expect(flash?.pricing?.cacheReadPerMillion).toBe(0.0028);
+
+    const pro = matchModelDefaults("deepseek-v4-pro");
+    expect(pro?.supportsReasoning).toBe(true);
+    expect(pro?.pricing?.cacheReadPerMillion).toBe(0.003625);
+
+    const grok = matchModelDefaults("x-ai/grok-4.6-latest");
+    expect(grok?.displayName).toBe("Grok 4.6");
+    expect(grok?.contextWindowTokens).toBe(500_000);
+    expect(grok?.supportsVision).toBe(true);
+    expect(grok?.supportsFunctionCalling).toBe(true);
+    expect(grok?.supportsReasoning).toBe(true);
+    expect(grok?.pricing?.inputPerMillion).toBe(2);
+    expect(grok?.pricing?.outputPerMillion).toBe(6);
+  });
 });
 
 describe("heuristicSupportsVision", () => {

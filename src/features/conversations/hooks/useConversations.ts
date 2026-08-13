@@ -23,6 +23,8 @@ function createConversation(): Conversation {
     assistantId: null,
     providerId: null,
     modelId: null,
+    thinkingEnabled: null,
+    reasoningEffort: null,
     systemPrompt: "",
     contextSummary: "",
     compressedUntilMessageId: null,

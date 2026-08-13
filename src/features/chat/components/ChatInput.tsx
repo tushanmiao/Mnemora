@@ -4,9 +4,12 @@ import {
   ArrowUp,
   BookOpenText,
   Command,
+  Brain,
   FileText,
   LoaderCircle,
+  NotebookPen,
   Paperclip,
+  Download,
   Quote,
   SlidersHorizontal,
   Square,
@@ -25,6 +28,9 @@ import {
 import type { ContextUsageEstimate } from "../utils/contextUsage";
 import type { ChatMessage, ChatQuote, LiteratureReference, NoteReference } from "../../../types/chat";
 import type { LocalSlashCommand, SlashCommandExecutionResult } from "../commands/slashCommands";
+import type { ReasoningEffort } from "../../../data/modelMatching";
+import type { ModelSelectorGroup } from "./ModelSelector";
+import { ModelSelector } from "./ModelSelector";
 import { buildSlashSuggestions, parseSlashInput } from "../commands/slashCommands";
 import { resolveSkillActivation } from "../utils/skillActivation";
 import {
@@ -55,6 +61,27 @@ type ChatInputProps = {
   supportsVision?: boolean | null;
   /** 只有 true 才允许文档附件和 Skill；false/null 均保持普通 Chat。 */
   supportsTools?: boolean | null;
+  supportsReasoning?: boolean | null;
+  reasoningEfforts?: ReasoningEffort[];
+  thinkingEnabled?: boolean;
+  reasoningEffort?: ReasoningEffort | null;
+  modelLabel?: string;
+  modelTitle?: string;
+  modelConfigured?: boolean;
+  modelGroups?: ModelSelectorGroup[];
+  selectedProviderId?: string | null;
+  selectedModelId?: string | null;
+  modelMenuRequest?: number;
+  modelSelectionDisabled?: boolean;
+  onModelChange?: (providerId: string, modelId: string) => void;
+  onThinkingChange?: (enabled: boolean) => void;
+  onReasoningEffortChange?: (effort: ReasoningEffort | null) => void;
+  onSaveConversationAsNote?: () => void;
+  onSummarizeConversationToNote?: () => void;
+  onGenerateDeepNote?: () => void;
+  onUpdateExistingNote?: () => void;
+  onExportConversation?: (format: "markdown" | "json") => void;
+  hasMessages?: boolean;
   /** Work 模式才显示文献入口；普通 Chat 不展示未实现的文献选择控件。 */
   showLiteraturePicker?: boolean;
   /** 从助手回答中选中的引用片段；发送时作为引用上下文并入消息。 */
@@ -138,6 +165,27 @@ export function ChatInput({
   contextWindowTokens,
   supportsVision = null,
   supportsTools = null,
+  supportsReasoning = null,
+  reasoningEfforts = [],
+  thinkingEnabled = false,
+  reasoningEffort = null,
+  modelLabel = "",
+  modelTitle = "",
+  modelConfigured = false,
+  modelGroups = [],
+  selectedProviderId = null,
+  selectedModelId = null,
+  modelMenuRequest,
+  modelSelectionDisabled = false,
+  onModelChange,
+  onThinkingChange,
+  onReasoningEffortChange,
+  onSaveConversationAsNote,
+  onSummarizeConversationToNote,
+  onGenerateDeepNote,
+  onUpdateExistingNote,
+  onExportConversation,
+  hasMessages = false,
   showLiteraturePicker = false,
   quotes = [],
   onQuoteRemove,
@@ -169,6 +217,8 @@ export function ChatInput({
   const [commandRunning, setCommandRunning] = useState(false);
   const [commandFeedback, setCommandFeedback] = useState("");
   const [unknownSlashConfirmation, setUnknownSlashConfirmation] = useState<string | null>(null);
+  const [reasoningMenuOpen, setReasoningMenuOpen] = useState(false);
+  const [noteMenuOpen, setNoteMenuOpen] = useState(false);
   const [selectedCommandIndex, setSelectedCommandIndex] = useState(0);
   const preparingAttachmentsRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -181,6 +231,8 @@ export function ChatInput({
   attachmentsRef.current = attachments;
   attachmentCapabilitiesRef.current = { supportsVision, supportsTools };
   const inputDisabled = disabled || busy || preparingAttachments || commandRunning;
+  const reasoningAvailable = supportsReasoning === true;
+  const effectiveEfforts = reasoningEfforts.filter((effort) => ["low", "medium", "high", "xhigh", "max"].includes(effort));
   const canSend = !inputDisabled && (
     draft.trim().length > 0
     || attachments.length > 0
@@ -714,6 +766,19 @@ export function ChatInput({
 
           <div className="composer-toolbar">
             <div className="composer-tools">
+              {onModelChange ? (
+                <ModelSelector
+                  groups={modelGroups}
+                  selectedProviderId={selectedProviderId}
+                  selectedModelId={selectedModelId}
+                  disabled={inputDisabled || modelSelectionDisabled}
+                  menuRequest={modelMenuRequest}
+                  label={modelLabel}
+                  title={modelTitle}
+                  configured={modelConfigured}
+                  onChange={onModelChange}
+                />
+              ) : null}
               <button
                 className={attachmentBadge ? "icon-button icon-button-attachment-limited" : "icon-button"}
                 type="button"
@@ -739,9 +804,37 @@ export function ChatInput({
                 disabledReason={supportsTools !== true ? t("chat.toolsUnsupported") : undefined}
                 onChange={onSelectedSkillsChange}
               />
-              <button className="icon-button" type="button" title={t("chat.options")} disabled={inputDisabled}>
-                <SlidersHorizontal size={18} />
-              </button>
+              <div className="composer-note-control">
+                <button className="icon-button" type="button" title={t("chat.noteActions")} aria-label={t("chat.noteActions")} aria-expanded={noteMenuOpen} disabled={inputDisabled || !hasMessages} onClick={() => { setNoteMenuOpen((value) => !value); setReasoningMenuOpen(false); }}>
+                  <NotebookPen size={18} />
+                </button>
+                {noteMenuOpen ? (
+                  <div className="composer-note-menu" role="menu" aria-label={t("chat.noteActions")}>
+                    <button type="button" role="menuitem" disabled={!hasMessages} onClick={() => { onSaveConversationAsNote?.(); setNoteMenuOpen(false); }}>{t("sidebar.saveAsNote")}</button>
+                    <button type="button" role="menuitem" disabled={!hasMessages} onClick={() => { onSummarizeConversationToNote?.(); setNoteMenuOpen(false); }}>{t("sidebar.summarizeToNote")}</button>
+                    <button type="button" role="menuitem" disabled={!hasMessages} onClick={() => { onGenerateDeepNote?.(); setNoteMenuOpen(false); }}>{t("sidebar.deepNote")}</button>
+                    <button type="button" role="menuitem" disabled={!hasMessages} onClick={() => { onUpdateExistingNote?.(); setNoteMenuOpen(false); }}>{t("sidebar.updateExistingNote")}</button>
+                    <div className="composer-menu-divider" />
+                    <button type="button" role="menuitem" disabled={!hasMessages} onClick={() => { onExportConversation?.("markdown"); setNoteMenuOpen(false); }}><Download size={14} />{t("sidebar.exportMarkdown")}</button>
+                    <button type="button" role="menuitem" disabled={!hasMessages} onClick={() => { onExportConversation?.("json"); setNoteMenuOpen(false); }}><Download size={14} />{t("sidebar.exportJson")}</button>
+                  </div>
+                ) : null}
+              </div>
+              <div className="composer-reasoning-control">
+                <button className={`icon-button${thinkingEnabled ? " skill-picker-active" : ""}`} type="button" title={reasoningAvailable ? t("chat.reasoningSettings") : t("chat.reasoningUnsupported")} aria-label={t("chat.reasoningSettings")} aria-expanded={reasoningMenuOpen} disabled={inputDisabled || !reasoningAvailable} onClick={() => { setReasoningMenuOpen((value) => !value); setNoteMenuOpen(false); }}>
+                  <Brain size={18} />
+                </button>
+                {reasoningMenuOpen && reasoningAvailable ? (
+                  <div className="composer-reasoning-menu" role="menu" aria-label={t("chat.reasoningSettings")}>
+                    <label className="composer-toggle-row"><span>{t("general.thinking")}</span><input type="checkbox" checked={thinkingEnabled} onChange={(event) => onThinkingChange?.(event.target.checked)} /></label>
+                    {effectiveEfforts.length > 0 ? <div className="composer-reasoning-options">
+                      {effectiveEfforts.map((effort) => <button type="button" role="menuitemradio" aria-checked={reasoningEffort === effort} className={reasoningEffort === effort ? "composer-reasoning-selected" : ""} key={effort} disabled={!thinkingEnabled} onClick={() => onReasoningEffortChange?.(effort)}>{effort}</button>)}
+                      <button type="button" role="menuitemradio" aria-checked={reasoningEffort === null} disabled={!thinkingEnabled} onClick={() => onReasoningEffortChange?.(null)}>{t("chat.reasoningAuto")}</button>
+                    </div> : null}
+                  </div>
+                ) : null}
+              </div>
+              <button className="icon-button" type="button" title={t("chat.options")} disabled={inputDisabled}><SlidersHorizontal size={18} /></button>
             </div>
 
             <div className="composer-actions">

@@ -1,6 +1,7 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::library::types::{NoteEditProposal, NotePipelinePhase, NotePipelineRun};
 
@@ -24,19 +25,49 @@ pub struct DeepNoteSection {
     pub kind: DeepNoteSectionKind,
     pub brief: String,
     #[serde(default)]
+    pub purpose: String,
+    #[serde(default)]
+    pub depends_on: Vec<String>,
+    #[serde(default)]
+    pub evidence_requirements: Vec<String>,
+    #[serde(default)]
+    pub success_criteria: Vec<String>,
+    #[serde(default)]
+    pub source_scope: Vec<String>,
+    #[serde(default = "default_target_depth")]
+    pub target_depth: String,
+    #[serde(default)]
+    pub allow_ai_supplement: bool,
+    #[serde(default)]
     pub needs_supplement: bool,
     #[serde(default)]
     pub source_message_ids: Vec<String>,
 }
 
+fn default_target_depth() -> String {
+    "standard".to_string()
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct DeepNoteOutline {
+    #[serde(default)]
+    pub goal: String,
+    #[serde(default)]
+    pub audience: String,
+    #[serde(default)]
+    pub scope: String,
     pub title: String,
     #[serde(default)]
     pub summary: String,
     #[serde(default)]
     pub weak_points: Vec<String>,
+    #[serde(default)]
+    pub allow_ai_supplement: bool,
+    #[serde(default)]
+    pub evidence_policy: String,
+    #[serde(default)]
+    pub source_ids: Vec<String>,
     pub sections: Vec<DeepNoteSection>,
 }
 
@@ -47,6 +78,10 @@ impl DeepNoteOutline {
             return Err("深度笔记标题为空或过长。".to_string());
         }
         self.summary = self.summary.trim().to_string();
+        self.goal = self.goal.trim().to_string();
+        self.audience = self.audience.trim().to_string();
+        self.scope = self.scope.trim().to_string();
+        self.evidence_policy = self.evidence_policy.trim().to_string();
         if self.sections.is_empty() || self.sections.len() > 40 {
             return Err("深度笔记提纲必须包含 1 到 40 个章节。".to_string());
         }
@@ -60,6 +95,10 @@ impl DeepNoteOutline {
                 .trim()
                 .to_string();
             section.brief = section.brief.trim().to_string();
+            section.purpose = section.purpose.trim().to_string();
+            if section.purpose.is_empty() {
+                section.purpose = section.brief.clone();
+            }
             if section.id.is_empty() || section.heading.is_empty() || section.brief.is_empty() {
                 return Err("深度笔记章节缺少 id、heading 或 brief。".to_string());
             }
@@ -71,7 +110,35 @@ impl DeepNoteOutline {
                 .retain(|message_id| valid_message_ids.contains(message_id));
             section.source_message_ids.sort();
             section.source_message_ids.dedup();
+            section.depends_on = normalize_string_list(&section.depends_on);
+            section.evidence_requirements = normalize_string_list(&section.evidence_requirements);
+            section.success_criteria = normalize_string_list(&section.success_criteria);
+            section.source_scope = normalize_string_list(&section.source_scope);
+            if section.success_criteria.is_empty() {
+                section
+                    .success_criteria
+                    .push(format!("完整说明{}，并与笔记目标一致", section.heading));
+            }
+            if section.target_depth.trim().is_empty() {
+                section.target_depth = default_target_depth();
+            }
+            section.target_depth = section.target_depth.trim().to_string();
+            if section.needs_supplement {
+                section.allow_ai_supplement = true;
+            }
         }
+        for section in &self.sections {
+            for dependency in &section.depends_on {
+                if dependency == &section.id || !ids.contains(dependency) {
+                    return Err(format!(
+                        "章节“{}”包含无效依赖：{dependency}。",
+                        section.heading
+                    ));
+                }
+            }
+        }
+        validate_section_dag(&self.sections)?;
+        self.source_ids = normalize_string_list(&self.source_ids);
         Ok(self)
     }
 
@@ -85,6 +152,487 @@ impl DeepNoteOutline {
         }
         Ok(outline)
     }
+}
+
+fn normalize_string_list(values: &[String]) -> Vec<String> {
+    let mut result = values
+        .iter()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    result.sort();
+    result.dedup();
+    result
+}
+
+fn validate_section_dag(sections: &[DeepNoteSection]) -> Result<(), String> {
+    let mut indegree = sections
+        .iter()
+        .map(|section| (section.id.clone(), section.depends_on.len()))
+        .collect::<HashMap<_, _>>();
+    let mut dependents: HashMap<&str, Vec<&str>> = HashMap::new();
+    for section in sections {
+        for dependency in &section.depends_on {
+            dependents
+                .entry(dependency.as_str())
+                .or_default()
+                .push(section.id.as_str());
+        }
+    }
+    let mut ready = indegree
+        .iter()
+        .filter_map(|(id, count)| (*count == 0).then_some(id.clone()))
+        .collect::<VecDeque<_>>();
+    let mut visited = 0usize;
+    while let Some(id) = ready.pop_front() {
+        visited += 1;
+        for dependent in dependents.get(id.as_str()).into_iter().flatten() {
+            if let Some(count) = indegree.get_mut(*dependent) {
+                *count = count.saturating_sub(1);
+                if *count == 0 {
+                    ready.push_back((*dependent).to_string());
+                }
+            }
+        }
+    }
+    if visited != sections.len() {
+        return Err("深度笔记章节依赖存在循环。".to_string());
+    }
+    Ok(())
+}
+
+fn stable_hash(value: impl AsRef<[u8]>) -> String {
+    format!("{:x}", Sha256::digest(value.as_ref()))
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeepNoteCapabilities {
+    pub tools: bool,
+    pub vision: Option<bool>,
+    pub reasoning: Option<bool>,
+    pub structured_outputs: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeepNoteModelSnapshot {
+    pub provider_id: String,
+    pub model_id: String,
+    pub capabilities: DeepNoteCapabilities,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeepNoteInputSnapshot {
+    pub conversation_revision: u64,
+    pub message_ids: Vec<String>,
+    pub attachment_ids: Vec<String>,
+    pub attachment_content_hashes: Vec<String>,
+    pub selected_literature_ids: Vec<String>,
+    pub selected_note_ids: Vec<String>,
+    pub model: DeepNoteModelSnapshot,
+    pub permission_mode: String,
+    pub created_at: u64,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum DeepNoteSourceKind {
+    Conversation,
+    Pdf,
+    Docx,
+    Xlsx,
+    Image,
+    Literature,
+    Note,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeepNoteSourceChunk {
+    pub chunk_id: String,
+    pub source_kind: DeepNoteSourceKind,
+    pub source_id: String,
+    pub message_id: Option<String>,
+    pub attachment_id: Option<String>,
+    pub library_item_id: Option<String>,
+    pub location: String,
+    pub excerpt: String,
+    pub content_hash: String,
+    pub ocr_confidence: Option<f32>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum DeepNoteEvidenceStatus {
+    Verified,
+    Conflicting,
+    Insufficient,
+    Invalidated,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum DeepNoteSupportLevel {
+    Direct,
+    Partial,
+    Context,
+    AiSupplement,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeepNoteEvidenceArtifact {
+    pub evidence_id: String,
+    pub section_id: String,
+    pub source_chunk_ids: Vec<String>,
+    pub claim: String,
+    pub model_synthesis: String,
+    pub source_excerpt: String,
+    pub support_level: DeepNoteSupportLevel,
+    pub status: DeepNoteEvidenceStatus,
+    pub content_hash: String,
+    pub created_at: u64,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeepNoteLedger {
+    pub note_goal: String,
+    pub audience: String,
+    pub canonical_terms: Vec<String>,
+    pub verified_facts: Vec<String>,
+    pub evidence_claim_links: Vec<String>,
+    pub covered_topics: Vec<String>,
+    pub open_questions: Vec<String>,
+    pub conflicts: Vec<String>,
+    pub ai_supplements: Vec<String>,
+    pub section_summaries: Vec<String>,
+    pub global_constraints: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum DeepNoteNodeType {
+    AnalyzeInput,
+    ReconSource,
+    ExtractEvidence,
+    BuildLedger,
+    DraftSection,
+    ValidateSection,
+    ReviewSection,
+    ReviseSection,
+    ValidateGlobal,
+    ApplyPatch,
+    AssembleNote,
+    PersistNote,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum DeepNoteNodeStatus {
+    Pending,
+    Ready,
+    InProgress,
+    Completed,
+    NeedsReview,
+    NeedsRevision,
+    Failed,
+    Blocked,
+    Skipped,
+    Interrupted,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeepNoteDagNode {
+    pub node_id: String,
+    pub node_type: DeepNoteNodeType,
+    pub section_id: Option<String>,
+    pub depends_on: Vec<String>,
+    pub status: DeepNoteNodeStatus,
+    pub attempt_count: u8,
+    pub evidence_ids: Vec<String>,
+    pub input_hash: String,
+    pub output_ref: Option<String>,
+    pub validation_json: String,
+    pub error_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeepNoteBudget {
+    pub semantic_call_limit: u32,
+    pub semantic_calls_used: u32,
+    pub node_attempt_limit: u8,
+    pub section_revision_limit: u8,
+    pub replan_limit: u8,
+    pub replans_used: u8,
+    pub max_parallel_nodes: u8,
+}
+
+impl DeepNoteBudget {
+    pub fn for_section_count(section_count: usize) -> Self {
+        Self {
+            semantic_call_limit: (2 + section_count as u32 * 3).min(80),
+            semantic_calls_used: 0,
+            node_attempt_limit: 5,
+            section_revision_limit: 5,
+            replan_limit: 4,
+            replans_used: 0,
+            max_parallel_nodes: 2,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeepNoteValidationReport {
+    pub passed: bool,
+    pub errors: Vec<String>,
+    pub warnings: Vec<String>,
+    pub checked_evidence_ids: Vec<String>,
+    pub criteria_coverage: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeepNotePlanVersion {
+    pub run_id: String,
+    pub plan_id: String,
+    pub version: u32,
+    pub plan: DeepNoteOutline,
+    pub compiled_dag: Vec<DeepNoteDagNode>,
+    pub plan_hash: String,
+    pub revision_reason: String,
+    pub confirmed_at: Option<u64>,
+    pub created_at: u64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeepNotePreflight {
+    pub ready: bool,
+    pub model: DeepNoteModelSnapshot,
+    pub requires_tools: bool,
+    pub requires_vision: bool,
+    pub missing_capabilities: Vec<String>,
+    pub warnings: Vec<String>,
+    pub attachment_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeepNoteEventRecord {
+    pub sequence: u64,
+    pub event_type: String,
+    pub node_id: Option<String>,
+    pub payload_json: String,
+    pub created_at: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeepNoteRunDetail {
+    pub run: NotePipelineRun,
+    pub preflight: Option<DeepNotePreflight>,
+    pub input_snapshot: Option<DeepNoteInputSnapshot>,
+    pub plan_version: Option<DeepNotePlanVersion>,
+    pub budget: DeepNoteBudget,
+    pub nodes: Vec<DeepNoteDagNode>,
+    pub source_chunks: Vec<DeepNoteSourceChunk>,
+    pub evidence: Vec<DeepNoteEvidenceArtifact>,
+    pub ledger: DeepNoteLedger,
+    pub events: Vec<DeepNoteEventRecord>,
+    pub markdown_preview: String,
+    pub sidecar_json: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeepNoteRuntimeState {
+    pub preflight: DeepNotePreflight,
+    pub input_snapshot: DeepNoteInputSnapshot,
+    pub plan_version: Option<DeepNotePlanVersion>,
+    pub budget: DeepNoteBudget,
+    pub ledger: DeepNoteLedger,
+}
+
+pub fn compile_plan(
+    run_id: &str,
+    version: u32,
+    plan: DeepNoteOutline,
+    input_snapshot_hash: &str,
+    revision_reason: &str,
+) -> Result<DeepNotePlanVersion, String> {
+    validate_section_dag(&plan.sections)?;
+    let plan_json =
+        serde_json::to_string(&plan).map_err(|error| format!("序列化深度笔记计划失败：{error}"))?;
+    let plan_hash = stable_hash(&plan_json);
+    let plan_id = format!("plan-{}", &plan_hash[..16]);
+    let mut nodes = Vec::new();
+    nodes.push(dag_node(
+        "analyze-input",
+        DeepNoteNodeType::AnalyzeInput,
+        None,
+        Vec::new(),
+        input_snapshot_hash,
+    ));
+    nodes.push(dag_node(
+        "recon-source",
+        DeepNoteNodeType::ReconSource,
+        None,
+        vec!["analyze-input".to_string()],
+        input_snapshot_hash,
+    ));
+    for section in &plan.sections {
+        let evidence_id = format!("evidence:{}", section.id);
+        nodes.push(dag_node(
+            &evidence_id,
+            DeepNoteNodeType::ExtractEvidence,
+            Some(section.id.clone()),
+            vec!["recon-source".to_string()],
+            input_snapshot_hash,
+        ));
+    }
+    let evidence_nodes = plan
+        .sections
+        .iter()
+        .map(|section| format!("evidence:{}", section.id))
+        .collect::<Vec<_>>();
+    nodes.push(dag_node(
+        "build-ledger",
+        DeepNoteNodeType::BuildLedger,
+        None,
+        evidence_nodes,
+        input_snapshot_hash,
+    ));
+    for section in &plan.sections {
+        let mut draft_dependencies = vec!["build-ledger".to_string()];
+        draft_dependencies.extend(
+            section
+                .depends_on
+                .iter()
+                .map(|dependency| format!("validate:{dependency}")),
+        );
+        let draft_id = format!("draft:{}", section.id);
+        let validate_id = format!("validate:{}", section.id);
+        nodes.push(dag_node(
+            &draft_id,
+            DeepNoteNodeType::DraftSection,
+            Some(section.id.clone()),
+            draft_dependencies,
+            input_snapshot_hash,
+        ));
+        nodes.push(dag_node(
+            &validate_id,
+            DeepNoteNodeType::ValidateSection,
+            Some(section.id.clone()),
+            vec![draft_id],
+            input_snapshot_hash,
+        ));
+    }
+    let section_validations = plan
+        .sections
+        .iter()
+        .map(|section| format!("validate:{}", section.id))
+        .collect::<Vec<_>>();
+    nodes.push(dag_node(
+        "validate-global",
+        DeepNoteNodeType::ValidateGlobal,
+        None,
+        section_validations,
+        input_snapshot_hash,
+    ));
+    nodes.push(dag_node(
+        "assemble-note",
+        DeepNoteNodeType::AssembleNote,
+        None,
+        vec!["validate-global".to_string()],
+        input_snapshot_hash,
+    ));
+    nodes.push(dag_node(
+        "persist-note",
+        DeepNoteNodeType::PersistNote,
+        None,
+        vec!["assemble-note".to_string()],
+        input_snapshot_hash,
+    ));
+    validate_compiled_dag(&nodes)?;
+    Ok(DeepNotePlanVersion {
+        run_id: run_id.to_string(),
+        plan_id,
+        version,
+        plan,
+        compiled_dag: nodes,
+        plan_hash,
+        revision_reason: revision_reason.trim().to_string(),
+        confirmed_at: None,
+        created_at: 0,
+    })
+}
+
+fn dag_node(
+    node_id: &str,
+    node_type: DeepNoteNodeType,
+    section_id: Option<String>,
+    depends_on: Vec<String>,
+    input_snapshot_hash: &str,
+) -> DeepNoteDagNode {
+    DeepNoteDagNode {
+        node_id: node_id.to_string(),
+        node_type,
+        section_id,
+        status: if depends_on.is_empty() {
+            DeepNoteNodeStatus::Ready
+        } else {
+            DeepNoteNodeStatus::Pending
+        },
+        depends_on,
+        attempt_count: 0,
+        evidence_ids: Vec::new(),
+        input_hash: stable_hash(format!("{input_snapshot_hash}:{node_id}")),
+        output_ref: None,
+        validation_json: String::new(),
+        error_message: None,
+    }
+}
+
+fn validate_compiled_dag(nodes: &[DeepNoteDagNode]) -> Result<(), String> {
+    let ids = nodes
+        .iter()
+        .map(|node| node.node_id.as_str())
+        .collect::<HashSet<_>>();
+    if ids.len() != nodes.len() {
+        return Err("编译后的深度笔记 DAG 包含重复节点 ID。".to_string());
+    }
+    let pseudo_sections = nodes
+        .iter()
+        .map(|node| DeepNoteSection {
+            id: node.node_id.clone(),
+            heading: node.node_id.clone(),
+            kind: DeepNoteSectionKind::Concept,
+            brief: node.node_id.clone(),
+            purpose: String::new(),
+            depends_on: node.depends_on.clone(),
+            evidence_requirements: Vec::new(),
+            success_criteria: Vec::new(),
+            source_scope: Vec::new(),
+            target_depth: default_target_depth(),
+            allow_ai_supplement: false,
+            needs_supplement: false,
+            source_message_ids: Vec::new(),
+        })
+        .collect::<Vec<_>>();
+    if pseudo_sections
+        .iter()
+        .flat_map(|node| node.depends_on.iter())
+        .any(|dependency| !ids.contains(dependency.as_str()))
+    {
+        return Err("编译后的深度笔记 DAG 包含悬空依赖。".to_string());
+    }
+    validate_section_dag(&pseudo_sections)
 }
 
 #[derive(Debug, Clone, Deserialize)]

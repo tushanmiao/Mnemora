@@ -1,5 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
+use sha2::{Digest, Sha256};
+
 use tauri::{ipc::Channel, AppHandle, Manager};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -24,16 +26,21 @@ use super::{
     merge::{apply_note_patches, compact_diff},
     prompts::{
         ANALYST_SYSTEM_PROMPT, NOTE_EDIT_PATCH_PROMPT, NOTE_EDIT_PLAN_PROMPT,
-        SECTION_SYSTEM_PROMPT, SIMPLE_NOTE_SYSTEM_PROMPT, STRICT_JSON_SUFFIX,
+        SECTION_REVISION_SYSTEM_PROMPT, SECTION_SYSTEM_PROMPT, STRICT_JSON_SUFFIX,
     },
     types::{
-        DeepNoteOutline, DeepNoteSection, NoteEditPrepareRequest, NoteEditPrepareResult,
-        NoteMergePlan, NotePatchSet, NotePipelineAdjustRequest, NotePipelineConfirmRequest,
-        NotePipelineProgress, NotePipelineStartRequest,
+        compile_plan, DeepNoteBudget, DeepNoteCapabilities, DeepNoteInputSnapshot, DeepNoteLedger,
+        DeepNoteModelSnapshot, DeepNoteOutline, DeepNotePlanVersion, DeepNotePreflight,
+        DeepNoteRunDetail, DeepNoteRuntimeState, DeepNoteSection, DeepNoteValidationReport,
+        NoteEditPrepareRequest, NoteEditPrepareResult, NoteMergePlan, NotePatchSet,
+        NotePipelineAdjustRequest, NotePipelineConfirmRequest, NotePipelineProgress,
+        NotePipelineStartRequest,
     },
 };
 
 const MAX_TRANSCRIPT_CHARS: usize = 300_000;
+const NODE_ATTEMPT_LIMIT: u8 = 5;
+const SECTION_REVISION_LIMIT: u8 = 5;
 
 fn send(channel: &Channel<NotePipelineProgress>, event: NotePipelineProgress) {
     let _ = channel.send(event);
@@ -198,6 +205,188 @@ fn enabled_model(settings: &ModelSettings, provider_id: &str, model_id: &str) ->
     })
 }
 
+fn stable_hash(value: impl AsRef<[u8]>) -> String {
+    format!("{:x}", Sha256::digest(value.as_ref()))
+}
+
+fn resolve_note_model_snapshot(
+    settings: &ModelSettings,
+    provider_id: &str,
+    model_id: &str,
+) -> Result<DeepNoteModelSnapshot, String> {
+    let provider = settings
+        .providers
+        .iter()
+        .find(|provider| provider.enabled && provider.id == provider_id)
+        .ok_or_else(|| "没有找到深度笔记使用的模型供应商。".to_string())?;
+    let model = provider
+        .models
+        .iter()
+        .find(|model| model.enabled && model.id == model_id)
+        .ok_or_else(|| "没有找到深度笔记使用的模型。".to_string())?;
+    let tools = model
+        .capabilities
+        .and_then(|capabilities| capabilities.function_calling)
+        .or_else(|| crate::ai::model::database_supports_function_calling(&model.api_model))
+        .unwrap_or(false);
+    let vision = model
+        .capabilities
+        .and_then(|capabilities| capabilities.vision)
+        .or_else(|| crate::ai::model::resolve_supports_vision(&model.api_model));
+    let reasoning = model
+        .capabilities
+        .and_then(|capabilities| capabilities.reasoning)
+        .or_else(|| crate::ai::model::database_supports_reasoning(&model.api_model));
+    Ok(DeepNoteModelSnapshot {
+        provider_id: provider_id.to_string(),
+        model_id: model_id.to_string(),
+        capabilities: DeepNoteCapabilities {
+            tools,
+            vision,
+            reasoning,
+            structured_outputs: false,
+        },
+    })
+}
+
+fn preflight(
+    settings: &ModelSettings,
+    conversation: &StoredConversation,
+    provider_id: &str,
+    model_id: &str,
+) -> Result<DeepNotePreflight, String> {
+    let model = resolve_note_model_snapshot(settings, provider_id, model_id)?;
+    let attachments = noteworthy_messages(conversation)
+        .into_iter()
+        .flat_map(|message| message.attachments.iter())
+        .collect::<Vec<_>>();
+    let requires_vision = attachments
+        .iter()
+        .any(|attachment| attachment.kind == "image");
+    let requires_tools = attachments
+        .iter()
+        .any(|attachment| attachment.kind == "file");
+    let mut missing_capabilities = Vec::new();
+    if requires_vision && model.capabilities.vision != Some(true) {
+        missing_capabilities.push("当前模型未明确支持图片识别".to_string());
+    }
+    if requires_tools && !model.capabilities.tools {
+        missing_capabilities.push("当前模型不支持 Tool，无法读取文档附件".to_string());
+    }
+    let mut warnings = Vec::new();
+    if !model.capabilities.tools && !requires_tools {
+        warnings
+            .push("当前模型不支持 Tool，本次仅使用已存储的文本、文献引用和笔记引用。".to_string());
+    }
+    if !model.capabilities.structured_outputs {
+        warnings.push("当前模型使用严格 JSON 兼容模式，所有计划均由 Rust 校验。".to_string());
+    }
+    Ok(DeepNotePreflight {
+        ready: missing_capabilities.is_empty(),
+        model,
+        requires_tools,
+        requires_vision,
+        missing_capabilities,
+        warnings,
+        attachment_ids: attachments
+            .into_iter()
+            .map(|attachment| attachment.id.clone())
+            .collect(),
+    })
+}
+
+fn input_snapshot(
+    conversation: &StoredConversation,
+    model: DeepNoteModelSnapshot,
+    created_at: u64,
+) -> DeepNoteInputSnapshot {
+    let messages = noteworthy_messages(conversation);
+    let message_ids = messages
+        .iter()
+        .map(|message| message.id.clone())
+        .collect::<Vec<_>>();
+    let attachments = messages
+        .iter()
+        .flat_map(|message| message.attachments.iter())
+        .collect::<Vec<_>>();
+    let attachment_ids = attachments
+        .iter()
+        .map(|attachment| attachment.id.clone())
+        .collect::<Vec<_>>();
+    let attachment_content_hashes = attachments
+        .iter()
+        .map(|attachment| {
+            stable_hash(format!(
+                "{}:{}:{}:{}",
+                attachment.id, attachment.name, attachment.size_bytes, attachment.path
+            ))
+        })
+        .collect::<Vec<_>>();
+    let mut selected_literature_ids = messages
+        .iter()
+        .flat_map(|message| message.literature_references.iter())
+        .map(|reference| reference.library_item_id.clone())
+        .collect::<Vec<_>>();
+    selected_literature_ids.extend(conversation.linked_library_item_ids.clone());
+    selected_literature_ids.sort();
+    selected_literature_ids.dedup();
+    let mut selected_note_ids = messages
+        .iter()
+        .flat_map(|message| message.note_references.iter())
+        .map(|reference| reference.note_id.clone())
+        .collect::<Vec<_>>();
+    selected_note_ids.sort();
+    selected_note_ids.dedup();
+    DeepNoteInputSnapshot {
+        conversation_revision: conversation.updated_at,
+        message_ids,
+        attachment_ids,
+        attachment_content_hashes,
+        selected_literature_ids,
+        selected_note_ids,
+        model,
+        permission_mode: format!("{:?}", conversation.permission_mode).to_lowercase(),
+        created_at,
+    }
+}
+
+fn runtime_state(run: &NotePipelineRun) -> Result<DeepNoteRuntimeState, String> {
+    serde_json::from_str(&run.preflight_json)
+        .map_err(|error| format!("读取深度笔记运行快照失败：{error}"))
+}
+
+fn save_runtime_state(
+    state: &AppState,
+    run_id: &str,
+    runtime: &DeepNoteRuntimeState,
+) -> Result<(), String> {
+    let runtime_json = serde_json::to_string(runtime)
+        .map_err(|error| format!("序列化深度笔记运行状态失败：{error}"))?;
+    let budget_json = serde_json::to_string(&runtime.budget)
+        .map_err(|error| format!("序列化深度笔记预算失败：{error}"))?;
+    state.library_repository.update_note_pipeline_runtime_json(
+        run_id,
+        &budget_json,
+        &runtime_json,
+        None,
+    )
+}
+
+fn consume_semantic_call(
+    state: &AppState,
+    run_id: &str,
+    runtime: &mut DeepNoteRuntimeState,
+) -> Result<(), String> {
+    if runtime.budget.semantic_calls_used >= runtime.budget.semantic_call_limit {
+        return Err(format!(
+            "深度笔记语义调用预算已用尽（{}/{}）。",
+            runtime.budget.semantic_calls_used, runtime.budget.semantic_call_limit
+        ));
+    }
+    runtime.budget.semantic_calls_used += 1;
+    save_runtime_state(state, run_id, runtime)
+}
+
 fn resolve_note_model(
     settings: &ModelSettings,
     conversation: &StoredConversation,
@@ -272,6 +461,7 @@ async fn model_call(
                 temperature: None,
                 max_output_tokens: Some(max_output_tokens),
                 thinking_enabled: run.thinking_enabled,
+                reasoning_effort: None,
             },
         },
     )
@@ -319,41 +509,6 @@ fn section_prompt(
         },
         conversation_transcript,
     ))
-}
-
-fn tail(value: &str) -> String {
-    value
-        .chars()
-        .rev()
-        .take(500)
-        .collect::<String>()
-        .chars()
-        .rev()
-        .collect()
-}
-
-fn split_note_markdown(markdown: &str, fallback_title: &str) -> (String, String) {
-    let content = markdown.trim();
-    let title = content
-        .lines()
-        .find_map(|line| line.strip_prefix("# "))
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or(fallback_title.trim())
-        .chars()
-        .take(500)
-        .collect::<String>();
-    let title = if title.is_empty() {
-        "未命名笔记".to_string()
-    } else {
-        title
-    };
-    let content = if content.lines().any(|line| line.starts_with("# ")) {
-        content.to_string()
-    } else {
-        format!("# {title}\n\n{content}")
-    };
-    (title, content)
 }
 
 fn assemble(
@@ -418,6 +573,100 @@ fn assemble(
         ));
     }
     (title, content, warnings)
+}
+
+fn validate_section_markdown(
+    section: &DeepNoteSection,
+    markdown: &str,
+) -> DeepNoteValidationReport {
+    let normalized = markdown.trim();
+    let mut errors = Vec::new();
+    let mut warnings = Vec::new();
+    if normalized.is_empty() {
+        errors.push("章节正文为空。".to_string());
+    }
+    let expected_heading = format!("## {}", section.heading);
+    if !normalized
+        .lines()
+        .next()
+        .is_some_and(|line| line.trim() == expected_heading)
+    {
+        errors.push(format!("章节必须以“{expected_heading}”开头。"));
+    }
+    let body_chars = normalized.chars().count();
+    if body_chars < 180 {
+        errors.push(format!("章节明显过短（{body_chars} 字符）。"));
+    }
+    if normalized.lines().any(|line| line.starts_with("# ")) {
+        errors.push("章节正文不能包含全文一级标题。".to_string());
+    }
+    if section.allow_ai_supplement || section.needs_supplement {
+        if !normalized.contains("AI 补充背景") {
+            errors.push("计划允许或要求 AI 补充，但正文没有明确标记“AI 补充背景”。".to_string());
+        }
+    } else if normalized.contains("AI 补充背景") {
+        warnings.push("正文包含计划未声明的 AI 补充标记。".to_string());
+    }
+    if normalized.contains("[本章生成失败") {
+        errors.push("失败占位文本不能通过章节验证。".to_string());
+    }
+    let criteria_coverage = section
+        .success_criteria
+        .iter()
+        .map(|criterion| {
+            let keywords = criterion
+                .split(|character: char| {
+                    character.is_whitespace() || "，。；：、".contains(character)
+                })
+                .filter(|value| value.chars().count() >= 2)
+                .take(4)
+                .collect::<Vec<_>>();
+            let covered = keywords.iter().any(|keyword| normalized.contains(keyword));
+            if !covered {
+                warnings.push(format!("成功标准可能未被明确覆盖：{criterion}"));
+            }
+            format!(
+                "{}:{}",
+                if covered { "covered" } else { "uncertain" },
+                criterion
+            )
+        })
+        .collect::<Vec<_>>();
+    DeepNoteValidationReport {
+        passed: errors.is_empty(),
+        errors,
+        warnings,
+        checked_evidence_ids: section.source_message_ids.clone(),
+        criteria_coverage,
+    }
+}
+
+fn sidecar_json(
+    run: &NotePipelineRun,
+    plan: &DeepNotePlanVersion,
+    sections: &[(DeepNoteSection, String, bool)],
+) -> Result<String, String> {
+    serde_json::to_string(&serde_json::json!({
+        "schemaVersion": 1,
+        "runId": run.id,
+        "planId": plan.plan_id,
+        "planVersion": plan.version,
+        "inputSnapshotHash": run.input_snapshot_hash,
+        "model": {
+            "providerId": run.provider_id,
+            "modelId": run.model_id,
+        },
+        "sections": sections.iter().map(|(section, markdown, failed)| serde_json::json!({
+            "sectionId": section.id,
+            "heading": section.heading,
+            "dependsOn": section.depends_on,
+            "sourceMessageIds": section.source_message_ids,
+            "contentHash": stable_hash(markdown),
+            "validated": !failed,
+            "aiSupplement": section.allow_ai_supplement || section.needs_supplement,
+        })).collect::<Vec<_>>(),
+    }))
+    .map_err(|error| format!("序列化深度笔记 Sidecar 失败：{error}"))
 }
 
 fn note_sources(
@@ -494,6 +743,7 @@ async fn persist_error(
 async fn analyze_outline(
     state: &AppState,
     run: &NotePipelineRun,
+    runtime: &mut DeepNoteRuntimeState,
     conversation: &StoredConversation,
     adjustment: &str,
 ) -> Result<DeepNoteOutline, String> {
@@ -506,6 +756,7 @@ async fn analyze_outline(
         .map(|message| message.id.clone())
         .collect::<HashSet<_>>();
     let user_prompt = analysis_prompt(&analysis_transcript, adjustment);
+    consume_semantic_call(state, &run.id, runtime)?;
     let first = model_call(
         state,
         run,
@@ -522,6 +773,7 @@ async fn analyze_outline(
             return Ok(outline);
         }
     }
+    consume_semantic_call(state, &run.id, runtime)?;
     let raw = model_call(
         state,
         run,
@@ -532,57 +784,6 @@ async fn analyze_outline(
     )
     .await?;
     parse_json_object::<DeepNoteOutline>(&raw).and_then(|outline| outline.validate(&valid_ids))
-}
-
-async fn fallback_simple_note(
-    state: &AppState,
-    run: &NotePipelineRun,
-    conversation: &StoredConversation,
-) -> Result<NotePipelineRun, String> {
-    let clean_transcript = transcript(conversation, false);
-    let raw = model_call(
-        state,
-        run,
-        "noteSummary",
-        SIMPLE_NOTE_SYSTEM_PROMPT.to_string(),
-        clean_transcript,
-        run.max_output_tokens.min(16_384),
-    )
-    .await?;
-    let (title, content) = split_note_markdown(&raw, &conversation.title);
-    let messages = noteworthy_messages(conversation);
-    let last_message_id = messages.last().map(|message| message.id.clone());
-    let sources = messages
-        .iter()
-        .map(|message| NoteSourceCreate {
-            section_id: "summary".to_string(),
-            origin: NoteSourceOrigin::Conversation,
-            conversation_id: Some(conversation.id.clone()),
-            message_id: Some(message.id.clone()),
-            summarized_until_message_id: last_message_id.clone(),
-        })
-        .collect();
-    let note = {
-        let _guard = state.library_operations.lock().await;
-        state.library_repository.create_note_with_sources(
-            LibraryNoteCreate {
-                item_id: None,
-                title,
-                content,
-                group_name: None,
-            },
-            sources,
-        )?
-    };
-    let warning = vec!["分析师提纲解析失败，已降级为简版总结。".to_string()];
-    let _guard = state.library_operations.lock().await;
-    state.library_repository.update_note_pipeline_phase(
-        &run.id,
-        NotePipelinePhase::Done,
-        Some(&note.id),
-        &warning,
-        None,
-    )
 }
 
 async fn run_analysis_task(
@@ -608,34 +809,26 @@ async fn run_analysis_task(
     let result = async {
         let run = state.library_repository.get_note_pipeline_run(&run_id)?;
         let conversation = state.conversation_repository.load(&run.conversation_id)?;
-        let outline = match analyze_outline(&state, &run, &conversation, &adjustment).await {
-            Ok(outline) => outline,
-            Err(_) if !cancellation.is_cancelled() => {
-                let completed = fallback_simple_note(&state, &run, &conversation).await?;
-                send(
-                    &channel,
-                    NotePipelineProgress::Done {
-                        run: completed,
-                        degraded: true,
-                    },
-                );
-                return Ok(());
-            }
-            Err(_) => {
-                let cancelled = {
-                    let _guard = state.library_operations.lock().await;
-                    state.library_repository.update_note_pipeline_phase(
-                        &run_id,
-                        NotePipelinePhase::Cancelled,
-                        None,
-                        &[],
-                        None,
-                    )?
-                };
-                send(&channel, NotePipelineProgress::Cancelled { run: cancelled });
-                return Ok(());
-            }
-        };
+        let mut runtime = runtime_state(&run)?;
+        let outline =
+            match analyze_outline(&state, &run, &mut runtime, &conversation, &adjustment).await {
+                Ok(outline) => outline,
+                Err(error) if !cancellation.is_cancelled() => return Err(error),
+                Err(_) => {
+                    let cancelled = {
+                        let _guard = state.library_operations.lock().await;
+                        state.library_repository.update_note_pipeline_phase(
+                            &run_id,
+                            NotePipelinePhase::Cancelled,
+                            None,
+                            &[],
+                            None,
+                        )?
+                    };
+                    send(&channel, NotePipelineProgress::Cancelled { run: cancelled });
+                    return Ok(());
+                }
+            };
         if cancellation.is_cancelled() {
             let cancelled = {
                 let _guard = state.library_operations.lock().await;
@@ -661,6 +854,7 @@ async fn run_analysis_task(
                     position,
                     section_json: serde_json::to_string(section)
                         .map_err(|error| error.to_string())?,
+                    input_hash: stable_hash(format!("{}:{}", run.input_snapshot_hash, section.id)),
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
@@ -670,6 +864,21 @@ async fn run_analysis_task(
                 .library_repository
                 .save_note_pipeline_outline(&run_id, &outline_json, sections)?
         };
+        let mut plan_version = compile_plan(
+            &run_id,
+            saved.current_plan_version.saturating_add(1).max(1),
+            outline,
+            &run.input_snapshot_hash,
+            if adjustment.trim().is_empty() {
+                "initial-plan"
+            } else {
+                adjustment.trim()
+            },
+        )?;
+        plan_version.created_at = saved.updated_at;
+        runtime.plan_version = Some(plan_version.clone());
+        runtime.budget = DeepNoteBudget::for_section_count(plan_version.plan.sections.len());
+        save_runtime_state(&state, &run_id, &runtime)?;
         send(&channel, NotePipelineProgress::OutlineReady { run: saved });
         Ok(())
     }
@@ -689,6 +898,14 @@ async fn run_drafting_task(
     let state = app.state::<AppState>();
     let result = async {
         let run = state.library_repository.get_note_pipeline_run(&run_id)?;
+        let mut runtime = runtime_state(&run)?;
+        let plan_version = runtime
+            .plan_version
+            .clone()
+            .ok_or_else(|| "深度笔记计划尚未编译。".to_string())?;
+        if plan_version.confirmed_at.is_none() {
+            return Err("深度笔记计划尚未由用户确认。".to_string());
+        }
         let conversation = state.conversation_repository.load(&run.conversation_id)?;
         let outline = parse_json_object::<DeepNoteOutline>(&run.outline_json)?;
         let selected_ids = run
@@ -710,14 +927,12 @@ async fn run_drafting_task(
             .map(|message| message.id.clone());
         let total = selected_outline.sections.len();
         let mut drafts: Vec<(DeepNoteSection, String, bool)> = Vec::new();
-        let mut previous_tail = String::new();
         for (index, section) in selected_outline.sections.iter().enumerate() {
             if cancellation.is_cancelled() {
                 break;
             }
             if let Some(existing) = persisted.get(&section.id) {
                 if existing.status == NotePipelineSectionStatus::Completed {
-                    previous_tail = tail(&existing.markdown);
                     drafts.push((section.clone(), existing.markdown.clone(), false));
                     continue;
                 }
@@ -730,18 +945,30 @@ async fn run_drafting_task(
                 Some(total),
                 format!("正在扩写 {}/{}：{}", index + 1, total, section.heading),
             );
-            let prompt = section_prompt(
-                &selected_outline,
-                section,
-                &clean_transcript,
-                &previous_tail,
-            )?;
+            let prompt = section_prompt(&selected_outline, section, &clean_transcript, "")?;
             let mut last_error = String::new();
             let mut markdown = None;
-            for _ in 0..run.retry_attempts.max(1) {
+            let mut validation = DeepNoteValidationReport {
+                passed: false,
+                errors: vec!["章节尚未生成。".to_string()],
+                warnings: Vec::new(),
+                checked_evidence_ids: Vec::new(),
+                criteria_coverage: Vec::new(),
+            };
+            let mut attempts = persisted
+                .get(&section.id)
+                .map(|existing| existing.attempt_count)
+                .unwrap_or(0);
+            let mut revisions = persisted
+                .get(&section.id)
+                .map(|existing| existing.revision_count)
+                .unwrap_or(0);
+            while attempts < NODE_ATTEMPT_LIMIT {
                 if cancellation.is_cancelled() {
                     break;
                 }
+                attempts += 1;
+                consume_semantic_call(&state, &run_id, &mut runtime)?;
                 match model_call(
                     &state,
                     &run,
@@ -753,43 +980,84 @@ async fn run_drafting_task(
                 .await
                 {
                     Ok(value) if !value.trim().is_empty() => {
-                        markdown = Some(value.trim().to_string());
-                        break;
+                        let mut candidate = value.trim().to_string();
+                        validation = validate_section_markdown(section, &candidate);
+                        while !validation.passed && revisions < SECTION_REVISION_LIMIT {
+                            revisions += 1;
+                            consume_semantic_call(&state, &run_id, &mut runtime)?;
+                            let revision_prompt = format!(
+                                "章节计划：\n{}\n\n当前正文：\n{}\n\n验证报告：\n{}",
+                                serde_json::to_string(section).map_err(|error| error.to_string())?,
+                                candidate,
+                                serde_json::to_string(&validation)
+                                    .map_err(|error| error.to_string())?,
+                            );
+                            candidate = model_call(
+                                &state,
+                                &run,
+                                "deepNote",
+                                SECTION_REVISION_SYSTEM_PROMPT.to_string(),
+                                revision_prompt,
+                                run.max_output_tokens.min(16_384),
+                            )
+                            .await?
+                            .trim()
+                            .to_string();
+                            validation = validate_section_markdown(section, &candidate);
+                        }
+                        if validation.passed {
+                            markdown = Some(candidate);
+                            break;
+                        }
+                        last_error = validation.errors.join("；");
                     }
                     Ok(_) => last_error = "模型返回了空章节。".to_string(),
                     Err(error) => last_error = error,
                 }
             }
             if let Some(markdown) = markdown {
+                let validation_json =
+                    serde_json::to_string(&validation).map_err(|error| error.to_string())?;
                 {
                     let _guard = state.library_operations.lock().await;
-                    state.library_repository.save_note_pipeline_section(
-                        &run_id,
-                        &section.id,
-                        &markdown,
-                        NotePipelineSectionStatus::Completed,
-                        None,
-                    )?;
+                    state
+                        .library_repository
+                        .save_note_pipeline_section_checkpoint(
+                            &run_id,
+                            &section.id,
+                            &markdown,
+                            NotePipelineSectionStatus::Completed,
+                            attempts,
+                            revisions,
+                            &section.source_message_ids,
+                            &validation_json,
+                            None,
+                        )?;
                 }
-                previous_tail = tail(&markdown);
                 drafts.push((section.clone(), markdown, false));
             } else if !cancellation.is_cancelled() {
-                let placeholder = format!(
-                    "## {}\n\n> [本章生成失败，可稍后重试]\n\n> 错误：{}",
-                    section.heading, last_error
-                );
+                let validation_json =
+                    serde_json::to_string(&validation).map_err(|error| error.to_string())?;
                 {
                     let _guard = state.library_operations.lock().await;
-                    state.library_repository.save_note_pipeline_section(
-                        &run_id,
-                        &section.id,
-                        &placeholder,
-                        NotePipelineSectionStatus::Failed,
-                        Some(&last_error),
-                    )?;
+                    state
+                        .library_repository
+                        .save_note_pipeline_section_checkpoint(
+                            &run_id,
+                            &section.id,
+                            "",
+                            NotePipelineSectionStatus::Failed,
+                            attempts,
+                            revisions,
+                            &section.source_message_ids,
+                            &validation_json,
+                            Some(&last_error),
+                        )?;
                 }
-                previous_tail = tail(&placeholder);
-                drafts.push((section.clone(), placeholder, true));
+                return Err(format!(
+                    "章节“{}”在 {} 次节点尝试和 {} 次语义修订后仍未通过验证：{}",
+                    section.heading, attempts, revisions, last_error
+                ));
             }
         }
         let cancelled = cancellation.is_cancelled() || drafts.len() < total;
@@ -835,7 +1103,25 @@ async fn run_drafting_task(
                 .collect(),
             ..selected_outline
         };
-        let (title, content, warnings) = assemble(&effective_outline, &drafts, cancelled);
+        if cancelled {
+            let cancelled_run = {
+                let _guard = state.library_operations.lock().await;
+                state.library_repository.update_note_pipeline_phase(
+                    &run_id,
+                    NotePipelinePhase::Paused,
+                    None,
+                    &run.warnings,
+                    None,
+                )?
+            };
+            send(
+                &channel,
+                NotePipelineProgress::Cancelled { run: cancelled_run },
+            );
+            return Ok(());
+        }
+        let (title, content, warnings) = assemble(&effective_outline, &drafts, false);
+        let sidecar = sidecar_json(&run, &plan_version, &drafts)?;
         progress(
             &channel,
             &run_id,
@@ -858,6 +1144,12 @@ async fn run_drafting_task(
                 &warnings,
                 None,
             )?;
+            state.library_repository.update_note_pipeline_runtime_json(
+                &run_id,
+                &serde_json::to_string(&runtime.budget).map_err(|error| error.to_string())?,
+                &serde_json::to_string(&runtime).map_err(|error| error.to_string())?,
+                Some(&sidecar),
+            )?;
             state.library_repository.create_note_with_sources(
                 LibraryNoteCreate {
                     item_id: None,
@@ -868,11 +1160,7 @@ async fn run_drafting_task(
                 sources,
             )?
         };
-        let phase = if cancelled {
-            NotePipelinePhase::Cancelled
-        } else {
-            NotePipelinePhase::Done
-        };
+        let phase = NotePipelinePhase::Done;
         let completed = {
             let _guard = state.library_operations.lock().await;
             state.library_repository.update_note_pipeline_phase(
@@ -883,17 +1171,13 @@ async fn run_drafting_task(
                 None,
             )?
         };
-        if cancelled {
-            send(&channel, NotePipelineProgress::Cancelled { run: completed });
-        } else {
-            send(
-                &channel,
-                NotePipelineProgress::Done {
-                    run: completed,
-                    degraded: false,
-                },
-            );
-        }
+        send(
+            &channel,
+            NotePipelineProgress::Done {
+                run: completed,
+                degraded: false,
+            },
+        );
         Ok(())
     }
     .await;
@@ -955,13 +1239,21 @@ pub async fn start(
     let conversation = state
         .conversation_repository
         .load(request.conversation_id.trim())?;
-    let (provider_id, model_id) = {
+    let (provider_id, model_id, preflight) = {
         let settings = state
             .model_settings
             .read()
             .map_err(|_| "模型设置锁不可用。".to_string())?;
-        resolve_note_model(&settings, &conversation)?
+        let (provider_id, model_id) = resolve_note_model(&settings, &conversation)?;
+        let preflight = preflight(&settings, &conversation, &provider_id, &model_id)?;
+        (provider_id, model_id, preflight)
     };
+    if !preflight.ready {
+        return Err(format!(
+            "当前模型无法启动深度笔记：{}。请切换模型、移除不支持的附件或返回设置。",
+            preflight.missing_capabilities.join("；")
+        ));
+    }
     let (max_output_tokens, thinking_enabled, retry_attempts) = {
         let settings = state
             .app_settings
@@ -977,20 +1269,57 @@ pub async fn start(
             },
         )
     };
+    let created_at = conversation.updated_at.max(1);
+    let snapshot = input_snapshot(&conversation, preflight.model.clone(), created_at);
+    let snapshot_json = serde_json::to_string(&snapshot)
+        .map_err(|error| format!("序列化深度笔记输入快照失败：{error}"))?;
+    let snapshot_hash = stable_hash(&snapshot_json);
+    let runtime = DeepNoteRuntimeState {
+        preflight: preflight.clone(),
+        input_snapshot: snapshot,
+        plan_version: None,
+        budget: DeepNoteBudget::for_section_count(1),
+        ledger: DeepNoteLedger::default(),
+    };
+    let runtime_json = serde_json::to_string(&runtime)
+        .map_err(|error| format!("序列化深度笔记运行状态失败：{error}"))?;
+    let budget_json = serde_json::to_string(&runtime.budget)
+        .map_err(|error| format!("序列化深度笔记预算失败：{error}"))?;
+    let run_id = Uuid::new_v4().to_string();
     let run = {
         let _guard = state.library_operations.lock().await;
         state
             .library_repository
             .create_note_pipeline_run(NotePipelineRunCreate {
-                id: Uuid::new_v4().to_string(),
+                id: run_id.clone(),
                 conversation_id: conversation.id,
                 provider_id,
                 model_id,
                 max_output_tokens,
                 thinking_enabled,
                 retry_attempts,
+                input_snapshot_hash: snapshot_hash,
+                budget_json,
+                preflight_json: runtime_json,
+                idempotency_key: stable_hash(format!("deep-note-output:{run_id}")),
             })?
     };
+    {
+        let _guard = state.library_operations.lock().await;
+        state.library_repository.append_note_pipeline_event(
+            &run.id,
+            "preflightCompleted",
+            None,
+            &serde_json::to_string(&preflight).map_err(|error| error.to_string())?,
+        )?;
+        state.library_repository.update_note_pipeline_phase(
+            &run.id,
+            NotePipelinePhase::Analyzing,
+            None,
+            &preflight.warnings,
+            None,
+        )?;
+    }
     spawn_analysis(app, run.id.clone(), String::new(), channel).await?;
     Ok(run)
 }
@@ -1036,6 +1365,90 @@ pub async fn confirm(
             .library_repository
             .select_note_pipeline_sections(&request.run_id, request.selected_section_ids)?
     };
+    let mut runtime = runtime_state(&run)?;
+    let selected = run
+        .selected_section_ids
+        .iter()
+        .cloned()
+        .collect::<HashSet<_>>();
+    let mut plan_version = runtime
+        .plan_version
+        .clone()
+        .ok_or_else(|| "深度笔记计划尚未生成。".to_string())?;
+    plan_version.plan = plan_version.plan.select(&selected)?;
+    plan_version = compile_plan(
+        &run.id,
+        plan_version.version,
+        plan_version.plan,
+        &run.input_snapshot_hash,
+        &plan_version.revision_reason,
+    )?;
+    plan_version.confirmed_at = Some(run.updated_at.max(1));
+    runtime.plan_version = Some(plan_version.clone());
+    runtime.budget = DeepNoteBudget::for_section_count(plan_version.plan.sections.len());
+    let plan_json = serde_json::to_string(&plan_version.plan).map_err(|error| error.to_string())?;
+    let dag_json =
+        serde_json::to_string(&plan_version.compiled_dag).map_err(|error| error.to_string())?;
+    let node_rows = plan_version
+        .compiled_dag
+        .iter()
+        .map(|node| {
+            Ok((
+                node.node_id.clone(),
+                serde_json::to_value(node.node_type)
+                    .map_err(|error| error.to_string())?
+                    .as_str()
+                    .unwrap_or("unknown")
+                    .to_string(),
+                node.section_id.clone(),
+                serde_json::to_string(&node.depends_on).map_err(|error| error.to_string())?,
+                serde_json::to_value(node.status)
+                    .map_err(|error| error.to_string())?
+                    .as_str()
+                    .unwrap_or("pending")
+                    .to_string(),
+                node.input_hash.clone(),
+            ))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    {
+        let _guard = state.library_operations.lock().await;
+        state.library_repository.save_note_pipeline_plan_version(
+            &run.id,
+            plan_version.version,
+            &plan_version.plan_id,
+            &plan_json,
+            &dag_json,
+            &plan_version.plan_hash,
+            &plan_version.revision_reason,
+            plan_version.confirmed_at,
+        )?;
+        state.library_repository.replace_note_pipeline_nodes(
+            &run.id,
+            plan_version.version,
+            &node_rows,
+        )?;
+        save_runtime_state(&state, &run.id, &runtime)?;
+        state.library_repository.append_note_pipeline_event(
+            &run.id,
+            "planConfirmed",
+            None,
+            &serde_json::json!({
+                "planId": plan_version.plan_id,
+                "version": plan_version.version,
+                "planHash": plan_version.plan_hash,
+            })
+            .to_string(),
+        )?;
+        state.library_repository.update_note_pipeline_phase(
+            &run.id,
+            NotePipelinePhase::Drafting,
+            None,
+            &run.warnings,
+            None,
+        )?;
+    }
+    let run = state.library_repository.get_note_pipeline_run(&run.id)?;
     spawn_drafting(app, run.id.clone(), channel).await?;
     Ok(run)
 }
@@ -1057,9 +1470,15 @@ pub async fn resume(
         NotePipelinePhase::Analyzing => {
             spawn_analysis(app, run.id.clone(), String::new(), channel).await?;
         }
-        NotePipelinePhase::Drafting
+        NotePipelinePhase::Compiling
+        | NotePipelinePhase::Queued
+        | NotePipelinePhase::Drafting
+        | NotePipelinePhase::Validating
+        | NotePipelinePhase::Replanning
         | NotePipelinePhase::Assembling
         | NotePipelinePhase::Persisting
+        | NotePipelinePhase::Paused
+        | NotePipelinePhase::Blocked
         | NotePipelinePhase::Error => {
             if run.outline_json.is_empty() {
                 {
@@ -1120,12 +1539,86 @@ pub async fn cancel(app: &AppHandle, run_id: &str) -> Result<bool, String> {
     Ok(true)
 }
 
+pub async fn pause(app: &AppHandle, run_id: &str) -> Result<NotePipelineRun, String> {
+    let state = app.state::<AppState>();
+    let _ = state.cancel_note_pipeline_run(run_id).await;
+    let run = state.library_repository.get_note_pipeline_run(run_id)?;
+    if matches!(
+        run.phase,
+        NotePipelinePhase::Done | NotePipelinePhase::Cancelled
+    ) {
+        return Err("已结束的深度笔记任务不能暂停。".to_string());
+    }
+    let _guard = state.library_operations.lock().await;
+    state
+        .library_repository
+        .append_note_pipeline_event(run_id, "runPaused", None, "{}")?;
+    state.library_repository.update_note_pipeline_phase(
+        run_id,
+        NotePipelinePhase::Paused,
+        None,
+        &run.warnings,
+        None,
+    )
+}
+
 pub fn list_resumable(state: &AppState) -> Result<Vec<NotePipelineRun>, String> {
     state.library_repository.list_resumable_note_pipeline_runs()
 }
 
 pub fn get_run(state: &AppState, run_id: &str) -> Result<NotePipelineRun, String> {
     state.library_repository.get_note_pipeline_run(run_id)
+}
+
+pub fn get_detail(state: &AppState, run_id: &str) -> Result<DeepNoteRunDetail, String> {
+    let run = state.library_repository.get_note_pipeline_run(run_id)?;
+    let runtime = runtime_state(&run)?;
+    let sections = state
+        .library_repository
+        .list_note_pipeline_sections(run_id)?;
+    let events = state
+        .library_repository
+        .list_note_pipeline_events(run_id, 200)?
+        .into_iter()
+        .map(
+            |(sequence, event_type, node_id, payload_json, created_at)| {
+                super::types::DeepNoteEventRecord {
+                    sequence,
+                    event_type,
+                    node_id,
+                    payload_json,
+                    created_at,
+                }
+            },
+        )
+        .collect();
+    let markdown_preview = sections
+        .iter()
+        .filter(|section| section.status == NotePipelineSectionStatus::Completed)
+        .map(|section| section.markdown.trim())
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    Ok(DeepNoteRunDetail {
+        run,
+        preflight: Some(runtime.preflight),
+        input_snapshot: Some(runtime.input_snapshot),
+        plan_version: runtime.plan_version.clone(),
+        budget: runtime.budget,
+        nodes: runtime
+            .plan_version
+            .map(|plan| plan.compiled_dag)
+            .unwrap_or_default(),
+        source_chunks: Vec::new(),
+        evidence: Vec::new(),
+        ledger: runtime.ledger,
+        events,
+        markdown_preview,
+        sidecar_json: state
+            .library_repository
+            .get_note_pipeline_run(run_id)?
+            .sidecar_json,
+    })
 }
 
 pub async fn prepare_note_edit(
@@ -1170,6 +1663,13 @@ pub async fn prepare_note_edit(
         max_output_tokens,
         thinking_enabled,
         retry_attempts,
+        input_snapshot_hash: String::new(),
+        current_plan_version: 0,
+        execution_version: 1,
+        budget_json: "{}".to_string(),
+        preflight_json: "{}".to_string(),
+        sidecar_json: String::new(),
+        idempotency_key: String::new(),
         completed_section_ids: Vec::new(),
         failed_section_ids: Vec::new(),
         warnings: Vec::new(),

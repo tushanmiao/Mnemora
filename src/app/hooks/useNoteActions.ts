@@ -16,6 +16,7 @@ import {
   adjustNotePipeline,
   cancelNotePipeline,
   confirmNotePipeline,
+  getNotePipelineDetail,
   getNotePipeline,
   listResumableNotePipelines,
   prepareNoteEdit,
@@ -25,6 +26,7 @@ import {
   type NoteEditDialogRequest,
   type NoteEditPrepareResult,
   type NotePipelineEvent,
+  type DeepNoteRunDetail,
 } from "../../features/chat/api/notePipeline";
 import {
   parseDeepNoteOutline,
@@ -92,6 +94,7 @@ export function useNoteActions({
   const [deepNoteActive, setDeepNoteActive] = useState(false);
   const [deepNoteReview, setDeepNoteReview] = useState<DeepNoteReview | null>(null);
   const [deepNoteReviewBusy, setDeepNoteReviewBusy] = useState(false);
+  const [deepNoteDetail, setDeepNoteDetail] = useState<DeepNoteRunDetail | null>(null);
   const [noteEditRequest, setNoteEditRequest] = useState<NoteEditDialogRequest | null>(null);
   const [noteEditResult, setNoteEditResult] = useState<NoteEditPrepareResult | null>(null);
   const [noteEditBusy, setNoteEditBusy] = useState(false);
@@ -114,6 +117,7 @@ export function useNoteActions({
     setDeepNoteActive(false);
     setDeepNoteReview(null);
     setDeepNoteReviewBusy(false);
+    setDeepNoteDetail(null);
   }, []);
 
   const handleNotePipelineEvent = useCallback((event: NotePipelineEvent) => {
@@ -133,6 +137,7 @@ export function useNoteActions({
           runId: event.run.id,
           outline: parsePersistedOutline(event.run.outlineJson),
         });
+        void getNotePipelineDetail(event.run.id).then(setDeepNoteDetail).catch(() => undefined);
         setDeepNoteReviewBusy(false);
         setFeedback(null);
       } catch (error) {
@@ -143,9 +148,7 @@ export function useNoteActions({
     }
     if (event.type === "done") {
       finishDeepNoteRun();
-      if (event.degraded) {
-        showFeedback("success", "提纲解析失败，已降级生成简版笔记。");
-      } else if (event.run.warnings.length > 0) {
+      if (event.run.warnings.length > 0) {
         showFeedback("success", `已生成深度笔记，有 ${event.run.warnings.length} 项检查提示。`);
       } else {
         showFeedback("success", "已生成深度笔记。");
@@ -276,12 +279,14 @@ export function useNoteActions({
     }
     deepNoteRunRef.current = { conversationId, runId: null, cancelRequested: false };
     setDeepNoteActive(true);
+    setDeepNoteDetail(null);
     showFeedback("progress", "正在启动深度笔记分析…");
     try {
       const run = await startNotePipeline(conversationId, handleNotePipelineEvent);
       const active = deepNoteRunRef.current;
       if (active) {
         active.runId = run.id;
+        void getNotePipelineDetail(run.id).then(setDeepNoteDetail).catch(() => undefined);
         if (active.cancelRequested) await cancelNotePipeline(run.id);
       }
     } catch (error) {
@@ -465,6 +470,7 @@ export function useNoteActions({
     deepNoteActive,
     deepNoteReview,
     deepNoteReviewBusy,
+    deepNoteDetail,
     noteEditRequest,
     noteEditResult,
     noteEditBusy,

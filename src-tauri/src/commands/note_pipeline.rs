@@ -4,8 +4,9 @@ use tauri::{ipc::Channel, AppHandle, State};
 
 use crate::{
     chat::note_pipeline::{
-        self, NoteEditPrepareRequest, NoteEditPrepareResult, NotePipelineAdjustRequest,
-        NotePipelineConfirmRequest, NotePipelineProgress, NotePipelineStartRequest,
+        self, DeepNoteRunDetail, NoteEditPrepareRequest, NoteEditPrepareResult,
+        NotePipelineAdjustRequest, NotePipelineConfirmRequest, NotePipelineProgress,
+        NotePipelineStartRequest,
     },
     library::types::{LibraryNote, NotePipelineRun},
     state::AppState,
@@ -53,6 +54,14 @@ pub async fn note_pipeline_cancel(app: AppHandle, run_id: String) -> Result<bool
 }
 
 #[tauri::command]
+pub async fn note_pipeline_pause(
+    app: AppHandle,
+    run_id: String,
+) -> Result<NotePipelineRun, String> {
+    note_pipeline::pause(&app, &run_id).await
+}
+
+#[tauri::command]
 pub async fn note_pipeline_list_resumable(
     state: State<'_, AppState>,
 ) -> Result<Vec<NotePipelineRun>, String> {
@@ -65,6 +74,14 @@ pub async fn note_pipeline_get(
     run_id: String,
 ) -> Result<NotePipelineRun, String> {
     note_pipeline::get_run(&state, &run_id)
+}
+
+#[tauri::command]
+pub async fn note_pipeline_get_detail(
+    state: State<'_, AppState>,
+    run_id: String,
+) -> Result<DeepNoteRunDetail, String> {
+    note_pipeline::get_detail(&state, &run_id)
 }
 
 #[tauri::command]

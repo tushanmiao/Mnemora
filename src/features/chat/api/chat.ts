@@ -1,6 +1,7 @@
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import type { AiPermissionMode, MessageRole, ModelUsage, ToolTrace } from "../../../types/chat";
 import type { ChatAttachment } from "../../../types/attachment";
+import type { ReasoningEffort } from "../../../data/modelMatching";
 
 /** React 交给 Rust 的最小非流式消息，不包含 API Model、Base URL 或 API Key。 */
 export type ChatCompletionRequest = {
@@ -23,6 +24,7 @@ export type ChatCompletionRequest = {
     temperature?: number;
     maxOutputTokens?: number;
     thinkingEnabled?: boolean;
+    reasoningEffort?: ReasoningEffort;
   };
 };
 

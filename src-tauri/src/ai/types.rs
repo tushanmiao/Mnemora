@@ -74,7 +74,7 @@ pub struct ModelToolResult {
 }
 
 /** 四种协议都能合理映射的最小公共生成参数。 */
-#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelOptions {
     #[serde(default)]
@@ -83,6 +83,8 @@ pub struct ModelOptions {
     pub max_output_tokens: Option<u32>,
     #[serde(default)]
     pub thinking_enabled: bool,
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
 }
 
 /** 已解析为 API Model 后的统一模型请求。 */

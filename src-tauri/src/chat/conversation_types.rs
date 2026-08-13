@@ -289,6 +289,10 @@ pub struct StoredConversation {
     pub provider_id: Option<String>,
     pub model_id: Option<String>,
     #[serde(default)]
+    pub thinking_enabled: Option<bool>,
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
+    #[serde(default)]
     pub system_prompt: String,
     #[serde(default)]
     pub context_summary: String,
@@ -610,6 +614,8 @@ mod tests {
             assistant_id: None,
             provider_id: None,
             model_id: None,
+            thinking_enabled: None,
+            reasoning_effort: None,
             system_prompt: String::new(),
             context_summary: String::new(),
             compressed_until_message_id: None,

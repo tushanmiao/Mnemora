@@ -2,7 +2,12 @@ import type { TranslationKey } from "./translations";
 
 // Loaded only when English is selected, keeping the default Chinese startup lean.
 export const enTranslations: Record<TranslationKey, string> = {
+  "view.deepNote": "Deep note",
   "chat.toolsUnsupported": "This model does not support tool calls, so Skills and document attachments are unavailable. Plain Chat remains available.",
+  "chat.noteActions": "Notes and export",
+  "chat.reasoningSettings": "Reasoning settings",
+  "chat.reasoningUnsupported": "This model does not expose reasoning controls",
+  "chat.reasoningAuto": "Auto",
   "chat.toolsUnsupportedDetail": "This model does not support tool calls, so document attachments cannot be added. Switch to a tool-capable model, or enable Function Calling in model capabilities after confirming provider support.",
   "chat.attachmentsUnsupported": "This model supports neither image input nor tool calls, so attachments cannot be added.",
   "chat.attachmentFormatUnsupported": "This file format has no corresponding safe reader and cannot be added as a chat attachment.",

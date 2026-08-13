@@ -224,6 +224,37 @@ mod tests {
     }
 
     #[test]
+    fn latest_deepseek_and_grok_models_resolve_from_database() {
+        assert_eq!(
+            database_context_window_tokens("deepseek-v4-flash"),
+            Some(1_048_576)
+        );
+        assert_eq!(
+            database_supports_function_calling("deepseek-v4-flash"),
+            Some(true)
+        );
+        assert_eq!(database_supports_reasoning("deepseek-v4-flash"), Some(true));
+
+        assert_eq!(
+            database_context_window_tokens("x-ai/grok-4.6-latest"),
+            Some(500_000)
+        );
+        assert_eq!(database_supports_vision("x-ai/grok-4.6-latest"), Some(true));
+        assert_eq!(
+            database_supports_function_calling("x-ai/grok-4.6-latest"),
+            Some(true)
+        );
+        assert_eq!(
+            database_supports_reasoning("x-ai/grok-4.6-latest"),
+            Some(true)
+        );
+        let pricing = database_pricing("grok-4.6").expect("grok-4.6 pricing");
+        assert_eq!(pricing.input_per_million, Some(2.0));
+        assert_eq!(pricing.output_per_million, Some(6.0));
+        assert_eq!(pricing.cache_read_per_million, Some(0.5));
+    }
+
+    #[test]
     fn openrouter_prefix_is_stripped() {
         assert_eq!(database_supports_vision("openai/gpt-5.5"), Some(true));
     }

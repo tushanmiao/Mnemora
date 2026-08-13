@@ -15,14 +15,27 @@ export interface DeepNoteSection {
   heading: string;
   kind: DeepNoteSectionKind;
   brief: string;
+  purpose?: string;
+  dependsOn?: string[];
+  evidenceRequirements?: string[];
+  successCriteria?: string[];
+  sourceScope?: string[];
+  targetDepth?: string;
+  allowAiSupplement?: boolean;
   needsSupplement: boolean;
   sourceMessageIds: string[];
 }
 
 export interface DeepNoteOutline {
+  goal?: string;
+  audience?: string;
+  scope?: string;
   title: string;
   summary: string;
   weakPoints: string[];
+  allowAiSupplement?: boolean;
+  evidencePolicy?: string;
+  sourceIds?: string[];
   sections: DeepNoteSection[];
 }
 
@@ -102,15 +115,43 @@ export function parseDeepNoteOutline(
       heading: requiredText(section.heading, `章节 ${id} 标题`, 300),
       kind: kind as DeepNoteSectionKind,
       brief: requiredText(section.brief, `章节 ${id} 简介`, 4_000),
+      purpose: typeof section.purpose === "string" && section.purpose.trim()
+        ? section.purpose.trim()
+        : requiredText(section.brief, `章节 ${id} 简介`, 4_000),
+      dependsOn: [...new Set(stringList(section.dependsOn ?? [], `章节 ${id} 依赖`, 40))],
+      evidenceRequirements: [...new Set(stringList(
+        section.evidenceRequirements ?? [],
+        `章节 ${id} 证据要求`,
+      ))],
+      successCriteria: [...new Set(stringList(
+        section.successCriteria ?? [],
+        `章节 ${id} 成功标准`,
+      ))],
+      sourceScope: [...new Set(stringList(section.sourceScope ?? [], `章节 ${id} 来源范围`))],
+      targetDepth: typeof section.targetDepth === "string" && section.targetDepth.trim()
+        ? section.targetDepth.trim()
+        : "standard",
+      allowAiSupplement: section.allowAiSupplement === true || section.needsSupplement === true,
       needsSupplement: section.needsSupplement === true,
       sourceMessageIds: [...new Set(sourceMessageIds)],
     };
   });
+  for (const section of sections) {
+    if (section.dependsOn?.some((dependency) => dependency === section.id || !ids.has(dependency))) {
+      throw new Error(`章节“${section.heading}”包含无效依赖。`);
+    }
+  }
 
   return {
+    goal: typeof record.goal === "string" ? record.goal.trim() : "",
+    audience: typeof record.audience === "string" ? record.audience.trim() : "",
+    scope: typeof record.scope === "string" ? record.scope.trim() : "",
     title: requiredText(record.title, "笔记标题", MAX_TITLE_CHARS),
     summary: typeof record.summary === "string" ? record.summary.trim() : "",
     weakPoints: stringList(record.weakPoints ?? [], "weakPoints", 100),
+    allowAiSupplement: record.allowAiSupplement === true,
+    evidencePolicy: typeof record.evidencePolicy === "string" ? record.evidencePolicy.trim() : "",
+    sourceIds: [...new Set(stringList(record.sourceIds ?? [], "sourceIds", 500))],
     sections,
   };
 }

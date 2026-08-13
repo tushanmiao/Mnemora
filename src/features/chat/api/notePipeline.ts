@@ -2,11 +2,18 @@ import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import type { LibraryNote, LibraryNoteSummary } from "../../library/types";
 
 export type NotePipelinePhase =
+  | "preflight"
   | "analyzing"
   | "awaitingOutline"
+  | "compiling"
+  | "queued"
   | "drafting"
+  | "validating"
+  | "replanning"
   | "assembling"
   | "persisting"
+  | "paused"
+  | "blocked"
   | "done"
   | "cancelled"
   | "error";
@@ -23,12 +30,81 @@ export interface NotePipelineRun {
   maxOutputTokens: number;
   thinkingEnabled: boolean;
   retryAttempts: number;
+  inputSnapshotHash: string;
+  currentPlanVersion: number;
+  executionVersion: number;
+  budgetJson: string;
+  preflightJson: string;
+  sidecarJson: string;
+  idempotencyKey: string;
   completedSectionIds: string[];
   failedSectionIds: string[];
   warnings: string[];
   errorMessage: string | null;
   createdAt: number;
   updatedAt: number;
+}
+
+export interface DeepNoteCapabilities {
+  tools: boolean;
+  vision: boolean | null;
+  reasoning: boolean | null;
+  structuredOutputs: boolean;
+}
+
+export interface DeepNotePreflight {
+  ready: boolean;
+  model: { providerId: string; modelId: string; capabilities: DeepNoteCapabilities };
+  requiresTools: boolean;
+  requiresVision: boolean;
+  missingCapabilities: string[];
+  warnings: string[];
+  attachmentIds: string[];
+}
+
+export interface DeepNoteBudget {
+  semanticCallLimit: number;
+  semanticCallsUsed: number;
+  nodeAttemptLimit: number;
+  sectionRevisionLimit: number;
+  replanLimit: number;
+  replansUsed: number;
+  maxParallelNodes: number;
+}
+
+export interface DeepNoteDagNode {
+  nodeId: string;
+  nodeType: string;
+  sectionId: string | null;
+  dependsOn: string[];
+  status: string;
+  attemptCount: number;
+  evidenceIds: string[];
+  validationJson: string;
+  errorMessage: string | null;
+}
+
+export interface DeepNoteRunDetail {
+  run: NotePipelineRun;
+  preflight: DeepNotePreflight | null;
+  inputSnapshot: { messageIds: string[]; attachmentIds: string[]; createdAt: number } | null;
+  planVersion: {
+    planId: string;
+    version: number;
+    plan: import("../notePipeline/outlineSchema").DeepNoteOutline;
+    compiledDag: DeepNoteDagNode[];
+    planHash: string;
+    revisionReason: string;
+    confirmedAt: number | null;
+  } | null;
+  budget: DeepNoteBudget;
+  nodes: DeepNoteDagNode[];
+  sourceChunks: unknown[];
+  evidence: unknown[];
+  ledger: Record<string, unknown>;
+  events: Array<{ sequence: number; eventType: string; createdAt: number }>;
+  markdownPreview: string;
+  sidecarJson: string;
 }
 
 export type NotePipelineEvent =
@@ -141,6 +217,11 @@ export function cancelNotePipeline(runId: string) {
   return invoke<boolean>("note_pipeline_cancel", { runId });
 }
 
+export function pauseNotePipeline(runId: string) {
+  requireTauri();
+  return invoke<NotePipelineRun>("note_pipeline_pause", { runId });
+}
+
 export function listResumableNotePipelines() {
   if (!isTauri()) return Promise.resolve<NotePipelineRun[]>([]);
   return invoke<NotePipelineRun[]>("note_pipeline_list_resumable");
@@ -149,6 +230,11 @@ export function listResumableNotePipelines() {
 export function getNotePipeline(runId: string) {
   requireTauri();
   return invoke<NotePipelineRun>("note_pipeline_get", { runId });
+}
+
+export function getNotePipelineDetail(runId: string) {
+  requireTauri();
+  return invoke<DeepNoteRunDetail>("note_pipeline_get_detail", { runId });
 }
 
 export function prepareNoteEdit(request: NoteEditPrepareRequest) {

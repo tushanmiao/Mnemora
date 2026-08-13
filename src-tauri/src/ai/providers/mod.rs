@@ -112,7 +112,7 @@ pub(crate) fn build_debug_request(
                 tool_result: message.tool_result.clone(),
             })
             .collect(),
-        options: request.options,
+        options: request.options.clone(),
         tools: request.tools.clone(),
     };
     let (url, body, default_auth) = match context.protocol {

@@ -31,7 +31,7 @@ use super::{
     },
 };
 
-const LIBRARY_SCHEMA_VERSION: i64 = 6;
+const LIBRARY_SCHEMA_VERSION: i64 = 7;
 const LIBRARY_DIRECTORY_NAME: &str = "library";
 const LIBRARY_DATABASE_NAME: &str = "library.sqlite3";
 const LIBRARY_FILES_DIRECTORY_NAME: &str = "files";
@@ -744,8 +744,10 @@ impl LibraryRepository {
             "INSERT INTO note_pipeline_runs (
                 id, conversation_id, phase, outline_json, selected_section_ids_json,
                 provider_id, model_id, max_output_tokens, thinking_enabled, retry_attempts,
+                input_snapshot_hash, current_plan_version, execution_version,
+                budget_json, preflight_json, sidecar_json, idempotency_key,
                 warnings_json, created_at, updated_at
-             ) VALUES (?, ?, 'analyzing', '', '[]', ?, ?, ?, ?, ?, '[]', ?, ?)",
+             ) VALUES (?, ?, 'preflight', '', '[]', ?, ?, ?, ?, ?, ?, 0, 1, ?, ?, '', ?, '[]', ?, ?)",
             params![
                 id,
                 conversation_id,
@@ -754,6 +756,10 @@ impl LibraryRepository {
                 i64::from(create.max_output_tokens),
                 bool_to_i64(create.thinking_enabled),
                 i64::from(create.retry_attempts),
+                create.input_snapshot_hash,
+                create.budget_json,
+                create.preflight_json,
+                create.idempotency_key,
                 now,
                 now,
             ],
@@ -780,7 +786,11 @@ impl LibraryRepository {
         let mut statement = connection
             .prepare(
                 "SELECT id FROM note_pipeline_runs
-                 WHERE phase IN ('analyzing', 'awaiting_outline', 'drafting', 'assembling', 'persisting', 'error')
+                 WHERE phase IN (
+                    'preflight', 'analyzing', 'awaiting_outline', 'compiling', 'queued',
+                    'drafting', 'validating', 'replanning', 'assembling', 'persisting',
+                    'paused', 'blocked', 'error'
+                 )
                  ORDER BY updated_at DESC",
             )
             .map_err(|error| format!("准备深度笔记任务查询失败：{error}"))?;
@@ -859,13 +869,16 @@ impl LibraryRepository {
             transaction
                 .execute(
                     "INSERT INTO note_pipeline_sections (
-                        run_id, section_id, position, section_json, markdown, status, updated_at
-                     ) VALUES (?, ?, ?, ?, '', 'pending', ?)",
+                        run_id, section_id, position, section_json, markdown, status,
+                        attempt_count, revision_count, evidence_ids_json, validation_json,
+                        input_hash, updated_at
+                     ) VALUES (?, ?, ?, ?, '', 'pending', 0, 0, '[]', '', ?, ?)",
                     params![
                         run_id,
                         section.section_id,
                         section.position as i64,
                         section.section_json,
+                        section.input_hash,
                         now
                     ],
                 )
@@ -875,6 +888,203 @@ impl LibraryRepository {
             .commit()
             .map_err(|error| format!("提交深度笔记提纲失败：{error}"))?;
         self.get_note_pipeline_run(&run_id)
+    }
+
+    pub fn save_note_pipeline_plan_version(
+        &self,
+        run_id: &str,
+        version: u32,
+        plan_id: &str,
+        plan_json: &str,
+        compiled_dag_json: &str,
+        plan_hash: &str,
+        revision_reason: &str,
+        confirmed_at: Option<u64>,
+    ) -> Result<(), String> {
+        let run_id = normalize_identifier("任务 ID", run_id)?;
+        let plan_id = normalize_identifier("计划 ID", plan_id)?;
+        if plan_json.is_empty()
+            || plan_json.len() > MAX_NOTE_PIPELINE_JSON_BYTES
+            || compiled_dag_json.is_empty()
+            || compiled_dag_json.len() > MAX_NOTE_PIPELINE_JSON_BYTES
+        {
+            return Err("深度笔记计划或 DAG 为空或过长。".to_string());
+        }
+        let connection = self.open_connection()?;
+        let now = now_millis_i64();
+        connection
+            .execute(
+                "INSERT INTO note_pipeline_plan_versions (
+                    run_id, version, plan_id, plan_json, compiled_dag_json, plan_hash,
+                    revision_reason, confirmed_at, created_at
+                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 ON CONFLICT(run_id, version) DO UPDATE SET
+                    plan_id = excluded.plan_id,
+                    plan_json = excluded.plan_json,
+                    compiled_dag_json = excluded.compiled_dag_json,
+                    plan_hash = excluded.plan_hash,
+                    revision_reason = excluded.revision_reason,
+                    confirmed_at = excluded.confirmed_at",
+                params![
+                    run_id,
+                    i64::from(version),
+                    plan_id,
+                    plan_json,
+                    compiled_dag_json,
+                    plan_hash,
+                    revision_reason,
+                    confirmed_at
+                        .map(|value| i64::try_from(value).map_err(|_| "确认时间无效。".to_string()))
+                        .transpose()?,
+                    now,
+                ],
+            )
+            .map_err(|error| format!("保存深度笔记计划版本失败：{error}"))?;
+        connection
+            .execute(
+                "UPDATE note_pipeline_runs
+                 SET current_plan_version = ?, updated_at = ? WHERE id = ?",
+                params![i64::from(version), now, run_id],
+            )
+            .map_err(|error| format!("更新深度笔记计划版本失败：{error}"))?;
+        Ok(())
+    }
+
+    pub fn replace_note_pipeline_nodes(
+        &self,
+        run_id: &str,
+        plan_version: u32,
+        nodes_json: &[(String, String, Option<String>, String, String, String)],
+    ) -> Result<(), String> {
+        let run_id = normalize_identifier("任务 ID", run_id)?;
+        let mut connection = self.open_connection()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| format!("开始保存深度笔记 DAG 失败：{error}"))?;
+        transaction
+            .execute(
+                "DELETE FROM note_pipeline_nodes WHERE run_id = ? AND plan_version = ?",
+                params![run_id, i64::from(plan_version)],
+            )
+            .map_err(|error| format!("重置深度笔记 DAG 失败：{error}"))?;
+        let now = now_millis_i64();
+        for (node_id, node_type, section_id, depends_on_json, status, input_hash) in nodes_json {
+            transaction
+                .execute(
+                    "INSERT INTO note_pipeline_nodes (
+                        run_id, plan_version, node_id, node_type, section_id, depends_on_json,
+                        status, attempt_count, evidence_ids_json, input_hash, validation_json, updated_at
+                     ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, '[]', ?, '', ?)",
+                    params![
+                        run_id,
+                        i64::from(plan_version),
+                        node_id,
+                        node_type,
+                        section_id,
+                        depends_on_json,
+                        status,
+                        input_hash,
+                        now,
+                    ],
+                )
+                .map_err(|error| format!("保存深度笔记 DAG 节点失败：{error}"))?;
+        }
+        transaction
+            .commit()
+            .map_err(|error| format!("提交深度笔记 DAG 失败：{error}"))
+    }
+
+    pub fn append_note_pipeline_event(
+        &self,
+        run_id: &str,
+        event_type: &str,
+        node_id: Option<&str>,
+        payload_json: &str,
+    ) -> Result<u64, String> {
+        let run_id = normalize_identifier("任务 ID", run_id)?;
+        let connection = self.open_connection()?;
+        let next: i64 = connection
+            .query_row(
+                "SELECT COALESCE(MAX(sequence), 0) + 1 FROM note_pipeline_events WHERE run_id = ?",
+                params![run_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| format!("读取深度笔记事件序号失败：{error}"))?;
+        connection
+            .execute(
+                "INSERT INTO note_pipeline_events (
+                    run_id, sequence, event_type, node_id, payload_json, created_at
+                 ) VALUES (?, ?, ?, ?, ?, ?)",
+                params![
+                    run_id,
+                    next,
+                    event_type,
+                    node_id,
+                    payload_json,
+                    now_millis_i64()
+                ],
+            )
+            .map_err(|error| format!("保存深度笔记事件失败：{error}"))?;
+        u64::try_from(next).map_err(|_| "深度笔记事件序号无效。".to_string())
+    }
+
+    pub fn list_note_pipeline_events(
+        &self,
+        run_id: &str,
+        limit: usize,
+    ) -> Result<Vec<(u64, String, Option<String>, String, u64)>, String> {
+        let run_id = normalize_identifier("任务 ID", run_id)?;
+        let limit = limit.clamp(1, 500);
+        let connection = self.open_connection()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT sequence, event_type, node_id, payload_json, created_at
+                 FROM note_pipeline_events WHERE run_id = ?
+                 ORDER BY sequence DESC LIMIT ?",
+            )
+            .map_err(|error| format!("准备深度笔记事件查询失败：{error}"))?;
+        let rows = statement
+            .query_map(params![run_id, limit as i64], |row| {
+                Ok((
+                    i64_to_u64(row.get(0)?),
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    i64_to_u64(row.get(4)?),
+                ))
+            })
+            .map_err(|error| format!("查询深度笔记事件失败：{error}"))?;
+        let mut events = rows
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("读取深度笔记事件失败：{error}"))?;
+        events.reverse();
+        Ok(events)
+    }
+
+    pub fn update_note_pipeline_runtime_json(
+        &self,
+        run_id: &str,
+        budget_json: &str,
+        preflight_json: &str,
+        sidecar_json: Option<&str>,
+    ) -> Result<(), String> {
+        let run_id = normalize_identifier("任务 ID", run_id)?;
+        let connection = self.open_connection()?;
+        connection
+            .execute(
+                "UPDATE note_pipeline_runs
+                 SET budget_json = ?, preflight_json = ?, sidecar_json = COALESCE(?, sidecar_json),
+                     updated_at = ? WHERE id = ?",
+                params![
+                    budget_json,
+                    preflight_json,
+                    sidecar_json,
+                    now_millis_i64(),
+                    run_id
+                ],
+            )
+            .map_err(|error| format!("保存深度笔记运行状态失败：{error}"))?;
+        Ok(())
     }
 
     pub fn select_note_pipeline_sections(
@@ -909,7 +1119,7 @@ impl LibraryRepository {
         let changed = connection
             .execute(
                 "UPDATE note_pipeline_runs
-                 SET phase = 'drafting', selected_section_ids_json = ?, error_message = NULL, updated_at = ?
+                 SET phase = 'compiling', selected_section_ids_json = ?, error_message = NULL, updated_at = ?
                  WHERE id = ?",
                 params![selected_json, now_millis_i64(), run_id],
             )
@@ -959,6 +1169,61 @@ impl LibraryRepository {
                 ],
             )
             .map_err(|error| format!("保存深度笔记章节状态失败：{error}"))?;
+        if changed == 0 {
+            return Err("深度笔记章节不存在。".to_string());
+        }
+        connection
+            .execute(
+                "UPDATE note_pipeline_runs SET updated_at = ? WHERE id = ?",
+                params![now, run_id],
+            )
+            .map_err(|error| format!("更新深度笔记任务时间失败：{error}"))?;
+        Ok(())
+    }
+
+    pub fn save_note_pipeline_section_checkpoint(
+        &self,
+        run_id: &str,
+        section_id: &str,
+        markdown: &str,
+        status: NotePipelineSectionStatus,
+        attempt_count: u8,
+        revision_count: u8,
+        evidence_ids: &[String],
+        validation_json: &str,
+        error_message: Option<&str>,
+    ) -> Result<(), String> {
+        let run_id = normalize_identifier("任务 ID", run_id)?;
+        let section_id = normalize_identifier("章节 ID", section_id)?;
+        if markdown.len() > MAX_NOTE_PIPELINE_JSON_BYTES
+            || validation_json.len() > MAX_NOTE_PIPELINE_JSON_BYTES
+        {
+            return Err("深度笔记章节检查点过长。".to_string());
+        }
+        let evidence_ids_json = serde_json::to_string(evidence_ids)
+            .map_err(|error| format!("序列化章节证据失败：{error}"))?;
+        let connection = self.open_connection()?;
+        let now = now_millis_i64();
+        let changed = connection
+            .execute(
+                "UPDATE note_pipeline_sections
+                 SET markdown = ?, status = ?, attempt_count = ?, revision_count = ?,
+                     evidence_ids_json = ?, validation_json = ?, error_message = ?, updated_at = ?
+                 WHERE run_id = ? AND section_id = ?",
+                params![
+                    markdown,
+                    status.as_str(),
+                    i64::from(attempt_count),
+                    i64::from(revision_count),
+                    evidence_ids_json,
+                    validation_json,
+                    error_message,
+                    now,
+                    run_id,
+                    section_id,
+                ],
+            )
+            .map_err(|error| format!("保存深度笔记章节检查点失败：{error}"))?;
         if changed == 0 {
             return Err("深度笔记章节不存在。".to_string());
         }
@@ -2052,6 +2317,188 @@ fn migrate(connection: &Connection) -> Result<(), String> {
             )
             .map_err(|error| format!("升级深度笔记任务与版本结构失败：{error}"))?;
     }
+    // v7：深度笔记第一版正式 Plan-and-Execute / DAG 运行结构。
+    if version <= 6 {
+        connection
+            .execute_batch(
+                "BEGIN IMMEDIATE;
+                 DROP INDEX IF EXISTS note_pipeline_active_conversation;
+                 DROP INDEX IF EXISTS note_pipeline_runs_updated;
+                 DROP INDEX IF EXISTS note_pipeline_sections_order;
+                 ALTER TABLE note_pipeline_sections RENAME TO note_pipeline_sections_v6;
+                 ALTER TABLE note_pipeline_runs RENAME TO note_pipeline_runs_v6;
+                 CREATE TABLE note_pipeline_runs (
+                    id TEXT PRIMARY KEY,
+                    conversation_id TEXT NOT NULL,
+                    note_id TEXT REFERENCES library_notes(id) ON DELETE SET NULL,
+                    phase TEXT NOT NULL CHECK (phase IN (
+                        'preflight', 'analyzing', 'awaiting_outline', 'compiling', 'queued',
+                        'drafting', 'validating', 'replanning', 'assembling', 'persisting',
+                        'paused', 'blocked', 'done', 'cancelled', 'error'
+                    )),
+                    outline_json TEXT NOT NULL DEFAULT '',
+                    selected_section_ids_json TEXT NOT NULL DEFAULT '[]',
+                    provider_id TEXT NOT NULL,
+                    model_id TEXT NOT NULL,
+                    max_output_tokens INTEGER NOT NULL,
+                    thinking_enabled INTEGER NOT NULL DEFAULT 0 CHECK (thinking_enabled IN (0, 1)),
+                    retry_attempts INTEGER NOT NULL DEFAULT 1,
+                    input_snapshot_hash TEXT NOT NULL DEFAULT '',
+                    current_plan_version INTEGER NOT NULL DEFAULT 0,
+                    execution_version INTEGER NOT NULL DEFAULT 1,
+                    budget_json TEXT NOT NULL DEFAULT '{}',
+                    preflight_json TEXT NOT NULL DEFAULT '{}',
+                    sidecar_json TEXT NOT NULL DEFAULT '',
+                    idempotency_key TEXT NOT NULL DEFAULT '',
+                    warnings_json TEXT NOT NULL DEFAULT '[]',
+                    error_message TEXT,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL
+                 );
+                 INSERT INTO note_pipeline_runs (
+                    id, conversation_id, note_id, phase, outline_json, selected_section_ids_json,
+                    provider_id, model_id, max_output_tokens, thinking_enabled, retry_attempts,
+                    warnings_json, error_message, created_at, updated_at
+                 ) SELECT id, conversation_id, note_id, phase, outline_json, selected_section_ids_json,
+                    provider_id, model_id, max_output_tokens, thinking_enabled, retry_attempts,
+                    warnings_json, error_message, created_at, updated_at
+                   FROM note_pipeline_runs_v6;
+                 CREATE TABLE note_pipeline_sections (
+                    run_id TEXT NOT NULL REFERENCES note_pipeline_runs(id) ON DELETE CASCADE,
+                    section_id TEXT NOT NULL,
+                    position INTEGER NOT NULL,
+                    section_json TEXT NOT NULL,
+                    markdown TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN (
+                        'pending', 'ready', 'in_progress', 'completed', 'needs_review',
+                        'needs_revision', 'failed', 'blocked', 'skipped', 'interrupted'
+                    )),
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    revision_count INTEGER NOT NULL DEFAULT 0,
+                    evidence_ids_json TEXT NOT NULL DEFAULT '[]',
+                    validation_json TEXT NOT NULL DEFAULT '',
+                    input_hash TEXT NOT NULL DEFAULT '',
+                    error_message TEXT,
+                    updated_at INTEGER NOT NULL,
+                    PRIMARY KEY (run_id, section_id)
+                 );
+                 INSERT INTO note_pipeline_sections (
+                    run_id, section_id, position, section_json, markdown, status,
+                    error_message, updated_at
+                 ) SELECT run_id, section_id, position, section_json, markdown, status,
+                    error_message, updated_at FROM note_pipeline_sections_v6;
+                 DROP TABLE note_pipeline_sections_v6;
+                 DROP TABLE note_pipeline_runs_v6;
+                 CREATE UNIQUE INDEX IF NOT EXISTS note_pipeline_active_conversation
+                    ON note_pipeline_runs(conversation_id)
+                    WHERE phase IN (
+                        'preflight', 'analyzing', 'awaiting_outline', 'compiling', 'queued',
+                        'drafting', 'validating', 'replanning', 'assembling', 'persisting',
+                        'paused', 'blocked', 'error'
+                    );
+                 CREATE UNIQUE INDEX IF NOT EXISTS note_pipeline_output_idempotency
+                    ON note_pipeline_runs(idempotency_key) WHERE idempotency_key <> '';
+                 CREATE INDEX IF NOT EXISTS note_pipeline_runs_updated
+                    ON note_pipeline_runs(updated_at DESC);
+                 CREATE INDEX IF NOT EXISTS note_pipeline_sections_order
+                    ON note_pipeline_sections(run_id, position);
+                 CREATE TABLE IF NOT EXISTS note_pipeline_plan_versions (
+                    run_id TEXT NOT NULL REFERENCES note_pipeline_runs(id) ON DELETE CASCADE,
+                    version INTEGER NOT NULL,
+                    plan_id TEXT NOT NULL,
+                    plan_json TEXT NOT NULL,
+                    compiled_dag_json TEXT NOT NULL,
+                    plan_hash TEXT NOT NULL,
+                    revision_reason TEXT NOT NULL DEFAULT '',
+                    confirmed_at INTEGER,
+                    created_at INTEGER NOT NULL,
+                    PRIMARY KEY (run_id, version)
+                 );
+                 CREATE INDEX IF NOT EXISTS note_pipeline_plan_hash
+                    ON note_pipeline_plan_versions(run_id, plan_hash);
+                 CREATE TABLE IF NOT EXISTS note_pipeline_nodes (
+                    run_id TEXT NOT NULL REFERENCES note_pipeline_runs(id) ON DELETE CASCADE,
+                    plan_version INTEGER NOT NULL,
+                    node_id TEXT NOT NULL,
+                    node_type TEXT NOT NULL,
+                    section_id TEXT,
+                    depends_on_json TEXT NOT NULL DEFAULT '[]',
+                    status TEXT NOT NULL,
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    evidence_ids_json TEXT NOT NULL DEFAULT '[]',
+                    input_hash TEXT NOT NULL DEFAULT '',
+                    output_ref TEXT,
+                    validation_json TEXT NOT NULL DEFAULT '',
+                    error_message TEXT,
+                    updated_at INTEGER NOT NULL,
+                    PRIMARY KEY (run_id, plan_version, node_id)
+                 );
+                 CREATE INDEX IF NOT EXISTS note_pipeline_nodes_ready
+                    ON note_pipeline_nodes(run_id, plan_version, status);
+                 CREATE TABLE IF NOT EXISTS note_pipeline_source_chunks (
+                    run_id TEXT NOT NULL REFERENCES note_pipeline_runs(id) ON DELETE CASCADE,
+                    chunk_id TEXT NOT NULL,
+                    source_kind TEXT NOT NULL,
+                    source_id TEXT NOT NULL,
+                    message_id TEXT,
+                    attachment_id TEXT,
+                    library_item_id TEXT,
+                    location TEXT NOT NULL,
+                    excerpt TEXT NOT NULL,
+                    content_hash TEXT NOT NULL,
+                    ocr_confidence REAL,
+                    created_at INTEGER NOT NULL,
+                    PRIMARY KEY (run_id, chunk_id)
+                 );
+                 CREATE INDEX IF NOT EXISTS note_pipeline_chunks_source
+                    ON note_pipeline_source_chunks(run_id, source_id);
+                 CREATE TABLE IF NOT EXISTS note_pipeline_evidence (
+                    run_id TEXT NOT NULL REFERENCES note_pipeline_runs(id) ON DELETE CASCADE,
+                    evidence_id TEXT NOT NULL,
+                    section_id TEXT NOT NULL,
+                    source_chunk_ids_json TEXT NOT NULL,
+                    claim_text TEXT NOT NULL,
+                    model_synthesis TEXT NOT NULL DEFAULT '',
+                    source_excerpt TEXT NOT NULL,
+                    support_level TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    content_hash TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    PRIMARY KEY (run_id, evidence_id)
+                 );
+                 CREATE INDEX IF NOT EXISTS note_pipeline_evidence_section
+                    ON note_pipeline_evidence(run_id, section_id);
+                 CREATE TABLE IF NOT EXISTS note_pipeline_ledgers (
+                    run_id TEXT NOT NULL REFERENCES note_pipeline_runs(id) ON DELETE CASCADE,
+                    version INTEGER NOT NULL,
+                    ledger_json TEXT NOT NULL,
+                    patch_json TEXT NOT NULL DEFAULT '',
+                    created_at INTEGER NOT NULL,
+                    PRIMARY KEY (run_id, version)
+                 );
+                 CREATE TABLE IF NOT EXISTS note_pipeline_events (
+                    run_id TEXT NOT NULL REFERENCES note_pipeline_runs(id) ON DELETE CASCADE,
+                    sequence INTEGER NOT NULL,
+                    event_type TEXT NOT NULL,
+                    node_id TEXT,
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    created_at INTEGER NOT NULL,
+                    PRIMARY KEY (run_id, sequence)
+                 );
+                 CREATE TABLE IF NOT EXISTS note_pipeline_outputs (
+                    run_id TEXT PRIMARY KEY REFERENCES note_pipeline_runs(id) ON DELETE CASCADE,
+                    note_id TEXT REFERENCES library_notes(id) ON DELETE SET NULL,
+                    markdown TEXT NOT NULL,
+                    sidecar_json TEXT NOT NULL,
+                    idempotency_key TEXT NOT NULL UNIQUE,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL
+                 );
+                 PRAGMA user_version = 7;
+                 COMMIT;",
+            )
+            .map_err(|error| format!("升级深度笔记 Plan-and-Execute 结构失败：{error}"))?;
+    }
     Ok(())
 }
 
@@ -2176,7 +2623,8 @@ fn get_note_pipeline_run_with_connection(
             "SELECT id, conversation_id, note_id, phase, outline_json,
                     selected_section_ids_json, provider_id, model_id, max_output_tokens,
                     thinking_enabled, retry_attempts, warnings_json, error_message,
-                    created_at, updated_at
+                    created_at, updated_at, input_snapshot_hash, current_plan_version,
+                    execution_version, budget_json, preflight_json, sidecar_json, idempotency_key
              FROM note_pipeline_runs WHERE id = ?",
             params![run_id],
             |row| {
@@ -2196,6 +2644,13 @@ fn get_note_pipeline_run_with_connection(
                     row.get::<_, Option<String>>(12)?,
                     row.get::<_, i64>(13)?,
                     row.get::<_, i64>(14)?,
+                    row.get::<_, String>(15)?,
+                    row.get::<_, i64>(16)?,
+                    row.get::<_, i64>(17)?,
+                    row.get::<_, String>(18)?,
+                    row.get::<_, String>(19)?,
+                    row.get::<_, String>(20)?,
+                    row.get::<_, String>(21)?,
                 ))
             },
         )
@@ -2227,6 +2682,15 @@ fn get_note_pipeline_run_with_connection(
             .map_err(|_| "深度笔记 Token 上限无效。".to_string())?,
         thinking_enabled: raw.9 != 0,
         retry_attempts: u8::try_from(raw.10).map_err(|_| "深度笔记重试次数无效。".to_string())?,
+        input_snapshot_hash: raw.15,
+        current_plan_version: u32::try_from(raw.16)
+            .map_err(|_| "深度笔记计划版本无效。".to_string())?,
+        execution_version: u32::try_from(raw.17)
+            .map_err(|_| "深度笔记执行版本无效。".to_string())?,
+        budget_json: raw.18,
+        preflight_json: raw.19,
+        sidecar_json: raw.20,
+        idempotency_key: raw.21,
         completed_section_ids,
         failed_section_ids,
         warnings: serde_json::from_str(&raw.11)
@@ -2244,7 +2708,8 @@ fn get_note_pipeline_sections_with_connection(
     let mut statement = connection
         .prepare(
             "SELECT run_id, section_id, position, section_json, markdown, status,
-                    error_message, updated_at
+                    error_message, updated_at, attempt_count, revision_count,
+                    evidence_ids_json, validation_json, input_hash
              FROM note_pipeline_sections WHERE run_id = ? ORDER BY position ASC",
         )
         .map_err(|error| format!("准备深度笔记章节查询失败：{error}"))?;
@@ -2262,6 +2727,21 @@ fn get_note_pipeline_sections_with_connection(
                         section_json: row.get(3).map_err(|error| error.to_string())?,
                         markdown: row.get(4).map_err(|error| error.to_string())?,
                         status,
+                        attempt_count: u8::try_from(
+                            row.get::<_, i64>(8).map_err(|error| error.to_string())?,
+                        )
+                        .map_err(|_| "深度笔记章节尝试次数无效。".to_string())?,
+                        revision_count: u8::try_from(
+                            row.get::<_, i64>(9).map_err(|error| error.to_string())?,
+                        )
+                        .map_err(|_| "深度笔记章节修订次数无效。".to_string())?,
+                        evidence_ids: serde_json::from_str(
+                            &row.get::<_, String>(10)
+                                .map_err(|error| error.to_string())?,
+                        )
+                        .map_err(|error| format!("解析章节证据失败：{error}"))?,
+                        validation_json: row.get(11).map_err(|error| error.to_string())?,
+                        input_hash: row.get(12).map_err(|error| error.to_string())?,
                         error_message: row.get(6).map_err(|error| error.to_string())?,
                         updated_at: i64_to_u64(row.get(7).map_err(|error| error.to_string())?),
                     })
@@ -2926,7 +3406,7 @@ mod tests {
         let version: i64 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 6);
+        assert_eq!(version, 7);
         let tables: i64 = connection
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master
@@ -3098,9 +3578,13 @@ mod tests {
                 max_output_tokens: 4_096,
                 thinking_enabled: true,
                 retry_attempts: 2,
+                input_snapshot_hash: "snapshot-1".to_string(),
+                budget_json: "{}".to_string(),
+                preflight_json: "{}".to_string(),
+                idempotency_key: "output-1".to_string(),
             })
             .unwrap();
-        assert_eq!(run.phase, NotePipelinePhase::Analyzing);
+        assert_eq!(run.phase, NotePipelinePhase::Preflight);
         assert!(repository
             .create_note_pipeline_run(NotePipelineRunCreate {
                 id: "run-duplicate".to_string(),
@@ -3110,6 +3594,10 @@ mod tests {
                 max_output_tokens: 4_096,
                 thinking_enabled: false,
                 retry_attempts: 1,
+                input_snapshot_hash: "snapshot-2".to_string(),
+                budget_json: "{}".to_string(),
+                preflight_json: "{}".to_string(),
+                idempotency_key: "output-2".to_string(),
             })
             .is_err());
 
@@ -3132,11 +3620,13 @@ mod tests {
                         section_id: "sec-1".to_string(),
                         position: 0,
                         section_json: serde_json::json!({ "id": "sec-1" }).to_string(),
+                        input_hash: "sec-1-input".to_string(),
                     },
                     NotePipelineSectionCreate {
                         section_id: "sec-2".to_string(),
                         position: 1,
                         section_json: serde_json::json!({ "id": "sec-2" }).to_string(),
+                        input_hash: "sec-2-input".to_string(),
                     },
                 ],
             )
@@ -3157,7 +3647,7 @@ mod tests {
 
         let reopened = LibraryRepository::new(directory.clone());
         let persisted = reopened.get_note_pipeline_run(&run.id).unwrap();
-        assert_eq!(persisted.phase, NotePipelinePhase::Drafting);
+        assert_eq!(persisted.phase, NotePipelinePhase::Compiling);
         assert_eq!(persisted.selected_section_ids, vec!["sec-1"]);
         assert_eq!(persisted.completed_section_ids, vec!["sec-1"]);
         assert_eq!(
@@ -3181,6 +3671,10 @@ mod tests {
                 max_output_tokens: 4_096,
                 thinking_enabled: false,
                 retry_attempts: 1,
+                input_snapshot_hash: "snapshot-3".to_string(),
+                budget_json: "{}".to_string(),
+                preflight_json: "{}".to_string(),
+                idempotency_key: "output-3".to_string(),
             })
             .is_ok());
         let _ = fs::remove_dir_all(directory);

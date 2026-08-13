@@ -1,4 +1,5 @@
 import type { AiPermissionMode, ChatMessage } from "./chat";
+import type { ReasoningEffort } from "../data/modelMatching";
 
 /**
  * 会话领域类型。
@@ -22,6 +23,10 @@ export interface Conversation {
   providerId: string | null;
   /** 当前对话使用的模型 ID；为空表示使用全局默认模型。 */
   modelId: string | null;
+  /** 浼氳瘽绾у紑鍏筹細null 琛ㄧず璺熼殢鍏ㄥ眬璁剧疆銆?*/
+  thinkingEnabled?: boolean | null;
+  /** 浼氳瘽绾у己搴︼細null 琛ㄧず浣跨敤 Provider 榛樿銆?*/
+  reasoningEffort?: ReasoningEffort | null;
   /**
    * 当前对话独有的自定义指令。
    * 这不是最终发送给模型的完整 System Prompt，后续还会与其他提示词来源组合。

@@ -128,7 +128,9 @@ export function useChatRuntime({
       }
       const modelMessages = toModelMessages(activeContextMessages(runningConversation));
       // 总览只是聚合页面，不会发起 Chat 请求；若运行时合同被复用，按普通 Chat 处理。
-      const completionWorkspaceMode = workspaceMode === "overview" || workspaceMode === "english"
+      const completionWorkspaceMode = workspaceMode === "overview"
+        || workspaceMode === "english"
+        || workspaceMode === "deepNote"
         ? "chat"
         : workspaceMode;
       const completionRequest = {
@@ -144,7 +146,8 @@ export function useChatRuntime({
         messages: modelMessages,
         options: {
           maxOutputTokens: appSettings.maxOutputTokens,
-          thinkingEnabled: appSettings.thinkingEnabled,
+          thinkingEnabled: runningConversation.thinkingEnabled ?? appSettings.thinkingEnabled,
+          reasoningEffort: runningConversation.reasoningEffort ?? undefined,
         },
       };
 

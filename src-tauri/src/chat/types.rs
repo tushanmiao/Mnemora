@@ -292,6 +292,16 @@ impl ChatCompletionRequest {
         }
         if self
             .options
+            .reasoning_effort
+            .as_deref()
+            .is_some_and(|effort| !matches!(effort, "low" | "medium" | "high" | "xhigh" | "max"))
+        {
+            return Err(ModelError::invalid_configuration(
+                "Reasoning effort must be low, medium, high, xhigh, or max.",
+            ));
+        }
+        if self
+            .options
             .max_output_tokens
             .is_some_and(|tokens| tokens == 0 || tokens > MAX_OUTPUT_TOKENS)
         {

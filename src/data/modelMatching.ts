@@ -22,12 +22,15 @@ type DatabaseEntry = {
     imageGeneration?: boolean;
     embedding?: boolean;
   };
+  reasoningEfforts?: ReasoningEffort[];
   pricing?: {
     input?: number;
     output?: number;
     cachedInput?: number;
   };
 };
+
+export type ReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max";
 
 /** 数据库记录的模型能力集合（展示用；undefined 表示未收录）。 */
 export interface ModelCapabilityDefaults {
@@ -49,6 +52,8 @@ export interface ModelDefaults {
   supportsFunctionCalling?: boolean;
   /** 是否支持独立 reasoning；undefined 表示数据库未收录。 */
   supportsReasoning?: boolean;
+  /** 鐭ヤ煡妯″瀷鏀寔鐨勬€濊€冨己搴︼紱鏈敹褰曟椂涓嶅睍绀鸿櫄鍋囬€夐」銆?*/
+  reasoningEfforts?: ReasoningEffort[];
   /** 数据库记录的完整能力集合（设置页徽章展示用）。 */
   capabilities?: ModelCapabilityDefaults;
   pricing?: ModelPricing;
@@ -151,6 +156,7 @@ export function matchModelDefaults(apiModel: string): ModelDefaults | null {
     supportsVision: entry.capabilities?.vision,
     supportsFunctionCalling: entry.capabilities?.functionCalling,
     supportsReasoning: entry.capabilities?.reasoning,
+    reasoningEfforts: entry.reasoningEfforts,
     capabilities: entry.capabilities
       ? {
           vision: entry.capabilities.vision,

@@ -1,6 +1,6 @@
 [package]
 name = "mnemora"
-version = "0.1.8"
+version = "0.1.9"
 description = "Mnemora desktop application"
 authors = ["tushanmiao"]
 edition = "2021"
