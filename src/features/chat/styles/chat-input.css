@@ -27,7 +27,7 @@
 }
 
 .composer-box:focus-within {
-  border-color: color-mix(in srgb, var(--color-accent) 58%, var(--color-border));
+  border-color: color-mix(in srgb, var(--color-accent) 46%, var(--color-border));
 }
 
 .slash-command-menu {
@@ -85,6 +85,11 @@
   font-family: var(--reading-font-family);
   letter-spacing: var(--reading-letter-spacing);
   line-height: 1.5;
+}
+
+/* 输入焦点由完整 Composer 外壳承载，避免正文区域出现突兀的内层矩形框。 */
+.composer-box .composer-textarea:focus-visible {
+  outline: none;
 }
 
 .composer-textarea::placeholder {

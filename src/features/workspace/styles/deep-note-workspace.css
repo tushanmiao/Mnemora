@@ -25,6 +25,12 @@
 .deep-note-workspace-title h1 { overflow: hidden; margin: 2px 0 0; font-size: 16px; line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; }
 .deep-note-run-status { display: flex; align-items: center; gap: 7px; color: var(--color-muted); font-size: 12px; }
 .deep-note-status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--color-accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 16%, transparent); }
+.deep-note-run-status[data-tone="success"] { color: var(--color-success); }
+.deep-note-run-status[data-tone="success"] .deep-note-status-dot { background: var(--color-success); box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-success) 16%, transparent); }
+.deep-note-run-status[data-tone="warning"] { color: var(--color-warning); }
+.deep-note-run-status[data-tone="warning"] .deep-note-status-dot { background: var(--color-warning); box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-warning) 16%, transparent); }
+.deep-note-run-status[data-tone="danger"] { color: var(--color-danger); }
+.deep-note-run-status[data-tone="danger"] .deep-note-status-dot { background: var(--color-danger); box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-danger) 16%, transparent); }
 
 .deep-note-source-pane,
 .deep-note-run-pane { overflow: auto; padding: 16px 14px; background: var(--color-surface); }
@@ -43,6 +49,49 @@
 .deep-note-check-list .is-muted { color: var(--color-muted); }
 .deep-note-check-list .is-warning { color: var(--color-danger); }
 .deep-note-inline-warning { display: flex; gap: 6px; margin: 10px 0 0; color: var(--color-muted); font-size: 12px; line-height: 1.45; }
+
+.deep-note-progress-overview {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 12px;
+  max-width: 960px;
+  margin: 0 auto 24px;
+  padding: 14px 16px;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 45%, var(--color-border-soft));
+  background: color-mix(in srgb, var(--color-accent) 7%, var(--color-surface));
+}
+.deep-note-progress-overview[data-tone="success"] { border-color: color-mix(in srgb, var(--color-success) 45%, var(--color-border-soft)); background: color-mix(in srgb, var(--color-success) 7%, var(--color-surface)); }
+.deep-note-progress-overview[data-tone="warning"] { border-color: color-mix(in srgb, var(--color-warning) 45%, var(--color-border-soft)); background: color-mix(in srgb, var(--color-warning) 8%, var(--color-surface)); }
+.deep-note-progress-overview[data-tone="danger"] { border-color: color-mix(in srgb, var(--color-danger) 45%, var(--color-border-soft)); background: color-mix(in srgb, var(--color-danger) 7%, var(--color-surface)); }
+.deep-note-progress-overview[data-tone="muted"] { border-color: var(--color-border-soft); background: var(--color-surface-soft); }
+.deep-note-progress-icon { display: grid; place-items: center; align-self: start; width: 28px; height: 28px; color: var(--color-accent); }
+.deep-note-progress-overview[data-tone="success"] .deep-note-progress-icon { color: var(--color-success); }
+.deep-note-progress-overview[data-tone="warning"] .deep-note-progress-icon { color: var(--color-warning); }
+.deep-note-progress-overview[data-tone="danger"] .deep-note-progress-icon { color: var(--color-danger); }
+.deep-note-progress-overview[data-tone="muted"] .deep-note-progress-icon { color: var(--color-muted); }
+.deep-note-progress-copy { min-width: 0; }
+.deep-note-progress-copy > div:first-child { display: flex; align-items: baseline; justify-content: space-between; gap: 14px; }
+.deep-note-progress-copy strong { font-size: 14px; }
+.deep-note-progress-copy time { color: var(--color-muted); font-size: 12px; white-space: nowrap; }
+.deep-note-progress-copy > p { margin: 4px 0 11px; color: var(--color-muted); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.deep-note-live-activity { display: flex; flex-wrap: wrap; gap: 5px 12px; margin: 0 0 11px; padding: 8px 10px; border: 1px solid var(--color-border-soft); border-radius: 5px; background: var(--color-surface); color: var(--color-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.deep-note-live-activity em { flex-basis: 100%; color: var(--color-danger); font-style: normal; line-height: 1.45; overflow-wrap: anywhere; }
+.deep-note-task-meter { height: 6px; overflow: hidden; background: var(--color-border-soft); }
+.deep-note-task-meter span { display: block; height: 100%; background: var(--color-accent); }
+.deep-note-progress-overview[data-tone="success"] .deep-note-task-meter span { background: var(--color-success); }
+.deep-note-progress-overview[data-tone="warning"] .deep-note-task-meter span { background: var(--color-warning); }
+.deep-note-progress-overview[data-tone="danger"] .deep-note-task-meter span { background: var(--color-danger); }
+.deep-note-progress-stats { display: flex; flex-wrap: wrap; gap: 8px 18px; margin: 10px 0 0; }
+.deep-note-progress-stats div { display: flex; gap: 5px; font-size: 12px; }
+.deep-note-progress-stats dt { color: var(--color-muted); }
+.deep-note-progress-stats dd { margin: 0; color: var(--color-text); font-variant-numeric: tabular-nums; font-weight: 700; }
+.deep-note-terminal-message { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 9px; max-width: 960px; margin: -8px auto 20px; padding: 10px 0; border-bottom: 1px solid var(--color-border-soft); }
+.deep-note-terminal-message.is-error { color: var(--color-danger); }
+.deep-note-terminal-message.is-warning { color: var(--color-warning); }
+.deep-note-terminal-message strong { font-size: 12px; }
+.deep-note-terminal-message p { margin: 3px 0 0; color: var(--color-muted); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.deep-note-warning-list { display: grid; gap: 5px; max-width: 960px; margin: -8px auto 20px; }
+.deep-note-warning-list p { display: grid; grid-template-columns: 16px minmax(0, 1fr); gap: 7px; margin: 0; color: var(--color-warning); font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
 
 .deep-note-plan-intro { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; max-width: 960px; margin: 0 auto 22px; }
 .deep-note-plan-intro div { padding-top: 8px; border-top: 2px solid var(--color-accent); }
@@ -67,10 +116,29 @@
 .deep-note-preview { max-width: 960px; margin: 28px auto 0; }
 .deep-note-preview pre { overflow: auto; margin: 0; padding: 16px 0; border-top: 1px solid var(--color-border); color: var(--color-text); font: 12px/1.65 var(--content-font, sans-serif); white-space: pre-wrap; }
 .deep-note-empty { display: grid; place-items: center; align-content: center; height: 100%; gap: 10px; color: var(--color-muted); font-size: 12px; }
+.deep-note-empty strong { color: var(--color-text); font-size: 14px; }
+.deep-note-empty span { max-width: 420px; text-align: center; line-height: 1.5; overflow-wrap: anywhere; }
 
 .deep-note-budget-meter { height: 5px; overflow: hidden; border-radius: 5px; background: var(--color-border-soft); }
 .deep-note-budget-meter span { display: block; height: 100%; background: var(--color-accent); }
+.deep-note-budget-meter.is-task span { background: var(--color-success); }
+.deep-note-budget-meter.is-context span { background: var(--color-literature, var(--color-accent)); }
 .deep-note-run-pane > p { margin: 7px 0 12px; color: var(--color-muted); font-size: 12px; }
+.deep-note-section-progress-list { display: grid; gap: 9px; }
+.deep-note-section-progress { display: grid; grid-template-columns: 7px minmax(0, 1fr); align-items: start; gap: 8px; }
+.deep-note-section-progress-dot { width: 7px; height: 7px; margin-top: 4px; border-radius: 50%; background: var(--color-border); }
+.deep-note-section-progress[data-status="completed"] .deep-note-section-progress-dot { background: var(--color-success); }
+.deep-note-section-progress[data-status="inProgress"] .deep-note-section-progress-dot,
+.deep-note-section-progress[data-status="ready"] .deep-note-section-progress-dot { background: var(--color-accent); }
+.deep-note-section-progress[data-status="failed"] .deep-note-section-progress-dot,
+.deep-note-section-progress[data-status="blocked"] .deep-note-section-progress-dot { background: var(--color-danger); }
+.deep-note-section-progress[data-status="needsReview"] .deep-note-section-progress-dot,
+.deep-note-section-progress[data-status="needsRevision"] .deep-note-section-progress-dot,
+.deep-note-section-progress[data-status="interrupted"] .deep-note-section-progress-dot { background: var(--color-warning); }
+.deep-note-section-progress-copy { display: grid; min-width: 0; gap: 2px; }
+.deep-note-section-progress-copy strong { overflow: hidden; font-size: 12px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
+.deep-note-section-progress-copy small { color: var(--color-muted); font-size: 12px; line-height: 1.4; }
+.deep-note-section-progress-copy em { color: var(--color-danger); font-size: 12px; font-style: normal; line-height: 1.4; overflow-wrap: anywhere; }
 .deep-note-node-list { display: grid; gap: 7px; }
 .deep-note-node-list div { display: grid; grid-template-columns: 7px minmax(0, 1fr); align-items: center; gap: 7px; }
 .deep-note-node-list div > span { width: 6px; height: 6px; border-radius: 50%; background: var(--color-border); }

@@ -1,11 +1,17 @@
 import { useEffect, useRef, useState } from "react";
 import type { ChatMessage } from "../../../types/chat";
 import { estimateTextTokens, type ContextUsageEstimate } from "../utils/contextUsage";
+import {
+  contextInputBudget,
+  CONTEXT_SAFETY_RATIO,
+  MIN_CONTEXT_SAFETY_TOKENS,
+} from "../utils/contextCompression";
 import "../styles/context-usage-indicator.css";
 
 type Props = {
   usage: ContextUsageEstimate;
   contextWindowTokens: number | null;
+  maxOutputTokens: number;
   messageCount: number;
   compressionCount?: number;
   disabled?: boolean;
@@ -18,6 +24,7 @@ type Props = {
 export function ContextUsageIndicator({
   usage,
   contextWindowTokens,
+  maxOutputTokens,
   messageCount,
   compressionCount = 0,
   disabled = false,
@@ -28,8 +35,11 @@ export function ContextUsageIndicator({
 }: Props) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
-  const ratio = contextWindowTokens && contextWindowTokens > 0
-    ? usage.tokens / contextWindowTokens
+  const inputBudget = contextWindowTokens && contextWindowTokens > 0
+    ? contextInputBudget(contextWindowTokens, maxOutputTokens)
+    : null;
+  const ratio = inputBudget && inputBudget > 0
+    ? usage.tokens / inputBudget
     : null;
   const ringPercent = ratio === null ? 0 : Math.min(100, Math.max(0, ratio * 100));
   const color = ratio !== null && ratio >= 0.9
@@ -38,7 +48,14 @@ export function ContextUsageIndicator({
       ? "#b7791f"
       : "var(--color-accent)";
   const breakdown = open
-    ? contextBreakdown(usage.tokens, messages, systemPrompt, availableSkillCount, contextWindowTokens)
+    ? contextBreakdown(
+        usage.tokens,
+        messages,
+        systemPrompt,
+        availableSkillCount,
+        contextWindowTokens,
+        maxOutputTokens,
+      )
     : null;
 
   useEffect(() => {
@@ -51,7 +68,7 @@ export function ContextUsageIndicator({
   }, [open]);
 
   const title = contextWindowTokens
-    ? `上下文 ${formatTokens(usage.tokens)} / ${formatTokens(contextWindowTokens)} · ${Math.round(ringPercent)}%`
+    ? `可用输入 ${formatTokens(usage.tokens)} / ${formatTokens(inputBudget ?? 0)} · ${Math.round(ringPercent)}%`
     : `上下文约 ${formatTokens(usage.tokens)} · 请在模型设置中填写上下文窗口`;
 
   return (
@@ -85,7 +102,7 @@ export function ContextUsageIndicator({
           </div>
           <div className="context-usage-values">
             <strong>{usage.source === "estimated" ? "约 " : ""}{formatTokens(usage.tokens)}</strong>
-            <span>/ {contextWindowTokens ? formatTokens(contextWindowTokens) : "未设置"}</span>
+            <span>/ {inputBudget ? formatTokens(inputBudget) : "未设置"}</span>
           </div>
           <div className="context-usage-bar" aria-hidden="true">
             <span style={{ width: `${ringPercent}%`, background: color }} />
@@ -113,6 +130,7 @@ function contextBreakdown(
   systemPrompt: string,
   availableSkillCount: number,
   contextWindowTokens: number | null,
+  maxOutputTokens: number,
 ): Array<[string, number]> {
   const system = estimateTextTokens(systemPrompt);
   const attachments = messages.reduce((sum, message) => sum + (message.attachments ?? []).reduce(
@@ -131,7 +149,9 @@ function contextBreakdown(
   );
   const known = system + attachments + activatedSkills + toolDefinitions + toolResults;
   const conversation = Math.max(0, total - known);
-  const reserve = contextWindowTokens ? Math.round(contextWindowTokens * 0.1) : 0;
+  const safety = contextWindowTokens
+    ? Math.max(MIN_CONTEXT_SAFETY_TOKENS, Math.ceil(contextWindowTokens * CONTEXT_SAFETY_RATIO))
+    : 0;
   return [
     ["System Prompt", system],
     ["对话消息", conversation],
@@ -139,7 +159,8 @@ function contextBreakdown(
     ["已激活 Skills", activatedSkills],
     ["工具定义", toolDefinitions],
     ["工具结果", toolResults],
-    ["预留输出空间", reserve],
+    ["预留输出空间", maxOutputTokens],
+    ["安全余量", safety],
   ];
 }
 

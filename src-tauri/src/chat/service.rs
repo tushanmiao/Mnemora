@@ -3,7 +3,10 @@
 //! 非流式和流式调用共享目标解析与系统凭据读取。流式调用额外负责运行注册、Channel 事件
 //! 和真实网络取消；设置锁不会跨网络请求持有，活动运行结束后一定从注册表移除。
 
-use std::time::{Duration, Instant};
+use std::{
+    future::Future,
+    time::{Duration, Instant},
+};
 
 use tauri::ipc::Channel;
 use tokio::sync::oneshot;
@@ -41,6 +44,7 @@ struct ResolvedTarget {
     base_url: String,
     api_model: String,
     display_name: String,
+    context_window_tokens: Option<u64>,
     pricing: Option<ModelPricing>,
     /// 是否支持图片输入：用户覆盖优先，其次内置模型数据库；`None` 表示未知（放行）。
     supports_vision: Option<bool>,
@@ -85,9 +89,45 @@ struct RetryPolicy {
     max_retries: u8,
 }
 
+#[derive(Debug, Clone)]
+pub enum CompletionProgress {
+    AttemptStarted {
+        retry_index: u8,
+        max_retries: u8,
+    },
+    RetryScheduled {
+        retry_index: u8,
+        max_retries: u8,
+        delay_ms: u64,
+        error: ModelError,
+    },
+}
+
+pub struct CompleteExecution<'a> {
+    pub cancellation: &'a CancellationToken,
+    pub max_retries: Option<u8>,
+    pub attempt_timeout: Option<Duration>,
+    pub on_progress: Option<&'a (dyn Fn(CompletionProgress) + Send + Sync)>,
+}
+
 pub async fn complete(
     state: &AppState,
     request: ChatCompletionRequest,
+) -> Result<ChatCompletionResponse, ModelError> {
+    let cancellation = CancellationToken::new();
+    let execution = CompleteExecution {
+        cancellation: &cancellation,
+        max_retries: None,
+        attempt_timeout: None,
+        on_progress: None,
+    };
+    complete_with_execution(state, request, &execution).await
+}
+
+pub async fn complete_with_execution(
+    state: &AppState,
+    request: ChatCompletionRequest,
+    execution: &CompleteExecution<'_>,
 ) -> Result<ChatCompletionResponse, ModelError> {
     request.validate()?;
     let conversation_id = request.conversation_id.clone();
@@ -117,6 +157,7 @@ pub async fn complete(
         conversation_id.as_deref(),
         message_id.as_deref(),
         &operation,
+        execution,
     )
     .await;
     let duration_ms = elapsed_ms(started_at);
@@ -430,6 +471,7 @@ async fn run_agent_complete(
     conversation_id: Option<&str>,
     message_id: Option<&str>,
     parent_operation: &str,
+    execution: &CompleteExecution<'_>,
 ) -> Result<AgentCompleteResult, ModelError> {
     if tool_context.permission_mode
         == crate::chat::conversation_types::AiPermissionMode::AskEveryTime
@@ -441,7 +483,6 @@ async fn run_agent_complete(
             )
         });
     }
-    let cancellation = CancellationToken::new();
     let run_id = uuid::Uuid::new_v4().to_string();
     let mut run_usage = ModelUsage {
         call_count: 0,
@@ -468,14 +509,42 @@ async fn run_agent_complete(
         }
         let created_at_ms = usage::now_ms();
         let started_at = Instant::now();
-        let retry_policy = retry_policy(state);
+        let retry_policy = RetryPolicy {
+            max_retries: execution
+                .max_retries
+                .unwrap_or_else(|| retry_policy(state).max_retries),
+        };
         let mut retry_index = 0;
         let result = loop {
-            match dispatcher::complete(&state.http, context, &request).await {
+            if let Some(callback) = execution.on_progress {
+                callback(CompletionProgress::AttemptStarted {
+                    retry_index,
+                    max_retries: retry_policy.max_retries,
+                });
+            }
+            let attempt = completion_attempt(
+                execution.cancellation,
+                execution.attempt_timeout,
+                dispatcher::complete(&state.http, context, &request),
+            )
+            .await;
+            match attempt {
                 Ok(response) => break Ok(response),
                 Err(error) if retry_index < retry_policy.max_retries && should_retry(&error) => {
-                    tokio::time::sleep(retry_delay(&error, retry_index)).await;
+                    let delay = retry_delay(&error, retry_index);
+                    if let Some(callback) = execution.on_progress {
+                        callback(CompletionProgress::RetryScheduled {
+                            retry_index: retry_index + 1,
+                            max_retries: retry_policy.max_retries,
+                            delay_ms: delay.as_millis().min(u128::from(u64::MAX)) as u64,
+                            error: error.clone(),
+                        });
+                    }
                     retry_index += 1;
+                    tokio::select! {
+                        _ = execution.cancellation.cancelled() => break Err(ModelError::cancelled()),
+                        _ = tokio::time::sleep(delay) => {}
+                    }
                 }
                 Err(error) => break Err(error),
             }
@@ -559,7 +628,8 @@ async fn run_agent_complete(
             tool_result: None,
         });
         let mut parallel_results =
-            execute_parallel_safe_tools(state, tool_context, &cancellation, &tool_calls).await;
+            execute_parallel_safe_tools(state, tool_context, execution.cancellation, &tool_calls)
+                .await;
         for (index, call) in tool_calls.into_iter().enumerate() {
             let result = if let Some(result) = parallel_results[index].take() {
                 result
@@ -586,7 +656,7 @@ async fn run_agent_complete(
                         &state.skill_repository,
                         &state.memory_repository,
                         &mut skill_cache,
-                        &cancellation,
+                        execution.cancellation,
                     )
                     .await
                     .unwrap_or_else(|error| agent::ToolExecution {
@@ -642,6 +712,29 @@ async fn run_agent_complete(
         }
     }
     Err(ModelError::provider("Agent 未能在运行预算内生成最终回答。"))
+}
+
+async fn completion_attempt<F>(
+    cancellation: &CancellationToken,
+    attempt_timeout: Option<Duration>,
+    dispatch: F,
+) -> Result<ModelResponse, ModelError>
+where
+    F: Future<Output = Result<ModelResponse, ModelError>>,
+{
+    let dispatch = async {
+        if let Some(timeout) = attempt_timeout {
+            tokio::time::timeout(timeout, dispatch)
+                .await
+                .map_err(|_| ModelError::timeout("模型请求超时。"))?
+        } else {
+            dispatch.await
+        }
+    };
+    tokio::select! {
+        _ = cancellation.cancelled() => Err(ModelError::cancelled()),
+        result = dispatch => result,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1227,6 +1320,75 @@ fn validate_attachment_capabilities(
     Ok(())
 }
 
+fn estimate_model_text_tokens(value: &str) -> u64 {
+    let ascii = value
+        .chars()
+        .filter(|character| character.is_ascii())
+        .count() as u64;
+    let non_ascii = value
+        .chars()
+        .filter(|character| !character.is_ascii())
+        .count() as u64;
+    (ascii + 3) / 4 + non_ascii
+}
+
+fn estimate_model_request_tokens(request: &ModelRequest) -> u64 {
+    let system = request
+        .system_prompt
+        .as_deref()
+        .map(estimate_model_text_tokens)
+        .unwrap_or_default();
+    let messages = request.messages.iter().fold(0u64, |total, message| {
+        total
+            + estimate_model_text_tokens(&message.content)
+            + (message.images.len() as u64).saturating_mul(1_200)
+            + message
+                .tool_result
+                .as_ref()
+                .map(|result| estimate_model_text_tokens(&result.content))
+                .unwrap_or_default()
+            + message
+                .tool_calls
+                .iter()
+                .map(|call| estimate_model_text_tokens(&call.arguments.to_string()))
+                .sum::<u64>()
+            + 8
+    });
+    let tools = request
+        .tools
+        .iter()
+        .map(|tool| {
+            estimate_model_text_tokens(&tool.name)
+                + estimate_model_text_tokens(&tool.description)
+                + estimate_model_text_tokens(&tool.input_schema.to_string())
+        })
+        .sum::<u64>();
+    system + messages + tools
+}
+
+fn validate_context_budget(
+    request: &ModelRequest,
+    target: &ResolvedTarget,
+) -> Result<(), ModelError> {
+    let Some(context_window_tokens) = target.context_window_tokens else {
+        return Ok(());
+    };
+    let input_tokens = estimate_model_request_tokens(request);
+    let output_reserve = u64::from(request.options.max_output_tokens.unwrap_or(4_096));
+    let safety_margin = (context_window_tokens / 12).max(4_096);
+    let required = input_tokens
+        .saturating_add(output_reserve)
+        .saturating_add(safety_margin);
+    if required > context_window_tokens {
+        return Err(ModelError::context_length(
+            format!(
+                "当前请求预计需要约 {input_tokens} Token，模型上下文上限为 {context_window_tokens} Token，已预留 {output_reserve} Token 输出和 {safety_margin} Token 安全余量。请先压缩或分块处理，不会自动切换模型。"
+            ),
+        ));
+    }
+    Ok(())
+}
+
 async fn prepare_call(
     state: &AppState,
     mut request: ChatCompletionRequest,
@@ -1312,6 +1474,8 @@ async fn prepare_call(
         agent::configure_model_request(&mut model_request, &tool_context, l1_memory.as_deref());
         append_agent_runtime_prompt(&mut model_request, agent_round_limit(state));
     }
+    // Tool schema、Skill 正文和运行时提示都可能显著增大输入，必须在最终请求成形后校验。
+    validate_context_budget(&model_request, &target)?;
     Ok(PreparedCall {
         target,
         request: model_request,
@@ -1561,6 +1725,9 @@ fn resolve_target(
         .capabilities
         .and_then(|capabilities| capabilities.reasoning)
         .or_else(|| crate::ai::model::database_supports_reasoning(&model.api_model));
+    let context_window_tokens = model
+        .context_window_tokens
+        .or_else(|| crate::ai::model::database_context_window_tokens(&model.api_model));
 
     Ok(ResolvedTarget {
         provider_id: provider.id.clone(),
@@ -1572,6 +1739,7 @@ fn resolve_target(
         base_url: provider.base_url.clone(),
         api_model: model.api_model.clone(),
         display_name: model.display_name.clone(),
+        context_window_tokens,
         pricing,
         supports_vision,
         supports_tools,
@@ -1585,7 +1753,10 @@ mod tests {
 
     use crate::ai::{
         error::{ModelError, ModelErrorKind},
-        types::{ModelOptions, ModelRole, ModelToolCall, ModelUsage, UsageSource},
+        types::{
+            ModelImage, ModelMessage, ModelOptions, ModelRequest, ModelResponse, ModelRole,
+            ModelTool, ModelToolCall, ModelUsage, UsageSource,
+        },
     };
     use crate::chat::{
         conversation_types::{AiPermissionMode, StoredChatAttachment},
@@ -1899,6 +2070,71 @@ mod tests {
     }
 
     #[test]
+    fn context_budget_counts_tool_contracts_and_preserves_error_kind() {
+        let mut settings = ModelSettings::default();
+        push_model(&mut settings, "unknown-budget-model");
+        settings.providers[0].models[0].context_window_tokens = Some(5_000);
+        let target = super::resolve_target(&settings, "official-openai", "model-1").unwrap();
+        let mut request = ModelRequest {
+            model: "unknown-budget-model".to_string(),
+            system_prompt: None,
+            messages: vec![ModelMessage {
+                role: ModelRole::User,
+                content: "ok".to_string(),
+                images: Vec::new(),
+                tool_calls: Vec::new(),
+                tool_result: None,
+            }],
+            options: ModelOptions {
+                max_output_tokens: Some(512),
+                ..ModelOptions::default()
+            },
+            tools: Vec::new(),
+        };
+        super::validate_context_budget(&request, &target)
+            .expect("the small request should fit before tools are disclosed");
+
+        request.tools.push(ModelTool {
+            name: "large_tool".to_string(),
+            description: "x".repeat(2_000),
+            input_schema: serde_json::json!({"type": "object"}),
+        });
+        let error = super::validate_context_budget(&request, &target)
+            .expect_err("the disclosed tool contract must count toward the hard budget");
+        assert_eq!(error.kind, ModelErrorKind::ContextLengthExceeded);
+        assert!(error.message.contains("不会自动切换模型"));
+    }
+
+    #[test]
+    fn token_estimator_counts_ascii_and_non_ascii_conservatively() {
+        assert_eq!(super::estimate_model_text_tokens("abcdefgh中文"), 4);
+
+        let mut request = ModelRequest {
+            model: "test".to_string(),
+            system_prompt: None,
+            messages: vec![ModelMessage {
+                role: ModelRole::User,
+                content: String::new(),
+                images: Vec::new(),
+                tool_calls: Vec::new(),
+                tool_result: None,
+            }],
+            options: ModelOptions::default(),
+            tools: Vec::new(),
+        };
+        let without_image = super::estimate_model_request_tokens(&request);
+        request.messages[0].images.push(ModelImage {
+            name: "image.png".to_string(),
+            media_type: "image/png".to_string(),
+            data_base64: "AA==".to_string(),
+        });
+        assert_eq!(
+            super::estimate_model_request_tokens(&request),
+            without_image + 1_200
+        );
+    }
+
+    #[test]
     fn custom_provider_usage_is_marked_as_gateway_normalized() {
         let mut usage = Some(ModelUsage {
             input_tokens: Some(10),
@@ -1941,5 +2177,29 @@ mod tests {
             )
             .await
         );
+    }
+
+    #[tokio::test]
+    async fn completion_attempt_stops_immediately_after_cancellation() {
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let result = super::completion_attempt(
+            &cancellation,
+            None,
+            std::future::pending::<Result<ModelResponse, ModelError>>(),
+        )
+        .await;
+        assert_eq!(result.unwrap_err().kind, ModelErrorKind::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn completion_attempt_enforces_the_per_request_timeout() {
+        let result = super::completion_attempt(
+            &CancellationToken::new(),
+            Some(Duration::from_millis(1)),
+            std::future::pending::<Result<ModelResponse, ModelError>>(),
+        )
+        .await;
+        assert_eq!(result.unwrap_err().kind, ModelErrorKind::Timeout);
     }
 }

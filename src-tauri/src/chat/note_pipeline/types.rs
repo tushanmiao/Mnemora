@@ -3,7 +3,9 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::library::types::{NoteEditProposal, NotePipelinePhase, NotePipelineRun};
+use crate::library::types::{
+    NoteEditProposal, NotePipelinePhase, NotePipelineRun, NotePipelineSectionStatus,
+};
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -219,6 +221,10 @@ pub struct DeepNoteCapabilities {
 pub struct DeepNoteModelSnapshot {
     pub provider_id: String,
     pub model_id: String,
+    #[serde(default)]
+    pub api_model: String,
+    #[serde(default)]
+    pub context_window_tokens: Option<u64>,
     pub capabilities: DeepNoteCapabilities,
 }
 
@@ -246,6 +252,20 @@ pub enum DeepNoteSourceKind {
     Image,
     Literature,
     Note,
+}
+
+impl DeepNoteSourceKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Conversation => "conversation",
+            Self::Pdf => "pdf",
+            Self::Docx => "docx",
+            Self::Xlsx => "xlsx",
+            Self::Image => "image",
+            Self::Literature => "literature",
+            Self::Note => "note",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -310,6 +330,25 @@ pub struct DeepNoteLedger {
     pub ai_supplements: Vec<String>,
     pub section_summaries: Vec<String>,
     pub global_constraints: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeepNoteContextBudget {
+    pub context_window_tokens: Option<u64>,
+    pub estimated_input_tokens: u64,
+    pub planner_output_reserve_tokens: u64,
+    pub prompt_overhead_tokens: u64,
+    pub safety_margin_tokens: u64,
+    pub usable_input_tokens: u64,
+    pub direct_input_limit_tokens: u64,
+    pub chunk_target_tokens: u64,
+    pub chunk_count: usize,
+    pub processed_chunk_count: usize,
+    pub total_message_count: usize,
+    pub processed_message_count: usize,
+    pub coverage_complete: bool,
+    pub omitted_message_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
@@ -434,19 +473,46 @@ pub struct DeepNoteEventRecord {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct NotePipelineActivity {
+    pub kind: String,
+    pub attempt: u8,
+    pub max_retries: u8,
+    pub started_at: u64,
+    pub delay_ms: Option<u64>,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DeepNoteRunDetail {
     pub run: NotePipelineRun,
     pub preflight: Option<DeepNotePreflight>,
     pub input_snapshot: Option<DeepNoteInputSnapshot>,
     pub plan_version: Option<DeepNotePlanVersion>,
     pub budget: DeepNoteBudget,
+    pub context_budget: DeepNoteContextBudget,
+    pub source_chunk_count: usize,
     pub nodes: Vec<DeepNoteDagNode>,
+    pub sections: Vec<DeepNoteSectionProgress>,
     pub source_chunks: Vec<DeepNoteSourceChunk>,
     pub evidence: Vec<DeepNoteEvidenceArtifact>,
     pub ledger: DeepNoteLedger,
     pub events: Vec<DeepNoteEventRecord>,
     pub markdown_preview: String,
     pub sidecar_json: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeepNoteSectionProgress {
+    pub section_id: String,
+    pub position: usize,
+    pub status: NotePipelineSectionStatus,
+    pub attempt_count: u8,
+    pub revision_count: u8,
+    pub error_message: Option<String>,
+    pub markdown_chars: usize,
+    pub updated_at: u64,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -457,6 +523,8 @@ pub struct DeepNoteRuntimeState {
     pub plan_version: Option<DeepNotePlanVersion>,
     pub budget: DeepNoteBudget,
     pub ledger: DeepNoteLedger,
+    #[serde(default)]
+    pub context_budget: DeepNoteContextBudget,
 }
 
 pub fn compile_plan(
@@ -668,6 +736,7 @@ pub enum NotePipelineProgress {
         current: Option<usize>,
         total: Option<usize>,
         message: String,
+        activity: Option<NotePipelineActivity>,
     },
     OutlineReady {
         run: NotePipelineRun,

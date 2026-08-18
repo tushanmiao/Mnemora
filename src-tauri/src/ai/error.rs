@@ -29,6 +29,7 @@ pub enum ModelErrorKind {
     Connection,
     InvalidResponse,
     Provider,
+    Cancelled,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -66,6 +67,18 @@ impl ModelError {
 
     pub fn provider(message: impl Into<String>) -> Self {
         Self::new(ModelErrorKind::Provider, message)
+    }
+
+    pub fn cancelled() -> Self {
+        Self::new(ModelErrorKind::Cancelled, "操作已取消。")
+    }
+
+    pub fn timeout(message: impl Into<String>) -> Self {
+        Self::new(ModelErrorKind::Timeout, message)
+    }
+
+    pub fn context_length(message: impl Into<String>) -> Self {
+        Self::new(ModelErrorKind::ContextLengthExceeded, message)
     }
 
     pub fn from_reqwest(error: reqwest::Error) -> Self {

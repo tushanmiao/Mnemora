@@ -5,6 +5,11 @@ AI 可以建议补充通用背景，但不得把补充内容伪装成对话事�
 JSON 契约：{"goal":"笔记目标","audience":"目标读者","scope":"内容边界","title":"不含 # 的标题","summary":"1~3 句概览","weakPoints":["薄弱点"],"allowAiSupplement":false,"evidencePolicy":"核心论断绑定真实来源，AI 补充明确标记","sourceIds":["消息或附件 ID"],"sections":[{"id":"sec-1","heading":"章节标题","kind":"prerequisite|concept|comparison|pitfall|example|summary|selfcheck","purpose":"本章在整份笔记中的作用","brief":"本章内容与依据","dependsOn":[],"evidenceRequirements":["需要哪些真实材料"],"successCriteria":["什么条件下本章才算完成"],"sourceScope":["允许使用的来源 ID"],"targetDepth":"standard","allowAiSupplement":false,"needsSupplement":false,"sourceMessageIds":["消息 ID"]}]}
 章节 1~40 个，id 唯一；dependsOn 只能引用其他章节且不得形成循环；sourceMessageIds 只能引用输入中标出的消息 ID。没有足够材料时必须在 evidenceRequirements 和 weakPoints 中诚实记录，不得编造来源。"#;
 
+pub const CHUNK_ANALYST_SYSTEM_PROMPT: &str = r#"你负责从一段对话来源中提取可验证的知识，不负责直接写笔记正文。
+只输出严格 JSON，不要输出 Markdown 代码围栏或额外解释。
+JSON 契约：{"summary":"本分块的紧凑语义摘要","canonicalTerms":["规范术语"],"verifiedFacts":["由原文直接支持的事实"],"coveredTopics":["主题"],"openQuestions":["未解决问题"],"conflicts":["冲突或不确定点"],"globalConstraints":["用户要求、边界或必须遵守的约束"],"sourceMessageIds":["真实消息 ID"]}。
+sourceMessageIds 只能使用输入中 <!-- message-id: ... --> 标记的 ID。不要把模型推理过程当作事实，不要补充输入中不存在的来源。"#;
+
 pub const STRICT_JSON_SUFFIX: &str = r#"上一次输出无法解析。现在必须只输出一个合法 JSON 对象。
 不要代码围栏、注释、前后缀文字、尾随逗号。字段必须完整且符合契约。"#;
 

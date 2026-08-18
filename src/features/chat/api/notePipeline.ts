@@ -54,7 +54,13 @@ export interface DeepNoteCapabilities {
 
 export interface DeepNotePreflight {
   ready: boolean;
-  model: { providerId: string; modelId: string; capabilities: DeepNoteCapabilities };
+  model: {
+    providerId: string;
+    modelId: string;
+    apiModel: string;
+    contextWindowTokens: number | null;
+    capabilities: DeepNoteCapabilities;
+  };
   requiresTools: boolean;
   requiresVision: boolean;
   missingCapabilities: string[];
@@ -72,6 +78,32 @@ export interface DeepNoteBudget {
   maxParallelNodes: number;
 }
 
+export interface DeepNoteContextBudget {
+  contextWindowTokens: number | null;
+  estimatedInputTokens: number;
+  plannerOutputReserveTokens: number;
+  promptOverheadTokens: number;
+  safetyMarginTokens: number;
+  usableInputTokens: number;
+  directInputLimitTokens: number;
+  chunkTargetTokens: number;
+  chunkCount: number;
+  processedChunkCount: number;
+  totalMessageCount: number;
+  processedMessageCount: number;
+  coverageComplete: boolean;
+  omittedMessageIds: string[];
+}
+
+export interface NotePipelineActivity {
+  kind: string;
+  attempt: number;
+  maxRetries: number;
+  startedAt: number;
+  delayMs: number | null;
+  lastError: string | null;
+}
+
 export interface DeepNoteDagNode {
   nodeId: string;
   nodeType: string;
@@ -82,6 +114,29 @@ export interface DeepNoteDagNode {
   evidenceIds: string[];
   validationJson: string;
   errorMessage: string | null;
+}
+
+export type DeepNoteSectionStatus =
+  | "pending"
+  | "ready"
+  | "inProgress"
+  | "completed"
+  | "needsReview"
+  | "needsRevision"
+  | "failed"
+  | "blocked"
+  | "skipped"
+  | "interrupted";
+
+export interface DeepNoteSectionProgress {
+  sectionId: string;
+  position: number;
+  status: DeepNoteSectionStatus;
+  attemptCount: number;
+  revisionCount: number;
+  errorMessage: string | null;
+  markdownChars: number;
+  updatedAt: number;
 }
 
 export interface DeepNoteRunDetail {
@@ -98,11 +153,20 @@ export interface DeepNoteRunDetail {
     confirmedAt: number | null;
   } | null;
   budget: DeepNoteBudget;
+  contextBudget: DeepNoteContextBudget;
+  sourceChunkCount: number;
   nodes: DeepNoteDagNode[];
+  sections: DeepNoteSectionProgress[];
   sourceChunks: unknown[];
   evidence: unknown[];
   ledger: Record<string, unknown>;
-  events: Array<{ sequence: number; eventType: string; createdAt: number }>;
+  events: Array<{
+    sequence: number;
+    eventType: string;
+    nodeId: string | null;
+    payloadJson: string;
+    createdAt: number;
+  }>;
   markdownPreview: string;
   sidecarJson: string;
 }
@@ -115,6 +179,7 @@ export type NotePipelineEvent =
       current: number | null;
       total: number | null;
       message: string;
+      activity: NotePipelineActivity | null;
     }
   | { type: "outlineReady"; run: NotePipelineRun }
   | { type: "done"; run: NotePipelineRun; degraded: boolean }

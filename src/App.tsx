@@ -354,6 +354,7 @@ function App() {
         focusRequest: composerFocusRequest,
         contextUsage,
         contextWindowTokens: currentModel?.model.contextWindowTokens ?? null,
+        maxOutputTokens: settings.appSettings.maxOutputTokens,
         supportsReasoning: currentModel
           ? resolveSupportsReasoning(currentModel.model.apiModel, currentModel.model.capabilities?.reasoning) ?? null
           : null,
@@ -660,6 +661,7 @@ function App() {
                 <DeepNoteViewRuntimeProvider value={{
                   detail: noteActions.deepNoteDetail,
                   review: noteActions.deepNoteReview,
+                  progress: noteActions.deepNoteProgress,
                   busy: noteActions.deepNoteReviewBusy,
                   onAdjust: (requirement) => {
                     void noteActions.adjustDeepNoteOutline(requirement);
@@ -668,6 +670,7 @@ function App() {
                     void noteActions.confirmDeepNoteOutline(selectedSectionIds);
                   },
                   onCancel: noteActions.cancelDeepNote,
+                  onOpenNote: () => changeWorkspaceMode("notes"),
                   onReturn: () => changeWorkspaceMode("chat"),
                 }}>
                   <WorkspaceViewHost
@@ -709,6 +712,15 @@ function App() {
             <LoaderCircle size={15} className="app-toast-spinner" />
           ) : null}
           <span>{noteActions.feedback.text}</span>
+          {noteActions.deepNoteDetail ? (
+            <button
+              className="app-toast-cancel"
+              type="button"
+              onClick={() => changeWorkspaceMode("deepNote")}
+            >
+              查看详情
+            </button>
+          ) : null}
           {noteActions.feedback.kind === "progress" && noteActions.deepNoteActive ? (
             <button className="app-toast-cancel" type="button" onClick={noteActions.cancelDeepNote}>取消</button>
           ) : null}

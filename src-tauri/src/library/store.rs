@@ -13,6 +13,8 @@ use std::{
 use rusqlite::{params, params_from_iter, types::Value, Connection, OptionalExtension, Row};
 use uuid::Uuid;
 
+use crate::chat::note_pipeline::types::DeepNoteSourceChunk;
+
 use super::{
     import::{import_pdf, ImportOutcome},
     types::{
@@ -992,6 +994,52 @@ impl LibraryRepository {
         transaction
             .commit()
             .map_err(|error| format!("提交深度笔记 DAG 失败：{error}"))
+    }
+
+    pub fn replace_note_pipeline_source_chunks(
+        &self,
+        run_id: &str,
+        chunks: &[DeepNoteSourceChunk],
+    ) -> Result<(), String> {
+        let run_id = normalize_identifier("任务 ID", run_id)?;
+        let mut connection = self.open_connection()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| format!("开始保存深度笔记来源分块失败：{error}"))?;
+        transaction
+            .execute(
+                "DELETE FROM note_pipeline_source_chunks WHERE run_id = ?",
+                params![run_id],
+            )
+            .map_err(|error| format!("清理深度笔记旧来源分块失败：{error}"))?;
+        let now = now_millis_i64();
+        for chunk in chunks {
+            transaction
+                .execute(
+                    "INSERT INTO note_pipeline_source_chunks (
+                        run_id, chunk_id, source_kind, source_id, message_id, attachment_id,
+                        library_item_id, location, excerpt, content_hash, ocr_confidence, created_at
+                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    params![
+                        run_id,
+                        chunk.chunk_id,
+                        chunk.source_kind.as_str(),
+                        chunk.source_id,
+                        chunk.message_id,
+                        chunk.attachment_id,
+                        chunk.library_item_id,
+                        chunk.location,
+                        chunk.excerpt,
+                        chunk.content_hash,
+                        chunk.ocr_confidence,
+                        now,
+                    ],
+                )
+                .map_err(|error| format!("保存深度笔记来源分块失败：{error}"))?;
+        }
+        transaction
+            .commit()
+            .map_err(|error| format!("提交深度笔记来源分块失败：{error}"))
     }
 
     pub fn append_note_pipeline_event(

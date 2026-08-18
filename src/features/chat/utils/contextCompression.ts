@@ -6,8 +6,18 @@ import {
 } from "./literatureReferences";
 import { formatNoteReferencesForCompression, formatNoteReferencesForModel } from "./noteReferences";
 
-export const AUTO_COMPRESSION_RATIO = 0.9;
 const RECENT_MESSAGES_TO_KEEP = 4;
+export const CONTEXT_SAFETY_RATIO = 0.08;
+export const MIN_CONTEXT_SAFETY_TOKENS = 4_096;
+export const COMPRESSION_CHUNK_TARGET_TOKENS = 16_000;
+
+export function contextInputBudget(contextWindowTokens: number, maxOutputTokens: number) {
+  const safety = Math.max(
+    MIN_CONTEXT_SAFETY_TOKENS,
+    Math.ceil(contextWindowTokens * CONTEXT_SAFETY_RATIO),
+  );
+  return Math.max(0, contextWindowTokens - Math.max(0, maxOutputTokens) - safety);
+}
 
 export function activeContextMessages(conversation: Conversation) {
   const boundaryId = conversation.compressedUntilMessageId;
@@ -64,6 +74,76 @@ export function compressionTranscript(
       : "",
     ...sections,
   ].filter(Boolean).join("\n\n");
+}
+
+function textTokenUnits(value: string) {
+  let units = 0;
+  for (const character of value) units += character.charCodeAt(0) < 128 ? 1 : 4;
+  return units;
+}
+
+function splitTextByTokenBudget(value: string, tokenBudget: number) {
+  const chunks: string[] = [];
+  let current = "";
+  let currentUnits = 0;
+  const maximumUnits = Math.max(1, tokenBudget) * 4;
+  for (const paragraph of value.split(/(?<=\n\n)/u)) {
+    const paragraphUnits = textTokenUnits(paragraph);
+    if (current && currentUnits + paragraphUnits > maximumUnits) {
+      chunks.push(current);
+      current = "";
+      currentUnits = 0;
+    }
+    if (paragraphUnits <= maximumUnits) {
+      current += paragraph;
+      currentUnits += paragraphUnits;
+      continue;
+    }
+    for (const character of paragraph) {
+      const characterUnits = character.charCodeAt(0) < 128 ? 1 : 4;
+      if (current && currentUnits + characterUnits > maximumUnits) {
+        chunks.push(current);
+        current = "";
+        currentUnits = 0;
+      }
+      current += character;
+      currentUnits += characterUnits;
+    }
+  }
+  if (current.trim()) chunks.push(current);
+  return chunks;
+}
+
+export function compressionTranscriptBatches(
+  messages: ChatMessage[],
+  tokenBudget = COMPRESSION_CHUNK_TARGET_TOKENS,
+) {
+  const batches: string[] = [];
+  let current = "";
+  let currentUnits = 0;
+  const maximumUnits = Math.max(1, tokenBudget) * 4;
+  const separator = "\n\n";
+  const separatorUnits = textTokenUnits(separator);
+  for (const message of messages) {
+    const transcript = compressionTranscript("", [message]);
+    for (const segment of splitTextByTokenBudget(transcript, tokenBudget)) {
+      const segmentUnits = textTokenUnits(segment);
+      if (current && currentUnits + separatorUnits + segmentUnits > maximumUnits) {
+        batches.push(current);
+        current = segment;
+        currentUnits = segmentUnits;
+      } else {
+        if (current) {
+          current += separator;
+          currentUnits += separatorUnits;
+        }
+        current += segment;
+        currentUnits += segmentUnits;
+      }
+    }
+  }
+  if (current.trim()) batches.push(current);
+  return batches;
 }
 
 export function toModelMessages(messages: ChatMessage[]) {

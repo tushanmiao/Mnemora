@@ -1,15 +1,33 @@
 import { createContext, useContext, type ReactNode } from "react";
-import type { DeepNoteRunDetail } from "../../chat/api/notePipeline";
+import type {
+  DeepNoteRunDetail,
+  NotePipelineActivity,
+  NotePipelinePhase,
+} from "../../chat/api/notePipeline";
 import type { DeepNoteReview } from "../../../app/hooks/useNoteActions";
 
 export type DeepNoteViewRuntime = {
   detail: DeepNoteRunDetail | null;
   review: DeepNoteReview | null;
+  progress: DeepNoteProgress | null;
   busy: boolean;
   onAdjust: (requirement: string) => void;
   onConfirm: (selectedSectionIds: ReadonlySet<string>) => void;
   onCancel: () => void;
+  onOpenNote: () => void;
   onReturn: () => void;
+};
+
+export type DeepNoteProgress = {
+  runId: string | null;
+  phase: NotePipelinePhase | null;
+  current: number | null;
+  total: number | null;
+  message: string;
+  updatedAt: number;
+  terminal: boolean;
+  degraded: boolean;
+  activity?: NotePipelineActivity | null;
 };
 
 const Context = createContext<DeepNoteViewRuntime | null>(null);

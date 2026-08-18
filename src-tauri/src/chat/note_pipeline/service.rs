@@ -1,4 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    time::Duration,
+};
 
 use sha2::{Digest, Sha256};
 
@@ -7,7 +10,10 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::{
-    ai::types::{ModelOptions, ModelRole},
+    ai::{
+        error::{ModelError, ModelErrorKind},
+        types::{ModelOptions, ModelRole},
+    },
     chat::{
         conversation_types::{MessageStatus, StoredChatMessage, StoredConversation},
         service as chat_service,
@@ -25,22 +31,65 @@ use crate::{
 use super::{
     merge::{apply_note_patches, compact_diff},
     prompts::{
-        ANALYST_SYSTEM_PROMPT, NOTE_EDIT_PATCH_PROMPT, NOTE_EDIT_PLAN_PROMPT,
-        SECTION_REVISION_SYSTEM_PROMPT, SECTION_SYSTEM_PROMPT, STRICT_JSON_SUFFIX,
+        ANALYST_SYSTEM_PROMPT, CHUNK_ANALYST_SYSTEM_PROMPT, NOTE_EDIT_PATCH_PROMPT,
+        NOTE_EDIT_PLAN_PROMPT, SECTION_REVISION_SYSTEM_PROMPT, SECTION_SYSTEM_PROMPT,
+        STRICT_JSON_SUFFIX,
     },
     types::{
-        compile_plan, DeepNoteBudget, DeepNoteCapabilities, DeepNoteInputSnapshot, DeepNoteLedger,
-        DeepNoteModelSnapshot, DeepNoteOutline, DeepNotePlanVersion, DeepNotePreflight,
-        DeepNoteRunDetail, DeepNoteRuntimeState, DeepNoteSection, DeepNoteValidationReport,
-        NoteEditPrepareRequest, NoteEditPrepareResult, NoteMergePlan, NotePatchSet,
-        NotePipelineAdjustRequest, NotePipelineConfirmRequest, NotePipelineProgress,
-        NotePipelineStartRequest,
+        compile_plan, DeepNoteBudget, DeepNoteCapabilities, DeepNoteContextBudget,
+        DeepNoteInputSnapshot, DeepNoteLedger, DeepNoteModelSnapshot, DeepNoteOutline,
+        DeepNotePlanVersion, DeepNotePreflight, DeepNoteRunDetail, DeepNoteRuntimeState,
+        DeepNoteSection, DeepNoteSectionProgress, DeepNoteSourceChunk, DeepNoteSourceKind,
+        DeepNoteValidationReport, NoteEditPrepareRequest, NoteEditPrepareResult, NoteMergePlan,
+        NotePatchSet, NotePipelineActivity, NotePipelineAdjustRequest, NotePipelineConfirmRequest,
+        NotePipelineProgress, NotePipelineStartRequest,
     },
 };
 
-const MAX_TRANSCRIPT_CHARS: usize = 300_000;
 const NODE_ATTEMPT_LIMIT: u8 = 5;
 const SECTION_REVISION_LIMIT: u8 = 5;
+const DIRECT_PLANNER_TOKEN_LIMIT: u64 = 24_000;
+const DEFAULT_CHUNK_TARGET_TOKENS: u64 = 16_000;
+const UNKNOWN_CONTEXT_CHUNK_TOKENS: u64 = 8_000;
+const PLANNER_PROMPT_OVERHEAD_TOKENS: u64 = 4_096;
+const MAX_ANALYSIS_CHUNKS: usize = 96;
+
+#[derive(Debug, Clone)]
+struct ConversationChunk {
+    source: DeepNoteSourceChunk,
+    message_ids: Vec<String>,
+    estimated_tokens: u64,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ChunkDigest {
+    #[serde(default)]
+    summary: String,
+    #[serde(default)]
+    canonical_terms: Vec<String>,
+    #[serde(default)]
+    verified_facts: Vec<String>,
+    #[serde(default)]
+    covered_topics: Vec<String>,
+    #[serde(default)]
+    open_questions: Vec<String>,
+    #[serde(default)]
+    conflicts: Vec<String>,
+    #[serde(default)]
+    global_constraints: Vec<String>,
+    #[serde(default)]
+    source_message_ids: Vec<String>,
+}
+
+impl ChunkDigest {
+    fn validate(self) -> Result<Self, String> {
+        if self.summary.trim().is_empty() {
+            return Err("来源分块摘要为空，不能把该分块标记为已覆盖。".to_string());
+        }
+        Ok(self)
+    }
+}
 
 fn send(channel: &Channel<NotePipelineProgress>, event: NotePipelineProgress) {
     let _ = channel.send(event);
@@ -62,17 +111,33 @@ fn progress(
             current,
             total,
             message: message.into(),
+            activity: None,
+        },
+    );
+}
+
+fn progress_activity(
+    channel: &Channel<NotePipelineProgress>,
+    run_id: &str,
+    phase: NotePipelinePhase,
+    message: impl Into<String>,
+    activity: NotePipelineActivity,
+) {
+    send(
+        channel,
+        NotePipelineProgress::Progress {
+            run_id: run_id.to_string(),
+            phase,
+            current: None,
+            total: None,
+            message: message.into(),
+            activity: Some(activity),
         },
     );
 }
 
 fn truncate_chars(value: String) -> String {
-    if value.chars().count() <= MAX_TRANSCRIPT_CHARS {
-        return value;
-    }
-    let mut output = value.chars().take(MAX_TRANSCRIPT_CHARS).collect::<String>();
-    output.push_str("\n\n（对话过长，以上转写已截断。）");
-    output
+    value
 }
 
 fn noteworthy_messages(conversation: &StoredConversation) -> Vec<&StoredChatMessage> {
@@ -152,16 +217,244 @@ fn transcript(conversation: &StoredConversation, include_reasoning: bool) -> Str
         noteworthy_messages(conversation)
             .into_iter()
             .map(|message| {
-                let anchor = if include_reasoning {
-                    format!("<!-- message-id: {} -->\n", message.id)
-                } else {
-                    String::new()
-                };
+                let anchor = format!("<!-- message-id: {} -->\n", message.id);
                 format!("{anchor}{}", message_text(message, include_reasoning))
             })
             .collect::<Vec<_>>()
             .join("\n\n"),
     )
+}
+
+fn estimate_text_tokens(value: &str) -> u64 {
+    let mut ascii = 0u64;
+    let mut non_ascii = 0u64;
+    for character in value.chars() {
+        if character.is_ascii() {
+            ascii += 1;
+        } else {
+            non_ascii += 1;
+        }
+    }
+    ascii.div_ceil(4) + non_ascii
+}
+
+fn context_budget(
+    conversation: &StoredConversation,
+    model: &DeepNoteModelSnapshot,
+    max_output_tokens: u32,
+) -> DeepNoteContextBudget {
+    let messages = noteworthy_messages(conversation);
+    let estimated_input_tokens = messages
+        .iter()
+        .map(|message| {
+            estimate_text_tokens(&message_text(message, false))
+                + estimate_text_tokens(&message.id)
+                + 12
+        })
+        .sum();
+    let planner_output_reserve_tokens = u64::from(max_output_tokens.min(8_192));
+    let (safety_margin_tokens, usable_input_tokens, direct_input_limit_tokens, chunk_target_tokens) =
+        if let Some(window) = model.context_window_tokens {
+            let safety = (window / 12).max(4_096);
+            let usable = window
+                .saturating_sub(planner_output_reserve_tokens)
+                .saturating_sub(PLANNER_PROMPT_OVERHEAD_TOKENS)
+                .saturating_sub(safety);
+            (
+                safety,
+                usable,
+                usable.min(DIRECT_PLANNER_TOKEN_LIMIT),
+                usable
+                    .saturating_sub(1_024)
+                    .min(DEFAULT_CHUNK_TARGET_TOKENS)
+                    .max(2_048),
+            )
+        } else {
+            (
+                4_096,
+                UNKNOWN_CONTEXT_CHUNK_TOKENS,
+                UNKNOWN_CONTEXT_CHUNK_TOKENS,
+                UNKNOWN_CONTEXT_CHUNK_TOKENS,
+            )
+        };
+    DeepNoteContextBudget {
+        context_window_tokens: model.context_window_tokens,
+        estimated_input_tokens,
+        planner_output_reserve_tokens,
+        prompt_overhead_tokens: PLANNER_PROMPT_OVERHEAD_TOKENS,
+        safety_margin_tokens,
+        usable_input_tokens,
+        direct_input_limit_tokens,
+        chunk_target_tokens,
+        chunk_count: 0,
+        processed_chunk_count: 0,
+        total_message_count: messages.len(),
+        processed_message_count: 0,
+        coverage_complete: false,
+        omitted_message_ids: Vec::new(),
+    }
+}
+
+fn split_text_by_token_budget(value: &str, target_tokens: u64) -> Vec<String> {
+    let target_units = target_tokens.max(1).saturating_mul(4);
+    let mut chunks = Vec::new();
+    let mut current = String::new();
+    let mut current_units = 0u64;
+    for paragraph in value.split_inclusive("\n\n") {
+        let paragraph_units = paragraph.chars().fold(0u64, |total, character| {
+            total + if character.is_ascii() { 1 } else { 4 }
+        });
+        if !current.is_empty() && current_units.saturating_add(paragraph_units) > target_units {
+            chunks.push(std::mem::take(&mut current));
+            current_units = 0;
+        }
+        if paragraph_units <= target_units {
+            current.push_str(paragraph);
+            current_units += paragraph_units;
+            continue;
+        }
+        for character in paragraph.chars() {
+            let units = if character.is_ascii() { 1 } else { 4 };
+            if !current.is_empty() && current_units.saturating_add(units) > target_units {
+                chunks.push(std::mem::take(&mut current));
+                current_units = 0;
+            }
+            current.push(character);
+            current_units += units;
+        }
+    }
+    if !current.trim().is_empty() {
+        chunks.push(current);
+    }
+    chunks
+}
+
+fn push_conversation_chunk(
+    chunks: &mut Vec<ConversationChunk>,
+    conversation_id: &str,
+    excerpt: String,
+    mut message_ids: Vec<String>,
+) {
+    if excerpt.trim().is_empty() {
+        return;
+    }
+    message_ids.sort();
+    message_ids.dedup();
+    let chunk_id = format!("chunk-{:04}", chunks.len() + 1);
+    let location = if message_ids.len() == 1 {
+        format!("消息 {}", message_ids[0])
+    } else {
+        format!("{} 条消息", message_ids.len())
+    };
+    chunks.push(ConversationChunk {
+        estimated_tokens: estimate_text_tokens(&excerpt),
+        source: DeepNoteSourceChunk {
+            chunk_id,
+            source_kind: DeepNoteSourceKind::Conversation,
+            source_id: conversation_id.to_string(),
+            message_id: (message_ids.len() == 1).then(|| message_ids[0].clone()),
+            attachment_id: None,
+            library_item_id: None,
+            location,
+            content_hash: stable_hash(&excerpt),
+            excerpt,
+            ocr_confidence: None,
+        },
+        message_ids,
+    });
+}
+
+fn conversation_chunks(
+    conversation: &StoredConversation,
+    target_tokens: u64,
+) -> Vec<ConversationChunk> {
+    let mut chunks = Vec::new();
+    let mut current = String::new();
+    let mut current_ids = Vec::new();
+    let mut current_tokens = 0u64;
+    for message in noteworthy_messages(conversation) {
+        let block = format!(
+            "<!-- message-id: {} -->\n{}",
+            message.id,
+            message_text(message, false)
+        );
+        for segment in split_text_by_token_budget(&block, target_tokens) {
+            let segment_tokens = estimate_text_tokens(&segment);
+            let separator_tokens = (!current.is_empty())
+                .then(|| estimate_text_tokens("\n\n"))
+                .unwrap_or_default();
+            if !current.is_empty()
+                && current_tokens
+                    .saturating_add(separator_tokens)
+                    .saturating_add(segment_tokens)
+                    > target_tokens
+            {
+                push_conversation_chunk(
+                    &mut chunks,
+                    &conversation.id,
+                    std::mem::take(&mut current),
+                    std::mem::take(&mut current_ids),
+                );
+                current_tokens = 0;
+            }
+            if !current.is_empty() {
+                current.push_str("\n\n");
+                current_tokens = current_tokens.saturating_add(separator_tokens);
+            }
+            current.push_str(&segment);
+            current_tokens += segment_tokens;
+            current_ids.push(message.id.clone());
+        }
+    }
+    push_conversation_chunk(&mut chunks, &conversation.id, current, current_ids);
+    chunks
+}
+
+fn extend_unique(target: &mut Vec<String>, values: Vec<String>, limit: usize) {
+    for value in values {
+        let value = value.trim();
+        if value.is_empty() || target.iter().any(|existing| existing == value) {
+            continue;
+        }
+        if target.len() >= limit {
+            break;
+        }
+        target.push(value.chars().take(2_000).collect());
+    }
+}
+
+fn merge_chunk_digest(
+    ledger: &mut DeepNoteLedger,
+    chunk: &ConversationChunk,
+    mut digest: ChunkDigest,
+) {
+    digest
+        .source_message_ids
+        .retain(|id| chunk.message_ids.contains(id));
+    extend_unique(&mut ledger.canonical_terms, digest.canonical_terms, 240);
+    extend_unique(&mut ledger.verified_facts, digest.verified_facts, 480);
+    extend_unique(&mut ledger.covered_topics, digest.covered_topics, 240);
+    extend_unique(&mut ledger.open_questions, digest.open_questions, 160);
+    extend_unique(&mut ledger.conflicts, digest.conflicts, 160);
+    extend_unique(
+        &mut ledger.global_constraints,
+        digest.global_constraints,
+        160,
+    );
+    let source_ids = if digest.source_message_ids.is_empty() {
+        chunk.message_ids.join(", ")
+    } else {
+        digest.source_message_ids.join(", ")
+    };
+    let summary = digest.summary.trim();
+    if !summary.is_empty() && ledger.section_summaries.len() < MAX_ANALYSIS_CHUNKS {
+        ledger.section_summaries.push(format!(
+            "{} | 来源消息 [{}] | {}",
+            chunk.source.chunk_id,
+            source_ids,
+            summary.chars().take(4_000).collect::<String>()
+        ));
+    }
 }
 
 fn incremental_transcript(
@@ -240,6 +533,10 @@ fn resolve_note_model_snapshot(
     Ok(DeepNoteModelSnapshot {
         provider_id: provider_id.to_string(),
         model_id: model_id.to_string(),
+        api_model: model.api_model.clone(),
+        context_window_tokens: model
+            .context_window_tokens
+            .or_else(|| crate::ai::model::database_context_window_tokens(&model.api_model)),
         capabilities: DeepNoteCapabilities {
             tools,
             vision,
@@ -439,7 +736,98 @@ async fn model_call(
     user_prompt: String,
     max_output_tokens: u32,
 ) -> Result<String, String> {
-    let response = chat_service::complete(
+    let cancellation = CancellationToken::new();
+    model_call_with_runtime(
+        state,
+        run,
+        operation,
+        run.phase,
+        system_prompt,
+        user_prompt,
+        max_output_tokens,
+        run.retry_attempts,
+        &cancellation,
+        None,
+    )
+    .await
+    .map_err(|error| error.message)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn model_call_with_runtime(
+    state: &AppState,
+    run: &NotePipelineRun,
+    operation: &str,
+    phase: NotePipelinePhase,
+    system_prompt: String,
+    user_prompt: String,
+    max_output_tokens: u32,
+    max_retries: u8,
+    cancellation: &CancellationToken,
+    channel: Option<&Channel<NotePipelineProgress>>,
+) -> Result<String, ModelError> {
+    let started_at = crate::usage::now_ms();
+    let observer = |event: chat_service::CompletionProgress| {
+        let Some(channel) = channel else {
+            return;
+        };
+        match event {
+            chat_service::CompletionProgress::AttemptStarted {
+                retry_index,
+                max_retries,
+            } => progress_activity(
+                channel,
+                &run.id,
+                phase,
+                format!(
+                    "正在等待模型响应 · 第 {} 次请求（已重试 {}/{max_retries}）",
+                    retry_index + 1,
+                    retry_index
+                ),
+                NotePipelineActivity {
+                    kind: "modelCall".to_string(),
+                    attempt: retry_index + 1,
+                    max_retries,
+                    started_at,
+                    delay_ms: None,
+                    last_error: None,
+                },
+            ),
+            chat_service::CompletionProgress::RetryScheduled {
+                retry_index,
+                max_retries,
+                delay_ms,
+                error,
+            } => progress_activity(
+                channel,
+                &run.id,
+                phase,
+                format!(
+                    "模型请求失败，准备第 {} 次重试（{retry_index}/{max_retries}）",
+                    retry_index
+                ),
+                NotePipelineActivity {
+                    kind: "retryWait".to_string(),
+                    attempt: retry_index + 1,
+                    max_retries,
+                    started_at,
+                    delay_ms: Some(delay_ms),
+                    last_error: Some(error.message),
+                },
+            ),
+        }
+    };
+    let execution = chat_service::CompleteExecution {
+        cancellation,
+        max_retries: Some(max_retries),
+        attempt_timeout: Some(Duration::from_secs(if max_output_tokens <= 8_192 {
+            240
+        } else {
+            360
+        })),
+        on_progress: Some(&observer),
+    };
+    let response = chat_service::complete_with_execution(
         state,
         ChatCompletionRequest {
             provider_id: run.provider_id.clone(),
@@ -464,9 +852,9 @@ async fn model_call(
                 reasoning_effort: None,
             },
         },
+        &execution,
     )
-    .await
-    .map_err(|error| error.message)?;
+    .await?;
     Ok(response.response.text)
 }
 
@@ -484,14 +872,265 @@ fn analysis_prompt(analysis_transcript: &str, adjustment: &str) -> String {
     .join("\n\n")
 }
 
+fn chunk_analysis_prompt(chunk: &ConversationChunk) -> String {
+    format!(
+        "分块：{}\n预计输入：{} Token\n来源消息 ID：{}\n\n{}",
+        chunk.source.chunk_id,
+        chunk.estimated_tokens,
+        chunk.message_ids.join(", "),
+        chunk.source.excerpt
+    )
+}
+
+fn ledger_analysis_prompt(
+    ledger: &DeepNoteLedger,
+    budget: &DeepNoteContextBudget,
+    adjustment: &str,
+) -> Result<String, String> {
+    let ledger_json = serde_json::to_string_pretty(ledger)
+        .map_err(|error| format!("序列化深度笔记知识账本失败：{error}"))?;
+    Ok([
+        (!adjustment.trim().is_empty())
+            .then(|| format!("用户对提纲的补充要求：\n{}", adjustment.trim())),
+        Some(format!(
+            "以下知识账本由 {}/{} 个来源分块提取，覆盖 {}/{} 条消息，coverageComplete={}。请基于账本生成提纲，并把账本中真实的消息 ID 分配到 sourceMessageIds；不得宣称使用未覆盖内容。\n\n{}",
+            budget.processed_chunk_count,
+            budget.chunk_count,
+            budget.processed_message_count,
+            budget.total_message_count,
+            budget.coverage_complete,
+            ledger_json
+        )),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join("\n\n"))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn build_chunked_ledger(
+    state: &AppState,
+    run: &NotePipelineRun,
+    runtime: &mut DeepNoteRuntimeState,
+    conversation: &StoredConversation,
+    target_tokens: u64,
+    channel: &Channel<NotePipelineProgress>,
+    cancellation: &CancellationToken,
+) -> Result<(), String> {
+    let chunks = conversation_chunks(conversation, target_tokens);
+    if chunks.is_empty() {
+        return Err("对话还没有可供深度笔记分析的来源内容。".to_string());
+    }
+    if chunks.len() > MAX_ANALYSIS_CHUNKS {
+        return Err(format!(
+            "当前对话需要拆分为 {} 个来源分块，超过单次深度笔记允许的 {} 个分块。请缩小会话范围后重试；系统不会静默丢弃内容。",
+            chunks.len(),
+            MAX_ANALYSIS_CHUNKS
+        ));
+    }
+    {
+        let _guard = state.library_operations.lock().await;
+        state
+            .library_repository
+            .replace_note_pipeline_source_chunks(
+                &run.id,
+                &chunks
+                    .iter()
+                    .map(|chunk| chunk.source.clone())
+                    .collect::<Vec<_>>(),
+            )?;
+    }
+    let can_resume = runtime.context_budget.chunk_count == chunks.len()
+        && runtime.context_budget.chunk_target_tokens == target_tokens
+        && runtime.context_budget.processed_chunk_count <= chunks.len()
+        && !runtime.ledger.section_summaries.is_empty();
+    if !can_resume {
+        runtime.ledger = DeepNoteLedger::default();
+        runtime.context_budget.processed_chunk_count = 0;
+        runtime.context_budget.processed_message_count = 0;
+    }
+    runtime.context_budget.chunk_target_tokens = target_tokens;
+    runtime.context_budget.chunk_count = chunks.len();
+    runtime.context_budget.coverage_complete = false;
+    runtime.context_budget.omitted_message_ids.clear();
+    runtime.budget.semantic_call_limit = runtime
+        .budget
+        .semantic_call_limit
+        .max(((chunks.len() as u32).saturating_mul(2) + 2).min(200));
+
+    let mut processed_ids = chunks
+        .iter()
+        .take(runtime.context_budget.processed_chunk_count)
+        .flat_map(|chunk| chunk.message_ids.iter().cloned())
+        .collect::<HashSet<_>>();
+    for (index, chunk) in chunks
+        .iter()
+        .enumerate()
+        .skip(runtime.context_budget.processed_chunk_count)
+    {
+        if cancellation.is_cancelled() {
+            return Err("操作已取消。".to_string());
+        }
+        progress(
+            channel,
+            &run.id,
+            NotePipelinePhase::Analyzing,
+            Some(index + 1),
+            Some(chunks.len()),
+            format!("正在提取来源分块 {}/{}", index + 1, chunks.len()),
+        );
+        let prompt = chunk_analysis_prompt(chunk);
+        consume_semantic_call(state, &run.id, runtime)?;
+        let raw = model_call_with_runtime(
+            state,
+            run,
+            "deepNote",
+            NotePipelinePhase::Analyzing,
+            CHUNK_ANALYST_SYSTEM_PROMPT.to_string(),
+            prompt.clone(),
+            run.max_output_tokens.min(4_096),
+            run.retry_attempts,
+            cancellation,
+            Some(channel),
+        )
+        .await
+        .map_err(|error| error.message)?;
+        let digest = match parse_json_object::<ChunkDigest>(&raw).and_then(ChunkDigest::validate) {
+            Ok(digest) => digest,
+            Err(_) => {
+                consume_semantic_call(state, &run.id, runtime)?;
+                let repaired = model_call_with_runtime(
+                    state,
+                    run,
+                    "deepNote",
+                    NotePipelinePhase::Analyzing,
+                    format!("{CHUNK_ANALYST_SYSTEM_PROMPT}\n\n{STRICT_JSON_SUFFIX}"),
+                    prompt,
+                    run.max_output_tokens.min(4_096),
+                    run.retry_attempts,
+                    cancellation,
+                    Some(channel),
+                )
+                .await
+                .map_err(|error| error.message)?;
+                parse_json_object::<ChunkDigest>(&repaired).and_then(ChunkDigest::validate)?
+            }
+        };
+        merge_chunk_digest(&mut runtime.ledger, chunk, digest);
+        processed_ids.extend(chunk.message_ids.iter().cloned());
+        runtime.context_budget.processed_chunk_count = index + 1;
+        runtime.context_budget.processed_message_count = processed_ids.len();
+        save_runtime_state(state, &run.id, runtime)?;
+        let _ = state.library_repository.append_note_pipeline_event(
+            &run.id,
+            "contextChunkCompleted",
+            None,
+            &serde_json::json!({
+                "chunkIndex": index + 1,
+                "chunkCount": chunks.len(),
+                "processedMessageCount": processed_ids.len(),
+                "totalMessageCount": runtime.context_budget.total_message_count,
+            })
+            .to_string(),
+        );
+    }
+    runtime.context_budget.coverage_complete = runtime.context_budget.processed_chunk_count
+        == chunks.len()
+        && processed_ids.len() == runtime.context_budget.total_message_count;
+    if !runtime.context_budget.coverage_complete {
+        let all_ids = noteworthy_messages(conversation)
+            .into_iter()
+            .map(|message| message.id.clone())
+            .collect::<HashSet<_>>();
+        runtime.context_budget.omitted_message_ids =
+            all_ids.difference(&processed_ids).cloned().collect();
+        runtime.context_budget.omitted_message_ids.sort();
+        return Err(format!(
+            "来源覆盖不完整：仍有 {} 条消息未处理。系统不会在不完整覆盖下生成完整笔记。",
+            runtime.context_budget.omitted_message_ids.len()
+        ));
+    }
+    save_runtime_state(state, &run.id, runtime)
+}
+
+fn selected_message_transcript(
+    conversation: &StoredConversation,
+    message_ids: &HashSet<String>,
+) -> String {
+    noteworthy_messages(conversation)
+        .into_iter()
+        .filter(|message| message_ids.contains(&message.id))
+        .map(|message| {
+            format!(
+                "<!-- message-id: {} -->\n{}",
+                message.id,
+                message_text(message, false)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+fn section_source_context(
+    conversation: &StoredConversation,
+    section: &DeepNoteSection,
+    ledger: &DeepNoteLedger,
+    budget: &DeepNoteContextBudget,
+) -> Result<(String, bool), String> {
+    let selected_ids = section
+        .source_message_ids
+        .iter()
+        .cloned()
+        .collect::<HashSet<_>>();
+    let raw = if selected_ids.is_empty() {
+        transcript(conversation, false)
+    } else {
+        selected_message_transcript(conversation, &selected_ids)
+    };
+    let raw_limit = budget
+        .usable_input_tokens
+        .saturating_sub(6_000)
+        .min(DIRECT_PLANNER_TOKEN_LIMIT)
+        .max(2_048);
+    if !raw.trim().is_empty() && estimate_text_tokens(&raw) <= raw_limit {
+        return Ok((raw, false));
+    }
+    let summaries = ledger
+        .section_summaries
+        .iter()
+        .filter(|summary| {
+            selected_ids.is_empty()
+                || selected_ids
+                    .iter()
+                    .any(|message_id| summary.contains(message_id))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    if summaries.is_empty() {
+        return Err(format!(
+            "章节“{}”没有可加载的来源消息或分块账本。请返回计划并补充来源范围。",
+            section.heading
+        ));
+    }
+    Ok((
+        format!(
+            "原始来源超过单章输入预算，以下内容来自已完成且可追溯的来源分块提取；来源消息 ID 保留在每条摘要中。\n\n{}",
+            summaries.join("\n\n")
+        ),
+        true,
+    ))
+}
+
 fn section_prompt(
     outline: &DeepNoteOutline,
     section: &DeepNoteSection,
-    conversation_transcript: &str,
+    source_context: &str,
+    ledger_context: &str,
     previous_tail: &str,
 ) -> Result<String, String> {
     Ok(format!(
-        "全局标题：{}\n全局概览：{}\n薄弱点：{}\n全部章节：\n{}\n\n当前章节：{}\n{}\n\n对话转写：\n{}",
+        "全局标题：{}\n全局概览：{}\n薄弱点：{}\n全部章节：\n{}\n\n当前章节：{}\n{}\n\n全局知识账本：\n{}\n\n当前章节来源：\n{}",
         outline.title,
         outline.summary,
         outline.weak_points.join("；"),
@@ -507,7 +1146,8 @@ fn section_prompt(
         } else {
             format!("前一章末段摘要：\n{previous_tail}")
         },
-        conversation_transcript,
+        ledger_context,
+        source_context,
     ))
 }
 
@@ -746,44 +1386,177 @@ async fn analyze_outline(
     runtime: &mut DeepNoteRuntimeState,
     conversation: &StoredConversation,
     adjustment: &str,
+    channel: &Channel<NotePipelineProgress>,
+    cancellation: &CancellationToken,
 ) -> Result<DeepNoteOutline, String> {
-    let analysis_transcript = transcript(conversation, true);
-    if analysis_transcript.is_empty() {
+    let analysis_transcript = transcript(conversation, false);
+    if analysis_transcript.trim().is_empty() {
         return Err("对话还没有可以生成深度笔记的消息。".to_string());
     }
     let valid_ids = noteworthy_messages(conversation)
         .into_iter()
         .map(|message| message.id.clone())
         .collect::<HashSet<_>>();
-    let user_prompt = analysis_prompt(&analysis_transcript, adjustment);
-    consume_semantic_call(state, &run.id, runtime)?;
-    let first = model_call(
-        state,
-        run,
-        "deepNote",
-        ANALYST_SYSTEM_PROMPT.to_string(),
-        user_prompt.clone(),
-        run.max_output_tokens.min(8_192),
-    )
-    .await;
-    if let Ok(raw) = first {
-        if let Ok(outline) = parse_json_object::<DeepNoteOutline>(&raw)
-            .and_then(|outline| outline.validate(&valid_ids))
-        {
-            return Ok(outline);
+    let calculated = context_budget(
+        conversation,
+        &runtime.input_snapshot.model,
+        run.max_output_tokens,
+    );
+    let previous = runtime.context_budget.clone();
+    runtime.context_budget = calculated;
+    if previous.estimated_input_tokens == runtime.context_budget.estimated_input_tokens
+        && previous.total_message_count == runtime.context_budget.total_message_count
+    {
+        runtime.context_budget.chunk_count = previous.chunk_count;
+        runtime.context_budget.processed_chunk_count = previous.processed_chunk_count;
+        runtime.context_budget.processed_message_count = previous.processed_message_count;
+        runtime.context_budget.coverage_complete = previous.coverage_complete;
+        runtime.context_budget.omitted_message_ids = previous.omitted_message_ids;
+        if previous.chunk_target_tokens > 0 {
+            runtime.context_budget.chunk_target_tokens = previous.chunk_target_tokens;
         }
     }
+    save_runtime_state(state, &run.id, runtime)?;
+    progress(
+        channel,
+        &run.id,
+        NotePipelinePhase::Analyzing,
+        None,
+        None,
+        format!(
+            "上下文预检完成 · 预计 {} Token · 可直接规划 {} Token",
+            runtime.context_budget.estimated_input_tokens,
+            runtime.context_budget.direct_input_limit_tokens
+        ),
+    );
+
+    let mut planner_prompt = None;
+    if runtime.context_budget.estimated_input_tokens
+        <= runtime.context_budget.direct_input_limit_tokens
+        && !runtime.context_budget.coverage_complete
+    {
+        let direct_chunks = conversation_chunks(
+            conversation,
+            runtime.context_budget.direct_input_limit_tokens.max(2_048),
+        );
+        {
+            let _guard = state.library_operations.lock().await;
+            state
+                .library_repository
+                .replace_note_pipeline_source_chunks(
+                    &run.id,
+                    &direct_chunks
+                        .iter()
+                        .map(|chunk| chunk.source.clone())
+                        .collect::<Vec<_>>(),
+                )?;
+        }
+        runtime.context_budget.chunk_count = direct_chunks.len();
+        runtime.context_budget.processed_chunk_count = direct_chunks.len();
+        runtime.context_budget.processed_message_count = valid_ids.len();
+        runtime.context_budget.coverage_complete = true;
+        runtime.context_budget.omitted_message_ids.clear();
+        save_runtime_state(state, &run.id, runtime)?;
+        let direct_prompt = analysis_prompt(&analysis_transcript, adjustment);
+        consume_semantic_call(state, &run.id, runtime)?;
+        match model_call_with_runtime(
+            state,
+            run,
+            "deepNote",
+            NotePipelinePhase::Analyzing,
+            ANALYST_SYSTEM_PROMPT.to_string(),
+            direct_prompt.clone(),
+            run.max_output_tokens.min(8_192),
+            0,
+            cancellation,
+            Some(channel),
+        )
+        .await
+        {
+            Ok(raw) => {
+                if let Ok(outline) = parse_json_object::<DeepNoteOutline>(&raw)
+                    .and_then(|outline| outline.validate(&valid_ids))
+                {
+                    return Ok(outline);
+                }
+                planner_prompt = Some(direct_prompt);
+            }
+            Err(error) if should_fallback_to_chunked_planner(&error) => {
+                progress(
+                    channel,
+                    &run.id,
+                    NotePipelinePhase::Analyzing,
+                    None,
+                    None,
+                    "直接规划未成功，正在缩小请求并切换到分块知识账本",
+                );
+                runtime.ledger = DeepNoteLedger::default();
+                runtime.context_budget.processed_chunk_count = 0;
+                runtime.context_budget.processed_message_count = 0;
+                runtime.context_budget.coverage_complete = false;
+            }
+            Err(error) => return Err(error.message),
+        }
+    }
+
+    if planner_prompt.is_none() {
+        if !runtime.context_budget.coverage_complete || runtime.ledger.section_summaries.is_empty()
+        {
+            let target = if runtime.context_budget.estimated_input_tokens
+                <= runtime.context_budget.direct_input_limit_tokens
+            {
+                runtime
+                    .context_budget
+                    .chunk_target_tokens
+                    .min(UNKNOWN_CONTEXT_CHUNK_TOKENS)
+            } else {
+                runtime.context_budget.chunk_target_tokens
+            };
+            build_chunked_ledger(
+                state,
+                run,
+                runtime,
+                conversation,
+                target.max(2_048),
+                channel,
+                cancellation,
+            )
+            .await?;
+        }
+        planner_prompt = Some(ledger_analysis_prompt(
+            &runtime.ledger,
+            &runtime.context_budget,
+            adjustment,
+        )?);
+    }
+
+    let planner_prompt = planner_prompt.unwrap_or_default();
     consume_semantic_call(state, &run.id, runtime)?;
-    let raw = model_call(
+    let raw = model_call_with_runtime(
         state,
         run,
         "deepNote",
+        NotePipelinePhase::Analyzing,
         format!("{ANALYST_SYSTEM_PROMPT}\n\n{STRICT_JSON_SUFFIX}"),
-        user_prompt,
+        planner_prompt,
         run.max_output_tokens.min(8_192),
+        run.retry_attempts,
+        cancellation,
+        Some(channel),
     )
-    .await?;
+    .await
+    .map_err(|error| error.message)?;
     parse_json_object::<DeepNoteOutline>(&raw).and_then(|outline| outline.validate(&valid_ids))
+}
+
+fn should_fallback_to_chunked_planner(error: &ModelError) -> bool {
+    matches!(
+        error.kind,
+        ModelErrorKind::Timeout
+            | ModelErrorKind::Connection
+            | ModelErrorKind::Provider
+            | ModelErrorKind::ContextLengthExceeded
+    )
 }
 
 async fn run_analysis_task(
@@ -810,25 +1583,34 @@ async fn run_analysis_task(
         let run = state.library_repository.get_note_pipeline_run(&run_id)?;
         let conversation = state.conversation_repository.load(&run.conversation_id)?;
         let mut runtime = runtime_state(&run)?;
-        let outline =
-            match analyze_outline(&state, &run, &mut runtime, &conversation, &adjustment).await {
-                Ok(outline) => outline,
-                Err(error) if !cancellation.is_cancelled() => return Err(error),
-                Err(_) => {
-                    let cancelled = {
-                        let _guard = state.library_operations.lock().await;
-                        state.library_repository.update_note_pipeline_phase(
-                            &run_id,
-                            NotePipelinePhase::Cancelled,
-                            None,
-                            &[],
-                            None,
-                        )?
-                    };
-                    send(&channel, NotePipelineProgress::Cancelled { run: cancelled });
-                    return Ok(());
-                }
-            };
+        let outline = match analyze_outline(
+            &state,
+            &run,
+            &mut runtime,
+            &conversation,
+            &adjustment,
+            &channel,
+            &cancellation,
+        )
+        .await
+        {
+            Ok(outline) => outline,
+            Err(error) if !cancellation.is_cancelled() => return Err(error),
+            Err(_) => {
+                let cancelled = {
+                    let _guard = state.library_operations.lock().await;
+                    state.library_repository.update_note_pipeline_phase(
+                        &run_id,
+                        NotePipelinePhase::Cancelled,
+                        None,
+                        &[],
+                        None,
+                    )?
+                };
+                send(&channel, NotePipelineProgress::Cancelled { run: cancelled });
+                return Ok(());
+            }
+        };
         if cancellation.is_cancelled() {
             let cancelled = {
                 let _guard = state.library_operations.lock().await;
@@ -921,7 +1703,8 @@ async fn run_drafting_task(
             .into_iter()
             .map(|section| (section.section_id.clone(), section))
             .collect::<HashMap<_, _>>();
-        let clean_transcript = transcript(&conversation, false);
+        let ledger_context = serde_json::to_string_pretty(&runtime.ledger)
+            .map_err(|error| format!("读取深度笔记知识账本失败：{error}"))?;
         let last_message_id = noteworthy_messages(&conversation)
             .last()
             .map(|message| message.id.clone());
@@ -945,7 +1728,31 @@ async fn run_drafting_task(
                 Some(total),
                 format!("正在扩写 {}/{}：{}", index + 1, total, section.heading),
             );
-            let prompt = section_prompt(&selected_outline, section, &clean_transcript, "")?;
+            let (source_context, using_ledger_summary) = section_source_context(
+                &conversation,
+                section,
+                &runtime.ledger,
+                &runtime.context_budget,
+            )?;
+            if using_ledger_summary {
+                let _ = state.library_repository.append_note_pipeline_event(
+                    &run_id,
+                    "sectionUsingChunkLedger",
+                    Some(&section.id),
+                    &serde_json::json!({
+                        "sectionId": section.id,
+                        "sourceMessageCount": section.source_message_ids.len(),
+                    })
+                    .to_string(),
+                );
+            }
+            let prompt = section_prompt(
+                &selected_outline,
+                section,
+                &source_context,
+                &ledger_context,
+                "",
+            )?;
             let mut last_error = String::new();
             let mut markdown = None;
             let mut validation = DeepNoteValidationReport {
@@ -969,13 +1776,17 @@ async fn run_drafting_task(
                 }
                 attempts += 1;
                 consume_semantic_call(&state, &run_id, &mut runtime)?;
-                match model_call(
+                match model_call_with_runtime(
                     &state,
                     &run,
                     "deepNote",
+                    NotePipelinePhase::Drafting,
                     SECTION_SYSTEM_PROMPT.to_string(),
                     prompt.clone(),
                     run.max_output_tokens.min(16_384),
+                    run.retry_attempts,
+                    &cancellation,
+                    Some(&channel),
                 )
                 .await
                 {
@@ -992,15 +1803,20 @@ async fn run_drafting_task(
                                 serde_json::to_string(&validation)
                                     .map_err(|error| error.to_string())?,
                             );
-                            candidate = model_call(
+                            candidate = model_call_with_runtime(
                                 &state,
                                 &run,
                                 "deepNote",
+                                NotePipelinePhase::Validating,
                                 SECTION_REVISION_SYSTEM_PROMPT.to_string(),
                                 revision_prompt,
                                 run.max_output_tokens.min(16_384),
+                                run.retry_attempts,
+                                &cancellation,
+                                Some(&channel),
                             )
-                            .await?
+                            .await
+                            .map_err(|error| error.message)?
                             .trim()
                             .to_string();
                             validation = validate_section_markdown(section, &candidate);
@@ -1012,7 +1828,7 @@ async fn run_drafting_task(
                         last_error = validation.errors.join("；");
                     }
                     Ok(_) => last_error = "模型返回了空章节。".to_string(),
-                    Err(error) => last_error = error,
+                    Err(error) => last_error = error.message,
                 }
             }
             if let Some(markdown) = markdown {
@@ -1103,24 +1919,15 @@ async fn run_drafting_task(
                 .collect(),
             ..selected_outline
         };
+        let (mut title, content, mut warnings) = assemble(&effective_outline, &drafts, false);
         if cancelled {
-            let cancelled_run = {
-                let _guard = state.library_operations.lock().await;
-                state.library_repository.update_note_pipeline_phase(
-                    &run_id,
-                    NotePipelinePhase::Paused,
-                    None,
-                    &run.warnings,
-                    None,
-                )?
-            };
-            send(
-                &channel,
-                NotePipelineProgress::Cancelled { run: cancelled_run },
-            );
-            return Ok(());
+            title = format!("{title}（部分完成）");
+            warnings.push(format!(
+                "任务已取消；已保存 {} 个完成章节，另有 {} 个章节未生成。",
+                drafts.len(),
+                total.saturating_sub(drafts.len())
+            ));
         }
-        let (title, content, warnings) = assemble(&effective_outline, &drafts, false);
         let sidecar = sidecar_json(&run, &plan_version, &drafts)?;
         progress(
             &channel,
@@ -1175,7 +1982,7 @@ async fn run_drafting_task(
             &channel,
             NotePipelineProgress::Done {
                 run: completed,
-                degraded: false,
+                degraded: cancelled,
             },
         );
         Ok(())
@@ -1265,7 +2072,7 @@ pub async fn start(
             if settings.retry_enabled {
                 settings.retry_attempts
             } else {
-                1
+                0
             },
         )
     };
@@ -1280,6 +2087,7 @@ pub async fn start(
         plan_version: None,
         budget: DeepNoteBudget::for_section_count(1),
         ledger: DeepNoteLedger::default(),
+        context_budget: DeepNoteContextBudget::default(),
     };
     let runtime_json = serde_json::to_string(&runtime)
         .map_err(|error| format!("序列化深度笔记运行状态失败：{error}"))?;
@@ -1599,16 +2407,33 @@ pub fn get_detail(state: &AppState, run_id: &str) -> Result<DeepNoteRunDetail, S
         .filter(|value| !value.is_empty())
         .collect::<Vec<_>>()
         .join("\n\n");
+    let section_progress = sections
+        .iter()
+        .map(|section| DeepNoteSectionProgress {
+            section_id: section.section_id.clone(),
+            position: section.position,
+            status: section.status,
+            attempt_count: section.attempt_count,
+            revision_count: section.revision_count,
+            error_message: section.error_message.clone(),
+            markdown_chars: section.markdown.chars().count(),
+            updated_at: section.updated_at,
+        })
+        .collect();
+    let source_chunk_count = runtime.context_budget.chunk_count;
     Ok(DeepNoteRunDetail {
         run,
         preflight: Some(runtime.preflight),
         input_snapshot: Some(runtime.input_snapshot),
         plan_version: runtime.plan_version.clone(),
         budget: runtime.budget,
+        context_budget: runtime.context_budget,
+        source_chunk_count,
         nodes: runtime
             .plan_version
             .map(|plan| plan.compiled_dag)
             .unwrap_or_default(),
+        sections: section_progress,
         source_chunks: Vec::new(),
         evidence: Vec::new(),
         ledger: runtime.ledger,
@@ -1647,7 +2472,7 @@ pub async fn prepare_note_edit(
             if settings.retry_enabled {
                 settings.retry_attempts
             } else {
-                1
+                0
             },
         )
     };
@@ -1834,4 +2659,208 @@ pub async fn prepare_note_edit(
             })?
     };
     Ok(NoteEditPrepareResult { proposal, warnings })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use crate::{
+        ai::{
+            error::{ModelError, ModelErrorKind},
+            types::ModelRole,
+        },
+        chat::conversation_types::{
+            AiPermissionMode, MessageStatus, StoredChatMessage, StoredConversation,
+        },
+    };
+
+    use super::{
+        context_budget, conversation_chunks, merge_chunk_digest,
+        should_fallback_to_chunked_planner, ChunkDigest, ConversationChunk,
+    };
+    use crate::chat::note_pipeline::types::{
+        DeepNoteCapabilities, DeepNoteLedger, DeepNoteModelSnapshot, DeepNoteSourceChunk,
+        DeepNoteSourceKind,
+    };
+
+    fn message(id: &str, role: ModelRole, content: String) -> StoredChatMessage {
+        StoredChatMessage {
+            id: id.to_string(),
+            conversation_id: "conversation-1".to_string(),
+            role,
+            content,
+            attachments: Vec::new(),
+            literature_references: Vec::new(),
+            note_references: Vec::new(),
+            reasoning: Some("不应进入深度笔记来源".to_string()),
+            status: MessageStatus::Completed,
+            created_at: 1,
+            updated_at: 1,
+            model_id: None,
+            model_snapshot: None,
+            usage: None,
+            activated_skills: Vec::new(),
+            tool_traces: Vec::new(),
+            agent_run_id: None,
+            workflow_summary: None,
+            error_message: None,
+        }
+    }
+
+    fn conversation(messages: Vec<StoredChatMessage>) -> StoredConversation {
+        StoredConversation {
+            id: "conversation-1".to_string(),
+            title: "Long conversation".to_string(),
+            messages,
+            assistant_id: None,
+            provider_id: None,
+            model_id: None,
+            thinking_enabled: None,
+            reasoning_effort: None,
+            system_prompt: String::new(),
+            context_summary: String::new(),
+            compressed_until_message_id: None,
+            context_compression_count: 0,
+            enabled_skill_ids: Vec::new(),
+            linked_library_item_ids: Vec::new(),
+            permission_mode: AiPermissionMode::AskSensitive,
+            project_id: None,
+            collection_id: None,
+            pinned: false,
+            created_at: 1,
+            updated_at: 1,
+        }
+    }
+
+    fn model(context_window_tokens: Option<u64>) -> DeepNoteModelSnapshot {
+        DeepNoteModelSnapshot {
+            provider_id: "provider-1".to_string(),
+            model_id: "model-1".to_string(),
+            api_model: "test-model".to_string(),
+            context_window_tokens,
+            capabilities: DeepNoteCapabilities {
+                tools: true,
+                vision: Some(true),
+                reasoning: Some(true),
+                structured_outputs: false,
+            },
+        }
+    }
+
+    #[test]
+    fn context_budget_reserves_output_prompt_and_safety_tokens() {
+        let conversation = conversation(vec![message(
+            "message-1",
+            ModelRole::User,
+            "context".repeat(100),
+        )]);
+        let budget = context_budget(&conversation, &model(Some(128_000)), 16_384);
+        assert_eq!(budget.planner_output_reserve_tokens, 8_192);
+        assert_eq!(budget.prompt_overhead_tokens, 4_096);
+        assert_eq!(budget.safety_margin_tokens, 128_000 / 12);
+        assert_eq!(budget.direct_input_limit_tokens, 24_000);
+        assert_eq!(budget.chunk_target_tokens, 16_000);
+        assert!(budget.usable_input_tokens < 128_000);
+
+        let unknown = context_budget(&conversation, &model(None), 16_384);
+        assert_eq!(unknown.direct_input_limit_tokens, 8_000);
+        assert_eq!(unknown.chunk_target_tokens, 8_000);
+    }
+
+    #[test]
+    fn conversation_chunks_preserve_every_message_and_long_message_character() {
+        let conversation = conversation(vec![
+            message("message-1", ModelRole::User, "x".repeat(700)),
+            message("message-2", ModelRole::Assistant, "界".repeat(200)),
+        ]);
+        let chunks = conversation_chunks(&conversation, 64);
+        assert!(chunks.len() > 2);
+        assert!(chunks.iter().all(|chunk| chunk.estimated_tokens <= 64));
+        let covered = chunks
+            .iter()
+            .flat_map(|chunk| chunk.message_ids.iter().cloned())
+            .collect::<HashSet<_>>();
+        assert_eq!(
+            covered,
+            HashSet::from(["message-1".to_string(), "message-2".to_string()])
+        );
+        let combined = chunks
+            .iter()
+            .map(|chunk| chunk.source.excerpt.as_str())
+            .collect::<String>();
+        assert_eq!(combined.matches('x').count(), 700);
+        assert_eq!(combined.matches('界').count(), 200);
+        assert!(!combined.contains("不应进入深度笔记来源"));
+    }
+
+    #[test]
+    fn ledger_keeps_traceable_ids_and_rejects_empty_chunk_summaries() {
+        let chunk = ConversationChunk {
+            source: DeepNoteSourceChunk {
+                chunk_id: "chunk-0001".to_string(),
+                source_kind: DeepNoteSourceKind::Conversation,
+                source_id: "conversation-1".to_string(),
+                message_id: Some("message-1".to_string()),
+                attachment_id: None,
+                library_item_id: None,
+                location: "消息 message-1".to_string(),
+                content_hash: "hash".to_string(),
+                excerpt: "source".to_string(),
+                ocr_confidence: None,
+            },
+            message_ids: vec!["message-1".to_string()],
+            estimated_tokens: 2,
+        };
+        let mut ledger = DeepNoteLedger::default();
+        merge_chunk_digest(
+            &mut ledger,
+            &chunk,
+            ChunkDigest {
+                summary: "可追溯摘要".to_string(),
+                verified_facts: vec!["事实".to_string()],
+                source_message_ids: vec!["message-1".to_string(), "foreign-id".to_string()],
+                canonical_terms: Vec::new(),
+                covered_topics: Vec::new(),
+                open_questions: Vec::new(),
+                conflicts: Vec::new(),
+                global_constraints: Vec::new(),
+            },
+        );
+        assert_eq!(ledger.section_summaries.len(), 1);
+        assert!(ledger.section_summaries[0].contains("message-1"));
+        assert!(!ledger.section_summaries[0].contains("foreign-id"));
+        assert!(ChunkDigest {
+            summary: String::new(),
+            canonical_terms: Vec::new(),
+            verified_facts: Vec::new(),
+            covered_topics: Vec::new(),
+            open_questions: Vec::new(),
+            conflicts: Vec::new(),
+            global_constraints: Vec::new(),
+            source_message_ids: Vec::new(),
+        }
+        .validate()
+        .is_err());
+    }
+
+    #[test]
+    fn direct_planner_transport_errors_fallback_without_becoming_json_repairs() {
+        assert!(should_fallback_to_chunked_planner(&ModelError::timeout(
+            "timeout"
+        )));
+        assert!(should_fallback_to_chunked_planner(
+            &ModelError::context_length("too long")
+        ));
+        assert!(!should_fallback_to_chunked_planner(
+            &ModelError::invalid_response("invalid json")
+        ));
+        assert!(!should_fallback_to_chunked_planner(&ModelError {
+            kind: ModelErrorKind::Cancelled,
+            message: "cancelled".to_string(),
+            status_code: None,
+            provider_code: None,
+            retry_after_ms: None,
+        }));
+    }
 }

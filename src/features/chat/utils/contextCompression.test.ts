@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { ChatMessage } from "../../../types/chat";
-import { compressionTranscript, toModelMessages } from "./contextCompression";
+import {
+  compressionTranscript,
+  compressionTranscriptBatches,
+  contextInputBudget,
+  toModelMessages,
+} from "./contextCompression";
+import { estimateTextTokens } from "./contextUsage";
 
 describe("toModelMessages", () => {
   it("keeps attachment-only user messages", () => {
@@ -78,5 +84,29 @@ describe("toModelMessages", () => {
     expect(modelMessage.content).toContain("[笔记引用 1]");
     expect(modelMessage.content).toContain("用户问题：\n解释这一段");
     expect(compressionTranscript("", [message])).toContain("学习笔记");
+  });
+});
+
+describe("context compression budget", () => {
+  it("reserves configured output and the larger safety margin", () => {
+    expect(contextInputBudget(128_000, 8_192)).toBe(109_568);
+    expect(contextInputBudget(8_000, 4_096)).toBe(0);
+  });
+
+  it("splits one oversized message without dropping its content", () => {
+    const content = "x".repeat(700);
+    const message: ChatMessage = {
+      id: "long-message",
+      conversationId: "conversation-1",
+      role: "user",
+      content,
+      status: "completed",
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const batches = compressionTranscriptBatches([message], 64);
+    expect(batches.length).toBeGreaterThan(1);
+    expect(batches.every((batch) => estimateTextTokens(batch) <= 64)).toBe(true);
+    expect((batches.join("").match(/x/g) ?? []).length).toBe(content.length);
   });
 });

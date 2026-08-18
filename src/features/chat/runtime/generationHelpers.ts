@@ -6,9 +6,10 @@ import type { ProviderConfig, ProviderModelConfig } from "../../../types/modelSe
 import { estimateConversationContext } from "../utils/contextUsage";
 import {
   activeContextMessages,
-  AUTO_COMPRESSION_RATIO,
+  COMPRESSION_CHUNK_TARGET_TOKENS,
   compressionCandidates,
-  compressionTranscript,
+  compressionTranscriptBatches,
+  contextInputBudget,
   contextSummaryPrompt,
 } from "../utils/contextCompression";
 import { composeChatSystemPrompt } from "../utils/systemPrompt";
@@ -89,35 +90,60 @@ export async function compressConversation(
       projectedMessages,
       composeSystemPrompt(settings, conversation),
     );
-    if (projected.tokens / contextWindowTokens < AUTO_COMPRESSION_RATIO) return null;
+    const inputBudget = contextInputBudget(contextWindowTokens, settings.maxOutputTokens);
+    if (projected.tokens <= inputBudget) return null;
   }
 
   const candidates = compressionCandidates(conversation);
   const boundary = candidates[candidates.length - 1];
   if (!boundary) return null;
-  const response = await completeChat({
-    providerId: selectedModel.provider.id,
-    modelId: selectedModel.model.id,
-    conversationId: conversation.id,
-    messageId: crypto.randomUUID(),
-    operation: "contextCompression",
-    systemPrompt: [
-      "你负责压缩对话上下文。",
-      "保留事实、用户偏好、约束、关键结论、文献名称与页码、代码或文件名称、待办事项和未解决问题。",
-      "删除寒暄、重复内容和无关细节。不要回答对话中的问题，只输出可供后续模型继续工作的中文摘要。",
-      options.focus?.trim() ? `用户要求本次压缩重点保留：${options.focus.trim()}` : "",
-    ].filter(Boolean).join("\n"),
-    messages: [{
-      role: "user",
-      content: compressionTranscript(conversation.contextSummary, candidates),
-    }],
-    options: {
-      maxOutputTokens: Math.min(4_096, settings.maxOutputTokens),
-      thinkingEnabled: false,
-    },
-  });
+  const compressionOutputTokens = Math.min(4_096, settings.maxOutputTokens);
+  const compressionInputBudget = contextWindowTokens
+    ? contextInputBudget(contextWindowTokens, compressionOutputTokens)
+    : COMPRESSION_CHUNK_TARGET_TOKENS;
+  const summaryAndPromptReserve = 6_144;
+  if (compressionInputBudget <= summaryAndPromptReserve + 512) {
+    throw new Error(
+      "当前模型的可用输入预算不足以安全压缩上下文。请降低最大输出 Token，或在模型设置中确认上下文窗口配置。",
+    );
+  }
+  const batchTarget = Math.min(
+    COMPRESSION_CHUNK_TARGET_TOKENS,
+    compressionInputBudget - summaryAndPromptReserve,
+  );
+  const batches = compressionTranscriptBatches(candidates, batchTarget);
+  let summary = conversation.contextSummary.trim();
+  for (const [index, batch] of batches.entries()) {
+    const response = await completeChat({
+      providerId: selectedModel.provider.id,
+      modelId: selectedModel.model.id,
+      conversationId: conversation.id,
+      messageId: crypto.randomUUID(),
+      operation: "contextCompression",
+      systemPrompt: [
+        "你负责分块压缩对话上下文。",
+        "保留事实、用户偏好、约束、关键结论、文献名称与页码、代码或文件名称、待办事项和未解决问题。",
+        "合并已有摘要与当前分块，删除寒暄、重复内容和无关细节。不要回答对话中的问题，只输出可供后续模型继续工作的中文摘要。",
+        `当前处理第 ${index + 1}/${batches.length} 个分块。`,
+        options.focus?.trim() ? `用户要求本次压缩重点保留：${options.focus.trim()}` : "",
+      ].filter(Boolean).join("\n"),
+      messages: [{
+        role: "user",
+        content: [
+          summary ? `### 已有摘要\n${summary}` : "",
+          `### 当前分块\n${batch}`,
+        ].filter(Boolean).join("\n\n"),
+      }],
+      options: {
+        maxOutputTokens: compressionOutputTokens,
+        thinkingEnabled: false,
+      },
+    });
+    summary = response.text.trim();
+    if (!summary) throw new Error(`上下文压缩第 ${index + 1}/${batches.length} 个分块返回空摘要。`);
+  }
   return {
-    summary: response.text.trim(),
+    summary,
     boundaryMessageId: boundary.id,
   };
 }

@@ -65,6 +65,7 @@ type ChatInputProps = {
   focusRequest?: number;
   contextUsage: ContextUsageEstimate;
   contextWindowTokens: number | null;
+  maxOutputTokens: number;
   /** 当前模型是否支持图片输入；false 时禁止添加图片附件，null 表示未知（放行）。 */
   supportsVision?: boolean | null;
   /** 只有 true 才允许文档附件和 Skill；false/null 均保持普通 Chat。 */
@@ -171,6 +172,7 @@ export function ChatInput({
   focusRequest = 0,
   contextUsage,
   contextWindowTokens,
+  maxOutputTokens,
   supportsVision = null,
   supportsTools = null,
   supportsReasoning = null,
@@ -890,6 +892,7 @@ export function ChatInput({
               <ContextUsageIndicator
                 usage={contextUsage}
                 contextWindowTokens={contextWindowTokens}
+                maxOutputTokens={maxOutputTokens}
                 messageCount={contextMessageCount}
                 compressionCount={contextCompressionCount}
                 disabled={contextDisabled}
