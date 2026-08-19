@@ -209,6 +209,13 @@ impl AppState {
         true
     }
 
+    pub async fn is_note_pipeline_run_active(&self, run_id: &str) -> bool {
+        self.active_note_pipeline_runs
+            .lock()
+            .await
+            .contains_key(run_id)
+    }
+
     pub async fn cancel_all_note_pipeline_runs(&self) -> usize {
         let runs = self.active_note_pipeline_runs.lock().await;
         cancel_chat_run_tokens(&runs)

@@ -11,8 +11,11 @@ export type DeepNoteViewRuntime = {
   review: DeepNoteReview | null;
   progress: DeepNoteProgress | null;
   busy: boolean;
+  controlBusy: boolean;
   onAdjust: (requirement: string) => void;
   onConfirm: (selectedSectionIds: ReadonlySet<string>) => void;
+  onPause: () => void;
+  onResume: () => void;
   onCancel: () => void;
   onOpenNote: () => void;
   onReturn: () => void;

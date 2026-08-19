@@ -97,11 +97,22 @@ export interface DeepNoteContextBudget {
 
 export interface NotePipelineActivity {
   kind: string;
+  callId: string;
+  operation: string;
   attempt: number;
   maxRetries: number;
   startedAt: number;
+  timeoutMs: number;
   delayMs: number | null;
   lastError: string | null;
+}
+
+export interface NotePipelineEventRecord {
+  sequence: number;
+  eventType: string;
+  nodeId: string | null;
+  payloadJson: string;
+  createdAt: number;
 }
 
 export interface DeepNoteDagNode {
@@ -160,13 +171,7 @@ export interface DeepNoteRunDetail {
   sourceChunks: unknown[];
   evidence: unknown[];
   ledger: Record<string, unknown>;
-  events: Array<{
-    sequence: number;
-    eventType: string;
-    nodeId: string | null;
-    payloadJson: string;
-    createdAt: number;
-  }>;
+  events: NotePipelineEventRecord[];
   markdownPreview: string;
   sidecarJson: string;
 }
@@ -183,6 +188,7 @@ export type NotePipelineEvent =
     }
   | { type: "outlineReady"; run: NotePipelineRun }
   | { type: "done"; run: NotePipelineRun; degraded: boolean }
+  | { type: "paused"; run: NotePipelineRun }
   | { type: "cancelled"; run: NotePipelineRun }
   | { type: "error"; runId: string; message: string };
 

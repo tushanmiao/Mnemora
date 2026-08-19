@@ -237,7 +237,11 @@ export const MessageBubble = memo(function MessageBubble({
   };
 
   return (
-    <article className={`message-row message-row-${message.role}`}>
+    <article
+      id={`message-${message.id}`}
+      data-message-id={message.id}
+      className={`message-row message-row-${message.role}`}
+    >
       <div className={`message-avatar message-avatar-${message.role}`} aria-hidden="true">
         {isAssistant ? <Bot size={18} /> : <UserRound size={17} />}
       </div>

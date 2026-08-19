@@ -475,9 +475,12 @@ pub struct DeepNoteEventRecord {
 #[serde(rename_all = "camelCase")]
 pub struct NotePipelineActivity {
     pub kind: String,
+    pub call_id: String,
+    pub operation: String,
     pub attempt: u8,
     pub max_retries: u8,
     pub started_at: u64,
+    pub timeout_ms: u64,
     pub delay_ms: Option<u64>,
     pub last_error: Option<String>,
 }
@@ -744,6 +747,9 @@ pub enum NotePipelineProgress {
     Done {
         run: NotePipelineRun,
         degraded: bool,
+    },
+    Paused {
+        run: NotePipelineRun,
     },
     Cancelled {
         run: NotePipelineRun,

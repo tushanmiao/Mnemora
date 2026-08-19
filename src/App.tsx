@@ -46,6 +46,7 @@ import { useWorkspaceLayout } from "./app/hooks/useWorkspaceLayout";
 import { useChatReferences } from "./app/hooks/useChatReferences";
 import { useNoteActions } from "./app/hooks/useNoteActions";
 import { NoteEditDialog } from "./features/chat/notePipeline/NoteEditDialog";
+import { TaskCenter } from "./features/tasks/components/TaskCenter";
 import { clearAttachmentPreviewCache } from "./features/chat/api/attachments";
 import { releaseBackgroundResources } from "./runtime/resources/ResourceRegistry";
 import { initializeWorkspaceLifecycle, subscribeWorkspaceLifecycle } from "./runtime/resources/WorkspaceLifecycle";
@@ -132,6 +133,12 @@ function App() {
     modelSettings: settings.modelSettings,
     appSettings: settings.appSettings,
   });
+
+  const latestAssistantMessage = useMemo(() => (
+    [...(conversations.currentConversation?.messages ?? [])]
+      .reverse()
+      .find((message) => message.role === "assistant") ?? null
+  ), [conversations.currentConversation?.messages]);
 
   useEffect(() => {
     if (noteActions.deepNoteActive || noteActions.deepNoteReview) {
@@ -560,6 +567,27 @@ function App() {
         onSelectView={changeWorkspaceMode}
         onOpenSettings={() => openSettings("general")}
       />
+      <TaskCenter
+        chatMessage={latestAssistantMessage}
+        deepNoteDetail={noteActions.deepNoteDetail}
+        deepNoteProgress={noteActions.deepNoteProgress}
+        deepNoteReviewTitle={noteActions.deepNoteReview?.outline.title}
+        deepNoteControlBusy={noteActions.deepNoteControlBusy}
+        onStopChatTask={chatRuntime.stopGeneration}
+        onOpenDeepNoteTask={() => changeWorkspaceMode("deepNote")}
+        onPauseDeepNoteTask={() => { void noteActions.pauseDeepNote(); }}
+        onResumeDeepNoteTask={() => { void noteActions.resumeDeepNote(); }}
+        onStopDeepNoteTask={() => { void noteActions.cancelDeepNote(); }}
+        onOpenChatTask={(messageId) => {
+          changeWorkspaceMode("chat");
+          requestAnimationFrame(() => {
+            document.getElementById(`message-${messageId}`)?.scrollIntoView({
+              block: "center",
+              behavior: "smooth",
+            });
+          });
+        }}
+      />
       {/* 上下文侧栏由视图清单决定：笔记视图自带左栏，不渲染共享 Sidebar。 */}
       {activeView === "workspace" && findWorkspaceView(workspaceMode)?.contextSidebar !== false ? <Sidebar
         mode={workspaceMode}
@@ -663,11 +691,18 @@ function App() {
                   review: noteActions.deepNoteReview,
                   progress: noteActions.deepNoteProgress,
                   busy: noteActions.deepNoteReviewBusy,
+                  controlBusy: noteActions.deepNoteControlBusy,
                   onAdjust: (requirement) => {
                     void noteActions.adjustDeepNoteOutline(requirement);
                   },
                   onConfirm: (selectedSectionIds) => {
                     void noteActions.confirmDeepNoteOutline(selectedSectionIds);
+                  },
+                  onPause: () => {
+                    void noteActions.pauseDeepNote();
+                  },
+                  onResume: () => {
+                    void noteActions.resumeDeepNote();
                   },
                   onCancel: noteActions.cancelDeepNote,
                   onOpenNote: () => changeWorkspaceMode("notes"),
