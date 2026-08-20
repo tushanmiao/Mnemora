@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useState } from "react";
-import { ArrowLeft, BarChart3, Bot, Brain, Bug, Cloud, Info, SlidersHorizontal, Sparkles } from "lucide-react";
+import { ArrowLeft, BarChart3, Bot, Brain, Bug, Cloud, Database, Info, SlidersHorizontal, Sparkles } from "lucide-react";
 import { RootErrorBoundary } from "../../../bootstrap/RootErrorBoundary";
 import type { AppSettings, SettingsBundle } from "../../../types/appSettings";
 import type { ModelSettings, ProviderApiKeyUpdate } from "../../../types/modelSettings";
@@ -19,16 +19,18 @@ const SyncSettingsPanel = lazy(() => import("./SyncSettingsPanel").then((module)
   default: module.SyncSettingsPanel,
 })));
 const UsageSettingsPanel = lazy(() => import("./UsageSettingsPanel").then((module) => ({ default: module.UsageSettingsPanel })));
+const StorageSettingsPanel = lazy(() => import("./StorageSettingsPanel").then((module) => ({ default: module.StorageSettingsPanel })));
 const RequestDebugSettingsPanel = lazy(() => import("./RequestDebugSettingsPanel").then((module) => ({ default: module.RequestDebugSettingsPanel })));
 const AboutSettingsPanel = lazy(() => import("./AboutSettingsPanel").then((module) => ({ default: module.AboutSettingsPanel })));
 
-export type SettingsCategory = "general" | "models" | "skills" | "memory" | "sync" | "usage" | "debug" | "about";
+export type SettingsCategory = "general" | "models" | "skills" | "memory" | "storage" | "sync" | "usage" | "debug" | "about";
 
-const CATEGORY_KEYS: Record<SettingsCategory, "settings.general" | "settings.models" | "settings.skills" | "settings.memory" | "settings.sync" | "settings.usage" | "settings.debug" | "settings.about"> = {
+const CATEGORY_KEYS: Record<SettingsCategory, "settings.general" | "settings.models" | "settings.skills" | "settings.memory" | "settings.storage" | "settings.sync" | "settings.usage" | "settings.debug" | "settings.about"> = {
   general: "settings.general",
   models: "settings.models",
   skills: "settings.skills",
   memory: "settings.memory",
+  storage: "settings.storage",
   sync: "settings.sync",
   usage: "settings.usage",
   debug: "settings.debug",
@@ -86,6 +88,7 @@ export function SettingsPage(props: SettingsPageProps) {
     { id: "models", label: t("settings.models"), icon: Bot },
     { id: "skills", label: t("settings.skills"), icon: Sparkles },
     { id: "memory", label: t("settings.memory"), icon: Brain },
+    { id: "storage", label: t("settings.storage"), icon: Database },
     { id: "sync", label: t("settings.sync"), icon: Cloud },
     { id: "usage", label: t("settings.usage"), icon: BarChart3 },
     { id: "debug", label: t("settings.debug"), icon: Bug },
@@ -143,6 +146,8 @@ export function SettingsPage(props: SettingsPageProps) {
                 onSaveSettings={props.onSaveAppSettings}
                 onDirtyChange={setMemoryDirty}
               />
+            ) : activeCategory === "storage" ? (
+              <StorageSettingsPanel />
             ) : activeCategory === "sync" ? (
               <SyncSettingsPanel />
             ) : activeCategory === "usage" ? (

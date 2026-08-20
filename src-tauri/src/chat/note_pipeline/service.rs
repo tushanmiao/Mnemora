@@ -21,8 +21,8 @@ use crate::{
     },
     library::types::{
         LibraryNoteCreate, NoteEditProposalCreate, NotePipelinePhase, NotePipelineRun,
-        NotePipelineRunCreate, NotePipelineSectionCreate, NotePipelineSectionStatus,
-        NoteSourceCreate, NoteSourceOrigin,
+        NotePipelineRunCreate, NotePipelineSection, NotePipelineSectionCreate,
+        NotePipelineSectionStatus, NoteSourceCreate, NoteSourceOrigin,
     },
     settings::types::ModelSettings,
     state::AppState,
@@ -35,6 +35,7 @@ use super::{
         NOTE_EDIT_PLAN_PROMPT, SECTION_REVISION_SYSTEM_PROMPT, SECTION_SYSTEM_PROMPT,
         STRICT_JSON_SUFFIX,
     },
+    scheduler::{stable_topological_sections, DeepNoteDagScheduler},
     types::{
         compile_plan, DeepNoteBudget, DeepNoteCapabilities, DeepNoteContextBudget, DeepNoteDagNode,
         DeepNoteInputSnapshot, DeepNoteLedger, DeepNoteModelSnapshot, DeepNoteNodeStatus,
@@ -871,6 +872,44 @@ fn consume_semantic_call(
     save_runtime_state(state, run_id, runtime)
 }
 
+fn persist_scheduler_state(
+    state: &AppState,
+    run_id: &str,
+    runtime: &mut DeepNoteRuntimeState,
+    scheduler: &DeepNoteDagScheduler,
+) -> Result<(), String> {
+    let plan_version = runtime
+        .plan_version
+        .as_mut()
+        .ok_or_else(|| "深度笔记执行图尚未编译。".to_string())?;
+    plan_version.compiled_dag = scheduler.nodes().to_vec();
+    let version = plan_version.version;
+    for node in scheduler.nodes() {
+        state.library_repository.update_note_pipeline_node_state(
+            run_id,
+            version,
+            &node.node_id,
+            node.status.as_str(),
+            node.attempt_count,
+            node.output_ref.as_deref(),
+            &node.validation_json,
+            node.error_message.as_deref(),
+        )?;
+    }
+    save_runtime_state(state, run_id, runtime)
+}
+
+fn dependency_context(section: &DeepNoteSection, drafts: &HashMap<String, String>) -> String {
+    let mut context = Vec::new();
+    for dependency in &section.depends_on {
+        if let Some(markdown) = drafts.get(dependency) {
+            let excerpt = markdown.chars().take(2_400).collect::<String>();
+            context.push(format!("依赖章节 {dependency} 已完成内容摘录：\n{excerpt}"));
+        }
+    }
+    context.join("\n\n")
+}
+
 fn resolve_note_model(
     settings: &ModelSettings,
     conversation: &StoredConversation,
@@ -1571,7 +1610,7 @@ fn section_prompt(
     section: &DeepNoteSection,
     source_context: &str,
     ledger_context: &str,
-    previous_tail: &str,
+    dependency_outputs: &str,
 ) -> Result<String, String> {
     Ok(format!(
         "全局标题：{}\n全局概览：{}\n薄弱点：{}\n全部章节：\n{}\n\n当前章节：{}\n{}\n\n全局知识账本：\n{}\n\n当前章节来源：\n{}",
@@ -1585,10 +1624,10 @@ fn section_prompt(
             .collect::<Vec<_>>()
             .join("\n"),
         serde_json::to_string(section).map_err(|error| error.to_string())?,
-        if previous_tail.is_empty() {
+        if dependency_outputs.is_empty() {
             String::new()
         } else {
-            format!("前一章末段摘要：\n{previous_tail}")
+            format!("已完成依赖章节产物：\n{dependency_outputs}")
         },
         ledger_context,
         source_context,
@@ -2221,7 +2260,584 @@ async fn run_analysis_task<R: Runtime>(
     state.finish_note_pipeline_run(&run_id).await;
 }
 
+async fn execute_dag_section(
+    state: &AppState,
+    run: &NotePipelineRun,
+    runtime: &mut DeepNoteRuntimeState,
+    selected_outline: &DeepNoteOutline,
+    section: &DeepNoteSection,
+    ledger_context: &str,
+    dependency_outputs: &str,
+    channel: &Channel<NotePipelineProgress>,
+    cancellation: &CancellationToken,
+    persisted: Option<&NotePipelineSection>,
+) -> Result<Option<(String, DeepNoteValidationReport, u8, u8)>, String> {
+    let conversation = state.conversation_repository.load(&run.conversation_id)?;
+    let (source_context, using_ledger_summary) = section_source_context(
+        &conversation,
+        section,
+        &runtime.ledger,
+        &runtime.context_budget,
+    )?;
+    if using_ledger_summary {
+        let _ = state.library_repository.append_note_pipeline_event(
+            &run.id,
+            "sectionUsingChunkLedger",
+            Some(&section.id),
+            &serde_json::json!({
+                "sectionId": section.id,
+                "sourceMessageCount": section.source_message_ids.len(),
+            })
+            .to_string(),
+        );
+    }
+    let prompt = section_prompt(
+        selected_outline,
+        section,
+        &source_context,
+        ledger_context,
+        dependency_outputs,
+    )?;
+    let mut last_error = String::new();
+    let mut markdown = None;
+    let mut validation = DeepNoteValidationReport {
+        passed: false,
+        errors: vec!["章节尚未生成。".to_string()],
+        warnings: Vec::new(),
+        checked_evidence_ids: Vec::new(),
+        criteria_coverage: Vec::new(),
+    };
+    let mut attempts = persisted.map(|value| value.attempt_count).unwrap_or(0);
+    let mut revisions = persisted.map(|value| value.revision_count).unwrap_or(0);
+    'attempts: while attempts < NODE_ATTEMPT_LIMIT {
+        if cancellation.is_cancelled() {
+            break;
+        }
+        attempts += 1;
+        consume_semantic_call(state, &run.id, runtime)?;
+        match model_call_with_runtime(
+            state,
+            run,
+            "deepNote",
+            NotePipelinePhase::Drafting,
+            SECTION_SYSTEM_PROMPT.to_string(),
+            prompt.clone(),
+            run.max_output_tokens.min(SECTION_OUTPUT_TOKEN_LIMIT),
+            run.retry_attempts,
+            cancellation,
+            Some(channel),
+        )
+        .await
+        {
+            Ok(value) if !value.trim().is_empty() => {
+                let mut candidate = value.trim().to_string();
+                validation = validate_section_markdown(section, &candidate);
+                while !validation.passed && revisions < SECTION_REVISION_LIMIT {
+                    revisions += 1;
+                    consume_semantic_call(state, &run.id, runtime)?;
+                    let revision_prompt = format!(
+                        "章节计划：\n{}\n\n当前正文：\n{}\n\n验证报告：\n{}",
+                        serde_json::to_string(section).map_err(|error| error.to_string())?,
+                        candidate,
+                        serde_json::to_string(&validation).map_err(|error| error.to_string())?,
+                    );
+                    let revision_result = model_call_with_runtime(
+                        state,
+                        run,
+                        "deepNote",
+                        NotePipelinePhase::Validating,
+                        SECTION_REVISION_SYSTEM_PROMPT.to_string(),
+                        revision_prompt,
+                        run.max_output_tokens.min(SECTION_OUTPUT_TOKEN_LIMIT),
+                        run.retry_attempts,
+                        cancellation,
+                        Some(channel),
+                    )
+                    .await;
+                    if cancellation.is_cancelled() {
+                        attempts = attempts.saturating_sub(1);
+                        revisions = revisions.saturating_sub(1);
+                        break 'attempts;
+                    }
+                    candidate = revision_result
+                        .map_err(|error| error.message)?
+                        .trim()
+                        .to_string();
+                    validation = validate_section_markdown(section, &candidate);
+                }
+                if validation.passed {
+                    markdown = Some(candidate);
+                    break;
+                }
+                last_error = validation.errors.join("；");
+            }
+            Ok(_) => last_error = "模型返回了空章节。".to_string(),
+            Err(_error) if cancellation.is_cancelled() => {
+                attempts = attempts.saturating_sub(1);
+                break;
+            }
+            Err(error) => last_error = error.message,
+        }
+    }
+    let Some(markdown) = markdown else {
+        if cancellation.is_cancelled() {
+            return Ok(None);
+        }
+        let validation_json =
+            serde_json::to_string(&validation).map_err(|error| error.to_string())?;
+        let _guard = state.library_operations.lock().await;
+        state
+            .library_repository
+            .save_note_pipeline_section_checkpoint(
+                &run.id,
+                &section.id,
+                "",
+                NotePipelineSectionStatus::Failed,
+                attempts,
+                revisions,
+                &section.source_message_ids,
+                &validation_json,
+                Some(&last_error),
+            )?;
+        return Err(format!(
+            "章节“{}”在 {} 次节点尝试和 {} 次语义修订后仍未通过验证：{}",
+            section.heading, attempts, revisions, last_error
+        ));
+    };
+    let validation_json = serde_json::to_string(&validation).map_err(|error| error.to_string())?;
+    let _guard = state.library_operations.lock().await;
+    state
+        .library_repository
+        .save_note_pipeline_section_checkpoint(
+            &run.id,
+            &section.id,
+            &markdown,
+            NotePipelineSectionStatus::Completed,
+            attempts,
+            revisions,
+            &section.source_message_ids,
+            &validation_json,
+            None,
+        )?;
+    Ok(Some((markdown, validation, attempts, revisions)))
+}
+
 async fn run_drafting_task<R: Runtime>(
+    app: AppHandle<R>,
+    run_id: String,
+    channel: Channel<NotePipelineProgress>,
+    cancellation: CancellationToken,
+) {
+    let state = app.state::<AppState>();
+    let result = async {
+        let run = state.library_repository.get_note_pipeline_run(&run_id)?;
+        let mut runtime = runtime_state(&run)?;
+        let plan_version = runtime
+            .plan_version
+            .clone()
+            .ok_or_else(|| "深度笔记计划尚未编译。".to_string())?;
+        if plan_version.confirmed_at.is_none() {
+            return Err("深度笔记计划尚未由用户确认。".to_string());
+        }
+        let conversation = state.conversation_repository.load(&run.conversation_id)?;
+        let outline = parse_json_object::<DeepNoteOutline>(&run.outline_json)?;
+        let selected_ids = run
+            .selected_section_ids
+            .iter()
+            .cloned()
+            .collect::<HashSet<_>>();
+        let selected_outline = outline.select(&selected_ids)?;
+        let persisted_sections = state
+            .library_repository
+            .list_note_pipeline_sections(&run_id)?
+            .into_iter()
+            .map(|section| (section.section_id.clone(), section))
+            .collect::<HashMap<_, _>>();
+        let ledger_context = serde_json::to_string(&compact_ledger_for_planner(&runtime.ledger))
+            .map_err(|error| format!("读取深度笔记知识账本失败：{error}"))?;
+        let last_message_id = noteworthy_messages(&conversation)
+            .last()
+            .map(|message| message.id.clone());
+        let total = selected_outline.sections.len();
+        let mut scheduler = DeepNoteDagScheduler::new(plan_version.compiled_dag.clone())?;
+        scheduler.complete_preparation();
+        scheduler.prepare_for_resume();
+        let mut drafts_by_id = HashMap::<String, String>::new();
+        for section in &selected_outline.sections {
+            if let Some(existing) = persisted_sections.get(&section.id) {
+                if existing.status == NotePipelineSectionStatus::Completed {
+                    drafts_by_id.insert(section.id.clone(), existing.markdown.clone());
+                    scheduler.reconcile_completed_section(&section.id)?;
+                }
+            }
+        }
+        runtime.plan_version = Some(plan_version.clone());
+        persist_scheduler_state(&state, &run_id, &mut runtime, &scheduler)?;
+
+        let mut cancelled = false;
+        while scheduler.has_unfinished_sections() {
+            scheduler.refresh_ready();
+            if cancellation.is_cancelled() {
+                scheduler.interrupt_running();
+                persist_scheduler_state(&state, &run_id, &mut runtime, &scheduler)?;
+                cancelled = true;
+                break;
+            }
+            if send_paused_if_requested(&state, &run_id, &channel)? {
+                scheduler.interrupt_running();
+                persist_scheduler_state(&state, &run_id, &mut runtime, &scheduler)?;
+                return Ok(());
+            }
+            let ready = scheduler.ready_section_ids(runtime.budget.max_parallel_nodes as usize);
+            if ready.is_empty() {
+                if scheduler.has_section_failures() {
+                    break;
+                }
+                return Err("DAG 调度器无法释放下一个章节节点，可能存在未满足的依赖。".to_string());
+            }
+            for section_id in ready {
+                if cancellation.is_cancelled() {
+                    break;
+                }
+                let Some(section) = selected_outline
+                    .sections
+                    .iter()
+                    .find(|value| value.id == section_id)
+                    .cloned()
+                else {
+                    return Err(format!("DAG 节点引用了不存在的章节：{section_id}"));
+                };
+                scheduler.transition(
+                    &format!("draft:{section_id}"),
+                    DeepNoteNodeStatus::InProgress,
+                )?;
+                if let Ok(node) = scheduler.node_mut(&format!("draft:{section_id}")) {
+                    node.attempt_count = persisted_sections
+                        .get(&section_id)
+                        .map(|value| value.attempt_count)
+                        .unwrap_or(0);
+                    node.error_message = None;
+                }
+                persist_scheduler_state(&state, &run_id, &mut runtime, &scheduler)?;
+                state.library_repository.append_note_pipeline_event(
+                    &run_id,
+                    "dagNodeStarted",
+                    Some(&format!("draft:{section_id}")),
+                    &serde_json::json!({
+                        "nodeId": format!("draft:{section_id}"),
+                        "sectionId": section_id,
+                        "nodeType": "draftSection",
+                    })
+                    .to_string(),
+                )?;
+                let completed_count = drafts_by_id.len();
+                progress(
+                    &state,
+                    &channel,
+                    &run_id,
+                    NotePipelinePhase::Drafting,
+                    Some(completed_count.saturating_add(1)),
+                    Some(total),
+                    format!(
+                        "正在按依赖执行章节 {}/{}：{}",
+                        completed_count.saturating_add(1),
+                        total,
+                        section.heading
+                    ),
+                );
+                let dependency_outputs = dependency_context(&section, &drafts_by_id);
+                let result = match execute_dag_section(
+                    &state,
+                    &run,
+                    &mut runtime,
+                    &selected_outline,
+                    &section,
+                    &ledger_context,
+                    &dependency_outputs,
+                    &channel,
+                    &cancellation,
+                    persisted_sections.get(&section_id),
+                )
+                .await
+                {
+                    Ok(value) => value,
+                    Err(error) => {
+                        let draft_node_id = format!("draft:{section_id}");
+                        scheduler.transition(&draft_node_id, DeepNoteNodeStatus::Failed)?;
+                        if let Ok(node) = scheduler.node_mut(&draft_node_id) {
+                            node.attempt_count = persisted_sections
+                                .get(&section_id)
+                                .map(|value| value.attempt_count)
+                                .unwrap_or(0)
+                                .saturating_add(1);
+                            node.error_message = Some(error.clone());
+                        }
+                        persist_scheduler_state(&state, &run_id, &mut runtime, &scheduler)?;
+                        state.library_repository.append_note_pipeline_event(
+                            &run_id,
+                            "dagNodeFailed",
+                            Some(&draft_node_id),
+                            &serde_json::json!({
+                                "nodeId": draft_node_id,
+                                "sectionId": section_id,
+                                "message": error,
+                            })
+                            .to_string(),
+                        )?;
+                        scheduler.refresh_ready();
+                        persist_scheduler_state(&state, &run_id, &mut runtime, &scheduler)?;
+                        continue;
+                    }
+                };
+                let Some((markdown, validation, attempts, revisions)) = result else {
+                    scheduler.interrupt_running();
+                    persist_scheduler_state(&state, &run_id, &mut runtime, &scheduler)?;
+                    cancelled = true;
+                    break;
+                };
+                let validation_json =
+                    serde_json::to_string(&validation).map_err(|error| error.to_string())?;
+                let draft_node_id = format!("draft:{section_id}");
+                scheduler.transition(&draft_node_id, DeepNoteNodeStatus::Completed)?;
+                if let Ok(node) = scheduler.node_mut(&draft_node_id) {
+                    node.attempt_count = attempts;
+                    node.output_ref = Some(format!("section:{section_id}"));
+                    node.validation_json = validation_json.clone();
+                    node.error_message = None;
+                }
+                persist_scheduler_state(&state, &run_id, &mut runtime, &scheduler)?;
+                state.library_repository.append_note_pipeline_event(
+                    &run_id,
+                    "dagNodeCompleted",
+                    Some(&draft_node_id),
+                    &serde_json::json!({
+                        "nodeId": draft_node_id,
+                        "sectionId": section_id,
+                        "attemptCount": attempts,
+                        "revisionCount": revisions,
+                        "markdownChars": markdown.chars().count(),
+                    })
+                    .to_string(),
+                )?;
+                scheduler.refresh_ready();
+                let validate_node_id = format!("validate:{section_id}");
+                scheduler.transition(&validate_node_id, DeepNoteNodeStatus::InProgress)?;
+                scheduler.transition(&validate_node_id, DeepNoteNodeStatus::Completed)?;
+                if let Ok(node) = scheduler.node_mut(&validate_node_id) {
+                    node.attempt_count = revisions;
+                    node.output_ref = Some(format!("validation:{section_id}"));
+                    node.validation_json = validation_json;
+                    node.error_message = None;
+                }
+                persist_scheduler_state(&state, &run_id, &mut runtime, &scheduler)?;
+                state.library_repository.append_note_pipeline_event(
+                    &run_id,
+                    "dagNodeCompleted",
+                    Some(&validate_node_id),
+                    &serde_json::json!({
+                        "nodeId": validate_node_id,
+                        "sectionId": section_id,
+                        "nodeType": "validateSection",
+                    })
+                    .to_string(),
+                )?;
+                drafts_by_id.insert(section_id, markdown);
+            }
+        }
+        if cancellation.is_cancelled() {
+            scheduler.interrupt_running();
+            cancelled = true;
+        }
+        if cancelled {
+            scheduler.skip_unfinished_sections();
+            persist_scheduler_state(&state, &run_id, &mut runtime, &scheduler)?;
+        }
+        if scheduler.has_section_failures() && !cancelled {
+            persist_scheduler_state(&state, &run_id, &mut runtime, &scheduler)?;
+            return Err("深度笔记存在失败或被阻塞的章节节点，未继续组装不完整笔记。".to_string());
+        }
+        let ordered_ids = stable_topological_sections(&selected_outline.sections)?;
+        let drafts = ordered_ids
+            .into_iter()
+            .filter_map(|id| drafts_by_id.get(&id).map(|markdown| (id, markdown.clone())))
+            .filter_map(|(id, markdown)| {
+                selected_outline
+                    .sections
+                    .iter()
+                    .find(|section| section.id == id)
+                    .cloned()
+                    .map(|section| (section, markdown, false))
+            })
+            .collect::<Vec<_>>();
+        if drafts.is_empty() {
+            finish_interrupted_run(&state, &run_id, &channel).await?;
+            return Ok(());
+        }
+        scheduler.refresh_ready();
+        if scheduler
+            .node("validate-global")
+            .is_some_and(|node| node.status == DeepNoteNodeStatus::Ready)
+        {
+            scheduler.transition("validate-global", DeepNoteNodeStatus::InProgress)?;
+            scheduler.transition("validate-global", DeepNoteNodeStatus::Completed)?;
+            if let Ok(node) = scheduler.node_mut("validate-global") {
+                node.output_ref = Some("global-validation".to_string());
+            }
+            persist_scheduler_state(&state, &run_id, &mut runtime, &scheduler)?;
+        }
+        {
+            let _guard = state.library_operations.lock().await;
+            let current = state.library_repository.get_note_pipeline_run(&run_id)?;
+            if current.phase == NotePipelinePhase::Paused {
+                send(&channel, NotePipelineProgress::Paused { run: current });
+                return Ok(());
+            }
+            state.library_repository.update_note_pipeline_phase(
+                &run_id,
+                NotePipelinePhase::Assembling,
+                None,
+                &[],
+                None,
+            )?;
+        }
+        progress(
+            &state,
+            &channel,
+            &run_id,
+            NotePipelinePhase::Assembling,
+            None,
+            None,
+            "正在组装与检查笔记。",
+        );
+        if scheduler
+            .node("assemble-note")
+            .is_some_and(|node| node.status == DeepNoteNodeStatus::Ready)
+        {
+            scheduler.transition("assemble-note", DeepNoteNodeStatus::InProgress)?;
+        }
+        let effective_outline = DeepNoteOutline {
+            sections: drafts
+                .iter()
+                .map(|(section, _, _)| section.clone())
+                .collect(),
+            ..selected_outline
+        };
+        let (mut title, content, mut warnings) = assemble(&effective_outline, &drafts, false);
+        if cancelled {
+            title = format!("{title}（部分完成）");
+            warnings.push(format!(
+                "任务已取消；已保存 {} 个完成章节，另有 {} 个章节未生成。",
+                drafts.len(),
+                total.saturating_sub(drafts.len())
+            ));
+        }
+        if scheduler
+            .node("assemble-note")
+            .is_some_and(|node| node.status == DeepNoteNodeStatus::InProgress)
+        {
+            scheduler.transition("assemble-note", DeepNoteNodeStatus::Completed)?;
+            if let Ok(node) = scheduler.node_mut("assemble-note") {
+                node.output_ref = Some("assembled-markdown".to_string());
+            }
+            persist_scheduler_state(&state, &run_id, &mut runtime, &scheduler)?;
+        }
+        let sidecar = sidecar_json(&run, &plan_version, &drafts)?;
+        progress(
+            &state,
+            &channel,
+            &run_id,
+            NotePipelinePhase::Persisting,
+            None,
+            None,
+            if cancelled {
+                "正在保存已完成章节为草稿。"
+            } else {
+                "正在保存笔记与来源。"
+            },
+        );
+        if scheduler
+            .node("persist-note")
+            .is_some_and(|node| node.status == DeepNoteNodeStatus::Ready)
+        {
+            scheduler.transition("persist-note", DeepNoteNodeStatus::InProgress)?;
+        }
+        let sources = note_sources(&conversation.id, last_message_id.as_deref(), &drafts);
+        let note = {
+            let _guard = state.library_operations.lock().await;
+            state.library_repository.update_note_pipeline_phase(
+                &run_id,
+                NotePipelinePhase::Persisting,
+                None,
+                &warnings,
+                None,
+            )?;
+            state.library_repository.update_note_pipeline_runtime_json(
+                &run_id,
+                &serde_json::to_string(&runtime.budget).map_err(|error| error.to_string())?,
+                &serde_json::to_string(&runtime).map_err(|error| error.to_string())?,
+                Some(&sidecar),
+            )?;
+            state.library_repository.create_note_with_sources(
+                LibraryNoteCreate {
+                    item_id: None,
+                    title,
+                    content,
+                    group_name: None,
+                },
+                sources,
+            )?
+        };
+        if scheduler
+            .node("persist-note")
+            .is_some_and(|node| node.status == DeepNoteNodeStatus::InProgress)
+        {
+            scheduler.transition("persist-note", DeepNoteNodeStatus::Completed)?;
+            if let Ok(node) = scheduler.node_mut("persist-note") {
+                node.output_ref = Some(format!("note:{}", note.id));
+            }
+            persist_scheduler_state(&state, &run_id, &mut runtime, &scheduler)?;
+        }
+        let completed = {
+            let _guard = state.library_operations.lock().await;
+            let completed = state.library_repository.update_note_pipeline_phase(
+                &run_id,
+                NotePipelinePhase::Done,
+                Some(&note.id),
+                &warnings,
+                None,
+            )?;
+            state.library_repository.append_note_pipeline_event(
+                &run_id,
+                "runCompleted",
+                None,
+                &serde_json::json!({
+                    "noteId": note.id,
+                    "completedSectionCount": completed.completed_section_ids.len(),
+                    "failedSectionCount": completed.failed_section_ids.len(),
+                    "degraded": cancelled,
+                })
+                .to_string(),
+            )?;
+            completed
+        };
+        send(
+            &channel,
+            NotePipelineProgress::Done {
+                run: completed,
+                degraded: cancelled,
+            },
+        );
+        Ok(())
+    }
+    .await;
+    if let Err(error) = result {
+        persist_error(&state, &run_id, &channel, error).await;
+    }
+    state.finish_note_pipeline_run(&run_id).await;
+}
+
+#[allow(dead_code)]
+async fn run_drafting_task_legacy<R: Runtime>(
     app: AppHandle<R>,
     run_id: String,
     channel: Channel<NotePipelineProgress>,

@@ -113,6 +113,8 @@ export default function DeepNoteView() {
   const [requirement, setRequirement] = useState("");
   const [clock, setClock] = useState(Date.now());
   const [logOpen, setLogOpen] = useState(true);
+  const [planOpen, setPlanOpen] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [fallbackModelKey, setFallbackModelKey] = useState("");
   const [switchingModel, setSwitchingModel] = useState(false);
@@ -314,22 +316,40 @@ export default function DeepNoteView() {
 
         {outline ? (
           <>
-            <div className="deep-note-plan-intro">
-              <div><span>目标</span><p>{outline.goal || outline.summary || "根据当前输入建立可验证、可复习的深度笔记。"}</p></div>
-              <div><span>读者与范围</span><p>{[outline.audience, outline.scope].filter(Boolean).join(" · ") || "沿用当前对话语境"}</p></div>
-            </div>
-            <div className="deep-note-section-toolbar"><strong>语义计划</strong><span>{selected.size}/{outline.sections.length} 个章节</span></div>
-            <div className="deep-note-plan-list">
-              {outline.sections.map((section) => (
-                <SectionItem key={section.id} section={section} selected={selected.has(section.id)} disabled={runtime.busy || !runtime.review}
-                  onChange={(checked) => setSelected((current) => {
-                    const next = new Set(current);
-                    if (checked) next.add(section.id); else next.delete(section.id);
-                    return next;
-                  })}
-                />
-              ))}
-            </div>
+            <section className="deep-note-plan-panel" aria-label="语义计划">
+              <div className="deep-note-plan-panel-header">
+                <button
+                  type="button"
+                  onClick={() => setPlanOpen((value) => !value)}
+                  aria-expanded={planOpen}
+                  aria-controls={planOpen ? "deep-note-plan-content" : undefined}
+                >
+                  <ChevronDown size={15} data-open={planOpen} />
+                  <strong>语义计划</strong>
+                  <span>{selected.size}/{outline.sections.length} 个章节</span>
+                </button>
+                <small>{planOpen ? "在此区域内滚动选择" : "点击展开"}</small>
+              </div>
+              {planOpen ? (
+                <div className="deep-note-plan-content" id="deep-note-plan-content" tabIndex={0}>
+                  <div className="deep-note-plan-intro">
+                    <div><span>目标</span><p>{outline.goal || outline.summary || "根据当前输入建立可验证、可复习的深度笔记。"}</p></div>
+                    <div><span>读者与范围</span><p>{[outline.audience, outline.scope].filter(Boolean).join(" · ") || "沿用当前对话语境"}</p></div>
+                  </div>
+                  <div className="deep-note-plan-list">
+                    {outline.sections.map((section) => (
+                      <SectionItem key={section.id} section={section} selected={selected.has(section.id)} disabled={runtime.busy || !runtime.review}
+                        onChange={(checked) => setSelected((current) => {
+                          const next = new Set(current);
+                          if (checked) next.add(section.id); else next.delete(section.id);
+                          return next;
+                        })}
+                      />
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+            </section>
             {runtime.review ? (
               <div className="deep-note-plan-actions">
                 <label><span>调整计划要求</span><textarea value={requirement} disabled={runtime.busy}
@@ -343,9 +363,6 @@ export default function DeepNoteView() {
                   </button>
                 </div>
               </div>
-            ) : null}
-            {runtime.detail?.markdownPreview ? (
-              <article className="deep-note-preview"><div className="deep-note-section-toolbar"><strong>已完成内容预览</strong></div><pre>{runtime.detail.markdownPreview}</pre></article>
             ) : null}
           </>
         ) : (
@@ -380,6 +397,29 @@ export default function DeepNoteView() {
             ) : <p className="deep-note-event-empty">任务创建后，阶段变化和模型请求会记录在这里。</p>
           ) : null}
         </section>
+
+        {runtime.detail?.markdownPreview ? (
+          <article className="deep-note-preview" aria-label="已完成内容预览">
+            <div className="deep-note-preview-header">
+              <button
+                type="button"
+                onClick={() => setPreviewOpen((value) => !value)}
+                aria-expanded={previewOpen}
+                aria-controls={previewOpen ? "deep-note-preview-content" : undefined}
+              >
+                <ChevronDown size={15} data-open={previewOpen} />
+                <strong>已完成内容预览</strong>
+                <span>{runtime.detail.markdownPreview.length.toLocaleString()} 字符</span>
+              </button>
+              <small>{previewOpen ? "在此区域内滚动查看" : "点击展开"}</small>
+            </div>
+            {previewOpen ? (
+              <div className="deep-note-preview-content" id="deep-note-preview-content" tabIndex={0}>
+                <pre>{runtime.detail.markdownPreview}</pre>
+              </div>
+            ) : null}
+          </article>
+        ) : null}
       </main>
 
       <aside className="deep-note-run-pane">
@@ -466,7 +506,12 @@ export default function DeepNoteView() {
             <div className="deep-note-pane-heading"><Network size={15} /><strong>执行图（计划依赖）</strong></div>
             <p>{completedNodes}/{nodes.length} 个节点完成</p>
             <div className="deep-note-node-list">
-              {nodes.slice(0, 18).map((node) => <div key={node.nodeId} data-status={node.status}><span /><small>{node.nodeType}</small></div>)}
+              {nodes.map((node) => (
+                <div key={node.nodeId} data-status={node.status} title={node.dependsOn?.length ? `依赖 ${node.dependsOn.join("、")}` : "无前置依赖"}>
+                  <span />
+                  <small>{node.sectionId ? `${sectionHeadings.get(node.sectionId) ?? node.sectionId} · ` : ""}{node.nodeType}</small>
+                </div>
+              ))}
             </div>
           </>
         ) : null}

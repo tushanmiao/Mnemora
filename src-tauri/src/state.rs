@@ -20,6 +20,7 @@ use crate::settings::{
 };
 use crate::skills::SkillRepository;
 use crate::startup_log::StartupErrorLog;
+use crate::storage::StorageManager;
 use crate::sync::{
     mapping::SyncMappingRepository, SyncSecretStore, SyncSettings, SyncSettingsRepository,
 };
@@ -63,6 +64,8 @@ pub struct AppState {
     pub usage_operations: Mutex<()>,
     pub request_debug_records: StdMutex<VecDeque<RequestDebugRecord>>,
     pub startup_error_log: StartupErrorLog,
+    pub storage: StorageManager,
+    pub storage_operations: Mutex<()>,
 }
 
 fn cancel_chat_run_tokens(runs: &HashMap<String, CancellationToken>) -> usize {
@@ -78,6 +81,7 @@ impl AppState {
         app_data_dir: PathBuf,
         resource_dir: PathBuf,
         log_dir: PathBuf,
+        storage: StorageManager,
     ) -> Result<Self, String> {
         let http = Client::builder()
             .connect_timeout(Duration::from_secs(30))
@@ -171,6 +175,8 @@ impl AppState {
             usage_operations: Mutex::new(()),
             request_debug_records: StdMutex::new(crate::request_debug::empty_store()),
             startup_error_log: StartupErrorLog::new(log_dir),
+            storage,
+            storage_operations: Mutex::new(()),
         })
     }
 

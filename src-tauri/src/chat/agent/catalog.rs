@@ -245,7 +245,7 @@ pub static TOOL_ENTRIES: &[ToolEntry] = &[
     },
     ToolEntry {
         name: "skill",
-        description: "按 ID 加载一个可用技能的完整工作说明；同一运行无需重复加载。",
+        description: "按 ID 加载一个与当前任务描述匹配的可用 Skill 完整工作说明；匹配时应主动调用，同一运行无需重复加载。",
         input_schema: skill_schema,
         namespace: ToolNamespace::Skill,
         handler: ToolHandler::Skill,

@@ -131,11 +131,13 @@ async fn run(options: Options) -> Result<TestResult, String> {
     let config_dir = options.output_dir.join("config");
     let data_dir = options.output_dir.join("data");
     let log_dir = options.output_dir.join("logs");
+    let storage = crate::storage::StorageManager::bootstrap(config_dir.clone(), data_dir.clone())?;
     let state = AppState::new(
         config_dir,
         data_dir.clone(),
         options.resource_dir.clone(),
         log_dir,
+        storage,
     )?;
     state.conversation_repository.save(&conversation)?;
 

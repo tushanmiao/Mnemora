@@ -13,6 +13,7 @@ mod settings;
 mod skills;
 mod startup_log;
 mod state;
+mod storage;
 mod sync;
 mod usage;
 mod window_lifecycle;
@@ -53,11 +54,40 @@ pub fn run() {
             let launched_from_autostart =
                 std::env::args().any(|argument| argument == AUTOSTART_ARG);
             let config_dir = app.path().app_config_dir().map_err(std::io::Error::other)?;
-            let app_data_dir = app.path().app_data_dir().map_err(std::io::Error::other)?;
+            let default_data_dir = app.path().app_data_dir().map_err(std::io::Error::other)?;
             let resource_dir = app.path().resource_dir().map_err(std::io::Error::other)?;
             let log_dir = app.path().app_log_dir().map_err(std::io::Error::other)?;
-            let app_state = state::AppState::new(config_dir, app_data_dir, resource_dir, log_dir)
-                .map_err(std::io::Error::other)?;
+            let storage_manager =
+                storage::StorageManager::bootstrap(config_dir.clone(), default_data_dir)
+                    .map_err(std::io::Error::other)?;
+            let app_data_dir = storage_manager.runtime_data_dir().to_path_buf();
+            let app_state = state::AppState::new(
+                config_dir,
+                app_data_dir,
+                resource_dir,
+                log_dir,
+                storage_manager,
+            )
+            .map_err(std::io::Error::other)?;
+            if app_state.storage.is_available() {
+                let scope = app.asset_protocol_scope();
+                scope
+                    .allow_directory(
+                        app_state.storage.current_data_dir().join("conversations"),
+                        true,
+                    )
+                    .map_err(std::io::Error::other)?;
+                scope
+                    .allow_directory(
+                        app_state
+                            .storage
+                            .current_data_dir()
+                            .join("english")
+                            .join("audio-cache"),
+                        true,
+                    )
+                    .map_err(std::io::Error::other)?;
+            }
             app.manage(app_state);
             app.manage(html_preview::HtmlPreviewState::default());
             window_lifecycle::setup_tray(app.handle()).map_err(std::io::Error::other)?;
@@ -83,6 +113,9 @@ pub fn run() {
             commands::app_settings::export_settings_bundle,
             commands::app_settings::inspect_settings_bundle,
             commands::app_settings::import_settings_bundle,
+            commands::storage::storage_get_status,
+            commands::storage::storage_open_directory,
+            commands::storage::storage_migrate_data,
             commands::app_update::check_application_update,
             commands::app_update::check_signed_application_update,
             commands::app_update::download_and_install_application_update,

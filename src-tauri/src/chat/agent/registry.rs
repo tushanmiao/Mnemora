@@ -201,10 +201,15 @@ pub fn configure_model_request(
     }
     if context.max_model_skill_activations > 0 && !context.model_skills.is_empty() {
         push_registered_tool(&mut tools, "search_skills");
+        // Skill 的正文仍然延迟加载，但首轮必须直接提供 skill 契约。
+        // 只暴露 search_skills 会多出一个模型自行搜索的决策点；Kivio 等
+        // Agent 实现会把轻量目录和加载工具同时提供给模型，匹配描述即可调用。
+        push_registered_tool(&mut tools, "skill");
         append_system_prompt(
             request,
-            "<mnemora_skill_discovery>\n当前工作区存在可按需使用的 Skill。只有任务确实需要专门工作方法时，先调用 search_skills；搜索命中后再调用 skill 加载正文。同一 Skill 不要重复加载。\n</mnemora_skill_discovery>",
+            "<mnemora_skill_discovery>\n当前工作区存在可按需使用的 Skill。先查看下方的轻量目录：如果当前任务与某个 Skill 的描述匹配，应主动调用 skill 加载该 Skill 的正文，不需要用户显式点名。不要因为问题看起来可以直接回答就跳过匹配；只有描述明确不适合时才跳过。Skill 正文仍按需披露，同一 Skill 不要重复加载。search_skills 仅用于目录中无法判断或需要进一步发现的情况。\n</mnemora_skill_discovery>",
         );
+        append_skill_catalog_prompt(request, &context.model_skills);
     }
     if context
         .available_tool_names
@@ -248,6 +253,32 @@ pub fn configure_model_request(
     request.tools = tools;
 }
 
+/// 将可用 Skill 的元数据放入首轮上下文，正文仍由 `skill` 工具延迟加载。
+/// 这一步是自动命中的关键：模型必须先知道有哪些 Skill 以及各自适用范围，
+/// 仅给一个抽象的 search_skills 工具无法稳定触发主动搜索。
+fn append_skill_catalog_prompt(request: &mut ModelRequest, skills: &[SkillSummary]) {
+    let mut catalog = String::from("<mnemora_available_skills>\n");
+    for skill in skills {
+        catalog.push_str("  <skill>\n");
+        catalog.push_str("    <id>");
+        catalog.push_str(&xml_escape(&skill.id));
+        catalog.push_str("</id>\n    <name>");
+        catalog.push_str(&xml_escape(&skill.name));
+        catalog.push_str("</name>\n    <description>");
+        catalog.push_str(&xml_escape(&skill.description));
+        catalog.push_str("</description>\n  </skill>\n");
+    }
+    catalog.push_str("</mnemora_available_skills>");
+    append_system_prompt(request, &catalog);
+}
+
+fn xml_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
 fn push_registered_tool(tools: &mut Vec<ModelTool>, name: &str) {
     if tools.iter().any(|tool| tool.name == name) {
         return;
@@ -256,7 +287,7 @@ fn push_registered_tool(tools: &mut Vec<ModelTool>, name: &str) {
     tools.push(entry.model_tool());
 }
 
-/** Tool/Skill 搜索结果只披露命中的下一层契约，不把完整 Catalog 注入首轮上下文。 */
+/** Tool/Skill 搜索结果只披露命中的下一层契约，不注入未命中的完整工具契约。 */
 pub fn apply_tool_disclosures(
     request: &mut ModelRequest,
     call: &ModelToolCall,
@@ -1398,8 +1429,12 @@ mod tests {
                 .iter()
                 .map(|tool| tool.name.as_str())
                 .collect::<Vec<_>>(),
-            vec!["search_skills"]
+            vec!["search_skills", "skill"]
         );
+        assert!(discovery_request
+            .system_prompt
+            .as_deref()
+            .is_some_and(|prompt| prompt.contains("<mnemora_available_skills>")));
         let search = tool_call("search_skills", json!({ "query": "first" }));
         let search_result = execute_skill_search(&search, &context).unwrap();
         apply_tool_disclosures(&mut discovery_request, &search, &search_result);
@@ -1434,6 +1469,49 @@ mod tests {
         .unwrap_err();
         assert!(error.message.contains("已达到上限"));
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn builtin_question_framing_is_visible_to_the_first_chat_model_call() {
+        let root = std::env::temp_dir().join(format!(
+            "mnemora-question-framing-catalog-{}",
+            Uuid::new_v4()
+        ));
+        let builtin = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("resources")
+            .join("skills");
+        let repository = SkillRepository::new(builtin, root.clone());
+        let model_skills = repository
+            .list()
+            .unwrap()
+            .skills
+            .into_iter()
+            .filter(|skill| skill.enabled)
+            .collect::<Vec<_>>();
+        let context = ToolRuntimeContext {
+            conversation_id: "conversation-1".to_string(),
+            permission_mode: AiPermissionMode::AskSensitive,
+            attachments: Vec::new(),
+            available_tool_names: vec!["skill".to_string()],
+            max_model_skill_activations: 12,
+            model_skills,
+            memory_settings: MemorySettings::default(),
+        };
+        let mut request = ModelRequest {
+            model: "test-model".to_string(),
+            system_prompt: None,
+            messages: Vec::new(),
+            options: ModelOptions::default(),
+            tools: Vec::new(),
+        };
+
+        configure_model_request(&mut request, &context, None);
+
+        let prompt = request.system_prompt.as_deref().unwrap();
+        assert!(prompt.contains("<id>question-framing</id>"), "{prompt}");
+        assert!(prompt.contains("为什么会这样"), "{prompt}");
+        assert!(request.tools.iter().any(|tool| tool.name == "skill"));
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

@@ -1007,6 +1007,52 @@ impl LibraryRepository {
             .map_err(|error| format!("提交深度笔记 DAG 失败：{error}"))
     }
 
+    pub fn update_note_pipeline_node_state(
+        &self,
+        run_id: &str,
+        plan_version: u32,
+        node_id: &str,
+        status: &str,
+        attempt_count: u8,
+        output_ref: Option<&str>,
+        validation_json: &str,
+        error_message: Option<&str>,
+    ) -> Result<(), String> {
+        let run_id = normalize_identifier("任务 ID", run_id)?;
+        let node_id = normalize_identifier("DAG 节点 ID", node_id)?;
+        let connection = self.open_connection()?;
+        let now = now_millis_i64();
+        let changed = connection
+            .execute(
+                "UPDATE note_pipeline_nodes
+                 SET status = ?, attempt_count = ?, output_ref = ?, validation_json = ?,
+                     error_message = ?, updated_at = ?
+                 WHERE run_id = ? AND plan_version = ? AND node_id = ?",
+                params![
+                    status,
+                    i64::from(attempt_count),
+                    output_ref,
+                    validation_json,
+                    error_message,
+                    now,
+                    run_id,
+                    i64::from(plan_version),
+                    node_id,
+                ],
+            )
+            .map_err(|error| format!("更新深度笔记 DAG 节点失败：{error}"))?;
+        if changed == 0 {
+            return Err(format!("深度笔记 DAG 节点不存在：{node_id}"));
+        }
+        connection
+            .execute(
+                "UPDATE note_pipeline_runs SET updated_at = ? WHERE id = ?",
+                params![now, run_id],
+            )
+            .map_err(|error| format!("更新深度笔记任务时间失败：{error}"))?;
+        Ok(())
+    }
+
     pub fn replace_note_pipeline_source_chunks(
         &self,
         run_id: &str,

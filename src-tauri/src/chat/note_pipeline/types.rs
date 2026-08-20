@@ -368,6 +368,43 @@ pub enum DeepNoteNodeType {
     PersistNote,
 }
 
+impl DeepNoteNodeType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AnalyzeInput => "analyzeInput",
+            Self::ReconSource => "reconSource",
+            Self::ExtractEvidence => "extractEvidence",
+            Self::BuildLedger => "buildLedger",
+            Self::DraftSection => "draftSection",
+            Self::ValidateSection => "validateSection",
+            Self::ReviewSection => "reviewSection",
+            Self::ReviseSection => "reviseSection",
+            Self::ValidateGlobal => "validateGlobal",
+            Self::ApplyPatch => "applyPatch",
+            Self::AssembleNote => "assembleNote",
+            Self::PersistNote => "persistNote",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "analyzeInput" => Ok(Self::AnalyzeInput),
+            "reconSource" => Ok(Self::ReconSource),
+            "extractEvidence" => Ok(Self::ExtractEvidence),
+            "buildLedger" => Ok(Self::BuildLedger),
+            "draftSection" => Ok(Self::DraftSection),
+            "validateSection" => Ok(Self::ValidateSection),
+            "reviewSection" => Ok(Self::ReviewSection),
+            "reviseSection" => Ok(Self::ReviseSection),
+            "validateGlobal" => Ok(Self::ValidateGlobal),
+            "applyPatch" => Ok(Self::ApplyPatch),
+            "assembleNote" => Ok(Self::AssembleNote),
+            "persistNote" => Ok(Self::PersistNote),
+            _ => Err(format!("未知的深度笔记执行节点类型：{value}")),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum DeepNoteNodeStatus {
@@ -381,6 +418,39 @@ pub enum DeepNoteNodeStatus {
     Blocked,
     Skipped,
     Interrupted,
+}
+
+impl DeepNoteNodeStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Ready => "ready",
+            Self::InProgress => "inProgress",
+            Self::Completed => "completed",
+            Self::NeedsReview => "needsReview",
+            Self::NeedsRevision => "needsRevision",
+            Self::Failed => "failed",
+            Self::Blocked => "blocked",
+            Self::Skipped => "skipped",
+            Self::Interrupted => "interrupted",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "pending" => Ok(Self::Pending),
+            "ready" => Ok(Self::Ready),
+            "inProgress" | "in_progress" => Ok(Self::InProgress),
+            "completed" => Ok(Self::Completed),
+            "needsReview" | "needs_review" => Ok(Self::NeedsReview),
+            "needsRevision" | "needs_revision" => Ok(Self::NeedsRevision),
+            "failed" => Ok(Self::Failed),
+            "blocked" => Ok(Self::Blocked),
+            "skipped" => Ok(Self::Skipped),
+            "interrupted" => Ok(Self::Interrupted),
+            _ => Err(format!("未知的深度笔记执行节点状态：{value}")),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
