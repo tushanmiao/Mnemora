@@ -107,6 +107,7 @@ pub struct CompleteExecution<'a> {
     pub cancellation: &'a CancellationToken,
     pub max_retries: Option<u8>,
     pub attempt_timeout: Option<Duration>,
+    pub retry_predicate: Option<&'a (dyn Fn(&ModelError) -> bool + Send + Sync)>,
     pub on_progress: Option<&'a (dyn Fn(CompletionProgress) + Send + Sync)>,
 }
 
@@ -119,6 +120,7 @@ pub async fn complete(
         cancellation: &cancellation,
         max_retries: None,
         attempt_timeout: None,
+        retry_predicate: None,
         on_progress: None,
     };
     complete_with_execution(state, request, &execution).await
@@ -530,7 +532,13 @@ async fn run_agent_complete(
             .await;
             match attempt {
                 Ok(response) => break Ok(response),
-                Err(error) if retry_index < retry_policy.max_retries && should_retry(&error) => {
+                Err(error)
+                    if retry_index < retry_policy.max_retries
+                        && should_retry(&error)
+                        && execution
+                            .retry_predicate
+                            .map_or(true, |predicate| predicate(&error)) =>
+                {
                     let delay = retry_delay(&error, retry_index);
                     if let Some(callback) = execution.on_progress {
                         callback(CompletionProgress::RetryScheduled {
@@ -1664,19 +1672,26 @@ fn should_retry(error: &ModelError) -> bool {
     matches!(
         error.kind,
         ModelErrorKind::RateLimited
-            | ModelErrorKind::Timeout
+            | ModelErrorKind::ConcurrencyLimited
+            | ModelErrorKind::ClientTimeout
+            | ModelErrorKind::UpstreamTimeout
             | ModelErrorKind::Connection
             | ModelErrorKind::Provider
     )
 }
 
 fn retry_delay(error: &ModelError, retry_index: u8) -> Duration {
-    let exponential_ms = 300u64.saturating_mul(1u64 << retry_index.min(4));
+    let base_ms: u64 = match error.kind {
+        ModelErrorKind::ConcurrencyLimited => 15_000,
+        ModelErrorKind::UpstreamTimeout => 5_000,
+        _ => 300,
+    };
+    let exponential_ms = base_ms.saturating_mul(1u64 << retry_index.min(4));
     Duration::from_millis(
         error
             .retry_after_ms
             .unwrap_or(exponential_ms)
-            .clamp(100, 5_000),
+            .clamp(100, 120_000),
     )
 }
 
@@ -2200,6 +2215,6 @@ mod tests {
             std::future::pending::<Result<ModelResponse, ModelError>>(),
         )
         .await;
-        assert_eq!(result.unwrap_err().kind, ModelErrorKind::Timeout);
+        assert_eq!(result.unwrap_err().kind, ModelErrorKind::ClientTimeout);
     }
 }

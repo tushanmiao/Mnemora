@@ -513,6 +513,7 @@ impl NotePipelinePhase {
                 | Self::Persisting
                 | Self::Paused
                 | Self::Blocked
+                | Self::Cancelled
                 | Self::Error
         )
     }

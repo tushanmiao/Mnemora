@@ -1,6 +1,6 @@
 [package]
 name = "mnemora"
-version = "0.1.12"
+version = "0.1.13"
 description = "Mnemora desktop application"
 authors = ["tushanmiao"]
 edition = "2021"
@@ -20,6 +20,12 @@ tauri-build = { version = "2", features = [] }
 [features]
 default = []
 memory-diagnostics = ["dep:sysinfo", "dep:windows-sys"]
+deep-note-e2e = ["tauri/test"]
+
+[[bin]]
+name = "deep-note-e2e"
+path = "src/bin/deep_note_e2e.rs"
+required-features = ["deep-note-e2e"]
 
 [dependencies]
 tauri = { version = "2", features = ["protocol-asset", "tray-icon"] }

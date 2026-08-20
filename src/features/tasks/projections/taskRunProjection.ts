@@ -113,7 +113,9 @@ export function projectDeepNoteTaskRun(
     metrics: {},
     needsAttention: status === "waiting" || status === "paused" || status === "failed",
     canPause: status === "running" && pauseableDeepNotePhase(phase),
-    canResume: status === "paused",
+    canResume: status === "paused" || status === "stopped",
+    canRetry: status === "failed",
+    canRestart: status === "failed" || status === "stopped",
     canStop: !TERMINAL_STATUSES.has(status),
   };
 }
@@ -168,6 +170,8 @@ export function projectChatTaskRun(
     needsAttention: workflow.needsAttention,
     canPause: false,
     canResume: false,
+    canRetry: false,
+    canRestart: false,
     canStop: status === "running",
   };
 }

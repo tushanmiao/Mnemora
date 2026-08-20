@@ -20,7 +20,7 @@ function detail(overrides: Partial<DeepNoteRunDetail> = {}): DeepNoteRunDetail {
     inputSnapshot: null,
     planVersion: null,
     budget: { semanticCallLimit: 12, semanticCallsUsed: 0, nodeAttemptLimit: 5, sectionRevisionLimit: 5, replanLimit: 4, replansUsed: 0, maxParallelNodes: 2 },
-    contextBudget: { contextWindowTokens: 128_000, estimatedInputTokens: 58_000, plannerOutputReserveTokens: 8_192, promptOverheadTokens: 4_096, safetyMarginTokens: 8_000, usableInputTokens: 100_000, directInputLimitTokens: 24_000, chunkTargetTokens: 16_000, chunkCount: 5, processedChunkCount: 5, totalMessageCount: 24, processedMessageCount: 24, coverageComplete: true, omittedMessageIds: [] },
+    contextBudget: { contextWindowTokens: 128_000, estimatedInputTokens: 58_000, plannerOutputReserveTokens: 4_096, promptOverheadTokens: 4_096, safetyMarginTokens: 8_000, usableInputTokens: 100_000, directInputLimitTokens: 24_000, chunkTargetTokens: 16_000, chunkCount: 5, processedChunkCount: 5, totalMessageCount: 24, processedMessageCount: 24, coverageComplete: true, omittedMessageIds: [] },
     sourceChunkCount: 5, nodes: [], sections: [], sourceChunks: [], evidence: [], ledger: {}, events: [], markdownPreview: "", sidecarJson: "{}",
     ...overrides,
   };
@@ -58,11 +58,51 @@ describe("deep note diagnostics", () => {
       sequence: 3,
       eventType: "modelCallCompleted",
       nodeId: null,
-      payloadJson: JSON.stringify({ durationMs: 12_400, responseChars: 3_200 }),
+      payloadJson: JSON.stringify({
+        operation: "deepNoteOutline", durationMs: 12_400, inputChars: 8_000,
+        responseChars: 3_200, maxOutputTokens: 4_096,
+      }),
       createdAt: 20_000,
     });
-    expect(event.label).toBe("模型请求完成");
+    expect(event.label).toBe("知识账本汇总提纲完成");
     expect(event.detail).toContain("12 秒");
+    expect(event.detail).toContain("输入 8000 字符");
     expect(event.detail).toContain("3200 字符");
+    expect(event.detail).toContain("4096 Token");
+  });
+
+  it("keeps legacy model events readable without invented zero metrics", () => {
+    const event = describeNotePipelineEvent({
+      sequence: 4,
+      eventType: "modelCallCompleted",
+      nodeId: null,
+      payloadJson: JSON.stringify({ durationMs: 2_000, responseChars: 180 }),
+      createdAt: 22_000,
+    });
+    expect(event.detail).toBe("耗时 2 秒 · 返回 180 字符");
+    expect(event.detail).not.toContain("输入 0");
+    expect(event.detail).not.toContain("输出上限 0");
+  });
+
+  it("explains continue, retry, and restart recovery events", () => {
+    const continued = describeNotePipelineEvent({
+      sequence: 5, eventType: "runContinued", nodeId: null,
+      payloadJson: JSON.stringify({ executionVersion: 2, resetFailedSections: false }),
+      createdAt: 23_000,
+    });
+    const retried = describeNotePipelineEvent({
+      sequence: 6, eventType: "runRetryRequested", nodeId: null,
+      payloadJson: JSON.stringify({ executionVersion: 3, resetFailedSections: true }),
+      createdAt: 24_000,
+    });
+    const restarted = describeNotePipelineEvent({
+      sequence: 7, eventType: "runRestarted", nodeId: null,
+      payloadJson: JSON.stringify({ newRunId: "run-2" }),
+      createdAt: 25_000,
+    });
+
+    expect(continued).toEqual({ label: "已从停止点继续", detail: "恢复执行版本 v2，保留已有检查点" });
+    expect(retried).toEqual({ label: "已重试失败步骤", detail: "恢复执行版本 v3，失败章节和节点已重置" });
+    expect(restarted).toEqual({ label: "已重新生成", detail: "新任务 run-2" });
   });
 });

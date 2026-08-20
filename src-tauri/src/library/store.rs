@@ -787,13 +787,24 @@ impl LibraryRepository {
         let connection = self.open_connection()?;
         let mut statement = connection
             .prepare(
-                "SELECT id FROM note_pipeline_runs
-                 WHERE phase IN (
-                    'preflight', 'analyzing', 'awaiting_outline', 'compiling', 'queued',
-                    'drafting', 'validating', 'replanning', 'assembling', 'persisting',
-                    'paused', 'blocked', 'error'
+                "SELECT candidate.id FROM note_pipeline_runs AS candidate
+                 WHERE (
+                    candidate.phase IN (
+                       'preflight', 'analyzing', 'awaiting_outline', 'compiling', 'queued',
+                       'drafting', 'validating', 'replanning', 'assembling', 'persisting',
+                       'paused', 'blocked', 'error'
+                    )
+                    OR (candidate.phase = 'cancelled' AND candidate.note_id IS NULL)
                  )
-                 ORDER BY updated_at DESC",
+                 AND NOT EXISTS (
+                    SELECT 1 FROM note_pipeline_runs AS newer
+                    WHERE newer.conversation_id = candidate.conversation_id
+                      AND (
+                         newer.created_at > candidate.created_at
+                         OR (newer.created_at = candidate.created_at AND newer.rowid > candidate.rowid)
+                      )
+                 )
+                 ORDER BY candidate.updated_at DESC, candidate.created_at DESC",
             )
             .map_err(|error| format!("准备深度笔记任务查询失败：{error}"))?;
         let ids = statement
@@ -1133,6 +1144,73 @@ impl LibraryRepository {
             )
             .map_err(|error| format!("保存深度笔记运行状态失败：{error}"))?;
         Ok(())
+    }
+
+    pub fn prepare_note_pipeline_retry(
+        &self,
+        run_id: &str,
+        reset_failed_sections: bool,
+    ) -> Result<NotePipelineRun, String> {
+        let run_id = normalize_identifier("任务 ID", run_id)?;
+        let mut connection = self.open_connection()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| format!("开始准备深度笔记恢复失败：{error}"))?;
+        let (phase, execution_version): (String, i64) = transaction
+            .query_row(
+                "SELECT phase, execution_version FROM note_pipeline_runs WHERE id = ?",
+                params![run_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(|error| format!("读取深度笔记恢复状态失败：{error}"))?
+            .ok_or_else(|| "深度笔记任务不存在。".to_string())?;
+        if !matches!(phase.as_str(), "error" | "blocked" | "cancelled") {
+            return Err("当前深度笔记任务不需要人工恢复。".to_string());
+        }
+        if execution_version >= 6 {
+            return Err("该深度笔记任务已达到 5 次人工恢复上限，请重新生成。".to_string());
+        }
+        let now = now_millis_i64();
+        transaction
+            .execute(
+                "UPDATE note_pipeline_runs
+                 SET execution_version = execution_version + 1, error_message = NULL, updated_at = ?
+                 WHERE id = ?",
+                params![now, run_id],
+            )
+            .map_err(|error| format!("更新深度笔记恢复版本失败：{error}"))?;
+        if reset_failed_sections {
+            transaction
+                .execute(
+                    "UPDATE note_pipeline_sections
+                     SET markdown = '', status = 'pending', attempt_count = 0, revision_count = 0,
+                         evidence_ids_json = '[]', validation_json = '', error_message = NULL,
+                         updated_at = ?
+                     WHERE run_id = ? AND status IN (
+                        'failed', 'blocked', 'needs_review', 'needs_revision', 'interrupted'
+                     )",
+                    params![now, run_id],
+                )
+                .map_err(|error| format!("重置失败章节检查点失败：{error}"))?;
+            transaction
+                .execute(
+                    "UPDATE note_pipeline_nodes
+                     SET status = 'pending', attempt_count = 0, evidence_ids_json = '[]',
+                         output_ref = NULL, validation_json = '', error_message = NULL,
+                         updated_at = ?
+                     WHERE run_id = ? AND status IN (
+                        'failed', 'blocked', 'needs_review', 'needs_revision', 'interrupted',
+                        'needsReview', 'needsRevision'
+                     )",
+                    params![now, run_id],
+                )
+                .map_err(|error| format!("重置失败执行节点失败：{error}"))?;
+        }
+        transaction
+            .commit()
+            .map_err(|error| format!("提交深度笔记恢复状态失败：{error}"))?;
+        self.get_note_pipeline_run(&run_id)
     }
 
     pub fn select_note_pipeline_sections(
@@ -3725,6 +3803,244 @@ mod tests {
                 idempotency_key: "output-3".to_string(),
             })
             .is_ok());
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn discovers_only_the_latest_recoverable_run_for_each_conversation() {
+        let directory = test_directory("note-pipeline-recovery-discovery");
+        let repository = LibraryRepository::new(directory.clone());
+        let first = repository
+            .create_note_pipeline_run(NotePipelineRunCreate {
+                id: "cancelled-run".to_string(),
+                conversation_id: "conversation-1".to_string(),
+                provider_id: "provider-1".to_string(),
+                model_id: "model-1".to_string(),
+                max_output_tokens: 4_096,
+                thinking_enabled: false,
+                retry_attempts: 5,
+                input_snapshot_hash: "snapshot-1".to_string(),
+                budget_json: "{}".to_string(),
+                preflight_json: "{}".to_string(),
+                idempotency_key: "output-1".to_string(),
+            })
+            .unwrap();
+        repository
+            .update_note_pipeline_phase(&first.id, NotePipelinePhase::Cancelled, None, &[], None)
+            .unwrap();
+
+        let recoverable = repository.list_resumable_note_pipeline_runs().unwrap();
+        assert_eq!(recoverable.len(), 1);
+        assert_eq!(recoverable[0].id, first.id);
+        assert!(NotePipelinePhase::Cancelled.is_resumable());
+
+        let newer = repository
+            .create_note_pipeline_run(NotePipelineRunCreate {
+                id: "completed-run".to_string(),
+                conversation_id: "conversation-1".to_string(),
+                provider_id: "provider-1".to_string(),
+                model_id: "model-1".to_string(),
+                max_output_tokens: 4_096,
+                thinking_enabled: false,
+                retry_attempts: 5,
+                input_snapshot_hash: "snapshot-2".to_string(),
+                budget_json: "{}".to_string(),
+                preflight_json: "{}".to_string(),
+                idempotency_key: "output-2".to_string(),
+            })
+            .unwrap();
+        repository
+            .update_note_pipeline_phase(&newer.id, NotePipelinePhase::Done, None, &[], None)
+            .unwrap();
+
+        assert!(repository
+            .list_resumable_note_pipeline_runs()
+            .unwrap()
+            .is_empty());
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn retry_preserves_completed_checkpoints_and_resets_failed_work() {
+        let directory = test_directory("note-pipeline-retry");
+        let repository = LibraryRepository::new(directory.clone());
+        let run = repository
+            .create_note_pipeline_run(NotePipelineRunCreate {
+                id: "retry-run".to_string(),
+                conversation_id: "conversation-1".to_string(),
+                provider_id: "provider-1".to_string(),
+                model_id: "model-1".to_string(),
+                max_output_tokens: 4_096,
+                thinking_enabled: true,
+                retry_attempts: 5,
+                input_snapshot_hash: "snapshot-1".to_string(),
+                budget_json: "{}".to_string(),
+                preflight_json: "{}".to_string(),
+                idempotency_key: "output-1".to_string(),
+            })
+            .unwrap();
+        let outline = serde_json::json!({
+            "title": "T",
+            "summary": "S",
+            "weakPoints": [],
+            "sections": [
+                { "id": "completed", "heading": "A", "kind": "concept", "brief": "A" },
+                { "id": "failed", "heading": "B", "kind": "summary", "brief": "B" }
+            ]
+        })
+        .to_string();
+        repository
+            .save_note_pipeline_outline(
+                &run.id,
+                &outline,
+                vec![
+                    NotePipelineSectionCreate {
+                        section_id: "completed".to_string(),
+                        position: 0,
+                        section_json: serde_json::json!({ "id": "completed" }).to_string(),
+                        input_hash: "completed-input".to_string(),
+                    },
+                    NotePipelineSectionCreate {
+                        section_id: "failed".to_string(),
+                        position: 1,
+                        section_json: serde_json::json!({ "id": "failed" }).to_string(),
+                        input_hash: "failed-input".to_string(),
+                    },
+                ],
+            )
+            .unwrap();
+        repository
+            .select_note_pipeline_sections(
+                &run.id,
+                vec!["completed".to_string(), "failed".to_string()],
+            )
+            .unwrap();
+        repository
+            .save_note_pipeline_section_checkpoint(
+                &run.id,
+                "completed",
+                "## Completed",
+                NotePipelineSectionStatus::Completed,
+                2,
+                1,
+                &["evidence-1".to_string()],
+                "{\"valid\":true}",
+                None,
+            )
+            .unwrap();
+        repository
+            .save_note_pipeline_section_checkpoint(
+                &run.id,
+                "failed",
+                "partial draft",
+                NotePipelineSectionStatus::Failed,
+                5,
+                5,
+                &["evidence-2".to_string()],
+                "{\"valid\":false}",
+                Some("timeout"),
+            )
+            .unwrap();
+        repository
+            .replace_note_pipeline_nodes(
+                &run.id,
+                1,
+                &[
+                    (
+                        "node-completed".to_string(),
+                        "draftSection".to_string(),
+                        Some("completed".to_string()),
+                        "[]".to_string(),
+                        "completed".to_string(),
+                        "completed-input".to_string(),
+                    ),
+                    (
+                        "node-review".to_string(),
+                        "validateSection".to_string(),
+                        Some("failed".to_string()),
+                        "[]".to_string(),
+                        "needsReview".to_string(),
+                        "failed-input".to_string(),
+                    ),
+                ],
+            )
+            .unwrap();
+        {
+            let connection = repository.open_connection().unwrap();
+            connection
+                .execute(
+                    "UPDATE note_pipeline_nodes SET attempt_count = 5, error_message = 'timeout' WHERE node_id = 'node-review'",
+                    [],
+                )
+                .unwrap();
+        }
+        repository
+            .update_note_pipeline_phase(
+                &run.id,
+                NotePipelinePhase::Error,
+                None,
+                &[],
+                Some("timeout"),
+            )
+            .unwrap();
+
+        let recovered = repository
+            .prepare_note_pipeline_retry(&run.id, true)
+            .unwrap();
+        assert_eq!(recovered.execution_version, 2);
+        assert!(recovered.error_message.is_none());
+        let sections = repository.list_note_pipeline_sections(&run.id).unwrap();
+        let completed = sections
+            .iter()
+            .find(|section| section.section_id == "completed")
+            .unwrap();
+        assert_eq!(completed.status, NotePipelineSectionStatus::Completed);
+        assert_eq!(completed.markdown, "## Completed");
+        assert_eq!(completed.attempt_count, 2);
+        let failed = sections
+            .iter()
+            .find(|section| section.section_id == "failed")
+            .unwrap();
+        assert_eq!(failed.status, NotePipelineSectionStatus::Pending);
+        assert!(failed.markdown.is_empty());
+        assert_eq!(failed.attempt_count, 0);
+        assert_eq!(failed.revision_count, 0);
+
+        let connection = repository.open_connection().unwrap();
+        let completed_node: (String, i64) = connection
+            .query_row(
+                "SELECT status, attempt_count FROM note_pipeline_nodes WHERE node_id = 'node-completed'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(completed_node, ("completed".to_string(), 0));
+        let retried_node: (String, i64, Option<String>) = connection
+            .query_row(
+                "SELECT status, attempt_count, error_message FROM note_pipeline_nodes WHERE node_id = 'node-review'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(retried_node, ("pending".to_string(), 0, None));
+        drop(connection);
+
+        for _ in 0..4 {
+            repository
+                .prepare_note_pipeline_retry(&run.id, false)
+                .unwrap();
+        }
+        assert_eq!(
+            repository
+                .get_note_pipeline_run(&run.id)
+                .unwrap()
+                .execution_version,
+            6
+        );
+        assert!(repository
+            .prepare_note_pipeline_retry(&run.id, false)
+            .unwrap_err()
+            .contains("5 次人工恢复上限"));
         let _ = fs::remove_dir_all(directory);
     }
 

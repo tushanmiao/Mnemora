@@ -114,6 +114,8 @@ export default function DeepNoteView() {
   const [clock, setClock] = useState(Date.now());
   const [logOpen, setLogOpen] = useState(true);
   const [copied, setCopied] = useState(false);
+  const [fallbackModelKey, setFallbackModelKey] = useState("");
+  const [switchingModel, setSwitchingModel] = useState(false);
 
   useEffect(() => {
     setSelected(new Set(outline?.sections.map((section) => section.id) ?? []));
@@ -133,6 +135,8 @@ export default function DeepNoteView() {
   const tone = phaseTone(phase);
   const terminal = runtime.progress?.terminal || TERMINAL_PHASES.has(phase);
   const paused = phase === "paused";
+  const failed = phase === "error" || phase === "blocked";
+  const stopped = phase === "cancelled";
   const canPause = Boolean(runtime.progress?.runId ?? runtime.detail?.run.id) && PAUSABLE_PHASES.has(phase);
   const sections = runtime.detail?.sections ?? [];
   const completedSections = sections.filter((section) => section.status === "completed").length;
@@ -164,6 +168,32 @@ export default function DeepNoteView() {
   const workflow = buildDeepNoteWorkflow(runtime.detail, phase);
   const events = runtime.detail?.events ?? [];
   const visibleEvents = events.slice(-60).reverse();
+  const runProviderId = runtime.detail?.preflight?.model.providerId ?? runtime.detail?.run.providerId ?? null;
+  const runModelId = runtime.detail?.preflight?.model.modelId ?? runtime.detail?.run.modelId ?? null;
+  const runApiModel = runtime.detail?.preflight?.model.apiModel ?? null;
+  const modelOption = runProviderId && runModelId
+    ? runtime.modelOptions.find((option) => option.providerId === runProviderId && option.modelId === runModelId)
+    : null;
+  const currentModelKey = runProviderId && runModelId ? `${runProviderId}:${runModelId}` : "";
+  const fallbackModelOptions = runtime.modelOptions.filter((option) => (
+    option.hasApiKey && `${option.providerId}:${option.modelId}` !== currentModelKey
+  ));
+
+  useEffect(() => {
+    const firstAvailable = fallbackModelOptions[0];
+    setFallbackModelKey(firstAvailable ? `${firstAvailable.providerId}:${firstAvailable.modelId}` : "");
+  }, [currentModelKey, runtime.modelOptions]);
+
+  const switchModel = async () => {
+    const [providerId, modelId] = fallbackModelKey.split(":");
+    if (!providerId || !modelId || switchingModel) return;
+    setSwitchingModel(true);
+    try {
+      await runtime.onSwitchModel(providerId, modelId);
+    } finally {
+      setSwitchingModel(false);
+    }
+  };
 
   const diagnosticText = useMemo(() => {
     const lines = [
@@ -171,7 +201,7 @@ export default function DeepNoteView() {
       `Run ID: ${runtime.detail?.run.id ?? runtime.progress?.runId ?? "尚未创建"}`,
       `阶段: ${PHASE_LABELS[phase]} (${phase})`,
       `状态: ${statusMessage}`,
-      `模型: ${runtime.detail?.run.providerId ?? "-"} / ${runtime.detail?.run.modelId ?? "-"}`,
+          `模型: ${modelOption?.providerName ?? runProviderId ?? "-"} / ${modelOption?.displayName ?? runModelId ?? "-"} (${runApiModel ?? modelOption?.apiModel ?? "-"})`,
       `输入覆盖: ${contextBudget?.processedMessageCount ?? 0}/${contextBudget?.totalMessageCount ?? 0}`,
       `语义调用: ${budget?.semanticCallsUsed ?? 0}/${budget?.semanticCallLimit ?? 0}`,
       activity
@@ -205,7 +235,25 @@ export default function DeepNoteView() {
           <h1>{outline?.title ?? "深度笔记"}</h1>
         </div>
         <div className="deep-note-run-status" data-tone={tone}><span className="deep-note-status-dot" />{PHASE_LABELS[phase]}</div>
-        {!terminal ? (
+        {failed ? (
+          <div className="deep-note-run-actions">
+            <button className="settings-button settings-button-primary" type="button" disabled={runtime.controlBusy} onClick={runtime.onRetry}>
+              <RotateCcw size={14} />重试失败步骤
+            </button>
+            <button className="settings-button settings-button-secondary" type="button" disabled={runtime.controlBusy} onClick={runtime.onRestart}>
+              <BrainCircuit size={14} />重新生成
+            </button>
+          </div>
+        ) : stopped ? (
+          <div className="deep-note-run-actions">
+            <button className="settings-button settings-button-primary" type="button" disabled={runtime.controlBusy} onClick={runtime.onResume}>
+              <Play size={14} />从检查点继续
+            </button>
+            <button className="settings-button settings-button-secondary" type="button" disabled={runtime.controlBusy} onClick={runtime.onRestart}>
+              <RotateCcw size={14} />重新生成
+            </button>
+          </div>
+        ) : !terminal ? (
           <div className="deep-note-run-actions">
             {paused ? (
               <button className="settings-button settings-button-primary" type="button" disabled={runtime.controlBusy} onClick={runtime.onResume}>
@@ -349,10 +397,36 @@ export default function DeepNoteView() {
         <dl className="deep-note-stat-list">
           <div><dt>消息</dt><dd>{runtime.detail?.inputSnapshot?.messageIds.length ?? 0}</dd></div>
           <div><dt>附件</dt><dd>{runtime.detail?.inputSnapshot?.attachmentIds.length ?? 0}</dd></div>
-          <div><dt>模型</dt><dd title={runtime.detail?.run.modelId}>{runtime.detail?.run.modelId ?? "-"}</dd></div>
+          <div><dt>服务商</dt><dd title={modelOption?.providerName ?? runProviderId ?? undefined}>{modelOption?.providerName ?? runProviderId ?? "-"}</dd></div>
+          <div><dt>模型</dt><dd title={modelOption?.displayName ?? runModelId ?? undefined}>{modelOption?.displayName ?? runModelId ?? "-"}</dd></div>
+          <div><dt>API 标识</dt><dd className="deep-note-model-api" title={runApiModel ?? modelOption?.apiModel ?? undefined}>{runApiModel ?? modelOption?.apiModel ?? "-"}</dd></div>
           <div><dt>Tool</dt><dd>{runtime.detail?.preflight?.model.capabilities.tools ? "可用" : "未启用"}</dd></div>
         </dl>
         {runtime.detail?.preflight?.warnings.map((warning) => <p className="deep-note-inline-warning" key={warning}><AlertTriangle size={13} />{warning}</p>)}
+
+        {failed ? (
+          <section className="deep-note-model-recovery" aria-label="切换备用模型">
+            <div className="deep-note-pane-heading"><RotateCcw size={15} /><strong>模型请求失败</strong></div>
+            <p>可以先重试当前失败步骤，也可以选择备用模型并从最新会话内容重新生成。</p>
+            {fallbackModelOptions.length > 0 ? (
+              <>
+                <label>
+                  <span>备用模型</span>
+                  <select value={fallbackModelKey} disabled={switchingModel} onChange={(event) => setFallbackModelKey(event.target.value)}>
+                    {fallbackModelOptions.map((option) => {
+                      const key = `${option.providerId}:${option.modelId}`;
+                      return <option key={key} value={key}>{option.providerName} · {option.displayName}</option>;
+                    })}
+                  </select>
+                </label>
+                <button className="settings-button settings-button-secondary" type="button" disabled={!fallbackModelKey || switchingModel} onClick={() => { void switchModel(); }}>
+                  {switchingModel ? <LoaderCircle size={14} className="deep-note-progress-spinner" /> : <RotateCcw size={14} />}
+                  {switchingModel ? "正在重新开始…" : "切换并重新开始"}
+                </button>
+              </>
+            ) : <p className="deep-note-model-recovery-empty">没有可用的备用模型。请先在设置中配置其他服务商和 API Key。</p>}
+          </section>
+        ) : null}
 
         <div className="deep-note-pane-heading"><ShieldCheck size={15} /><strong>规划输入覆盖</strong></div>
         <p className="deep-note-pane-note">覆盖完成只表示消息已纳入规划输入；提纲仍需等待模型生成。</p>

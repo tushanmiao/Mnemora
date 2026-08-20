@@ -233,6 +233,46 @@ function number(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+function modelStage(value: unknown): string {
+  switch (text(value)) {
+    case "deepNoteChunk": return "来源分块提取";
+    case "deepNoteChunkRepair": return "来源分块 JSON 修复";
+    case "deepNoteOutlineDirect": return "直接生成提纲";
+    case "deepNoteOutline": return "知识账本汇总提纲";
+    case "deepNoteOutlineFallback": return "精简账本提纲";
+    default: return "模型调用";
+  }
+}
+
+function modelCallMetrics(data: Record<string, unknown>, includeResponse: boolean): string {
+  const metrics = [`耗时 ${formatDuration(number(data.durationMs) ?? 0)}`];
+  const inputChars = number(data.inputChars);
+  const responseChars = number(data.responseChars);
+  const maxOutputTokens = number(data.maxOutputTokens);
+  if (inputChars !== null) metrics.push(`输入 ${inputChars} 字符`);
+  if (includeResponse && responseChars !== null) metrics.push(`返回 ${responseChars} 字符`);
+  if (maxOutputTokens !== null) metrics.push(`输出上限 ${maxOutputTokens} Token`);
+  return metrics.join(" · ");
+}
+
+function modelErrorGuidance(data: Record<string, unknown>): string | null {
+  const kind = text(data.errorKind)?.toLowerCase();
+  const status = number(data.statusCode);
+  if (kind?.includes("concurrency") || status === 429 && text(data.message)?.toLowerCase().includes("concurr")) {
+    return "账户并发额度已用尽：等待冷却后重试，或切换备用模型。";
+  }
+  if (kind?.includes("providerunavailable") || status === 503 || status === 403 && /balance|quota|insufficient/i.test(text(data.message) ?? "")) {
+    return "当前模型没有可用渠道：不要连续重试同一模型，建议切换备用模型。";
+  }
+  if (kind?.includes("upstreamtimeout") || status === 504 || status === 524) {
+    return "中转站或模型服务处理超时：已保留检查点，可缩小请求或切换模型。";
+  }
+  if (kind?.includes("clienttimeout")) {
+    return "客户端等待窗口已到：可以从当前检查点继续，不需要重新解析全部会话。";
+  }
+  return null;
+}
+
 export function describeNotePipelineEvent(record: NotePipelineEventRecord): { label: string; detail: string } {
   const data = payload(record);
   const activity = data.activity && typeof data.activity === "object"
@@ -256,14 +296,26 @@ export function describeNotePipelineEvent(record: NotePipelineEventRecord): { la
     case "modelCallStarted":
       return {
         label: "模型请求开始",
-        detail: `${text(data.message) ?? "等待模型响应"} · 超时 ${Math.ceil((number(activity.timeoutMs) ?? 0) / 1_000)} 秒`,
+        detail: `${text(data.message) ?? modelStage(activity.operation)} · 超时 ${Math.ceil((number(activity.timeoutMs) ?? 0) / 1_000)} 秒`,
       };
     case "modelRetryScheduled":
       return { label: "模型请求准备重试", detail: text(activity.lastError) ?? text(data.message) ?? "等待重试" };
     case "modelCallCompleted":
-      return { label: "模型请求完成", detail: `耗时 ${formatDuration(number(data.durationMs) ?? 0)} · 返回 ${number(data.responseChars) ?? 0} 字符` };
+      return {
+        label: `${modelStage(data.operation)}完成`,
+        detail: modelCallMetrics(data, true),
+      };
     case "modelCallFailed":
-      return { label: "模型请求失败", detail: text(data.message) ?? text(data.errorKind) ?? "未知模型错误" };
+      return {
+        label: `${modelStage(data.operation)}失败`,
+        detail: [
+          text(data.message) ?? text(data.errorKind) ?? "未知模型错误",
+          modelErrorGuidance(data),
+          number(data.statusCode) !== null ? `HTTP ${number(data.statusCode)}` : null,
+          number(data.inputChars) !== null ? `输入 ${number(data.inputChars)} 字符` : null,
+          number(data.maxOutputTokens) !== null ? `输出上限 ${number(data.maxOutputTokens)} Token` : null,
+        ].filter(Boolean).join(" · "),
+      };
     case "outlineReady":
       return { label: "知识结构生成完成", detail: `提纲包含 ${number(data.sectionCount) ?? 0} 个章节` };
     case "planConfirmed":
@@ -278,6 +330,21 @@ export function describeNotePipelineEvent(record: NotePipelineEventRecord): { la
       return { label: "任务暂停", detail: "当前请求已中断，检查点已保留" };
     case "runResumed":
       return { label: "任务继续", detail: "从最近检查点恢复" };
+    case "runContinued":
+      return {
+        label: "已从停止点继续",
+        detail: `恢复执行版本 v${number(data.executionVersion) ?? "-"}，保留已有检查点`,
+      };
+    case "runRetryRequested":
+      return {
+        label: "已重试失败步骤",
+        detail: `恢复执行版本 v${number(data.executionVersion) ?? "-"}，失败章节和节点已重置`,
+      };
+    case "runRestarted":
+      return {
+        label: "已重新生成",
+        detail: text(data.newRunId) ? `新任务 ${text(data.newRunId)}` : "已使用当前会话创建新任务",
+      };
     case "runCompleted":
       return { label: "深度笔记完成", detail: `${number(data.completedSectionCount) ?? 0} 个章节已完成` };
     case "runFailed":
@@ -294,4 +361,3 @@ export function formatDuration(milliseconds: number): string {
   const minutes = Math.floor(seconds / 60);
   return `${minutes} 分 ${seconds % 60} 秒`;
 }
-

@@ -12,6 +12,7 @@ import {
   LoaderCircle,
   Pause,
   Play,
+  RotateCcw,
   Sparkles,
   Square,
   Wrench,
@@ -50,6 +51,8 @@ type TaskCenterProps = {
   onOpenDeepNoteTask: () => void;
   onPauseDeepNoteTask: () => void;
   onResumeDeepNoteTask: () => void;
+  onRetryDeepNoteTask: () => void;
+  onRestartDeepNoteTask: () => void;
   onStopDeepNoteTask: () => void;
 };
 
@@ -68,6 +71,8 @@ const copy = {
     tokens: "Token",
     pause: "暂停",
     resume: "继续",
+    retry: "重试失败步骤",
+    restart: "重新生成",
     stop: "停止",
     details: "完整详情",
     showContent: "查看过程内容",
@@ -87,6 +92,8 @@ const copy = {
     tokens: "Tokens",
     pause: "Pause",
     resume: "Resume",
+    retry: "Retry failed step",
+    restart: "Regenerate",
     stop: "Stop",
     details: "Full details",
     showContent: "Show process content",
@@ -105,6 +112,8 @@ export function TaskCenter({
   onOpenDeepNoteTask,
   onPauseDeepNoteTask,
   onResumeDeepNoteTask,
+  onRetryDeepNoteTask,
+  onRestartDeepNoteTask,
   onStopDeepNoteTask,
 }: TaskCenterProps) {
   const { language } = useI18n();
@@ -286,13 +295,22 @@ export function TaskCenter({
           </div>
 
           <footer className="task-center-actions">
-            {selectedTask.canResume ? (
+            {selectedTask.canRetry ? (
+              <button type="button" disabled={deepNoteControlBusy} onClick={onRetryDeepNoteTask}>
+                <RotateCcw size={14} />{text.retry}
+              </button>
+            ) : selectedTask.canResume ? (
               <button type="button" disabled={deepNoteControlBusy} onClick={onResumeDeepNoteTask}>
                 <Play size={14} />{text.resume}
               </button>
             ) : selectedTask.canPause ? (
               <button type="button" disabled={deepNoteControlBusy} onClick={onPauseDeepNoteTask}>
                 <Pause size={14} />{text.pause}
+              </button>
+            ) : null}
+            {selectedTask.canRestart ? (
+              <button type="button" disabled={deepNoteControlBusy} onClick={onRestartDeepNoteTask}>
+                <RotateCcw size={14} />{text.restart}
               </button>
             ) : null}
             {selectedTask.canStop ? (

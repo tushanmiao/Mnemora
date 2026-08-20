@@ -12,6 +12,7 @@
   --space-10: 40px;
   --radius-control: 5px;
   --radius-panel: 7px;
+  --radius-pill: 999px;
   --duration-fast: 140ms;
   --duration-standard: 200ms;
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
@@ -20,6 +21,10 @@
 .app-shell {
   --ui-font-family: "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
   --ui-font-size: 14px;
+  --font-size-micro: 10px;
+  --font-size-meta: 11px;
+  --font-size-label: 12px;
+  --font-size-row: 13px;
   --reading-font-family: var(--ui-font-family);
   --reading-font-size: 14px;
   --reading-letter-spacing: 0px;

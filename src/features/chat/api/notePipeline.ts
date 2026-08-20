@@ -283,6 +283,28 @@ export function resumeNotePipeline(
   });
 }
 
+export function retryNotePipeline(
+  runId: string,
+  onEvent: (event: NotePipelineEvent) => void,
+) {
+  requireTauri();
+  return invoke<NotePipelineRun>("note_pipeline_retry", {
+    runId,
+    onEvent: channel(onEvent),
+  });
+}
+
+export function restartNotePipeline(
+  runId: string,
+  onEvent: (event: NotePipelineEvent) => void,
+) {
+  requireTauri();
+  return invoke<NotePipelineRun>("note_pipeline_restart", {
+    runId,
+    onEvent: channel(onEvent),
+  });
+}
+
 export function cancelNotePipeline(runId: string) {
   if (!isTauri()) return Promise.resolve(false);
   return invoke<boolean>("note_pipeline_cancel", { runId });

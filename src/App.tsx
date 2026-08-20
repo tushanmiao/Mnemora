@@ -166,6 +166,31 @@ function App() {
       .filter((group) => group.models.length > 0)
   ), [settings.modelSettings]);
 
+  const deepNoteModelOptions = useMemo(() => settings.modelSettings.providers
+    .filter((provider) => provider.enabled)
+    .flatMap((provider) => provider.models
+      .filter((model) => model.enabled)
+      .map((model) => ({
+        providerId: provider.id,
+        providerName: provider.name,
+        modelId: model.id,
+        displayName: model.displayName,
+        apiModel: model.apiModel,
+        hasApiKey: provider.hasApiKey,
+      }))), [settings.modelSettings.providers]);
+
+  const handleDeepNoteModelSwitch = useCallback(async (providerId: string, modelId: string) => {
+    const conversationId = noteActions.deepNoteDetail?.run.conversationId
+      ?? conversations.currentConversationId;
+    if (!conversationId) return;
+    await settings.changeNoteModel(providerId, modelId);
+    if (noteActions.deepNoteDetail?.run.id) {
+      await noteActions.restartDeepNote();
+    } else {
+      await noteActions.startDeepNote(conversationId);
+    }
+  }, [conversations.currentConversationId, noteActions.deepNoteDetail?.run.conversationId, noteActions.deepNoteDetail?.run.id, noteActions.restartDeepNote, noteActions.startDeepNote, settings.changeNoteModel]);
+
   const contextUsage = useMemo(() => {
     const conversation = conversations.currentConversation;
     return estimateConversationContext(
@@ -577,6 +602,8 @@ function App() {
         onOpenDeepNoteTask={() => changeWorkspaceMode("deepNote")}
         onPauseDeepNoteTask={() => { void noteActions.pauseDeepNote(); }}
         onResumeDeepNoteTask={() => { void noteActions.resumeDeepNote(); }}
+        onRetryDeepNoteTask={() => { void noteActions.retryDeepNote(); }}
+        onRestartDeepNoteTask={() => { void noteActions.restartDeepNote(); }}
         onStopDeepNoteTask={() => { void noteActions.cancelDeepNote(); }}
         onOpenChatTask={(messageId) => {
           changeWorkspaceMode("chat");
@@ -692,6 +719,7 @@ function App() {
                   progress: noteActions.deepNoteProgress,
                   busy: noteActions.deepNoteReviewBusy,
                   controlBusy: noteActions.deepNoteControlBusy,
+                  modelOptions: deepNoteModelOptions,
                   onAdjust: (requirement) => {
                     void noteActions.adjustDeepNoteOutline(requirement);
                   },
@@ -704,7 +732,14 @@ function App() {
                   onResume: () => {
                     void noteActions.resumeDeepNote();
                   },
+                  onRetry: () => {
+                    void noteActions.retryDeepNote();
+                  },
+                  onRestart: () => {
+                    void noteActions.restartDeepNote();
+                  },
                   onCancel: noteActions.cancelDeepNote,
+                  onSwitchModel: handleDeepNoteModelSwitch,
                   onOpenNote: () => changeWorkspaceMode("notes"),
                   onReturn: () => changeWorkspaceMode("chat"),
                 }}>

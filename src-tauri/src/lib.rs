@@ -17,6 +17,10 @@ mod sync;
 mod usage;
 mod window_lifecycle;
 
+#[cfg(feature = "deep-note-e2e")]
+#[doc(hidden)]
+pub mod deep_note_e2e;
+
 use tauri::Manager;
 
 const AUTOSTART_ARG: &str = "--from-autostart";
@@ -173,6 +177,8 @@ pub fn run() {
             commands::note_pipeline::note_pipeline_adjust,
             commands::note_pipeline::note_pipeline_confirm,
             commands::note_pipeline::note_pipeline_resume,
+            commands::note_pipeline::note_pipeline_retry,
+            commands::note_pipeline::note_pipeline_restart,
             commands::note_pipeline::note_pipeline_cancel,
             commands::note_pipeline::note_pipeline_pause,
             commands::note_pipeline::note_pipeline_list_resumable,

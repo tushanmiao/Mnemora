@@ -22,11 +22,14 @@ import {
   pauseNotePipeline,
   prepareNoteEdit,
   resolveNoteEdit,
+  restartNotePipeline,
   resumeNotePipeline,
+  retryNotePipeline,
   startNotePipeline,
   type NoteEditDialogRequest,
   type NoteEditPrepareResult,
   type NotePipelineEvent,
+  type NotePipelineRun,
   type DeepNoteRunDetail,
 } from "../../features/chat/api/notePipeline";
 import {
@@ -71,6 +74,39 @@ function noteErrorText(error: unknown): string {
     if (typeof message === "string" && message.trim()) return message;
   }
   return String(error);
+}
+
+function recoverableRunProgress(run: NotePipelineRun): Omit<DeepNoteProgress, "updatedAt"> {
+  const completed = run.completedSectionIds.length + run.failedSectionIds.length;
+  const total = run.selectedSectionIds.length || null;
+  if (run.phase === "paused") {
+    return {
+      runId: run.id, phase: run.phase, current: completed, total,
+      message: "任务保持暂停。已完成章节已保存，点击继续后从断点恢复。",
+      terminal: false, degraded: false, activity: null,
+    };
+  }
+  if (run.phase === "cancelled") {
+    return {
+      runId: run.id, phase: run.phase, current: completed, total,
+      message: "任务已停止，检查点仍然保留。可以从检查点继续或重新生成。",
+      terminal: true, degraded: false, activity: null,
+    };
+  }
+  if (run.phase === "error" || run.phase === "blocked") {
+    return {
+      runId: run.id, phase: run.phase, current: completed, total,
+      message: run.errorMessage ?? "任务未能完成，可以从失败步骤重试或重新生成。",
+      terminal: run.phase === "error", degraded: false, activity: null,
+    };
+  }
+  return {
+    runId: run.id, phase: run.phase, current: completed, total,
+    message: run.phase === "awaitingOutline"
+      ? "计划已生成，等待确认后开始执行。"
+      : "已重新连接到未完成的深度笔记任务。",
+    terminal: false, degraded: false, activity: null,
+  };
 }
 
 export function useNoteActions({
@@ -250,6 +286,14 @@ export function useNoteActions({
       return;
     }
     if (event.type === "cancelled") {
+      deepNotePausedRunIdRef.current = null;
+      const existing = deepNoteRunRef.current;
+      deepNoteRunRef.current = {
+        conversationId: existing?.conversationId ?? deepNoteDetail?.run.conversationId ?? "",
+        runId: event.run.id,
+        cancelRequested: false,
+      };
+      setDeepNoteActive(true);
       setProgress({
         runId: event.run.id,
         phase: event.run.phase,
@@ -260,7 +304,7 @@ export function useNoteActions({
         degraded: Boolean(event.run.noteId),
       });
       refreshDeepNoteDetail(event.run.id, true);
-      finishDeepNoteRun();
+      setDeepNoteControlBusy(false);
       showFeedback(
         "success",
         event.run.noteId ? "已取消并保存完成章节为草稿。" : "已取消深度笔记生成。",
@@ -276,10 +320,13 @@ export function useNoteActions({
       terminal: true,
       degraded: false,
     });
+    const existing = deepNoteRunRef.current;
+    if (existing) existing.runId = event.runId;
+    setDeepNoteActive(true);
+    setDeepNoteControlBusy(false);
     refreshDeepNoteDetail(event.runId, true);
-    finishDeepNoteRun();
     showFeedback("error", `生成深度笔记失败：${event.message}`);
-  }, [finishDeepNoteRun, refreshDeepNoteDetail, setProgress, showFeedback]);
+  }, [deepNoteDetail?.run.conversationId, finishDeepNoteRun, refreshDeepNoteDetail, setProgress, showFeedback]);
 
   useEffect(() => {
     if (recoveryCheckedRef.current) return;
@@ -305,6 +352,27 @@ export function useNoteActions({
             total: run.selectedSectionIds.length || null,
             message: "任务保持暂停。已完成章节已保存，点击继续后从断点恢复。",
             terminal: false,
+            degraded: false,
+            activity: null,
+          });
+          refreshDeepNoteDetail(run.id, true);
+          setFeedback(null);
+          return;
+        }
+        if (run.phase === "cancelled") {
+          setProgress(recoverableRunProgress(run));
+          refreshDeepNoteDetail(run.id, true);
+          setFeedback(null);
+          return;
+        }
+        if (run.phase === "error" || run.phase === "blocked") {
+          setProgress({
+            runId: run.id,
+            phase: run.phase,
+            current: run.completedSectionIds.length + run.failedSectionIds.length,
+            total: run.selectedSectionIds.length || null,
+            message: run.errorMessage ?? "任务未能完成，可以从失败步骤重试或重新生成。",
+            terminal: run.phase === "error",
             degraded: false,
             activity: null,
           });
@@ -384,13 +452,15 @@ export function useNoteActions({
             terminal: true,
             degraded: false,
           });
-          if (runId) refreshDeepNoteDetail(runId, true);
-          finishDeepNoteRun();
+          if (runId) {
+            setDeepNoteActive(true);
+            refreshDeepNoteDetail(runId, true);
+          }
         }
         if (!disposed) showFeedback("error", `恢复深度笔记失败：${noteErrorText(error)}`);
       });
     return () => { disposed = true; };
-  }, [finishDeepNoteRun, handleNotePipelineEvent, refreshDeepNoteDetail, setProgress, showFeedback]);
+  }, [handleNotePipelineEvent, refreshDeepNoteDetail, setProgress, showFeedback]);
 
   const saveConversationAsNote = useCallback((conversationId: string) => {
     void saveStoredConversationAsNote(conversationId)
@@ -472,17 +542,48 @@ export function useNoteActions({
         if (active.cancelRequested) await cancelNotePipeline(run.id);
       }
     } catch (error) {
+      const message = noteErrorText(error);
+      try {
+        const runs = await listResumableNotePipelines();
+        const recoverable = runs.find((run) => run.conversationId === conversationId);
+        if (recoverable) {
+          latestDeepNoteRunIdRef.current = recoverable.id;
+          deepNoteRunRef.current = {
+            conversationId: recoverable.conversationId,
+            runId: recoverable.id,
+            cancelRequested: false,
+          };
+          deepNotePausedRunIdRef.current = recoverable.phase === "paused" ? recoverable.id : null;
+          setDeepNoteActive(true);
+          setProgress(recoverableRunProgress(recoverable));
+          if (recoverable.phase === "awaitingOutline" && recoverable.outlineJson) {
+            try {
+              setDeepNoteReview({
+                runId: recoverable.id,
+                outline: parsePersistedOutline(recoverable.outlineJson),
+              });
+            } catch {
+              setDeepNoteReview(null);
+            }
+          }
+          refreshDeepNoteDetail(recoverable.id, true);
+          showFeedback("success", "已找回这个对话中保存的深度笔记任务。可继续处理，无需重新启动。");
+          return;
+        }
+      } catch {
+        // Keep the original start error when recovery discovery is also unavailable.
+      }
       setProgress({
         runId: deepNoteRunRef.current?.runId ?? null,
         phase: "error",
         current: null,
         total: null,
-        message: noteErrorText(error),
+        message,
         terminal: true,
         degraded: false,
       });
       finishDeepNoteRun();
-      showFeedback("error", `生成深度笔记失败：${noteErrorText(error)}`);
+      showFeedback("error", `生成深度笔记失败：${message}`);
     }
   }, [
     finishDeepNoteRun,
@@ -533,13 +634,12 @@ export function useNoteActions({
         degraded: false,
       });
       refreshDeepNoteDetail(deepNoteReview.runId, true);
-      finishDeepNoteRun();
+      setDeepNoteControlBusy(false);
       showFeedback("error", `生成深度笔记失败：${noteErrorText(error)}`);
     }
   }, [
     deepNoteReview,
     deepNoteReviewBusy,
-    finishDeepNoteRun,
     handleNotePipelineEvent,
     refreshDeepNoteDetail,
     setProgress,
@@ -599,8 +699,10 @@ export function useNoteActions({
 
   const resumeDeepNote = useCallback(async () => {
     const run = deepNoteRunRef.current;
-    if (!run?.runId || deepNoteControlBusy || deepNoteProgress?.phase !== "paused") return;
+    const resumablePhase = deepNoteProgress?.phase === "paused" || deepNoteProgress?.phase === "cancelled";
+    if (!run?.runId || deepNoteControlBusy || !resumablePhase) return;
     const runId = run.runId;
+    const previousPhase = deepNoteProgress?.phase ?? "paused";
     setDeepNoteControlBusy(true);
     deepNotePausedRunIdRef.current = null;
     setDeepNoteProgress((current) => current ? {
@@ -626,13 +728,13 @@ export function useNoteActions({
       refreshDeepNoteDetail(runId, true);
       showFeedback("progress", "已继续深度笔记任务。");
     } catch (error) {
-      deepNotePausedRunIdRef.current = runId;
+      if (previousPhase === "paused") deepNotePausedRunIdRef.current = runId;
       setDeepNoteProgress((current) => ({
         runId,
-        phase: "paused",
+        phase: previousPhase,
         current: current?.current ?? null,
         total: current?.total ?? null,
-        message: `继续失败，任务仍保持暂停：${noteErrorText(error)}`,
+        message: `继续失败，原检查点仍然保留：${noteErrorText(error)}`,
         updatedAt: Date.now(),
         terminal: false,
         degraded: false,
@@ -650,6 +752,88 @@ export function useNoteActions({
     setProgress,
     showFeedback,
   ]);
+
+  const retryDeepNote = useCallback(async () => {
+    const runId = deepNoteRunRef.current?.runId ?? deepNoteDetail?.run.id ?? deepNoteProgress?.runId;
+    const conversationId = deepNoteRunRef.current?.conversationId ?? deepNoteDetail?.run.conversationId;
+    if (!runId || !conversationId || deepNoteControlBusy) return;
+    deepNoteRunRef.current = { conversationId, runId, cancelRequested: false };
+    latestDeepNoteRunIdRef.current = runId;
+    setDeepNoteControlBusy(true);
+    setDeepNoteActive(true);
+    setProgress({
+      runId,
+      phase: deepNoteDetail?.run.outlineJson ? "drafting" : "analyzing",
+      current: deepNoteDetail?.run.completedSectionIds.length ?? 0,
+      total: deepNoteDetail?.run.selectedSectionIds.length || null,
+      message: "正在从失败步骤恢复，已完成的检查点会保留…",
+      terminal: false,
+      degraded: false,
+      activity: null,
+    });
+    showFeedback("progress", "正在重试深度笔记失败步骤…");
+    try {
+      const recovered = await retryNotePipeline(runId, handleNotePipelineEvent);
+      refreshDeepNoteDetail(recovered.id, true);
+    } catch (error) {
+      setProgress({
+        runId,
+        phase: "error",
+        current: deepNoteDetail?.run.completedSectionIds.length ?? null,
+        total: deepNoteDetail?.run.selectedSectionIds.length || null,
+        message: `重试失败：${noteErrorText(error)}`,
+        terminal: true,
+        degraded: false,
+        activity: null,
+      });
+      showFeedback("error", `重试深度笔记失败：${noteErrorText(error)}`);
+    } finally {
+      setDeepNoteControlBusy(false);
+    }
+  }, [deepNoteControlBusy, deepNoteDetail, deepNoteProgress?.runId, handleNotePipelineEvent, refreshDeepNoteDetail, setProgress, showFeedback]);
+
+  const restartDeepNote = useCallback(async () => {
+    const oldRunId = deepNoteRunRef.current?.runId ?? deepNoteDetail?.run.id ?? deepNoteProgress?.runId;
+    const conversationId = deepNoteRunRef.current?.conversationId ?? deepNoteDetail?.run.conversationId;
+    if (!oldRunId || !conversationId || deepNoteControlBusy) return;
+    setDeepNoteControlBusy(true);
+    setDeepNoteActive(true);
+    latestDeepNoteRunIdRef.current = null;
+    setProgress({
+      runId: oldRunId,
+      phase: "preflight",
+      current: null,
+      total: null,
+      message: "正在使用当前会话内容创建全新的深度笔记任务…",
+      terminal: false,
+      degraded: false,
+      activity: null,
+    });
+    showFeedback("progress", "正在重新生成深度笔记…");
+    try {
+      const restarted = await restartNotePipeline(oldRunId, handleNotePipelineEvent);
+      latestDeepNoteRunIdRef.current = restarted.id;
+      deepNoteRunRef.current = { conversationId, runId: restarted.id, cancelRequested: false };
+      setDeepNoteDetail(null);
+      refreshDeepNoteDetail(restarted.id, true);
+    } catch (error) {
+      latestDeepNoteRunIdRef.current = oldRunId;
+      deepNoteRunRef.current = { conversationId, runId: oldRunId, cancelRequested: false };
+      setProgress({
+        runId: oldRunId,
+        phase: deepNoteDetail?.run.phase ?? "error",
+        current: deepNoteDetail?.run.completedSectionIds.length ?? null,
+        total: deepNoteDetail?.run.selectedSectionIds.length || null,
+        message: `重新生成失败，原任务仍然保留：${noteErrorText(error)}`,
+        terminal: true,
+        degraded: false,
+        activity: null,
+      });
+      showFeedback("error", `重新生成深度笔记失败：${noteErrorText(error)}`);
+    } finally {
+      setDeepNoteControlBusy(false);
+    }
+  }, [deepNoteControlBusy, deepNoteDetail, deepNoteProgress?.runId, handleNotePipelineEvent, refreshDeepNoteDetail, setProgress, showFeedback]);
 
   const cancelDeepNote = useCallback(async () => {
     const run = deepNoteRunRef.current;
@@ -830,6 +1014,8 @@ export function useNoteActions({
     confirmDeepNoteOutline,
     pauseDeepNote,
     resumeDeepNote,
+    retryDeepNote,
+    restartDeepNote,
     cancelDeepNote,
     openConversationNoteEdit,
     openSelectionNoteEdit,

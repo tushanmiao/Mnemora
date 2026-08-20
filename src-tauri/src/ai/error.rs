@@ -25,8 +25,12 @@ pub enum ModelErrorKind {
     ModelNotFound,
     ContextLengthExceeded,
     ContentFiltered,
-    Timeout,
+    ClientTimeout,
+    UpstreamTimeout,
     Connection,
+    ConcurrencyLimited,
+    QuotaExceeded,
+    ProviderUnavailable,
     InvalidResponse,
     Provider,
     Cancelled,
@@ -74,7 +78,7 @@ impl ModelError {
     }
 
     pub fn timeout(message: impl Into<String>) -> Self {
-        Self::new(ModelErrorKind::Timeout, message)
+        Self::new(ModelErrorKind::ClientTimeout, message)
     }
 
     pub fn context_length(message: impl Into<String>) -> Self {
@@ -83,7 +87,7 @@ impl ModelError {
 
     pub fn from_reqwest(error: reqwest::Error) -> Self {
         let (kind, message) = if error.is_timeout() {
-            (ModelErrorKind::Timeout, "模型请求超时，请稍后重试。")
+            (ModelErrorKind::ClientTimeout, "模型请求超时，请稍后重试。")
         } else if error.is_connect() {
             (
                 ModelErrorKind::Connection,
@@ -116,7 +120,18 @@ impl ModelError {
             .unwrap_or("供应商未返回错误详情");
         let provider_message = redact_and_limit(provider_message, api_key);
         let kind = classify_error(status, provider_code.as_deref(), &provider_message);
-        let message = format!("模型服务返回 HTTP {}：{provider_message}", status.as_u16());
+        let guidance = match kind {
+            ModelErrorKind::ConcurrencyLimited => "账户并发额度已用尽，请等待后重试或切换模型",
+            ModelErrorKind::QuotaExceeded => "账户余额或调用额度不足，请检查中转站账户后重试",
+            ModelErrorKind::ProviderUnavailable => "当前模型没有可用渠道，请切换模型或稍后重试",
+            ModelErrorKind::UpstreamTimeout => "中转站或模型服务处理超时，可缩小请求或切换模型",
+            _ => "",
+        };
+        let message = if guidance.is_empty() {
+            format!("模型服务返回 HTTP {}：{provider_message}", status.as_u16())
+        } else {
+            format!("HTTP {}：{guidance}；{provider_message}", status.as_u16())
+        };
 
         Self {
             kind,
@@ -194,18 +209,44 @@ fn classify_error(
     provider_code: Option<&str>,
     message: &str,
 ) -> ModelErrorKind {
+    let details = format!("{} {message}", provider_code.unwrap_or_default()).to_lowercase();
     match status {
         StatusCode::UNAUTHORIZED => return ModelErrorKind::Authentication,
-        StatusCode::FORBIDDEN => return ModelErrorKind::PermissionDenied,
-        StatusCode::TOO_MANY_REQUESTS => return ModelErrorKind::RateLimited,
-        StatusCode::REQUEST_TIMEOUT | StatusCode::GATEWAY_TIMEOUT => {
-            return ModelErrorKind::Timeout;
+        StatusCode::PAYMENT_REQUIRED | StatusCode::FORBIDDEN => {
+            if details.contains("balance")
+                || details.contains("quota")
+                || details.contains("insufficient")
+                || status == StatusCode::PAYMENT_REQUIRED
+            {
+                return ModelErrorKind::QuotaExceeded;
+            }
+            return ModelErrorKind::PermissionDenied;
+        }
+        StatusCode::TOO_MANY_REQUESTS => {
+            if details.contains("concurr") || details.contains("capacity") {
+                return ModelErrorKind::ConcurrencyLimited;
+            }
+            return ModelErrorKind::RateLimited;
+        }
+        StatusCode::BAD_GATEWAY | StatusCode::REQUEST_TIMEOUT | StatusCode::GATEWAY_TIMEOUT => {
+            return ModelErrorKind::UpstreamTimeout;
+        }
+        status if status.as_u16() == 524 => {
+            return ModelErrorKind::UpstreamTimeout;
+        }
+        StatusCode::SERVICE_UNAVAILABLE => {
+            if details.contains("no available channel")
+                || details.contains("no channel")
+                || details.contains("unavailable")
+            {
+                return ModelErrorKind::ProviderUnavailable;
+            }
+            return ModelErrorKind::Provider;
         }
         status if status.is_server_error() => return ModelErrorKind::Provider,
         _ => {}
     }
 
-    let details = format!("{} {message}", provider_code.unwrap_or_default()).to_lowercase();
     if details.contains("context_length")
         || details.contains("context window")
         || details.contains("too many tokens")
@@ -251,6 +292,38 @@ mod tests {
         assert_eq!(
             classify_error(StatusCode::TOO_MANY_REQUESTS, None, "slow down"),
             ModelErrorKind::RateLimited
+        );
+        assert_eq!(
+            classify_error(
+                StatusCode::TOO_MANY_REQUESTS,
+                None,
+                "Concurrency limit exceeded for account"
+            ),
+            ModelErrorKind::ConcurrencyLimited
+        );
+        assert_eq!(
+            classify_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                None,
+                "No available channel for model"
+            ),
+            ModelErrorKind::ProviderUnavailable
+        );
+        assert_eq!(
+            classify_error(StatusCode::FORBIDDEN, None, "insufficient balance"),
+            ModelErrorKind::QuotaExceeded
+        );
+        assert_eq!(
+            classify_error(StatusCode::PAYMENT_REQUIRED, None, "payment required"),
+            ModelErrorKind::QuotaExceeded
+        );
+        assert_eq!(
+            classify_error(StatusCode::GATEWAY_TIMEOUT, None, "gateway timeout"),
+            ModelErrorKind::UpstreamTimeout
+        );
+        assert_eq!(
+            classify_error(StatusCode::from_u16(524).unwrap(), None, "origin timeout"),
+            ModelErrorKind::UpstreamTimeout
         );
     }
 

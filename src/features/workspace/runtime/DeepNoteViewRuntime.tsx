@@ -12,13 +12,26 @@ export type DeepNoteViewRuntime = {
   progress: DeepNoteProgress | null;
   busy: boolean;
   controlBusy: boolean;
+  modelOptions: DeepNoteModelOption[];
   onAdjust: (requirement: string) => void;
   onConfirm: (selectedSectionIds: ReadonlySet<string>) => void;
   onPause: () => void;
   onResume: () => void;
+  onRetry: () => void;
+  onRestart: () => void;
   onCancel: () => void;
+  onSwitchModel: (providerId: string, modelId: string) => Promise<void>;
   onOpenNote: () => void;
   onReturn: () => void;
+};
+
+export type DeepNoteModelOption = {
+  providerId: string;
+  providerName: string;
+  modelId: string;
+  displayName: string;
+  apiModel: string;
+  hasApiKey: boolean;
 };
 
 export type DeepNoteProgress = {

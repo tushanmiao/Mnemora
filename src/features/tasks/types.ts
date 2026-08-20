@@ -56,6 +56,7 @@ export interface TaskRunProjection {
   needsAttention: boolean;
   canPause: boolean;
   canResume: boolean;
+  canRetry: boolean;
+  canRestart: boolean;
   canStop: boolean;
 }
-

@@ -5,7 +5,7 @@ use std::{
 
 use sha2::{Digest, Sha256};
 
-use tauri::{ipc::Channel, AppHandle, Manager};
+use tauri::{ipc::Channel, AppHandle, Manager, Runtime};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -36,25 +36,53 @@ use super::{
         STRICT_JSON_SUFFIX,
     },
     types::{
-        compile_plan, DeepNoteBudget, DeepNoteCapabilities, DeepNoteContextBudget,
-        DeepNoteInputSnapshot, DeepNoteLedger, DeepNoteModelSnapshot, DeepNoteOutline,
-        DeepNotePlanVersion, DeepNotePreflight, DeepNoteRunDetail, DeepNoteRuntimeState,
-        DeepNoteSection, DeepNoteSectionProgress, DeepNoteSourceChunk, DeepNoteSourceKind,
-        DeepNoteValidationReport, NoteEditPrepareRequest, NoteEditPrepareResult, NoteMergePlan,
-        NotePatchSet, NotePipelineActivity, NotePipelineAdjustRequest, NotePipelineConfirmRequest,
-        NotePipelineProgress, NotePipelineStartRequest,
+        compile_plan, DeepNoteBudget, DeepNoteCapabilities, DeepNoteContextBudget, DeepNoteDagNode,
+        DeepNoteInputSnapshot, DeepNoteLedger, DeepNoteModelSnapshot, DeepNoteNodeStatus,
+        DeepNoteOutline, DeepNotePlanVersion, DeepNotePreflight, DeepNoteRunDetail,
+        DeepNoteRuntimeState, DeepNoteSection, DeepNoteSectionProgress, DeepNoteSourceChunk,
+        DeepNoteSourceKind, DeepNoteValidationReport, NoteEditPrepareRequest,
+        NoteEditPrepareResult, NoteMergePlan, NotePatchSet, NotePipelineActivity,
+        NotePipelineAdjustRequest, NotePipelineConfirmRequest, NotePipelineProgress,
+        NotePipelineStartRequest,
     },
 };
 
 const NODE_ATTEMPT_LIMIT: u8 = 5;
 const SECTION_REVISION_LIMIT: u8 = 5;
-const DIRECT_PLANNER_TOKEN_LIMIT: u64 = 24_000;
+// Direct mode is only safe when the same raw input can also be reused by a
+// section writer. Larger inputs first build a traceable ledger so drafting
+// never reaches an outline with no bounded source context.
+const DIRECT_PLANNER_TOKEN_LIMIT: u64 = 3_000;
+// 提纲是受 Rust schema 校验的短 JSON。较小的输出上限可以显著降低中转网关
+// 对推理模型的首字节等待时间，避免 504；章节正文仍使用独立的输出预算。
+const PLANNER_OUTPUT_TOKEN_LIMIT: u32 = 2_048;
+// Chunk digests contain evidence links and message IDs. Keep a larger bound than
+// the outline planner so a valid JSON object is not cut off mid-string by a
+// provider that spends tokens on structured output.
+const CHUNK_OUTPUT_TOKEN_LIMIT: u32 = 4_096;
+const PLANNER_FALLBACK_RETRIES: u8 = 1;
+const FAST_PLANNER_OUTPUT_TOKENS: u32 = 1_024;
+const SECTION_OUTPUT_TOKEN_LIMIT: u32 = 2_048;
+const SECTION_SOURCE_TOKEN_LIMIT: u64 = 3_000;
+const FAST_PLANNER_SYSTEM_PROMPT: &str = r#"You are the outline planner for a study note. Return exactly one valid JSON object and no markdown. Use only the supplied ledger and message IDs. Keep the outline concise: 4 to 8 sections. Required shape: {"goal":"","audience":"","scope":"","title":"","summary":"","weakPoints":[],"allowAiSupplement":false,"evidencePolicy":"","sourceIds":[],"sections":[{"id":"sec-1","heading":"","kind":"prerequisite|concept|comparison|pitfall|example|summary|selfcheck","purpose":"","brief":"","dependsOn":[],"evidenceRequirements":[],"successCriteria":[],"sourceScope":[],"targetDepth":"standard","allowAiSupplement":false,"needsSupplement":false,"sourceMessageIds":[]}]}. Every sourceMessageIds value must be copied from the ledger. Do not invent facts or IDs."#;
+const OUTLINE_SIZE_SUFFIX: &str =
+    "Prefer 6 to 12 sections and never exceed 12 sections. Keep every field concise.";
 const DEFAULT_CHUNK_TARGET_TOKENS: u64 = 16_000;
 const UNKNOWN_CONTEXT_CHUNK_TOKENS: u64 = 8_000;
 const PLANNER_PROMPT_OVERHEAD_TOKENS: u64 = 4_096;
 const MAX_ANALYSIS_CHUNKS: usize = 96;
 const PIPELINE_STOP_WAIT_ATTEMPTS: usize = 100;
 const PIPELINE_STOP_WAIT_INTERVAL: Duration = Duration::from_millis(25);
+
+fn budget_for_drafting(previous: &DeepNoteBudget, section_count: usize) -> DeepNoteBudget {
+    let mut budget = DeepNoteBudget::for_section_count(section_count);
+    budget.semantic_calls_used = previous.semantic_calls_used;
+    let revision_calls = section_count as u32 * (1 + u32::from(SECTION_REVISION_LIMIT));
+    budget.semantic_call_limit = budget
+        .semantic_call_limit
+        .max(previous.semantic_calls_used.saturating_add(revision_calls));
+    budget
+}
 
 #[derive(Debug, Clone)]
 struct ConversationChunk {
@@ -353,7 +381,10 @@ fn context_budget(
                 + 12
         })
         .sum();
-    let planner_output_reserve_tokens = u64::from(max_output_tokens.min(8_192));
+    // The outline schema is deliberately bounded. Reserving the full user output
+    // budget here can force otherwise safe conversations into unnecessary chunking.
+    let planner_output_reserve_tokens =
+        u64::from(max_output_tokens.min(PLANNER_OUTPUT_TOKEN_LIMIT));
     let (safety_margin_tokens, usable_input_tokens, direct_input_limit_tokens, chunk_target_tokens) =
         if let Some(window) = model.context_window_tokens {
             let safety = (window / 12).max(4_096);
@@ -748,6 +779,61 @@ fn input_snapshot(
     }
 }
 
+fn validate_recovery_snapshot(
+    conversation: &StoredConversation,
+    snapshot: &DeepNoteInputSnapshot,
+) -> Result<(), String> {
+    let current = input_snapshot(conversation, snapshot.model.clone(), snapshot.created_at);
+    let unchanged = current.conversation_revision == snapshot.conversation_revision
+        && current.message_ids == snapshot.message_ids
+        && current.attachment_ids == snapshot.attachment_ids
+        && current.attachment_content_hashes == snapshot.attachment_content_hashes
+        && current.selected_literature_ids == snapshot.selected_literature_ids
+        && current.selected_note_ids == snapshot.selected_note_ids;
+    if unchanged {
+        Ok(())
+    } else {
+        Err("会话内容或附件在任务创建后已经变化，不能混用旧检查点。请使用当前内容重新生成深度笔记。".to_string())
+    }
+}
+
+fn extend_manual_recovery_budget(runtime: &mut DeepNoteRuntimeState) {
+    runtime.budget.semantic_call_limit = runtime.budget.semantic_call_limit.max(
+        runtime
+            .budget
+            .semantic_calls_used
+            .saturating_add(12)
+            .min(200),
+    );
+}
+
+fn reset_failed_runtime_nodes(runtime: &mut DeepNoteRuntimeState) {
+    let Some(plan_version) = runtime.plan_version.as_mut() else {
+        return;
+    };
+    reset_failed_nodes(&mut plan_version.compiled_dag);
+}
+
+fn reset_failed_nodes(nodes: &mut [DeepNoteDagNode]) {
+    for node in nodes {
+        if matches!(
+            node.status,
+            DeepNoteNodeStatus::Failed
+                | DeepNoteNodeStatus::Blocked
+                | DeepNoteNodeStatus::NeedsReview
+                | DeepNoteNodeStatus::NeedsRevision
+                | DeepNoteNodeStatus::Interrupted
+        ) {
+            node.status = DeepNoteNodeStatus::Pending;
+            node.attempt_count = 0;
+            node.evidence_ids.clear();
+            node.output_ref = None;
+            node.validation_json.clear();
+            node.error_message = None;
+        }
+    }
+}
+
 fn runtime_state(run: &NotePipelineRun) -> Result<DeepNoteRuntimeState, String> {
     serde_json::from_str(&run.preflight_json)
         .map_err(|error| format!("读取深度笔记运行快照失败：{error}"))
@@ -854,6 +940,103 @@ async fn model_call(
     .map_err(|error| error.message)
 }
 
+fn model_stage_label(operation: &str) -> &'static str {
+    match operation {
+        "deepNoteChunk" => "来源分块提取",
+        "deepNoteChunkRepair" => "来源分块 JSON 修复",
+        "deepNoteOutlineDirect" => "直接生成提纲",
+        "deepNoteOutline" => "知识账本汇总提纲",
+        "deepNoteOutlineFallback" => "精简账本提纲",
+        _ => "深度笔记模型调用",
+    }
+}
+
+fn should_retry_note_model_call(operation: &str, error: &ModelError) -> bool {
+    // A gateway timeout on an outline aggregation request means the current
+    // payload did not finish inside the upstream gateway window. Return to the
+    // pipeline immediately so it can reduce the payload before trying again.
+    if error.kind == ModelErrorKind::UpstreamTimeout
+        && matches!(
+            operation,
+            "deepNote" | "deepNoteOutline" | "deepNoteOutlineFallback" | "deepNoteOutlineDirect"
+        )
+    {
+        return false;
+    }
+    !matches!(error.kind, ModelErrorKind::ProviderUnavailable)
+}
+
+#[cfg(feature = "deep-note-e2e")]
+fn mock_model_response(operation: &str, prompt: &str) -> String {
+    let mut message_ids = Vec::new();
+    for token in prompt.split_whitespace() {
+        let Some(start) = token.find("message-") else {
+            continue;
+        };
+        let id = token[start..]
+            .chars()
+            .take_while(|value| value.is_ascii_alphanumeric() || *value == '-')
+            .collect::<String>();
+        if id.len() > 10 && !message_ids.contains(&id) {
+            message_ids.push(id);
+        }
+    }
+    match operation {
+        "deepNoteChunk" | "deepNoteChunkRepair" => serde_json::json!({
+            "summary": "模拟来源摘要：已提取本分块中的核心概念、事实和可复习要点。",
+            "canonicalTerms": ["核心概念", "实践方法"],
+            "verifiedFacts": ["事实来自当前输入分块。"],
+            "coveredTopics": ["主题概览"],
+            "openQuestions": [],
+            "conflicts": [],
+            "globalConstraints": [],
+            "sourceMessageIds": message_ids,
+        })
+        .to_string(),
+        "deepNoteOutline" | "deepNoteOutlineFallback" | "deepNoteOutlineDirect" => {
+            serde_json::json!({
+                "goal": "建立可验证、可复习的深度笔记。",
+                "audience": "当前对话的学习者",
+                "scope": "仅覆盖当前输入内容",
+                "title": "模拟深度笔记",
+                "summary": "这是一份用于验证全链路的模拟提纲。",
+                "weakPoints": [],
+                "allowAiSupplement": false,
+                "evidencePolicy": "以当前对话消息为依据。",
+                "sourceIds": message_ids,
+                "sections": [{
+                    "id": "sec-1",
+                    "heading": "核心概念与实践",
+                    "kind": "concept",
+                    "purpose": "建立核心概念并说明实践方法。",
+                    "brief": "解释当前输入中的核心概念、关系和使用方式。",
+                    "dependsOn": [],
+                    "evidenceRequirements": ["当前对话中的事实"],
+                    "successCriteria": ["说明核心概念并给出实践方法"],
+                    "sourceScope": [],
+                    "targetDepth": "standard",
+                    "allowAiSupplement": false,
+                    "needsSupplement": false,
+                    "sourceMessageIds": message_ids,
+                }]
+            })
+            .to_string()
+        }
+        _ => {
+            let heading = prompt
+                .find("\"heading\":\"")
+                .and_then(|start| {
+                    let value = &prompt[start + 11..];
+                    value.find('"').map(|end| value[..end].to_string())
+                })
+                .unwrap_or_else(|| "核心概念与实践".to_string());
+            format!(
+                "## {heading}\n\n本节基于当前输入与已保存的来源账本，说明核心概念、它们之间的关系以及实际使用方式。内容只引用当前任务已经覆盖的消息，不把尚未验证的信息当作事实。这里补充定义、适用条件、常见误区、操作步骤和检查方法，确保读者可以独立复习并把知识迁移到新的问题中。\n\n- 核心概念：当前输入中的主要知识点，并说明它与相关概念的区别。\n- 实践方法：将概念转化为可执行步骤，说明输入、过程、结果和注意事项。\n- 常见误区：列出容易混淆的边界，说明为什么不能简单套用。\n- 自检问题：能否用自己的话解释概念并判断适用边界。\n- 复习提示：重新阅读来源消息后，检查本节是否仍然能够被证据支持。"
+            )
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn model_call_with_runtime(
     state: &AppState,
@@ -869,10 +1052,38 @@ async fn model_call_with_runtime(
 ) -> Result<String, ModelError> {
     let started_at = crate::usage::now_ms();
     let call_id = Uuid::new_v4().to_string();
-    let timeout_ms = if max_output_tokens <= 8_192 {
-        240_000
-    } else {
-        360_000
+    #[cfg(feature = "deep-note-e2e")]
+    if std::env::var("MNEMORA_DEEP_NOTE_MOCK").ok().as_deref() == Some("1") {
+        let text = mock_model_response(operation, &user_prompt);
+        let _ = state.library_repository.append_note_pipeline_event(
+            &run.id,
+            "modelCallCompleted",
+            None,
+            &serde_json::json!({
+                "callId": call_id,
+                "operation": operation,
+                "phase": phase.as_str(),
+                "durationMs": 0,
+                "responseChars": text.chars().count(),
+                "inputChars": user_prompt.chars().count(),
+                "systemPromptChars": system_prompt.chars().count(),
+                "maxOutputTokens": max_output_tokens,
+                "maxRetries": 0,
+                "timeoutMs": 0,
+                "mock": true,
+            })
+            .to_string(),
+        );
+        return Ok(text);
+    }
+    let timeout_ms = match operation {
+        "deepNoteChunk" => 300_000,
+        "deepNoteChunkRepair" => 180_000,
+        "deepNoteOutlineDirect" | "deepNoteOutline" => 300_000,
+        "deepNoteOutlineFallback" => 180_000,
+        "deepNote" => 420_000,
+        _ if max_output_tokens <= 8_192 => 300_000,
+        _ => 420_000,
     };
     let observer = |event: chat_service::CompletionProgress| {
         let Some(channel) = channel else {
@@ -888,7 +1099,8 @@ async fn model_call_with_runtime(
                 &run.id,
                 phase,
                 format!(
-                    "正在等待模型响应 · 第 {} 次请求（已重试 {}/{max_retries}）",
+                    "{} · 正在等待模型响应 · 第 {} 次请求（已重试 {}/{max_retries}）",
+                    model_stage_label(operation),
                     retry_index + 1,
                     retry_index
                 ),
@@ -915,7 +1127,8 @@ async fn model_call_with_runtime(
                 &run.id,
                 phase,
                 format!(
-                    "模型请求失败，准备第 {} 次重试（{retry_index}/{max_retries}）",
+                    "{}请求失败，准备第 {} 次重试（{retry_index}/{max_retries}）",
+                    model_stage_label(operation),
                     retry_index
                 ),
                 NotePipelineActivity {
@@ -936,8 +1149,11 @@ async fn model_call_with_runtime(
         cancellation,
         max_retries: Some(max_retries),
         attempt_timeout: Some(Duration::from_millis(timeout_ms)),
+        retry_predicate: Some(&|error| should_retry_note_model_call(operation, error)),
         on_progress: Some(&observer),
     };
+    let input_chars = user_prompt.chars().count();
+    let system_prompt_chars = system_prompt.chars().count();
     let result = chat_service::complete_with_execution(
         state,
         ChatCompletionRequest {
@@ -945,7 +1161,9 @@ async fn model_call_with_runtime(
             model_id: run.model_id.clone(),
             conversation_id: Some(run.conversation_id.clone()),
             message_id: Some(Uuid::new_v4().to_string()),
-            operation: Some(operation.to_string()),
+            // All pipeline stages are auxiliary model calls. Keep the persisted
+            // request operation stable while exposing the finer stage in events.
+            operation: Some("deepNote".to_string()),
             system_prompt,
             activated_skill_ids: Vec::new(),
             slash_skill_id: None,
@@ -979,6 +1197,11 @@ async fn model_call_with_runtime(
                     "phase": phase.as_str(),
                     "durationMs": crate::usage::now_ms().saturating_sub(started_at),
                     "responseChars": text.chars().count(),
+                    "inputChars": input_chars,
+                    "systemPromptChars": system_prompt_chars,
+                    "maxOutputTokens": max_output_tokens,
+                    "maxRetries": max_retries,
+                    "timeoutMs": timeout_ms,
                 })
                 .to_string(),
             );
@@ -996,6 +1219,14 @@ async fn model_call_with_runtime(
                     "durationMs": crate::usage::now_ms().saturating_sub(started_at),
                     "errorKind": format!("{:?}", error.kind),
                     "message": error.message,
+                    "statusCode": error.status_code,
+                    "providerCode": error.provider_code,
+                    "retryAfterMs": error.retry_after_ms,
+                    "inputChars": input_chars,
+                    "systemPromptChars": system_prompt_chars,
+                    "maxOutputTokens": max_output_tokens,
+                    "maxRetries": max_retries,
+                    "timeoutMs": timeout_ms,
                 })
                 .to_string(),
             );
@@ -1052,6 +1283,59 @@ fn ledger_analysis_prompt(
     .flatten()
     .collect::<Vec<_>>()
     .join("\n\n"))
+}
+
+fn compact_ledger_for_planner(ledger: &DeepNoteLedger) -> DeepNoteLedger {
+    fn take(values: &[String], limit: usize, max_chars: usize) -> Vec<String> {
+        values
+            .iter()
+            .take(limit)
+            .map(|value| value.chars().take(max_chars).collect())
+            .collect()
+    }
+
+    DeepNoteLedger {
+        note_goal: ledger.note_goal.chars().take(1_000).collect(),
+        audience: ledger.audience.chars().take(500).collect(),
+        canonical_terms: take(&ledger.canonical_terms, 16, 80),
+        verified_facts: take(&ledger.verified_facts, 16, 180),
+        evidence_claim_links: take(&ledger.evidence_claim_links, 8, 160),
+        covered_topics: take(&ledger.covered_topics, 16, 80),
+        open_questions: take(&ledger.open_questions, 8, 140),
+        conflicts: take(&ledger.conflicts, 8, 140),
+        ai_supplements: take(&ledger.ai_supplements, 8, 140),
+        section_summaries: take(&ledger.section_summaries, 6, 360),
+        global_constraints: take(&ledger.global_constraints, 8, 140),
+    }
+}
+
+fn compact_ledger_analysis_prompt(
+    ledger: &DeepNoteLedger,
+    budget: &DeepNoteContextBudget,
+    adjustment: &str,
+) -> Result<String, String> {
+    let compact = compact_ledger_for_planner(ledger);
+    let ledger_json = serde_json::to_string(&compact)
+        .map_err(|error| format!("序列化精简知识账本失败：{error}"))?;
+    let mut prompt = format!(
+        "Fast outline request. Covered chunks: {}/{}; covered messages: {}/{}; coverageComplete={}.\nLedger JSON:\n{}",
+        budget.processed_chunk_count,
+        budget.chunk_count,
+        budget.processed_message_count,
+        budget.total_message_count,
+        budget.coverage_complete,
+        ledger_json
+    );
+    if !adjustment.trim().is_empty() {
+        prompt.push_str(&format!(
+            "\nUser outline adjustment:\n{}",
+            adjustment.trim()
+        ));
+    }
+    prompt.push_str(
+        "\n\nGenerate 4 to 8 concise sections. Use only evidence retained in this ledger.",
+    );
+    Ok(prompt)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1132,11 +1416,11 @@ async fn build_chunked_ledger(
         let raw = model_call_with_runtime(
             state,
             run,
-            "deepNote",
+            "deepNoteChunk",
             NotePipelinePhase::Analyzing,
             CHUNK_ANALYST_SYSTEM_PROMPT.to_string(),
             prompt.clone(),
-            run.max_output_tokens.min(4_096),
+            run.max_output_tokens.min(CHUNK_OUTPUT_TOKEN_LIMIT),
             run.retry_attempts,
             cancellation,
             Some(channel),
@@ -1150,11 +1434,11 @@ async fn build_chunked_ledger(
                 let repaired = model_call_with_runtime(
                     state,
                     run,
-                    "deepNote",
+                    "deepNoteChunkRepair",
                     NotePipelinePhase::Analyzing,
                     format!("{CHUNK_ANALYST_SYSTEM_PROMPT}\n\n{STRICT_JSON_SUFFIX}"),
                     prompt,
-                    run.max_output_tokens.min(4_096),
+                    run.max_output_tokens.min(CHUNK_OUTPUT_TOKEN_LIMIT),
                     run.retry_attempts,
                     cancellation,
                     Some(channel),
@@ -1251,7 +1535,7 @@ fn section_source_context(
     let raw_limit = budget
         .usable_input_tokens
         .saturating_sub(6_000)
-        .min(DIRECT_PLANNER_TOKEN_LIMIT)
+        .min(SECTION_SOURCE_TOKEN_LIMIT)
         .max(2_048);
     if !raw.trim().is_empty() && estimate_text_tokens(&raw) <= raw_limit {
         return Ok((raw, false));
@@ -1647,16 +1931,25 @@ async fn analyze_outline(
             .to_string(),
         );
         let direct_prompt = analysis_prompt(&analysis_transcript, adjustment);
+        progress(
+            state,
+            channel,
+            &run.id,
+            NotePipelinePhase::Analyzing,
+            None,
+            None,
+            "上下文在预算内 · 正在直接生成知识结构与提纲",
+        );
         consume_semantic_call(state, &run.id, runtime)?;
         match model_call_with_runtime(
             state,
             run,
-            "deepNote",
+            "deepNoteOutlineDirect",
             NotePipelinePhase::Analyzing,
-            ANALYST_SYSTEM_PROMPT.to_string(),
+            format!("{ANALYST_SYSTEM_PROMPT}\n\n{OUTLINE_SIZE_SUFFIX}"),
             direct_prompt.clone(),
-            run.max_output_tokens.min(8_192),
-            0,
+            run.max_output_tokens.min(PLANNER_OUTPUT_TOKEN_LIMIT),
+            run.retry_attempts,
             cancellation,
             Some(channel),
         )
@@ -1713,7 +2006,7 @@ async fn analyze_outline(
             )
             .await?;
         }
-        planner_prompt = Some(ledger_analysis_prompt(
+        planner_prompt = Some(compact_ledger_analysis_prompt(
             &runtime.ledger,
             &runtime.context_budget,
             adjustment,
@@ -1721,36 +2014,95 @@ async fn analyze_outline(
     }
 
     let planner_prompt = planner_prompt.unwrap_or_default();
+    progress(
+        state,
+        channel,
+        &run.id,
+        NotePipelinePhase::Analyzing,
+        None,
+        None,
+        "来源覆盖已完成 · 正在汇总知识账本并生成提纲",
+    );
+    let planner_output_tokens = run.max_output_tokens.min(PLANNER_OUTPUT_TOKEN_LIMIT);
     consume_semantic_call(state, &run.id, runtime)?;
-    let raw = model_call_with_runtime(
+    let initial_result = model_call_with_runtime(
         state,
         run,
-        "deepNote",
+        "deepNoteOutline",
         NotePipelinePhase::Analyzing,
-        format!("{ANALYST_SYSTEM_PROMPT}\n\n{STRICT_JSON_SUFFIX}"),
+        FAST_PLANNER_SYSTEM_PROMPT.to_string(),
         planner_prompt,
-        run.max_output_tokens.min(8_192),
+        planner_output_tokens.min(FAST_PLANNER_OUTPUT_TOKENS),
         run.retry_attempts,
         cancellation,
         Some(channel),
     )
-    .await
-    .map_err(|error| error.message)?;
+    .await;
+    let raw = match initial_result {
+        Ok(raw) => raw,
+        Err(error) if should_fallback_to_chunked_planner(&error) => {
+            progress(
+                state,
+                channel,
+                &run.id,
+                NotePipelinePhase::Analyzing,
+                None,
+                None,
+                "提纲请求未完成 · 正在使用精简知识账本重试",
+            );
+            let compact_prompt = if runtime.ledger.section_summaries.is_empty() {
+                let mut prompt = analysis_prompt(&analysis_transcript, adjustment);
+                prompt.push_str(
+                    "\n\nGenerate a concise outline with at most 12 sections and return only valid JSON.",
+                );
+                prompt
+            } else {
+                compact_ledger_analysis_prompt(
+                    &runtime.ledger,
+                    &runtime.context_budget,
+                    adjustment,
+                )?
+            };
+            consume_semantic_call(state, &run.id, runtime)?;
+            let initial_message = error.message.clone();
+            model_call_with_runtime(
+                state,
+                run,
+                "deepNoteOutlineFallback",
+                NotePipelinePhase::Analyzing,
+                FAST_PLANNER_SYSTEM_PROMPT.to_string(),
+                compact_prompt,
+                FAST_PLANNER_OUTPUT_TOKENS,
+                PLANNER_FALLBACK_RETRIES,
+                cancellation,
+                Some(channel),
+            )
+            .await
+            .map_err(|fallback| {
+                format!(
+                    "{}；精简提纲重试仍失败：{}",
+                    initial_message, fallback.message
+                )
+            })?
+        }
+        Err(error) => return Err(error.message),
+    };
     parse_json_object::<DeepNoteOutline>(&raw).and_then(|outline| outline.validate(&valid_ids))
 }
 
 fn should_fallback_to_chunked_planner(error: &ModelError) -> bool {
     matches!(
         error.kind,
-        ModelErrorKind::Timeout
+        ModelErrorKind::ClientTimeout
+            | ModelErrorKind::UpstreamTimeout
             | ModelErrorKind::Connection
             | ModelErrorKind::Provider
             | ModelErrorKind::ContextLengthExceeded
     )
 }
 
-async fn run_analysis_task(
-    app: AppHandle,
+async fn run_analysis_task<R: Runtime>(
+    app: AppHandle<R>,
     run_id: String,
     adjustment: String,
     channel: Channel<NotePipelineProgress>,
@@ -1846,7 +2198,7 @@ async fn run_analysis_task(
         )?;
         plan_version.created_at = saved.updated_at;
         runtime.plan_version = Some(plan_version.clone());
-        runtime.budget = DeepNoteBudget::for_section_count(plan_version.plan.sections.len());
+        runtime.budget = budget_for_drafting(&runtime.budget, plan_version.plan.sections.len());
         save_runtime_state(&state, &run_id, &runtime)?;
         let _ = state.library_repository.append_note_pipeline_event(
             &run_id,
@@ -1869,8 +2221,8 @@ async fn run_analysis_task(
     state.finish_note_pipeline_run(&run_id).await;
 }
 
-async fn run_drafting_task(
-    app: AppHandle,
+async fn run_drafting_task<R: Runtime>(
+    app: AppHandle<R>,
     run_id: String,
     channel: Channel<NotePipelineProgress>,
     cancellation: CancellationToken,
@@ -1901,7 +2253,7 @@ async fn run_drafting_task(
             .into_iter()
             .map(|section| (section.section_id.clone(), section))
             .collect::<HashMap<_, _>>();
-        let ledger_context = serde_json::to_string_pretty(&runtime.ledger)
+        let ledger_context = serde_json::to_string(&compact_ledger_for_planner(&runtime.ledger))
             .map_err(|error| format!("读取深度笔记知识账本失败：{error}"))?;
         let last_message_id = noteworthy_messages(&conversation)
             .last()
@@ -1982,7 +2334,7 @@ async fn run_drafting_task(
                     NotePipelinePhase::Drafting,
                     SECTION_SYSTEM_PROMPT.to_string(),
                     prompt.clone(),
-                    run.max_output_tokens.min(16_384),
+                    run.max_output_tokens.min(SECTION_OUTPUT_TOKEN_LIMIT),
                     run.retry_attempts,
                     &cancellation,
                     Some(&channel),
@@ -2009,7 +2361,7 @@ async fn run_drafting_task(
                                 NotePipelinePhase::Validating,
                                 SECTION_REVISION_SYSTEM_PROMPT.to_string(),
                                 revision_prompt,
-                                run.max_output_tokens.min(16_384),
+                                run.max_output_tokens.min(SECTION_OUTPUT_TOKEN_LIMIT),
                                 run.retry_attempts,
                                 &cancellation,
                                 Some(&channel),
@@ -2239,8 +2591,8 @@ async fn run_drafting_task(
     state.finish_note_pipeline_run(&run_id).await;
 }
 
-async fn spawn_analysis(
-    app: &AppHandle,
+async fn spawn_analysis<R: Runtime>(
+    app: &AppHandle<R>,
     run_id: String,
     adjustment: String,
     channel: Channel<NotePipelineProgress>,
@@ -2264,8 +2616,8 @@ async fn spawn_analysis(
     Ok(())
 }
 
-async fn spawn_drafting(
-    app: &AppHandle,
+async fn spawn_drafting<R: Runtime>(
+    app: &AppHandle<R>,
     run_id: String,
     channel: Channel<NotePipelineProgress>,
 ) -> Result<(), String> {
@@ -2282,8 +2634,8 @@ async fn spawn_drafting(
     Ok(())
 }
 
-pub async fn start(
-    app: &AppHandle,
+pub async fn start<R: Runtime>(
+    app: &AppHandle<R>,
     request: NotePipelineStartRequest,
     channel: Channel<NotePipelineProgress>,
 ) -> Result<NotePipelineRun, String> {
@@ -2377,8 +2729,8 @@ pub async fn start(
     Ok(run)
 }
 
-pub async fn adjust(
-    app: &AppHandle,
+pub async fn adjust<R: Runtime>(
+    app: &AppHandle<R>,
     request: NotePipelineAdjustRequest,
     channel: Channel<NotePipelineProgress>,
 ) -> Result<NotePipelineRun, String> {
@@ -2406,8 +2758,8 @@ pub async fn adjust(
     Ok(run)
 }
 
-pub async fn confirm(
-    app: &AppHandle,
+pub async fn confirm<R: Runtime>(
+    app: &AppHandle<R>,
     request: NotePipelineConfirmRequest,
     channel: Channel<NotePipelineProgress>,
 ) -> Result<NotePipelineRun, String> {
@@ -2438,7 +2790,7 @@ pub async fn confirm(
     )?;
     plan_version.confirmed_at = Some(run.updated_at.max(1));
     runtime.plan_version = Some(plan_version.clone());
-    runtime.budget = DeepNoteBudget::for_section_count(plan_version.plan.sections.len());
+    runtime.budget = budget_for_drafting(&runtime.budget, plan_version.plan.sections.len());
     let plan_json = serde_json::to_string(&plan_version.plan).map_err(|error| error.to_string())?;
     let dag_json =
         serde_json::to_string(&plan_version.compiled_dag).map_err(|error| error.to_string())?;
@@ -2506,23 +2858,26 @@ pub async fn confirm(
     Ok(run)
 }
 
-pub async fn resume(
-    app: &AppHandle,
-    run_id: String,
+async fn dispatch_checkpoint<R: Runtime>(
+    app: &AppHandle<R>,
+    run: NotePipelineRun,
     channel: Channel<NotePipelineProgress>,
 ) -> Result<NotePipelineRun, String> {
     let state = app.state::<AppState>();
-    let run = state.library_repository.get_note_pipeline_run(&run_id)?;
-    if run.phase == NotePipelinePhase::Paused {
-        if !wait_for_pipeline_task_to_stop(&state, &run.id).await {
-            return Err("深度笔记任务仍在暂停处理中，请稍后再继续。".to_string());
-        }
-        let _guard = state.library_operations.lock().await;
-        state
-            .library_repository
-            .append_note_pipeline_event(&run.id, "runResumed", None, "{}")?;
-    }
     match run.phase {
+        NotePipelinePhase::Preflight => {
+            {
+                let _guard = state.library_operations.lock().await;
+                state.library_repository.update_note_pipeline_phase(
+                    &run.id,
+                    NotePipelinePhase::Analyzing,
+                    None,
+                    &run.warnings,
+                    None,
+                )?;
+            }
+            spawn_analysis(app, run.id.clone(), String::new(), channel).await?;
+        }
         NotePipelinePhase::AwaitingOutline => {
             send(
                 &channel,
@@ -2541,6 +2896,7 @@ pub async fn resume(
         | NotePipelinePhase::Persisting
         | NotePipelinePhase::Paused
         | NotePipelinePhase::Blocked
+        | NotePipelinePhase::Cancelled
         | NotePipelinePhase::Error => {
             if run.outline_json.is_empty() {
                 {
@@ -2578,7 +2934,166 @@ pub async fn resume(
     state.library_repository.get_note_pipeline_run(&run.id)
 }
 
-pub async fn cancel(app: &AppHandle, run_id: &str) -> Result<bool, String> {
+async fn prepare_manual_recovery<R: Runtime>(
+    app: &AppHandle<R>,
+    run: &NotePipelineRun,
+    reset_failed_sections: bool,
+    event_type: &str,
+) -> Result<NotePipelineRun, String> {
+    let state = app.state::<AppState>();
+    if !wait_for_pipeline_task_to_stop(&state, &run.id).await {
+        return Err("深度笔记后台任务仍在结束处理中，请稍后再试。".to_string());
+    }
+    let conversation = state.conversation_repository.load(&run.conversation_id)?;
+    let mut runtime = runtime_state(run)?;
+    validate_recovery_snapshot(&conversation, &runtime.input_snapshot)?;
+    extend_manual_recovery_budget(&mut runtime);
+    if reset_failed_sections {
+        reset_failed_runtime_nodes(&mut runtime);
+    }
+    let recovered = {
+        let _guard = state.library_operations.lock().await;
+        let recovered = state
+            .library_repository
+            .prepare_note_pipeline_retry(&run.id, reset_failed_sections)?;
+        save_runtime_state(&state, &run.id, &runtime)?;
+        state.library_repository.append_note_pipeline_event(
+            &run.id,
+            event_type,
+            None,
+            &serde_json::json!({
+                "executionVersion": recovered.execution_version,
+                "resetFailedSections": reset_failed_sections,
+            })
+            .to_string(),
+        )?;
+        recovered
+    };
+    Ok(recovered)
+}
+
+pub async fn resume<R: Runtime>(
+    app: &AppHandle<R>,
+    run_id: String,
+    channel: Channel<NotePipelineProgress>,
+) -> Result<NotePipelineRun, String> {
+    let state = app.state::<AppState>();
+    let run = state.library_repository.get_note_pipeline_run(&run_id)?;
+    if run.phase != NotePipelinePhase::Cancelled
+        && !state.is_note_pipeline_run_active(&run.id).await
+    {
+        let conversation = state.conversation_repository.load(&run.conversation_id)?;
+        let runtime = runtime_state(&run)?;
+        validate_recovery_snapshot(&conversation, &runtime.input_snapshot)?;
+    }
+    let run = match run.phase {
+        NotePipelinePhase::Paused => {
+            if !wait_for_pipeline_task_to_stop(&state, &run.id).await {
+                return Err("深度笔记任务仍在暂停处理中，请稍后再继续。".to_string());
+            }
+            state.library_repository.append_note_pipeline_event(
+                &run.id,
+                "runResumed",
+                None,
+                "{}",
+            )?;
+            run
+        }
+        NotePipelinePhase::Cancelled => {
+            prepare_manual_recovery(app, &run, false, "runContinued").await?
+        }
+        NotePipelinePhase::Preflight
+        | NotePipelinePhase::Analyzing
+        | NotePipelinePhase::AwaitingOutline
+        | NotePipelinePhase::Compiling
+        | NotePipelinePhase::Queued
+        | NotePipelinePhase::Drafting
+        | NotePipelinePhase::Validating
+        | NotePipelinePhase::Replanning
+        | NotePipelinePhase::Assembling
+        | NotePipelinePhase::Persisting => run,
+        _ => return Err("只有已暂停或已停止的深度笔记任务可以继续。".to_string()),
+    };
+    dispatch_checkpoint(app, run, channel).await
+}
+
+pub async fn retry<R: Runtime>(
+    app: &AppHandle<R>,
+    run_id: String,
+    channel: Channel<NotePipelineProgress>,
+) -> Result<NotePipelineRun, String> {
+    let state = app.state::<AppState>();
+    let run = state.library_repository.get_note_pipeline_run(&run_id)?;
+    if !matches!(
+        run.phase,
+        NotePipelinePhase::Error | NotePipelinePhase::Blocked
+    ) {
+        return Err("只有失败或阻塞的深度笔记任务可以重试。".to_string());
+    }
+    let recovered = prepare_manual_recovery(app, &run, true, "runRetryRequested").await?;
+    dispatch_checkpoint(app, recovered, channel).await
+}
+
+pub async fn restart<R: Runtime>(
+    app: &AppHandle<R>,
+    run_id: String,
+    channel: Channel<NotePipelineProgress>,
+) -> Result<NotePipelineRun, String> {
+    let state = app.state::<AppState>();
+    let previous = state.library_repository.get_note_pipeline_run(&run_id)?;
+    if !matches!(
+        previous.phase,
+        NotePipelinePhase::Error | NotePipelinePhase::Blocked | NotePipelinePhase::Cancelled
+    ) {
+        return Err("当前深度笔记任务不能重新生成。".to_string());
+    }
+    if state.is_note_pipeline_run_active(&previous.id).await {
+        return Err("旧的深度笔记后台任务仍在结束处理中，请稍后再试。".to_string());
+    }
+    if previous.phase != NotePipelinePhase::Cancelled {
+        let _guard = state.library_operations.lock().await;
+        state.library_repository.update_note_pipeline_phase(
+            &previous.id,
+            NotePipelinePhase::Cancelled,
+            None,
+            &previous.warnings,
+            None,
+        )?;
+    }
+    let result = start(
+        app,
+        NotePipelineStartRequest {
+            conversation_id: previous.conversation_id.clone(),
+        },
+        channel,
+    )
+    .await;
+    match result {
+        Ok(run) => {
+            let _ = state.library_repository.append_note_pipeline_event(
+                &previous.id,
+                "runRestarted",
+                None,
+                &serde_json::json!({ "newRunId": run.id }).to_string(),
+            );
+            Ok(run)
+        }
+        Err(error) => {
+            if previous.phase != NotePipelinePhase::Cancelled {
+                let _ = state.library_repository.update_note_pipeline_phase(
+                    &previous.id,
+                    previous.phase,
+                    previous.note_id.as_deref(),
+                    &previous.warnings,
+                    previous.error_message.as_deref(),
+                );
+            }
+            Err(error)
+        }
+    }
+}
+
+pub async fn cancel<R: Runtime>(app: &AppHandle<R>, run_id: &str) -> Result<bool, String> {
     let state = app.state::<AppState>();
     if state.cancel_note_pipeline_run(run_id).await {
         return Ok(true);
@@ -2601,7 +3116,10 @@ pub async fn cancel(app: &AppHandle, run_id: &str) -> Result<bool, String> {
     Ok(true)
 }
 
-pub async fn pause(app: &AppHandle, run_id: &str) -> Result<NotePipelineRun, String> {
+pub async fn pause<R: Runtime>(
+    app: &AppHandle<R>,
+    run_id: &str,
+) -> Result<NotePipelineRun, String> {
     let state = app.state::<AppState>();
     let paused = {
         let _guard = state.library_operations.lock().await;
@@ -2936,12 +3454,13 @@ mod tests {
     };
 
     use super::{
-        can_pause_phase, context_budget, conversation_chunks, merge_chunk_digest,
-        should_fallback_to_chunked_planner, ChunkDigest, ConversationChunk,
+        can_pause_phase, compact_ledger_for_planner, context_budget, conversation_chunks,
+        input_snapshot, merge_chunk_digest, reset_failed_nodes, should_fallback_to_chunked_planner,
+        should_retry_note_model_call, validate_recovery_snapshot, ChunkDigest, ConversationChunk,
     };
     use crate::chat::note_pipeline::types::{
-        DeepNoteCapabilities, DeepNoteLedger, DeepNoteModelSnapshot, DeepNoteSourceChunk,
-        DeepNoteSourceKind,
+        DeepNoteCapabilities, DeepNoteDagNode, DeepNoteLedger, DeepNoteModelSnapshot,
+        DeepNoteNodeStatus, DeepNoteNodeType, DeepNoteSourceChunk, DeepNoteSourceKind,
     };
 
     fn message(id: &str, role: ModelRole, content: String) -> StoredChatMessage {
@@ -3016,16 +3535,96 @@ mod tests {
             "context".repeat(100),
         )]);
         let budget = context_budget(&conversation, &model(Some(128_000)), 16_384);
-        assert_eq!(budget.planner_output_reserve_tokens, 8_192);
+        assert_eq!(budget.planner_output_reserve_tokens, 2_048);
         assert_eq!(budget.prompt_overhead_tokens, 4_096);
         assert_eq!(budget.safety_margin_tokens, 128_000 / 12);
-        assert_eq!(budget.direct_input_limit_tokens, 24_000);
+        assert_eq!(budget.direct_input_limit_tokens, 3_000);
         assert_eq!(budget.chunk_target_tokens, 16_000);
         assert!(budget.usable_input_tokens < 128_000);
 
         let unknown = context_budget(&conversation, &model(None), 16_384);
         assert_eq!(unknown.direct_input_limit_tokens, 8_000);
         assert_eq!(unknown.chunk_target_tokens, 8_000);
+    }
+
+    #[test]
+    fn recovery_rejects_a_changed_conversation_snapshot() {
+        let mut conversation = conversation(vec![message(
+            "message-1",
+            ModelRole::User,
+            "original context".to_string(),
+        )]);
+        let snapshot = input_snapshot(&conversation, model(Some(128_000)), 1);
+        assert!(validate_recovery_snapshot(&conversation, &snapshot).is_ok());
+
+        conversation.messages.push(message(
+            "message-2",
+            ModelRole::User,
+            "new context".to_string(),
+        ));
+        conversation.updated_at += 1;
+        let error = validate_recovery_snapshot(&conversation, &snapshot).unwrap_err();
+        assert!(error.contains("不能混用旧检查点"));
+        assert!(error.contains("重新生成"));
+    }
+
+    #[test]
+    fn retry_resets_failed_runtime_nodes_without_touching_completed_nodes() {
+        let node = |node_id: &str, status: DeepNoteNodeStatus| DeepNoteDagNode {
+            node_id: node_id.to_string(),
+            node_type: DeepNoteNodeType::DraftSection,
+            section_id: Some(node_id.to_string()),
+            depends_on: Vec::new(),
+            status,
+            attempt_count: 5,
+            evidence_ids: vec!["evidence-1".to_string()],
+            input_hash: "input".to_string(),
+            output_ref: Some("output".to_string()),
+            validation_json: "{\"valid\":false}".to_string(),
+            error_message: Some("timeout".to_string()),
+        };
+        let mut nodes = vec![
+            node("completed", DeepNoteNodeStatus::Completed),
+            node("failed", DeepNoteNodeStatus::Failed),
+            node("review", DeepNoteNodeStatus::NeedsReview),
+        ];
+
+        reset_failed_nodes(&mut nodes);
+
+        assert_eq!(nodes[0].status, DeepNoteNodeStatus::Completed);
+        assert_eq!(nodes[0].attempt_count, 5);
+        for recovered in &nodes[1..] {
+            assert_eq!(recovered.status, DeepNoteNodeStatus::Pending);
+            assert_eq!(recovered.attempt_count, 0);
+            assert!(recovered.evidence_ids.is_empty());
+            assert!(recovered.output_ref.is_none());
+            assert!(recovered.validation_json.is_empty());
+            assert!(recovered.error_message.is_none());
+        }
+    }
+
+    #[test]
+    fn compact_planner_ledger_bounds_retry_payload_without_dropping_summaries() {
+        let ledger = DeepNoteLedger {
+            verified_facts: (0..120)
+                .map(|index| format!("fact-{index}").repeat(100))
+                .collect(),
+            section_summaries: (0..30)
+                .map(|index| format!("chunk-{index}:{}", "summary".repeat(300)))
+                .collect(),
+            ..DeepNoteLedger::default()
+        };
+        let compact = compact_ledger_for_planner(&ledger);
+        assert_eq!(compact.verified_facts.len(), 16);
+        assert_eq!(compact.section_summaries.len(), 6);
+        assert!(compact
+            .verified_facts
+            .iter()
+            .all(|value| value.chars().count() <= 180));
+        assert!(compact
+            .section_summaries
+            .iter()
+            .all(|value| value.chars().count() <= 360));
     }
 
     #[test]
@@ -3122,6 +3721,39 @@ mod tests {
             provider_code: None,
             retry_after_ms: None,
         }));
+    }
+
+    #[test]
+    fn outline_gateway_timeouts_reduce_payload_instead_of_repeating_the_same_request() {
+        let gateway_timeout = ModelError {
+            kind: ModelErrorKind::UpstreamTimeout,
+            message: "gateway timeout".to_string(),
+            status_code: Some(504),
+            provider_code: None,
+            retry_after_ms: None,
+        };
+        assert!(!should_retry_note_model_call(
+            "deepNoteOutline",
+            &gateway_timeout
+        ));
+        assert!(!should_retry_note_model_call(
+            "deepNoteOutlineFallback",
+            &gateway_timeout
+        ));
+        assert!(should_retry_note_model_call(
+            "deepNoteChunk",
+            &gateway_timeout
+        ));
+        assert!(should_retry_note_model_call(
+            "deepNoteOutline",
+            &ModelError {
+                kind: ModelErrorKind::Connection,
+                message: "temporary disconnect".to_string(),
+                status_code: None,
+                provider_code: None,
+                retry_after_ms: None,
+            }
+        ));
     }
 
     #[test]

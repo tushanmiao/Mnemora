@@ -49,6 +49,24 @@ pub async fn note_pipeline_resume(
 }
 
 #[tauri::command]
+pub async fn note_pipeline_retry(
+    app: AppHandle,
+    run_id: String,
+    on_event: Channel<NotePipelineProgress>,
+) -> Result<NotePipelineRun, String> {
+    note_pipeline::retry(&app, run_id, on_event).await
+}
+
+#[tauri::command]
+pub async fn note_pipeline_restart(
+    app: AppHandle,
+    run_id: String,
+    on_event: Channel<NotePipelineProgress>,
+) -> Result<NotePipelineRun, String> {
+    note_pipeline::restart(&app, run_id, on_event).await
+}
+
+#[tauri::command]
 pub async fn note_pipeline_cancel(app: AppHandle, run_id: String) -> Result<bool, String> {
     note_pipeline::cancel(&app, &run_id).await
 }

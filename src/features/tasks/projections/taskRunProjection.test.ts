@@ -163,5 +163,31 @@ describe("taskRunProjection", () => {
     }), "分析", true, "zh", 2_000)!;
     expect(sortTaskRuns([running, paused]).map((task) => task.status)).toEqual(["paused", "running"]);
   });
-});
 
+  it("为失败的深度笔记提供步骤重试和完整重生成", () => {
+    const detail = deepNoteDetail();
+    detail.run.phase = "error";
+    detail.run.errorMessage = "模型请求超时";
+    const task = projectDeepNoteTaskRun({ detail, progress: null }, "zh", 2_000);
+
+    expect(task).toMatchObject({
+      status: "failed",
+      canResume: false,
+      canRetry: true,
+      canRestart: true,
+    });
+  });
+
+  it("为已停止的深度笔记提供检查点继续和完整重生成", () => {
+    const detail = deepNoteDetail();
+    detail.run.phase = "cancelled";
+    const task = projectDeepNoteTaskRun({ detail, progress: null }, "zh", 2_000);
+
+    expect(task).toMatchObject({
+      status: "stopped",
+      canResume: true,
+      canRetry: false,
+      canRestart: true,
+    });
+  });
+});
