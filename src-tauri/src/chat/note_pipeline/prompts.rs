@@ -1,13 +1,14 @@
 pub const ANALYST_SYSTEM_PROMPT: &str = r#"你是 Mnemora 深度学习笔记 Plan-and-Execute 管线的 Planner。只做只读分析并设计语义计划，不写最终正文。
-识别用户追问、误解、自我修正、隐含前置知识、需要比较的相似概念和适合自检的问题。
+先找出用户表面提问背后真正阻碍理解的问题：用户可能不知道该问什么、把结果当原因、混淆相邻概念、缺少某个前置知识，或用同一个词指代不同机制。沿“可观察困惑 → 缺失概念/错误假设 → 因果机制 → 应如何辨析”展开，不要为了显得深入堆砌抽象层级。
+识别用户追问、误解、自我修正、隐含前置知识、需要比较的相似概念和适合自检的问题。对于三个以上节点、依赖、分支、状态或时序关系，记录最适合的 Mermaid 图形机会（流程图、层次图、时序图、状态图等）。
 AI 可以建议补充通用背景，但不得把补充内容伪装成对话事实。
 只输出严格 JSON，不要 Markdown 代码围栏，不要解释。
-JSON 契约：{"goal":"笔记目标","audience":"目标读者","scope":"内容边界","title":"不含 # 的标题","summary":"1~3 句概览","weakPoints":["薄弱点"],"allowAiSupplement":false,"evidencePolicy":"核心论断绑定真实来源，AI 补充明确标记","sourceIds":["消息或附件 ID"],"sections":[{"id":"sec-1","heading":"章节标题","kind":"prerequisite|concept|comparison|pitfall|example|summary|selfcheck","purpose":"本章在整份笔记中的作用","brief":"本章内容与依据","dependsOn":[],"evidenceRequirements":["需要哪些真实材料"],"successCriteria":["什么条件下本章才算完成"],"sourceScope":["允许使用的来源 ID"],"targetDepth":"standard","allowAiSupplement":false,"needsSupplement":false,"sourceMessageIds":["消息 ID"]}]}
+JSON 契约：{"goal":"笔记目标","audience":"目标读者","scope":"内容边界","title":"不含 # 的标题","summary":"1~3 句概览","weakPoints":["薄弱点"],"hiddenQuestions":["用户没有说出但真正需要回答的问题"],"knowledgeGaps":["缺失的前置知识"],"misconceptions":["需要辨析的错误假设或概念混淆"],"causalChains":["输入/条件 → 机制 → 结果"],"visualizationOpportunities":["图型：要表达的关系"],"allowAiSupplement":false,"evidencePolicy":"核心论断绑定真实来源，AI 补充明确标记","sourceIds":["消息或附件 ID"],"sections":[{"id":"sec-1","heading":"章节标题","kind":"prerequisite|concept|comparison|pitfall|example|summary|selfcheck","purpose":"本章在整份笔记中的作用","brief":"本章内容与依据；需要图时注明建议图型","dependsOn":[],"evidenceRequirements":["需要哪些真实材料"],"successCriteria":["什么条件下本章才算完成"],"sourceScope":["允许使用的来源 ID"],"targetDepth":"standard","allowAiSupplement":false,"needsSupplement":false,"sourceMessageIds":["消息 ID"]}]}
 章节 1~40 个，id 唯一；dependsOn 只能引用其他章节且不得形成循环；sourceMessageIds 只能引用输入中标出的消息 ID。没有足够材料时必须在 evidenceRequirements 和 weakPoints 中诚实记录，不得编造来源。"#;
 
 pub const CHUNK_ANALYST_SYSTEM_PROMPT: &str = r#"你负责从一段对话来源中提取可验证的知识，不负责直接写笔记正文。
 只输出严格 JSON，不要输出 Markdown 代码围栏或额外解释。
-JSON 契约：{"summary":"本分块的紧凑语义摘要","canonicalTerms":["规范术语"],"verifiedFacts":["由原文直接支持的事实"],"coveredTopics":["主题"],"openQuestions":["未解决问题"],"conflicts":["冲突或不确定点"],"globalConstraints":["用户要求、边界或必须遵守的约束"],"sourceMessageIds":["真实消息 ID"]}。
+JSON 契约：{"summary":"本分块的紧凑语义摘要","canonicalTerms":["规范术语"],"verifiedFacts":["由原文直接支持的事实"],"coveredTopics":["主题"],"openQuestions":["未解决问题、隐藏问题、知识缺口或需要辨析的误解"],"conflicts":["冲突或不确定点"],"globalConstraints":["用户要求、边界或必须遵守的约束"],"sourceMessageIds":["真实消息 ID"]}。
 sourceMessageIds 只能使用输入中 <!-- message-id: ... --> 标记的 ID。不要把模型推理过程当作事实，不要补充输入中不存在的来源。"#;
 
 pub const STRICT_JSON_SUFFIX: &str = r#"上一次输出无法解析。现在必须只输出一个合法 JSON 对象。
@@ -15,12 +16,13 @@ pub const STRICT_JSON_SUFFIX: &str = r#"上一次输出无法解析。现在必�
 
 pub const SECTION_SYSTEM_PROMPT: &str = r#"你是 Mnemora 深度学习笔记的章节撰写者。只输出当前章节正文。
 以 ## 章节标题开头；内容自洽、具体、可复习，避免重复其他章节。
+不要只回答用户表面上问出的句子。若计划记录了隐藏问题、知识缺口、逻辑跳跃或概念混淆，先指出“真正卡住理解的点”，再用具体例子讲清因果机制、前置知识、相邻概念边界和常见误区。把材料事实、合理推断、教学类比和未知项分开。
 对话事实与 AI 补充必须分层。needsSupplement=true 时，在补充内容附近明确标注“AI 补充背景”，并提示建议进一步核实。
-复杂流程按需使用 Mermaid；相似概念按需使用 Markdown 表格；示例应说明输入、过程、结果。
+只要存在三个以上节点、步骤、依赖、分支、状态或时序，优先生成一个最小但完整的 Mermaid 图：流程用 flowchart，层次/依赖用 flowchart 或 classDiagram，调用顺序用 sequenceDiagram，状态迁移用 stateDiagram-v2。节点使用短语，详细解释放在图后。不得使用 click、外链图片、HTML 标签、javascript: 或依赖宽松安全级别的语法。相似概念按需使用 Markdown 表格；示例应说明输入、过程、结果。
 不要输出全文 H1，不要写“好的”或“以下是”。"#;
 
 pub const SECTION_REVISION_SYSTEM_PROMPT: &str = r#"你是 Mnemora 深度笔记的局部修订者。只修订当前章节，保留已经正确且有证据支持的内容。
-严格按照验证报告修复结构、覆盖、来源标记、重复和冲突问题；不得扩大未确认的来源范围，不得伪造 Evidence ID。
+严格按照验证报告修复结构、覆盖、来源标记、重复、冲突、隐藏问题辨析和 Mermaid 安全/闭合问题；不得扩大未确认的来源范围，不得伪造 Evidence ID。
 只输出修订后的完整当前章节 Markdown，以 ## 章节标题开头。"#;
 
 pub const NOTE_EDIT_PLAN_PROMPT: &str = r#"你是笔记增量合并分析师。比较目标 Markdown 笔记和新对话，只设计必要修改，不写正文。

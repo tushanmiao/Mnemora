@@ -1,5 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
+    fs::File,
+    io::Read,
     time::Duration,
 };
 
@@ -12,7 +14,7 @@ use uuid::Uuid;
 use crate::{
     ai::{
         error::{ModelError, ModelErrorKind},
-        types::{ModelOptions, ModelRole},
+        types::{ModelOptions, ModelRole, ModelToolCall},
     },
     chat::{
         conversation_types::{MessageStatus, StoredChatMessage, StoredConversation},
@@ -38,13 +40,15 @@ use super::{
     scheduler::{stable_topological_sections, DeepNoteDagScheduler},
     types::{
         compile_plan, DeepNoteBudget, DeepNoteCapabilities, DeepNoteContextBudget, DeepNoteDagNode,
-        DeepNoteInputSnapshot, DeepNoteLedger, DeepNoteModelSnapshot, DeepNoteNodeStatus,
+        DeepNoteEvidenceArtifact, DeepNoteEvidenceStatus, DeepNoteInputSnapshot, DeepNoteLedger,
+        DeepNoteLocalReaderCapabilities, DeepNoteModelSnapshot, DeepNoteNodeStatus,
         DeepNoteOutline, DeepNotePlanVersion, DeepNotePreflight, DeepNoteRunDetail,
-        DeepNoteRuntimeState, DeepNoteSection, DeepNoteSectionProgress, DeepNoteSourceChunk,
-        DeepNoteSourceKind, DeepNoteValidationReport, NoteEditPrepareRequest,
-        NoteEditPrepareResult, NoteMergePlan, NotePatchSet, NotePipelineActivity,
-        NotePipelineAdjustRequest, NotePipelineConfirmRequest, NotePipelineProgress,
-        NotePipelineStartRequest,
+        DeepNoteRuntimeState, DeepNoteSection, DeepNoteSectionProgress, DeepNoteSkillProfileKind,
+        DeepNoteSkillProfiles, DeepNoteSkillSnapshot, DeepNoteSourceChunk, DeepNoteSourceKind,
+        DeepNoteStartInspection, DeepNoteSupportLevel, DeepNoteValidationReport,
+        NoteEditPrepareRequest, NoteEditPrepareResult, NoteMergePlan, NotePatchSet,
+        NotePipelineActivity, NotePipelineAdjustRequest, NotePipelineConfirmRequest,
+        NotePipelineProgress, NotePipelineStartRequest,
     },
 };
 
@@ -65,7 +69,7 @@ const PLANNER_FALLBACK_RETRIES: u8 = 1;
 const FAST_PLANNER_OUTPUT_TOKENS: u32 = 1_024;
 const SECTION_OUTPUT_TOKEN_LIMIT: u32 = 2_048;
 const SECTION_SOURCE_TOKEN_LIMIT: u64 = 3_000;
-const FAST_PLANNER_SYSTEM_PROMPT: &str = r#"You are the outline planner for a study note. Return exactly one valid JSON object and no markdown. Use only the supplied ledger and message IDs. Keep the outline concise: 4 to 8 sections. Required shape: {"goal":"","audience":"","scope":"","title":"","summary":"","weakPoints":[],"allowAiSupplement":false,"evidencePolicy":"","sourceIds":[],"sections":[{"id":"sec-1","heading":"","kind":"prerequisite|concept|comparison|pitfall|example|summary|selfcheck","purpose":"","brief":"","dependsOn":[],"evidenceRequirements":[],"successCriteria":[],"sourceScope":[],"targetDepth":"standard","allowAiSupplement":false,"needsSupplement":false,"sourceMessageIds":[]}]}. Every sourceMessageIds value must be copied from the ledger. Do not invent facts or IDs."#;
+const FAST_PLANNER_SYSTEM_PROMPT: &str = r#"You are the outline planner for a study note. Return exactly one valid JSON object and no markdown. Use only the supplied ledger and message IDs. Identify the unspoken question, missing prerequisite, confused causal link, or misconception that actually blocks understanding. Prefer causal mechanisms over empty abstraction. Record useful Mermaid opportunities when at least three nodes, steps, dependencies, branches, states, or temporal interactions exist. Keep the outline concise: 4 to 8 sections. Required shape: {"goal":"","audience":"","scope":"","title":"","summary":"","weakPoints":[],"hiddenQuestions":[],"knowledgeGaps":[],"misconceptions":[],"causalChains":[],"visualizationOpportunities":[],"allowAiSupplement":false,"evidencePolicy":"","sourceIds":[],"sections":[{"id":"sec-1","heading":"","kind":"prerequisite|concept|comparison|pitfall|example|summary|selfcheck","purpose":"","brief":"","dependsOn":[],"evidenceRequirements":[],"successCriteria":[],"sourceScope":[],"targetDepth":"standard","allowAiSupplement":false,"needsSupplement":false,"sourceMessageIds":[]}]}. Every sourceMessageIds value must be copied from the ledger. Do not invent facts or IDs."#;
 const OUTLINE_SIZE_SUFFIX: &str =
     "Prefer 6 to 12 sections and never exceed 12 sections. Keep every field concise.";
 const DEFAULT_CHUNK_TARGET_TOKENS: u64 = 16_000;
@@ -282,6 +286,163 @@ fn noteworthy_messages(conversation: &StoredConversation) -> Vec<&StoredChatMess
                     || !message.note_references.is_empty())
         })
         .collect()
+}
+
+fn message_source_hash(message: &StoredChatMessage) -> String {
+    stable_hash(
+        serde_json::to_vec(&serde_json::json!({
+            "id": message.id,
+            "role": message.role,
+            "content": message.content,
+            "attachments": message.attachments,
+            "literatureReferences": message.literature_references,
+            "noteReferences": message.note_references,
+            "status": message.status,
+        }))
+        .unwrap_or_default(),
+    )
+}
+
+fn attachment_metadata_hash(
+    attachment: &crate::chat::conversation_types::StoredChatAttachment,
+) -> String {
+    stable_hash(
+        serde_json::to_vec(&serde_json::json!({
+            "id": attachment.id,
+            "kind": attachment.kind,
+            "name": attachment.name,
+            "mimeType": attachment.mime_type,
+            "sizeBytes": attachment.size_bytes,
+            "path": attachment.path,
+            "previewPath": attachment.preview_path,
+            "width": attachment.width,
+            "height": attachment.height,
+        }))
+        .unwrap_or_default(),
+    )
+}
+
+fn attachment_snapshot_hash(
+    repository: &crate::chat::storage::ConversationRepository,
+    conversation_id: &str,
+    attachment: &crate::chat::conversation_types::StoredChatAttachment,
+) -> Result<String, String> {
+    let path = repository.resolve_attachment_path(conversation_id, &attachment.path)?;
+    let mut file =
+        File::open(&path).map_err(|error| format!("读取附件“{}”失败：{error}", attachment.name))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|error| format!("校验附件“{}”失败：{error}", attachment.name))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    let byte_hash = format!("{:x}", hasher.finalize());
+    Ok(stable_hash(format!(
+        "{}:{byte_hash}",
+        attachment_metadata_hash(attachment)
+    )))
+}
+
+fn attachment_content_hashes(
+    repository: &crate::chat::storage::ConversationRepository,
+    conversation: &StoredConversation,
+) -> Result<Vec<String>, String> {
+    noteworthy_messages(conversation)
+        .into_iter()
+        .flat_map(|message| message.attachments.iter())
+        .map(|attachment| attachment_snapshot_hash(repository, &conversation.id, attachment))
+        .collect()
+}
+
+fn attachment_extension(name: &str) -> String {
+    std::path::Path::new(name)
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+}
+
+fn is_text_source_attachment(
+    attachment: &crate::chat::conversation_types::StoredChatAttachment,
+) -> bool {
+    attachment.mime_type.starts_with("text/")
+        || matches!(
+            attachment.mime_type.as_str(),
+            "application/json"
+                | "application/xml"
+                | "application/javascript"
+                | "application/x-javascript"
+        )
+        || matches!(
+            attachment_extension(&attachment.name).as_str(),
+            "txt"
+                | "md"
+                | "markdown"
+                | "csv"
+                | "json"
+                | "xml"
+                | "html"
+                | "css"
+                | "js"
+                | "jsx"
+                | "ts"
+                | "tsx"
+                | "rs"
+                | "py"
+                | "java"
+                | "c"
+                | "cc"
+                | "cpp"
+                | "h"
+                | "hpp"
+                | "go"
+                | "rb"
+                | "php"
+                | "swift"
+                | "kt"
+                | "kts"
+                | "toml"
+                | "yaml"
+                | "yml"
+                | "sql"
+                | "sh"
+                | "ps1"
+        )
+}
+
+fn is_pdf_source_attachment(
+    attachment: &crate::chat::conversation_types::StoredChatAttachment,
+) -> bool {
+    attachment.mime_type == "application/pdf" || attachment_extension(&attachment.name) == "pdf"
+}
+
+fn is_docx_source_attachment(
+    attachment: &crate::chat::conversation_types::StoredChatAttachment,
+) -> bool {
+    attachment.mime_type
+        == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        || attachment_extension(&attachment.name) == "docx"
+}
+
+fn is_xlsx_source_attachment(
+    attachment: &crate::chat::conversation_types::StoredChatAttachment,
+) -> bool {
+    attachment.mime_type == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        || attachment_extension(&attachment.name) == "xlsx"
+}
+
+fn is_supported_source_attachment(
+    attachment: &crate::chat::conversation_types::StoredChatAttachment,
+) -> bool {
+    is_text_source_attachment(attachment)
+        || is_pdf_source_attachment(attachment)
+        || is_docx_source_attachment(attachment)
+        || is_xlsx_source_attachment(attachment)
 }
 
 fn message_text(message: &StoredChatMessage, include_reasoning: bool) -> String {
@@ -543,6 +704,574 @@ fn conversation_chunks(
     chunks
 }
 
+const SOURCE_TEXT_WINDOW_LINES: usize = 100;
+const SOURCE_OFFICE_WINDOW_ITEMS: usize = 50;
+const SOURCE_READER_CALL_LIMIT: usize = 256;
+const SOURCE_PDF_PAGES_PER_CALL: usize = 2;
+const VISION_SOURCE_SYSTEM_PROMPT: &str = r#"你是深度笔记的只读视觉来源分析器。只描述图片中真实可见的信息，并区分文字、结构、关系、趋势与不确定项。不得根据文件名猜测，不得补写图片外事实。输出可直接作为 Source Chunk 的中文文本；保留关键标签、箭头方向、层次和数值。若图片无法辨认，明确说明无法辨认的区域。"#;
+
+fn source_chunk_message_ids(chunk: &DeepNoteSourceChunk) -> Vec<String> {
+    if let Some(message_id) = chunk.message_id.as_ref() {
+        return vec![message_id.clone()];
+    }
+    chunk
+        .excerpt
+        .match_indices("<!-- message-id: ")
+        .filter_map(|(start, _)| {
+            let suffix = &chunk.excerpt[start + "<!-- message-id: ".len()..];
+            suffix.find(" -->").map(|end| suffix[..end].to_string())
+        })
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn evidence_for_plan(
+    run: &NotePipelineRun,
+    plan: &DeepNotePlanVersion,
+    chunks: &[DeepNoteSourceChunk],
+) -> Vec<DeepNoteEvidenceArtifact> {
+    let created_at = run.updated_at.max(1);
+    plan.plan
+        .sections
+        .iter()
+        .flat_map(|section| {
+            let scoped = chunks
+                .iter()
+                .filter(|chunk| {
+                    section.source_message_ids.is_empty()
+                        || source_chunk_message_ids(chunk)
+                            .iter()
+                            .any(|message_id| section.source_message_ids.contains(message_id))
+                })
+                .collect::<Vec<_>>();
+            let selected = if section.source_message_ids.is_empty() {
+                chunks.iter().collect::<Vec<_>>()
+            } else {
+                scoped
+            };
+            let requirements = if section.evidence_requirements.is_empty() {
+                vec![format!("支撑章节“{}”的已确认来源", section.heading)]
+            } else {
+                section.evidence_requirements.clone()
+            };
+            requirements
+                .into_iter()
+                .enumerate()
+                .map(|(index, requirement)| {
+                    let source_chunk_ids = selected
+                        .iter()
+                        .map(|chunk| chunk.chunk_id.clone())
+                        .collect::<Vec<_>>();
+                    let source_excerpt = selected
+                        .iter()
+                        .take(3)
+                        .map(|chunk| {
+                            format!(
+                                "[{} · {}]\n{}",
+                                chunk.source_kind.as_str(),
+                                chunk.location,
+                                chunk.excerpt.chars().take(1_200).collect::<String>()
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n\n");
+                    let status = if source_chunk_ids.is_empty() {
+                        DeepNoteEvidenceStatus::Insufficient
+                    } else {
+                        DeepNoteEvidenceStatus::Verified
+                    };
+                    let content_hash = stable_hash(format!(
+                        "{}:{}:{}:{}",
+                        section.id,
+                        index,
+                        requirement,
+                        source_chunk_ids.join(":")
+                    ));
+                    DeepNoteEvidenceArtifact {
+                        evidence_id: format!("evidence-{}", &content_hash[..20]),
+                        section_id: section.id.clone(),
+                        source_chunk_ids,
+                        claim: requirement.clone(),
+                        model_synthesis: format!(
+                            "章节“{}”必须用这些已冻结来源说明：{}",
+                            section.heading, requirement
+                        ),
+                        source_excerpt,
+                        support_level: if status == DeepNoteEvidenceStatus::Verified {
+                            DeepNoteSupportLevel::Direct
+                        } else {
+                            DeepNoteSupportLevel::Partial
+                        },
+                        status,
+                        content_hash,
+                        created_at,
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+fn evidence_ids_by_section(evidence: &[DeepNoteEvidenceArtifact]) -> HashMap<String, Vec<String>> {
+    let mut result = HashMap::<String, Vec<String>>::new();
+    for item in evidence {
+        if item.status != DeepNoteEvidenceStatus::Verified {
+            continue;
+        }
+        result
+            .entry(item.section_id.clone())
+            .or_default()
+            .push(item.evidence_id.clone());
+    }
+    result
+}
+
+fn ledger_has_real_output(ledger: &DeepNoteLedger, coverage_complete: bool) -> bool {
+    coverage_complete
+        && (!ledger.section_summaries.is_empty()
+            || !ledger.verified_facts.is_empty()
+            || !ledger.covered_topics.is_empty()
+            || !ledger.open_questions.is_empty()
+            || !ledger.conflicts.is_empty())
+}
+
+fn push_attachment_source_chunks(
+    chunks: &mut Vec<ConversationChunk>,
+    attachment: &crate::chat::conversation_types::StoredChatAttachment,
+    message_id: &str,
+    source_kind: DeepNoteSourceKind,
+    location: &str,
+    content: String,
+    target_tokens: u64,
+) {
+    for (segment_index, excerpt) in split_text_by_token_budget(&content, target_tokens)
+        .into_iter()
+        .enumerate()
+    {
+        if excerpt.trim().is_empty() {
+            continue;
+        }
+        let content_hash = stable_hash(&excerpt);
+        let chunk_id = format!(
+            "source-{}",
+            &stable_hash(format!(
+                "{}:{location}:{segment_index}:{content_hash}",
+                attachment.id
+            ))[..20]
+        );
+        chunks.push(ConversationChunk {
+            estimated_tokens: estimate_text_tokens(&excerpt),
+            source: DeepNoteSourceChunk {
+                chunk_id,
+                source_kind,
+                source_id: attachment.id.clone(),
+                message_id: Some(message_id.to_string()),
+                attachment_id: Some(attachment.id.clone()),
+                library_item_id: None,
+                location: location.to_string(),
+                excerpt,
+                content_hash,
+                ocr_confidence: None,
+            },
+            message_ids: vec![message_id.to_string()],
+        });
+    }
+}
+
+async fn execute_source_reader(
+    state: &AppState,
+    run: &NotePipelineRun,
+    call: ModelToolCall,
+    attachments: &[crate::chat::conversation_types::StoredChatAttachment],
+    cancellation: &CancellationToken,
+) -> Result<crate::chat::agent::ToolExecution, String> {
+    let started_at = crate::usage::now_ms();
+    state.library_repository.append_note_pipeline_event(
+        &run.id,
+        "toolStarted",
+        Some("recon-source"),
+        &serde_json::json!({
+            "callId": call.id,
+            "toolName": call.name,
+            "arguments": call.arguments,
+            "readOnly": true,
+        })
+        .to_string(),
+    )?;
+    let result = crate::chat::agent::execute_bounded_attachment_reader(
+        &call,
+        &run.conversation_id,
+        attachments,
+        &state.conversation_repository,
+        cancellation,
+    )
+    .await;
+    match result {
+        Ok(result) if result.output_truncated => {
+            let message = format!(
+                "只读来源工具 {} 的输出被截断，不能把该范围标记为覆盖完成。",
+                call.name
+            );
+            state.library_repository.append_note_pipeline_event(
+                &run.id,
+                "toolFailed",
+                Some("recon-source"),
+                &serde_json::json!({
+                    "callId": call.id,
+                    "toolName": call.name,
+                    "message": message,
+                    "outputTruncated": true,
+                })
+                .to_string(),
+            )?;
+            Err(message)
+        }
+        Ok(result) => {
+            state.library_repository.append_note_pipeline_event(
+                &run.id,
+                "toolCompleted",
+                Some("recon-source"),
+                &serde_json::json!({
+                    "callId": call.id,
+                    "toolName": call.name,
+                    "durationMs": crate::usage::now_ms().saturating_sub(started_at),
+                    "outputChars": result.output_chars,
+                    "outputTruncated": false,
+                    "preview": result.preview,
+                })
+                .to_string(),
+            )?;
+            Ok(result)
+        }
+        Err(error) => {
+            state.library_repository.append_note_pipeline_event(
+                &run.id,
+                "toolFailed",
+                Some("recon-source"),
+                &serde_json::json!({
+                    "callId": call.id,
+                    "toolName": call.name,
+                    "message": error.message,
+                })
+                .to_string(),
+            )?;
+            Err(error.message)
+        }
+    }
+}
+
+fn xlsx_sheet_catalog(content: &str) -> Vec<String> {
+    content
+        .lines()
+        .find_map(|line| line.strip_prefix("可用工作表："))
+        .map(|value| {
+            value
+                .split('、')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+async fn attachment_source_chunks(
+    state: &AppState,
+    run: &NotePipelineRun,
+    runtime: &mut DeepNoteRuntimeState,
+    conversation: &StoredConversation,
+    target_tokens: u64,
+    cancellation: &CancellationToken,
+) -> Result<Vec<ConversationChunk>, String> {
+    let attachments = noteworthy_messages(conversation)
+        .into_iter()
+        .flat_map(|message| message.attachments.iter().cloned())
+        .collect::<Vec<_>>();
+    let mut chunks = Vec::new();
+    let mut calls = 0usize;
+    for message in noteworthy_messages(conversation) {
+        for attachment in &message.attachments {
+            if cancellation.is_cancelled() {
+                return Err("操作已取消。".to_string());
+            }
+            if attachment.kind == "image" {
+                consume_semantic_call(state, &run.id, runtime)?;
+                let prompt = format!(
+                    "图片附件 ID：{}\n文件名：{}\n请生成可追溯的视觉 Source Chunk。",
+                    attachment.id, attachment.name
+                );
+                let text = model_call_with_runtime_attachments(
+                    state,
+                    run,
+                    "deepNoteVisionSource",
+                    NotePipelinePhase::Analyzing,
+                    system_prompt_with_skill_profile(
+                        state,
+                        &run.id,
+                        runtime,
+                        DeepNoteSkillProfileKind::Reviewer,
+                        Some("recon-source"),
+                        VISION_SOURCE_SYSTEM_PROMPT,
+                    ),
+                    prompt,
+                    vec![attachment.clone()],
+                    run.max_output_tokens.min(2_048),
+                    run.retry_attempts,
+                    cancellation,
+                    None,
+                )
+                .await
+                .map_err(|error| error.message)?;
+                if text.trim().is_empty() {
+                    return Err(format!(
+                        "图片附件“{}”没有产生可验证的视觉描述。",
+                        attachment.name
+                    ));
+                }
+                push_attachment_source_chunks(
+                    &mut chunks,
+                    attachment,
+                    &message.id,
+                    DeepNoteSourceKind::Image,
+                    &format!("图片 {}", attachment.name),
+                    text,
+                    target_tokens,
+                );
+                continue;
+            }
+            if is_text_source_attachment(attachment) {
+                let mut start = 1usize;
+                loop {
+                    if calls >= SOURCE_READER_CALL_LIMIT {
+                        return Err("来源 Reader 调用达到安全上限，附件覆盖尚未完成。".to_string());
+                    }
+                    let end = start + SOURCE_TEXT_WINDOW_LINES - 1;
+                    calls = calls.saturating_add(1);
+                    let call = ModelToolCall {
+                        id: Uuid::new_v4().to_string(),
+                        name: "read_attachment_text".to_string(),
+                        arguments: serde_json::json!({
+                            "attachmentId": attachment.id,
+                            "startLine": start,
+                            "endLine": end,
+                            "maxBytes": 32_000,
+                        }),
+                        provider_signature: None,
+                    };
+                    let result =
+                        execute_source_reader(state, run, call, &attachments, cancellation).await?;
+                    if result.content.trim().is_empty() {
+                        if start == 1 {
+                            push_attachment_source_chunks(
+                                &mut chunks,
+                                attachment,
+                                &message.id,
+                                DeepNoteSourceKind::Text,
+                                &format!("附件 {}", attachment.name),
+                                "[该附件没有可提取的非空 UTF-8 文本。]".to_string(),
+                                target_tokens,
+                            );
+                        }
+                        break;
+                    }
+                    push_attachment_source_chunks(
+                        &mut chunks,
+                        attachment,
+                        &message.id,
+                        DeepNoteSourceKind::Text,
+                        &format!("附件 {} 第 {start}-{end} 行", attachment.name),
+                        result.content,
+                        target_tokens,
+                    );
+                    start = end + 1;
+                }
+            } else if is_pdf_source_attachment(attachment) {
+                let path = state
+                    .conversation_repository
+                    .resolve_attachment_path(&conversation.id, &attachment.path)?;
+                let page_count = tauri::async_runtime::spawn_blocking(move || {
+                    lopdf::Document::load(path)
+                        .map_err(|error| format!("读取 PDF 页数失败：{error}"))
+                        .map(|document| document.get_pages().len())
+                })
+                .await
+                .map_err(|error| format!("PDF 页数检查任务失败：{error}"))??;
+                for start in (1..=page_count.max(1)).step_by(SOURCE_PDF_PAGES_PER_CALL) {
+                    if calls >= SOURCE_READER_CALL_LIMIT {
+                        return Err("来源 Reader 调用达到安全上限，PDF 覆盖尚未完成。".to_string());
+                    }
+                    let end = (start + SOURCE_PDF_PAGES_PER_CALL - 1).min(page_count);
+                    let pages = (start..=end).collect::<Vec<_>>();
+                    calls = calls.saturating_add(1);
+                    let call = ModelToolCall {
+                        id: Uuid::new_v4().to_string(),
+                        name: "read_pdf_pages".to_string(),
+                        arguments: serde_json::json!({ "attachmentId": attachment.id, "pages": pages }),
+                        provider_signature: None,
+                    };
+                    let result =
+                        execute_source_reader(state, run, call, &attachments, cancellation).await?;
+                    push_attachment_source_chunks(
+                        &mut chunks,
+                        attachment,
+                        &message.id,
+                        DeepNoteSourceKind::Pdf,
+                        &format!("PDF {} 第 {start}-{end} 页", attachment.name),
+                        result.content,
+                        target_tokens,
+                    );
+                }
+            } else if is_docx_source_attachment(attachment) {
+                let mut start = 1usize;
+                loop {
+                    if calls >= SOURCE_READER_CALL_LIMIT {
+                        return Err("来源 Reader 调用达到安全上限，DOCX 覆盖尚未完成。".to_string());
+                    }
+                    let end = start + SOURCE_OFFICE_WINDOW_ITEMS - 1;
+                    calls = calls.saturating_add(1);
+                    let call = ModelToolCall {
+                        id: Uuid::new_v4().to_string(),
+                        name: "read_docx_blocks".to_string(),
+                        arguments: serde_json::json!({
+                            "attachmentId": attachment.id,
+                            "startBlock": start,
+                            "endBlock": end,
+                        }),
+                        provider_signature: None,
+                    };
+                    let result =
+                        execute_source_reader(state, run, call, &attachments, cancellation).await?;
+                    if result.content.starts_with("DOCX 中没有第") {
+                        break;
+                    }
+                    push_attachment_source_chunks(
+                        &mut chunks,
+                        attachment,
+                        &message.id,
+                        DeepNoteSourceKind::Docx,
+                        &format!("DOCX {} 第 {start}-{end} 块", attachment.name),
+                        result.content,
+                        target_tokens,
+                    );
+                    start = end + 1;
+                }
+            } else if is_xlsx_source_attachment(attachment) {
+                calls = calls.saturating_add(1);
+                let first_call = ModelToolCall {
+                    id: Uuid::new_v4().to_string(),
+                    name: "read_xlsx_rows".to_string(),
+                    arguments: serde_json::json!({
+                        "attachmentId": attachment.id,
+                        "startRow": 1,
+                        "endRow": SOURCE_OFFICE_WINDOW_ITEMS,
+                    }),
+                    provider_signature: None,
+                };
+                let first =
+                    execute_source_reader(state, run, first_call, &attachments, cancellation)
+                        .await?;
+                let sheets = xlsx_sheet_catalog(&first.content);
+                if sheets.is_empty() {
+                    return Err(format!(
+                        "XLSX 附件“{}”没有可读取的工作表。",
+                        attachment.name
+                    ));
+                }
+                for (sheet_index, sheet) in sheets.iter().enumerate() {
+                    let mut start = 1usize;
+                    loop {
+                        if calls >= SOURCE_READER_CALL_LIMIT {
+                            return Err(
+                                "来源 Reader 调用达到安全上限，XLSX 覆盖尚未完成。".to_string()
+                            );
+                        }
+                        let end = start + SOURCE_OFFICE_WINDOW_ITEMS - 1;
+                        let result = if sheet_index == 0 && start == 1 {
+                            first.clone()
+                        } else {
+                            calls = calls.saturating_add(1);
+                            let call = ModelToolCall {
+                                id: Uuid::new_v4().to_string(),
+                                name: "read_xlsx_rows".to_string(),
+                                arguments: serde_json::json!({
+                                    "attachmentId": attachment.id,
+                                    "sheetName": sheet,
+                                    "startRow": start,
+                                    "endRow": end,
+                                }),
+                                provider_signature: None,
+                            };
+                            execute_source_reader(state, run, call, &attachments, cancellation)
+                                .await?
+                        };
+                        if result.content.contains("中没有第") {
+                            break;
+                        }
+                        push_attachment_source_chunks(
+                            &mut chunks,
+                            attachment,
+                            &message.id,
+                            DeepNoteSourceKind::Xlsx,
+                            &format!("XLSX {} / {} 第 {start}-{end} 行", attachment.name, sheet),
+                            result.content,
+                            target_tokens,
+                        );
+                        start = end + 1;
+                    }
+                }
+            } else {
+                return Err(format!(
+                    "附件“{}”不在深度笔记只读来源白名单中。",
+                    attachment.name
+                ));
+            }
+        }
+    }
+    Ok(chunks)
+}
+
+async fn all_source_chunks(
+    state: &AppState,
+    run: &NotePipelineRun,
+    runtime: &mut DeepNoteRuntimeState,
+    conversation: &StoredConversation,
+    target_tokens: u64,
+    cancellation: &CancellationToken,
+) -> Result<Vec<ConversationChunk>, String> {
+    let mut chunks = conversation_chunks(conversation, target_tokens);
+    chunks.extend(
+        attachment_source_chunks(
+            state,
+            run,
+            runtime,
+            conversation,
+            target_tokens,
+            cancellation,
+        )
+        .await?,
+    );
+    for chunk in &chunks {
+        state.library_repository.append_note_pipeline_event(
+            &run.id,
+            "sourceChunkCreated",
+            Some("recon-source"),
+            &serde_json::json!({
+                "chunkId": chunk.source.chunk_id,
+                "sourceKind": chunk.source.source_kind.as_str(),
+                "sourceId": chunk.source.source_id,
+                "messageId": chunk.source.message_id,
+                "attachmentId": chunk.source.attachment_id,
+                "location": chunk.source.location,
+                "contentHash": chunk.source.content_hash,
+                "excerptChars": chunk.source.excerpt.chars().count(),
+            })
+            .to_string(),
+        )?;
+    }
+    Ok(chunks)
+}
+
 fn extend_unique(target: &mut Vec<String>, values: Vec<String>, limit: usize) {
     for value in values {
         let value = value.trim();
@@ -593,11 +1322,18 @@ fn merge_chunk_digest(
 fn incremental_transcript(
     conversation: &StoredConversation,
     summarized_until: Option<&str>,
-) -> (String, HashSet<String>, Option<String>) {
+) -> Result<(String, HashSet<String>, Option<String>), String> {
     let messages = noteworthy_messages(conversation);
-    let start = summarized_until
-        .and_then(|anchor| messages.iter().position(|message| message.id == anchor))
-        .map_or(0, |index| index + 1);
+    let start = match summarized_until {
+        Some(anchor) => messages
+            .iter()
+            .position(|message| message.id == anchor)
+            .map(|index| index + 1)
+            .ok_or_else(|| {
+                "已有笔记的增量锚点已被删除或重排，不能从头回退生成更新。".to_string()
+            })?,
+        None => 0,
+    };
     let selected = &messages[start..];
     let ids = selected
         .iter()
@@ -617,7 +1353,7 @@ fn incremental_transcript(
             .collect::<Vec<_>>()
             .join("\n\n"),
     );
-    (value, ids, last)
+    Ok((value, ids, last))
 }
 
 fn enabled_model(settings: &ModelSettings, provider_id: &str, model_id: &str) -> bool {
@@ -693,20 +1429,34 @@ fn preflight(
     let requires_vision = attachments
         .iter()
         .any(|attachment| attachment.kind == "image");
-    let requires_tools = attachments
+    let file_attachments = attachments
         .iter()
-        .any(|attachment| attachment.kind == "file");
+        .filter(|attachment| attachment.kind == "file")
+        .copied()
+        .collect::<Vec<_>>();
+    let requires_local_readers = !file_attachments.is_empty();
+    // 深度笔记由 Rust 固定调度本地 Reader，不要求模型具备 Function Calling。
+    let requires_tools = false;
     let mut missing_capabilities = Vec::new();
     if requires_vision && model.capabilities.vision != Some(true) {
         missing_capabilities.push("当前模型未明确支持图片识别".to_string());
     }
-    if requires_tools && !model.capabilities.tools {
-        missing_capabilities.push("当前模型不支持 Tool，无法读取文档附件".to_string());
+    let unsupported = file_attachments
+        .iter()
+        .filter(|attachment| !is_supported_source_attachment(attachment))
+        .map(|attachment| attachment.name.clone())
+        .collect::<Vec<_>>();
+    if !unsupported.is_empty() {
+        missing_capabilities.push(format!(
+            "本地只读来源网关暂不支持这些附件：{}",
+            unsupported.join("、")
+        ));
     }
     let mut warnings = Vec::new();
-    if !model.capabilities.tools && !requires_tools {
-        warnings
-            .push("当前模型不支持 Tool，本次仅使用已存储的文本、文献引用和笔记引用。".to_string());
+    if requires_local_readers && !model.capabilities.tools {
+        warnings.push(
+            "文档附件将由 Mnemora 本地只读 Reader 解析；不依赖当前模型的 Tool 能力。".to_string(),
+        );
     }
     if !model.capabilities.structured_outputs {
         warnings.push("当前模型使用严格 JSON 兼容模式，所有计划均由 Rust 校验。".to_string());
@@ -715,7 +1465,14 @@ fn preflight(
         ready: missing_capabilities.is_empty(),
         model,
         requires_tools,
+        requires_local_readers,
         requires_vision,
+        local_readers: DeepNoteLocalReaderCapabilities {
+            text: true,
+            pdf: true,
+            docx: true,
+            xlsx: true,
+        },
         missing_capabilities,
         warnings,
         attachment_ids: attachments
@@ -729,11 +1486,16 @@ fn input_snapshot(
     conversation: &StoredConversation,
     model: DeepNoteModelSnapshot,
     created_at: u64,
+    attachment_content_hashes: Vec<String>,
 ) -> DeepNoteInputSnapshot {
     let messages = noteworthy_messages(conversation);
     let message_ids = messages
         .iter()
         .map(|message| message.id.clone())
+        .collect::<Vec<_>>();
+    let message_content_hashes = messages
+        .iter()
+        .map(|message| message_source_hash(message))
         .collect::<Vec<_>>();
     let attachments = messages
         .iter()
@@ -743,15 +1505,7 @@ fn input_snapshot(
         .iter()
         .map(|attachment| attachment.id.clone())
         .collect::<Vec<_>>();
-    let attachment_content_hashes = attachments
-        .iter()
-        .map(|attachment| {
-            stable_hash(format!(
-                "{}:{}:{}:{}",
-                attachment.id, attachment.name, attachment.size_bytes, attachment.path
-            ))
-        })
-        .collect::<Vec<_>>();
+    debug_assert_eq!(attachment_content_hashes.len(), attachments.len());
     let mut selected_literature_ids = messages
         .iter()
         .flat_map(|message| message.literature_references.iter())
@@ -770,6 +1524,7 @@ fn input_snapshot(
     DeepNoteInputSnapshot {
         conversation_revision: conversation.updated_at,
         message_ids,
+        message_content_hashes,
         attachment_ids,
         attachment_content_hashes,
         selected_literature_ids,
@@ -783,19 +1538,128 @@ fn input_snapshot(
 fn validate_recovery_snapshot(
     conversation: &StoredConversation,
     snapshot: &DeepNoteInputSnapshot,
+    current_attachment_content_hashes: Vec<String>,
 ) -> Result<(), String> {
-    let current = input_snapshot(conversation, snapshot.model.clone(), snapshot.created_at);
-    let unchanged = current.conversation_revision == snapshot.conversation_revision
-        && current.message_ids == snapshot.message_ids
-        && current.attachment_ids == snapshot.attachment_ids
+    let messages = noteworthy_messages(conversation);
+    if messages.len() < snapshot.message_ids.len() {
+        return Err(
+            "旧任务覆盖的消息已被删除，不能恢复旧快照。请使用当前内容重新生成深度笔记。"
+                .to_string(),
+        );
+    }
+    let prefix = &messages[..snapshot.message_ids.len()];
+    let prefix_ids = prefix
+        .iter()
+        .map(|message| message.id.clone())
+        .collect::<Vec<_>>();
+    if prefix_ids != snapshot.message_ids {
+        return Err(
+            "旧任务覆盖的消息顺序或身份已经变化，不能恢复旧快照。请使用当前内容重新生成深度笔记。"
+                .to_string(),
+        );
+    }
+    if snapshot.message_content_hashes.len() != snapshot.message_ids.len() {
+        return Err(
+            "旧任务缺少逐消息内容 Hash，无法安全判断是否仅追加了新消息。请重新生成深度笔记。"
+                .to_string(),
+        );
+    }
+    let prefix_hashes = prefix
+        .iter()
+        .map(|message| message_source_hash(message))
+        .collect::<Vec<_>>();
+    if prefix_hashes != snapshot.message_content_hashes {
+        return Err("旧任务覆盖的消息内容、引用或附件已经被编辑，不能恢复旧快照。请使用当前内容重新生成深度笔记。".to_string());
+    }
+    let mut projected = conversation.clone();
+    projected.messages = prefix.iter().map(|message| (*message).clone()).collect();
+    projected.linked_library_item_ids = conversation
+        .linked_library_item_ids
+        .iter()
+        .filter(|id| snapshot.selected_literature_ids.contains(id))
+        .cloned()
+        .collect();
+    let current = input_snapshot(
+        &projected,
+        snapshot.model.clone(),
+        snapshot.created_at,
+        current_attachment_content_hashes,
+    );
+    let unchanged_sources = current.attachment_ids == snapshot.attachment_ids
         && current.attachment_content_hashes == snapshot.attachment_content_hashes
         && current.selected_literature_ids == snapshot.selected_literature_ids
         && current.selected_note_ids == snapshot.selected_note_ids;
-    if unchanged {
-        Ok(())
-    } else {
-        Err("会话内容或附件在任务创建后已经变化，不能混用旧检查点。请使用当前内容重新生成深度笔记。".to_string())
+    if !unchanged_sources {
+        return Err("旧任务覆盖的附件、文献或笔记引用已经变化，不能恢复旧快照。请使用当前内容重新生成深度笔记。".to_string());
     }
+    Ok(())
+}
+
+fn snapshot_conversation_after_validation(
+    conversation: &StoredConversation,
+    snapshot: &DeepNoteInputSnapshot,
+) -> Result<StoredConversation, String> {
+    let messages = noteworthy_messages(conversation);
+    let mut projected = conversation.clone();
+    projected.messages = messages[..snapshot.message_ids.len()]
+        .iter()
+        .map(|message| (*message).clone())
+        .collect();
+    projected.linked_library_item_ids = conversation
+        .linked_library_item_ids
+        .iter()
+        .filter(|id| snapshot.selected_literature_ids.contains(id))
+        .cloned()
+        .collect();
+    projected.updated_at = snapshot.conversation_revision;
+    Ok(projected)
+}
+
+async fn validate_recovery_snapshot_from_storage(
+    repository: &crate::chat::storage::ConversationRepository,
+    conversation: &StoredConversation,
+    snapshot: &DeepNoteInputSnapshot,
+) -> Result<(), String> {
+    let repository = repository.clone();
+    let messages = noteworthy_messages(conversation);
+    let mut conversation_for_hash = conversation.clone();
+    if messages.len() >= snapshot.message_ids.len() {
+        conversation_for_hash.messages = messages[..snapshot.message_ids.len()]
+            .iter()
+            .map(|message| (*message).clone())
+            .collect();
+    }
+    let hashes = tauri::async_runtime::spawn_blocking(move || {
+        attachment_content_hashes(&repository, &conversation_for_hash)
+    })
+    .await
+    .map_err(|error| format!("附件快照校验任务失败：{error}"))??;
+    validate_recovery_snapshot(conversation, snapshot, hashes)
+}
+
+async fn snapshot_conversation(
+    repository: &crate::chat::storage::ConversationRepository,
+    conversation: &StoredConversation,
+    snapshot: &DeepNoteInputSnapshot,
+) -> Result<StoredConversation, String> {
+    validate_recovery_snapshot_from_storage(repository, conversation, snapshot).await?;
+    snapshot_conversation_after_validation(conversation, snapshot)
+}
+
+async fn create_input_snapshot(
+    repository: &crate::chat::storage::ConversationRepository,
+    conversation: &StoredConversation,
+    model: DeepNoteModelSnapshot,
+    created_at: u64,
+) -> Result<DeepNoteInputSnapshot, String> {
+    let repository = repository.clone();
+    let conversation_for_hash = conversation.clone();
+    let hashes = tauri::async_runtime::spawn_blocking(move || {
+        attachment_content_hashes(&repository, &conversation_for_hash)
+    })
+    .await
+    .map_err(|error| format!("附件快照创建任务失败：{error}"))??;
+    Ok(input_snapshot(conversation, model, created_at, hashes))
 }
 
 fn extend_manual_recovery_budget(runtime: &mut DeepNoteRuntimeState) {
@@ -838,6 +1702,124 @@ fn reset_failed_nodes(nodes: &mut [DeepNoteDagNode]) {
 fn runtime_state(run: &NotePipelineRun) -> Result<DeepNoteRuntimeState, String> {
     serde_json::from_str(&run.preflight_json)
         .map_err(|error| format!("读取深度笔记运行快照失败：{error}"))
+}
+
+fn snapshot_skill_profiles(
+    state: &AppState,
+    include_visual_evidence: bool,
+) -> (DeepNoteSkillProfiles, Vec<String>) {
+    use crate::skills::types::{SkillMode, SkillRisk};
+
+    let profile_ids = [
+        (
+            DeepNoteSkillProfileKind::Planner,
+            vec!["question-framing", "knowledge-capture"],
+        ),
+        (
+            DeepNoteSkillProfileKind::Writer,
+            vec![
+                "beginner-teaching",
+                "document-authoring",
+                "markdown-notes",
+                "diagram",
+            ],
+        ),
+        (
+            DeepNoteSkillProfileKind::Reviewer,
+            if include_visual_evidence {
+                vec![
+                    "knowledge-capture",
+                    "markdown-notes",
+                    "diagram",
+                    "visual-evidence-analysis",
+                ]
+            } else {
+                vec!["knowledge-capture", "markdown-notes", "diagram"]
+            },
+        ),
+    ];
+    let mut profiles = DeepNoteSkillProfiles::default();
+    let mut warnings = Vec::new();
+    for (profile, ids) in profile_ids {
+        for skill_id in ids {
+            let detail = match state.skill_repository.get_detail(skill_id) {
+                Ok(detail) => detail,
+                Err(error) => {
+                    warnings.push(format!("深度笔记未加载 Skill {skill_id}：{error}"));
+                    continue;
+                }
+            };
+            if !detail.summary.enabled
+                || !detail.summary.supported_modes.contains(&SkillMode::Notes)
+                || detail.summary.risk == SkillRisk::High
+                || detail.summary.disable_model_invocation
+            {
+                warnings.push(format!(
+                    "深度笔记跳过不满足 Notes 安全条件的 Skill：{}",
+                    detail.summary.name
+                ));
+                continue;
+            }
+            let rendered_prompt = match state.skill_repository.render_method_snapshot(skill_id) {
+                Ok(prompt) => prompt,
+                Err(error) => {
+                    warnings.push(format!("深度笔记冻结 Skill {skill_id} 失败：{error}"));
+                    continue;
+                }
+            };
+            let snapshot = DeepNoteSkillSnapshot {
+                profile,
+                skill_id: detail.summary.id,
+                name: detail.summary.name,
+                version: detail.summary.version,
+                content_hash: detail.summary.content_hash,
+                rendered_prompt,
+            };
+            match profile {
+                DeepNoteSkillProfileKind::Planner => profiles.planner.push(snapshot),
+                DeepNoteSkillProfileKind::Writer => profiles.writer.push(snapshot),
+                DeepNoteSkillProfileKind::Reviewer => profiles.reviewer.push(snapshot),
+            }
+        }
+    }
+    (profiles, warnings)
+}
+
+fn system_prompt_with_skill_profile(
+    state: &AppState,
+    run_id: &str,
+    runtime: &DeepNoteRuntimeState,
+    profile: DeepNoteSkillProfileKind,
+    node_id: Option<&str>,
+    base_prompt: &str,
+) -> String {
+    let skills = runtime.skill_profiles.for_profile(profile);
+    if skills.is_empty() {
+        return base_prompt.to_string();
+    }
+    for skill in skills {
+        let _ = state.library_repository.append_note_pipeline_event(
+            run_id,
+            "skillApplied",
+            node_id,
+            &serde_json::json!({
+                "profile": profile.as_str(),
+                "skillId": skill.skill_id,
+                "name": skill.name,
+                "version": skill.version,
+                "contentHash": skill.content_hash,
+            })
+            .to_string(),
+        );
+    }
+    format!(
+        "{base_prompt}\n\n以下方法论 Skill 已在本 Run 创建时冻结。它们只能影响分析与表达，不能改变来源、权限、DAG 或预算：\n\n{}",
+        skills
+            .iter()
+            .map(|skill| skill.rendered_prompt.as_str())
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    )
 }
 
 fn save_runtime_state(
@@ -891,12 +1873,23 @@ fn persist_scheduler_state(
             &node.node_id,
             node.status.as_str(),
             node.attempt_count,
+            &node.evidence_ids,
             node.output_ref.as_deref(),
             &node.validation_json,
             node.error_message.as_deref(),
         )?;
     }
     save_runtime_state(state, run_id, runtime)
+}
+
+fn verified_evidence_ids_for_section(
+    evidence_by_section: &HashMap<String, Vec<String>>,
+    section_id: &str,
+) -> Vec<String> {
+    evidence_by_section
+        .get(section_id)
+        .cloned()
+        .unwrap_or_default()
 }
 
 fn dependency_context(section: &DeepNoteSection, drafts: &HashMap<String, String>) -> String {
@@ -1040,6 +2033,11 @@ fn mock_model_response(operation: &str, prompt: &str) -> String {
                 "title": "模拟深度笔记",
                 "summary": "这是一份用于验证全链路的模拟提纲。",
                 "weakPoints": [],
+                "hiddenQuestions": [],
+                "knowledgeGaps": [],
+                "misconceptions": [],
+                "causalChains": [],
+                "visualizationOpportunities": ["flowchart：核心概念到实践方法"],
                 "allowAiSupplement": false,
                 "evidencePolicy": "以当前对话消息为依据。",
                 "sourceIds": message_ids,
@@ -1084,6 +2082,36 @@ async fn model_call_with_runtime(
     phase: NotePipelinePhase,
     system_prompt: String,
     user_prompt: String,
+    max_output_tokens: u32,
+    max_retries: u8,
+    cancellation: &CancellationToken,
+    channel: Option<&Channel<NotePipelineProgress>>,
+) -> Result<String, ModelError> {
+    model_call_with_runtime_attachments(
+        state,
+        run,
+        operation,
+        phase,
+        system_prompt,
+        user_prompt,
+        Vec::new(),
+        max_output_tokens,
+        max_retries,
+        cancellation,
+        channel,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn model_call_with_runtime_attachments(
+    state: &AppState,
+    run: &NotePipelineRun,
+    operation: &str,
+    phase: NotePipelinePhase,
+    system_prompt: String,
+    user_prompt: String,
+    attachments: Vec<crate::chat::conversation_types::StoredChatAttachment>,
     max_output_tokens: u32,
     max_retries: u8,
     cancellation: &CancellationToken,
@@ -1212,7 +2240,7 @@ async fn model_call_with_runtime(
             messages: vec![ChatModelMessage {
                 role: ModelRole::User,
                 content: user_prompt,
-                attachments: Vec::new(),
+                attachments,
             }],
             options: ModelOptions {
                 temperature: None,
@@ -1388,7 +2416,15 @@ async fn build_chunked_ledger(
     channel: &Channel<NotePipelineProgress>,
     cancellation: &CancellationToken,
 ) -> Result<(), String> {
-    let chunks = conversation_chunks(conversation, target_tokens);
+    let chunks = all_source_chunks(
+        state,
+        run,
+        runtime,
+        conversation,
+        target_tokens,
+        cancellation,
+    )
+    .await?;
     if chunks.is_empty() {
         return Err("对话还没有可供深度笔记分析的来源内容。".to_string());
     }
@@ -1458,7 +2494,14 @@ async fn build_chunked_ledger(
             run,
             "deepNoteChunk",
             NotePipelinePhase::Analyzing,
-            CHUNK_ANALYST_SYSTEM_PROMPT.to_string(),
+            system_prompt_with_skill_profile(
+                state,
+                &run.id,
+                runtime,
+                DeepNoteSkillProfileKind::Planner,
+                Some("recon-source"),
+                CHUNK_ANALYST_SYSTEM_PROMPT,
+            ),
             prompt.clone(),
             run.max_output_tokens.min(CHUNK_OUTPUT_TOKEN_LIMIT),
             run.retry_attempts,
@@ -1476,7 +2519,14 @@ async fn build_chunked_ledger(
                     run,
                     "deepNoteChunkRepair",
                     NotePipelinePhase::Analyzing,
-                    format!("{CHUNK_ANALYST_SYSTEM_PROMPT}\n\n{STRICT_JSON_SUFFIX}"),
+                    system_prompt_with_skill_profile(
+                        state,
+                        &run.id,
+                        runtime,
+                        DeepNoteSkillProfileKind::Planner,
+                        Some("recon-source"),
+                        &format!("{CHUNK_ANALYST_SYSTEM_PROMPT}\n\n{STRICT_JSON_SUFFIX}"),
+                    ),
                     prompt,
                     run.max_output_tokens.min(CHUNK_OUTPUT_TOKEN_LIMIT),
                     run.retry_attempts,
@@ -1577,7 +2627,16 @@ fn section_source_context(
         .saturating_sub(6_000)
         .min(SECTION_SOURCE_TOKEN_LIMIT)
         .max(2_048);
-    if !raw.trim().is_empty() && estimate_text_tokens(&raw) <= raw_limit {
+    let selected_has_attachments = noteworthy_messages(conversation)
+        .into_iter()
+        .any(|message| {
+            (selected_ids.is_empty() || selected_ids.contains(&message.id))
+                && !message.attachments.is_empty()
+        });
+    if !selected_has_attachments
+        && !raw.trim().is_empty()
+        && estimate_text_tokens(&raw) <= raw_limit
+    {
         return Ok((raw, false));
     }
     let summaries = ledger
@@ -1599,7 +2658,7 @@ fn section_source_context(
     }
     Ok((
         format!(
-            "原始来源超过单章输入预算，以下内容来自已完成且可追溯的来源分块提取；来源消息 ID 保留在每条摘要中。\n\n{}",
+            "本章使用已完成且可追溯的来源分块账本；当消息包含附件时，账本同时包含附件 Reader 或视觉分析产物，来源消息 ID 保留在每条摘要中。\n\n{}",
             summaries.join("\n\n")
         ),
         true,
@@ -1614,10 +2673,15 @@ fn section_prompt(
     dependency_outputs: &str,
 ) -> Result<String, String> {
     Ok(format!(
-        "全局标题：{}\n全局概览：{}\n薄弱点：{}\n全部章节：\n{}\n\n当前章节：{}\n{}\n\n全局知识账本：\n{}\n\n当前章节来源：\n{}",
+        "全局标题：{}\n全局概览：{}\n薄弱点：{}\n隐藏问题：{}\n知识缺口：{}\n需要辨析的误解：{}\n因果链：{}\n图形机会：{}\n全部章节：\n{}\n\n当前章节：{}\n{}\n\n全局知识账本：\n{}\n\n当前章节来源：\n{}",
         outline.title,
         outline.summary,
         outline.weak_points.join("；"),
+        outline.hidden_questions.join("；"),
+        outline.knowledge_gaps.join("；"),
+        outline.misconceptions.join("；"),
+        outline.causal_chains.join("；"),
+        outline.visualization_opportunities.join("；"),
         outline
             .sections
             .iter()
@@ -1702,6 +2766,7 @@ fn assemble(
 fn validate_section_markdown(
     section: &DeepNoteSection,
     markdown: &str,
+    checked_evidence_ids: &[String],
 ) -> DeepNoteValidationReport {
     let normalized = markdown.trim();
     let mut errors = Vec::new();
@@ -1756,11 +2821,50 @@ fn validate_section_markdown(
             )
         })
         .collect::<Vec<_>>();
+    let mermaid_blocks = normalized.matches("```mermaid").count();
+    let closing_fences = normalized.matches("```").count();
+    if mermaid_blocks > 0 && closing_fences < mermaid_blocks.saturating_mul(2) {
+        errors.push("Mermaid 代码块没有正确闭合。".to_string());
+    }
+    for forbidden in ["click ", "javascript:", "<iframe", "<script", "<img"] {
+        if normalized.to_ascii_lowercase().contains(forbidden) {
+            errors.push(format!("图形或 Markdown 包含不安全内容：{forbidden}"));
+        }
+    }
+    if mermaid_blocks > 0
+        && ![
+            "flowchart",
+            "sequenceDiagram",
+            "stateDiagram",
+            "classDiagram",
+            "erDiagram",
+            "timeline",
+            "gantt",
+        ]
+        .iter()
+        .any(|kind| normalized.contains(kind))
+    {
+        warnings.push("检测到 Mermaid 代码块，但未识别到受支持的图型关键字。".to_string());
+    }
+    let relation_heavy = matches!(
+        section.kind,
+        super::types::DeepNoteSectionKind::Prerequisite
+            | super::types::DeepNoteSectionKind::Comparison
+            | super::types::DeepNoteSectionKind::Example
+    ) || section.brief.contains("流程")
+        || section.brief.contains("层次")
+        || section.brief.contains("依赖")
+        || section.brief.contains("状态")
+        || section.brief.contains("时序");
+    if relation_heavy && mermaid_blocks == 0 {
+        warnings
+            .push("本章包含明显的流程、层次或依赖关系，建议用 Mermaid 图辅助理解。".to_string());
+    }
     DeepNoteValidationReport {
         passed: errors.is_empty(),
         errors,
         warnings,
-        checked_evidence_ids: section.source_message_ids.clone(),
+        checked_evidence_ids: checked_evidence_ids.to_vec(),
         criteria_coverage,
     }
 }
@@ -1769,6 +2873,7 @@ fn sidecar_json(
     run: &NotePipelineRun,
     plan: &DeepNotePlanVersion,
     sections: &[(DeepNoteSection, String, bool)],
+    evidence_by_section: &HashMap<String, Vec<String>>,
 ) -> Result<String, String> {
     serde_json::to_string(&serde_json::json!({
         "schemaVersion": 1,
@@ -1785,6 +2890,7 @@ fn sidecar_json(
             "heading": section.heading,
             "dependsOn": section.depends_on,
             "sourceMessageIds": section.source_message_ids,
+            "evidenceIds": evidence_by_section.get(&section.id).cloned().unwrap_or_default(),
             "contentHash": stable_hash(markdown),
             "validated": !failed,
             "aiSupplement": section.allow_ai_supplement || section.needs_supplement,
@@ -1932,14 +3038,23 @@ async fn analyze_outline(
     );
 
     let mut planner_prompt = None;
-    if runtime.context_budget.estimated_input_tokens
-        <= runtime.context_budget.direct_input_limit_tokens
+    let has_source_attachments = noteworthy_messages(conversation)
+        .into_iter()
+        .any(|message| !message.attachments.is_empty());
+    if !has_source_attachments
+        && runtime.context_budget.estimated_input_tokens
+            <= runtime.context_budget.direct_input_limit_tokens
         && !runtime.context_budget.coverage_complete
     {
-        let direct_chunks = conversation_chunks(
+        let direct_chunks = all_source_chunks(
+            state,
+            run,
+            runtime,
             conversation,
             runtime.context_budget.direct_input_limit_tokens.max(2_048),
-        );
+            cancellation,
+        )
+        .await?;
         {
             let _guard = state.library_operations.lock().await;
             state
@@ -1986,7 +3101,14 @@ async fn analyze_outline(
             run,
             "deepNoteOutlineDirect",
             NotePipelinePhase::Analyzing,
-            format!("{ANALYST_SYSTEM_PROMPT}\n\n{OUTLINE_SIZE_SUFFIX}"),
+            system_prompt_with_skill_profile(
+                state,
+                &run.id,
+                runtime,
+                DeepNoteSkillProfileKind::Planner,
+                Some("analyze-input"),
+                &format!("{ANALYST_SYSTEM_PROMPT}\n\n{OUTLINE_SIZE_SUFFIX}"),
+            ),
             direct_prompt.clone(),
             run.max_output_tokens.min(PLANNER_OUTPUT_TOKEN_LIMIT),
             run.retry_attempts,
@@ -2070,7 +3192,14 @@ async fn analyze_outline(
         run,
         "deepNoteOutline",
         NotePipelinePhase::Analyzing,
-        FAST_PLANNER_SYSTEM_PROMPT.to_string(),
+        system_prompt_with_skill_profile(
+            state,
+            &run.id,
+            runtime,
+            DeepNoteSkillProfileKind::Planner,
+            Some("analyze-input"),
+            FAST_PLANNER_SYSTEM_PROMPT,
+        ),
         planner_prompt,
         planner_output_tokens.min(FAST_PLANNER_OUTPUT_TOKENS),
         run.retry_attempts,
@@ -2110,7 +3239,14 @@ async fn analyze_outline(
                 run,
                 "deepNoteOutlineFallback",
                 NotePipelinePhase::Analyzing,
-                FAST_PLANNER_SYSTEM_PROMPT.to_string(),
+                system_prompt_with_skill_profile(
+                    state,
+                    &run.id,
+                    runtime,
+                    DeepNoteSkillProfileKind::Planner,
+                    Some("analyze-input"),
+                    FAST_PLANNER_SYSTEM_PROMPT,
+                ),
                 compact_prompt,
                 FAST_PLANNER_OUTPUT_TOKENS,
                 PLANNER_FALLBACK_RETRIES,
@@ -2164,8 +3300,14 @@ async fn run_analysis_task<R: Runtime>(
     );
     let result = async {
         let run = state.library_repository.get_note_pipeline_run(&run_id)?;
-        let conversation = state.conversation_repository.load(&run.conversation_id)?;
         let mut runtime = runtime_state(&run)?;
+        let live_conversation = state.conversation_repository.load(&run.conversation_id)?;
+        let conversation = snapshot_conversation(
+            &state.conversation_repository,
+            &live_conversation,
+            &runtime.input_snapshot,
+        )
+        .await?;
         let outline = match analyze_outline(
             &state,
             &run,
@@ -2265,6 +3407,7 @@ async fn execute_dag_section(
     state: &AppState,
     run: &NotePipelineRun,
     runtime: &mut DeepNoteRuntimeState,
+    conversation: &StoredConversation,
     selected_outline: &DeepNoteOutline,
     section: &DeepNoteSection,
     ledger_context: &str,
@@ -2272,10 +3415,10 @@ async fn execute_dag_section(
     channel: &Channel<NotePipelineProgress>,
     cancellation: &CancellationToken,
     persisted: Option<&NotePipelineSection>,
+    evidence_ids: &[String],
 ) -> Result<Option<(String, DeepNoteValidationReport, u8, u8)>, String> {
-    let conversation = state.conversation_repository.load(&run.conversation_id)?;
     let (source_context, using_ledger_summary) = section_source_context(
-        &conversation,
+        conversation,
         section,
         &runtime.ledger,
         &runtime.context_budget,
@@ -2305,7 +3448,7 @@ async fn execute_dag_section(
         passed: false,
         errors: vec!["章节尚未生成。".to_string()],
         warnings: Vec::new(),
-        checked_evidence_ids: Vec::new(),
+        checked_evidence_ids: evidence_ids.to_vec(),
         criteria_coverage: Vec::new(),
     };
     let mut attempts = persisted.map(|value| value.attempt_count).unwrap_or(0);
@@ -2321,7 +3464,14 @@ async fn execute_dag_section(
             run,
             "deepNote",
             NotePipelinePhase::Drafting,
-            SECTION_SYSTEM_PROMPT.to_string(),
+            system_prompt_with_skill_profile(
+                state,
+                &run.id,
+                runtime,
+                DeepNoteSkillProfileKind::Writer,
+                Some(&format!("draft:{}", section.id)),
+                SECTION_SYSTEM_PROMPT,
+            ),
             prompt.clone(),
             run.max_output_tokens.min(SECTION_OUTPUT_TOKEN_LIMIT),
             run.retry_attempts,
@@ -2332,7 +3482,7 @@ async fn execute_dag_section(
         {
             Ok(value) if !value.trim().is_empty() => {
                 let mut candidate = value.trim().to_string();
-                validation = validate_section_markdown(section, &candidate);
+                validation = validate_section_markdown(section, &candidate, evidence_ids);
                 while !validation.passed && revisions < SECTION_REVISION_LIMIT {
                     revisions += 1;
                     consume_semantic_call(state, &run.id, runtime)?;
@@ -2347,7 +3497,14 @@ async fn execute_dag_section(
                         run,
                         "deepNote",
                         NotePipelinePhase::Validating,
-                        SECTION_REVISION_SYSTEM_PROMPT.to_string(),
+                        system_prompt_with_skill_profile(
+                            state,
+                            &run.id,
+                            runtime,
+                            DeepNoteSkillProfileKind::Reviewer,
+                            Some(&format!("validate:{}", section.id)),
+                            SECTION_REVISION_SYSTEM_PROMPT,
+                        ),
                         revision_prompt,
                         run.max_output_tokens.min(SECTION_OUTPUT_TOKEN_LIMIT),
                         run.retry_attempts,
@@ -2364,7 +3521,7 @@ async fn execute_dag_section(
                         .map_err(|error| error.message)?
                         .trim()
                         .to_string();
-                    validation = validate_section_markdown(section, &candidate);
+                    validation = validate_section_markdown(section, &candidate, evidence_ids);
                 }
                 if validation.passed {
                     markdown = Some(candidate);
@@ -2396,7 +3553,7 @@ async fn execute_dag_section(
                 NotePipelineSectionStatus::Failed,
                 attempts,
                 revisions,
-                &section.source_message_ids,
+                evidence_ids,
                 &validation_json,
                 Some(&last_error),
             )?;
@@ -2416,7 +3573,7 @@ async fn execute_dag_section(
             NotePipelineSectionStatus::Completed,
             attempts,
             revisions,
-            &section.source_message_ids,
+            evidence_ids,
             &validation_json,
             None,
         )?;
@@ -2440,7 +3597,13 @@ async fn run_drafting_task<R: Runtime>(
         if plan_version.confirmed_at.is_none() {
             return Err("深度笔记计划尚未由用户确认。".to_string());
         }
-        let conversation = state.conversation_repository.load(&run.conversation_id)?;
+        let live_conversation = state.conversation_repository.load(&run.conversation_id)?;
+        let conversation = snapshot_conversation(
+            &state.conversation_repository,
+            &live_conversation,
+            &runtime.input_snapshot,
+        )
+        .await?;
         let outline = parse_json_object::<DeepNoteOutline>(&run.outline_json)?;
         let selected_ids = run
             .selected_section_ids
@@ -2461,7 +3624,53 @@ async fn run_drafting_task<R: Runtime>(
             .map(|message| message.id.clone());
         let total = selected_outline.sections.len();
         let mut scheduler = DeepNoteDagScheduler::new(plan_version.compiled_dag.clone())?;
-        scheduler.complete_preparation();
+        let source_chunks = state
+            .library_repository
+            .list_note_pipeline_source_chunks(&run.id)?;
+        if source_chunks.is_empty() {
+            return Err("深度笔记没有持久化 Source Chunk，不能推进执行 DAG。".to_string());
+        }
+        let mut evidence = state
+            .library_repository
+            .list_note_pipeline_evidence(&run.id)?;
+        if evidence.is_empty() {
+            evidence = evidence_for_plan(&run, &plan_version, &source_chunks);
+            state
+                .library_repository
+                .replace_note_pipeline_evidence(&run.id, &evidence)?;
+            for item in &evidence {
+                state.library_repository.append_note_pipeline_event(
+                    &run.id,
+                    "evidenceCreated",
+                    Some(&format!("evidence:{}", item.section_id)),
+                    &serde_json::json!({
+                        "evidenceId": item.evidence_id,
+                        "sectionId": item.section_id,
+                        "sourceChunkIds": item.source_chunk_ids,
+                        "status": item.status.as_str(),
+                        "supportLevel": item.support_level.as_str(),
+                    })
+                    .to_string(),
+                )?;
+            }
+        }
+        state.library_repository.save_note_pipeline_ledger(
+            &run.id,
+            plan_version.version,
+            &runtime.ledger,
+            &serde_json::json!({
+                "reason": "confirmed-plan",
+                "sourceChunkCount": source_chunks.len(),
+                "evidenceCount": evidence.len(),
+            })
+            .to_string(),
+        )?;
+        let evidence_by_section = evidence_ids_by_section(&evidence);
+        scheduler.complete_preparation(
+            !source_chunks.is_empty(),
+            &evidence_by_section,
+            ledger_has_real_output(&runtime.ledger, runtime.context_budget.coverage_complete),
+        )?;
         scheduler.prepare_for_resume();
         let mut drafts_by_id = HashMap::<String, String>::new();
         for section in &selected_outline.sections {
@@ -2547,10 +3756,13 @@ async fn run_drafting_task<R: Runtime>(
                     ),
                 );
                 let dependency_outputs = dependency_context(&section, &drafts_by_id);
+                let section_evidence_ids =
+                    verified_evidence_ids_for_section(&evidence_by_section, &section_id);
                 let result = match execute_dag_section(
                     &state,
                     &run,
                     &mut runtime,
+                    &conversation,
                     &selected_outline,
                     &section,
                     &ledger_context,
@@ -2558,6 +3770,7 @@ async fn run_drafting_task<R: Runtime>(
                     &channel,
                     &cancellation,
                     persisted_sections.get(&section_id),
+                    &section_evidence_ids,
                 )
                 .await
                 {
@@ -2602,6 +3815,7 @@ async fn run_drafting_task<R: Runtime>(
                 scheduler.transition(&draft_node_id, DeepNoteNodeStatus::Completed)?;
                 if let Ok(node) = scheduler.node_mut(&draft_node_id) {
                     node.attempt_count = attempts;
+                    node.evidence_ids = section_evidence_ids.clone();
                     node.output_ref = Some(format!("section:{section_id}"));
                     node.validation_json = validation_json.clone();
                     node.error_message = None;
@@ -2626,6 +3840,7 @@ async fn run_drafting_task<R: Runtime>(
                 scheduler.transition(&validate_node_id, DeepNoteNodeStatus::Completed)?;
                 if let Ok(node) = scheduler.node_mut(&validate_node_id) {
                     node.attempt_count = revisions;
+                    node.evidence_ids = section_evidence_ids;
                     node.output_ref = Some(format!("validation:{section_id}"));
                     node.validation_json = validation_json;
                     node.error_message = None;
@@ -2650,8 +3865,9 @@ async fn run_drafting_task<R: Runtime>(
             cancelled = true;
         }
         if cancelled {
-            scheduler.skip_unfinished_sections();
             persist_scheduler_state(&state, &run_id, &mut runtime, &scheduler)?;
+            finish_interrupted_run(&state, &run_id, &channel).await?;
+            return Ok(());
         }
         if scheduler.has_section_failures() && !cancelled {
             persist_scheduler_state(&state, &run_id, &mut runtime, &scheduler)?;
@@ -2723,15 +3939,7 @@ async fn run_drafting_task<R: Runtime>(
                 .collect(),
             ..selected_outline
         };
-        let (mut title, content, mut warnings) = assemble(&effective_outline, &drafts, false);
-        if cancelled {
-            title = format!("{title}（部分完成）");
-            warnings.push(format!(
-                "任务已取消；已保存 {} 个完成章节，另有 {} 个章节未生成。",
-                drafts.len(),
-                total.saturating_sub(drafts.len())
-            ));
-        }
+        let (title, content, warnings) = assemble(&effective_outline, &drafts, false);
         if scheduler
             .node("assemble-note")
             .is_some_and(|node| node.status == DeepNoteNodeStatus::InProgress)
@@ -2742,7 +3950,7 @@ async fn run_drafting_task<R: Runtime>(
             }
             persist_scheduler_state(&state, &run_id, &mut runtime, &scheduler)?;
         }
-        let sidecar = sidecar_json(&run, &plan_version, &drafts)?;
+        let sidecar = sidecar_json(&run, &plan_version, &drafts, &evidence_by_section)?;
         progress(
             &state,
             &channel,
@@ -2750,11 +3958,7 @@ async fn run_drafting_task<R: Runtime>(
             NotePipelinePhase::Persisting,
             None,
             None,
-            if cancelled {
-                "正在保存已完成章节为草稿。"
-            } else {
-                "正在保存笔记与来源。"
-            },
+            "正在保存笔记与来源。",
         );
         if scheduler
             .node("persist-note")
@@ -2778,15 +3982,19 @@ async fn run_drafting_task<R: Runtime>(
                 &serde_json::to_string(&runtime).map_err(|error| error.to_string())?,
                 Some(&sidecar),
             )?;
-            state.library_repository.create_note_with_sources(
-                LibraryNoteCreate {
-                    item_id: None,
-                    title,
-                    content,
-                    group_name: None,
-                },
-                sources,
-            )?
+            state
+                .library_repository
+                .create_note_with_sources_and_coverage(
+                    LibraryNoteCreate {
+                        item_id: None,
+                        title,
+                        content,
+                        group_name: None,
+                    },
+                    sources,
+                    &conversation.id,
+                    &runtime.input_snapshot,
+                )?
         };
         if scheduler
             .node("persist-note")
@@ -2815,7 +4023,7 @@ async fn run_drafting_task<R: Runtime>(
                     "noteId": note.id,
                     "completedSectionCount": completed.completed_section_ids.len(),
                     "failedSectionCount": completed.failed_section_ids.len(),
-                    "degraded": cancelled,
+                    "degraded": false,
                 })
                 .to_string(),
             )?;
@@ -2825,7 +4033,7 @@ async fn run_drafting_task<R: Runtime>(
             &channel,
             NotePipelineProgress::Done {
                 run: completed,
-                degraded: cancelled,
+                degraded: false,
             },
         );
         Ok(())
@@ -2855,7 +4063,13 @@ async fn run_drafting_task_legacy<R: Runtime>(
         if plan_version.confirmed_at.is_none() {
             return Err("深度笔记计划尚未由用户确认。".to_string());
         }
-        let conversation = state.conversation_repository.load(&run.conversation_id)?;
+        let live_conversation = state.conversation_repository.load(&run.conversation_id)?;
+        let conversation = snapshot_conversation(
+            &state.conversation_repository,
+            &live_conversation,
+            &runtime.input_snapshot,
+        )
+        .await?;
         let outline = parse_json_object::<DeepNoteOutline>(&run.outline_json)?;
         let selected_ids = run
             .selected_section_ids
@@ -2960,7 +4174,7 @@ async fn run_drafting_task_legacy<R: Runtime>(
                 {
                     Ok(value) if !value.trim().is_empty() => {
                         let mut candidate = value.trim().to_string();
-                        validation = validate_section_markdown(section, &candidate);
+                        validation = validate_section_markdown(section, &candidate, &[]);
                         while !validation.passed && revisions < SECTION_REVISION_LIMIT {
                             revisions += 1;
                             consume_semantic_call(&state, &run_id, &mut runtime)?;
@@ -2993,7 +4207,7 @@ async fn run_drafting_task_legacy<R: Runtime>(
                                 .map_err(|error| error.message)?
                                 .trim()
                                 .to_string();
-                            validation = validate_section_markdown(section, &candidate);
+                            validation = validate_section_markdown(section, &candidate, &[]);
                         }
                         if validation.passed {
                             markdown = Some(candidate);
@@ -3128,7 +4342,7 @@ async fn run_drafting_task_legacy<R: Runtime>(
                 total.saturating_sub(drafts.len())
             ));
         }
-        let sidecar = sidecar_json(&run, &plan_version, &drafts)?;
+        let sidecar = sidecar_json(&run, &plan_version, &drafts, &HashMap::new())?;
         progress(
             &state,
             &channel,
@@ -3158,15 +4372,19 @@ async fn run_drafting_task_legacy<R: Runtime>(
                 &serde_json::to_string(&runtime).map_err(|error| error.to_string())?,
                 Some(&sidecar),
             )?;
-            state.library_repository.create_note_with_sources(
-                LibraryNoteCreate {
-                    item_id: None,
-                    title,
-                    content,
-                    group_name: None,
-                },
-                sources,
-            )?
+            state
+                .library_repository
+                .create_note_with_sources_and_coverage(
+                    LibraryNoteCreate {
+                        item_id: None,
+                        title,
+                        content,
+                        group_name: None,
+                    },
+                    sources,
+                    &conversation.id,
+                    &runtime.input_snapshot,
+                )?
         };
         let phase = NotePipelinePhase::Done;
         let completed = {
@@ -3257,10 +4475,25 @@ pub async fn start<R: Runtime>(
     channel: Channel<NotePipelineProgress>,
 ) -> Result<NotePipelineRun, String> {
     let state = app.state::<AppState>();
+    let inspection = inspect_start(&state, request.conversation_id.trim()).await?;
+    match inspection.status.as_str() {
+        "new" => {}
+        "invalidated" if request.replace_invalidated => {}
+        "invalidated" => {
+            return Err(format!(
+                "{} 如需重新生成，请先明确确认替换失效快照。",
+                inspection.message
+            ));
+        }
+        "updateAvailable" | "upToDate" => {
+            return Err(inspection.message);
+        }
+        _ => return Err("已有深度笔记检查返回了未知状态。".to_string()),
+    }
     let conversation = state
         .conversation_repository
         .load(request.conversation_id.trim())?;
-    let (provider_id, model_id, preflight) = {
+    let (provider_id, model_id, mut preflight) = {
         let settings = state
             .model_settings
             .read()
@@ -3275,6 +4508,9 @@ pub async fn start<R: Runtime>(
             preflight.missing_capabilities.join("；")
         ));
     }
+    let (skill_profiles, skill_warnings) =
+        snapshot_skill_profiles(&state, preflight.requires_vision);
+    preflight.warnings.extend(skill_warnings);
     let (max_output_tokens, thinking_enabled, retry_attempts) = {
         let settings = state
             .app_settings
@@ -3291,7 +4527,13 @@ pub async fn start<R: Runtime>(
         )
     };
     let created_at = conversation.updated_at.max(1);
-    let snapshot = input_snapshot(&conversation, preflight.model.clone(), created_at);
+    let snapshot = create_input_snapshot(
+        &state.conversation_repository,
+        &conversation,
+        preflight.model.clone(),
+        created_at,
+    )
+    .await?;
     let snapshot_json = serde_json::to_string(&snapshot)
         .map_err(|error| format!("序列化深度笔记输入快照失败：{error}"))?;
     let snapshot_hash = stable_hash(&snapshot_json);
@@ -3301,6 +4543,7 @@ pub async fn start<R: Runtime>(
         plan_version: None,
         budget: DeepNoteBudget::for_section_count(1),
         ledger: DeepNoteLedger::default(),
+        skill_profiles: skill_profiles.clone(),
         context_budget: DeepNoteContextBudget::default(),
     };
     let runtime_json = serde_json::to_string(&runtime)
@@ -3334,6 +4577,29 @@ pub async fn start<R: Runtime>(
             None,
             &serde_json::to_string(&preflight).map_err(|error| error.to_string())?,
         )?;
+        state.library_repository.append_note_pipeline_event(
+            &run.id,
+            "skillProfileLoaded",
+            None,
+            &serde_json::json!({
+                "planner": skill_profiles.planner.iter().map(|skill| serde_json::json!({
+                    "skillId": skill.skill_id,
+                    "version": skill.version,
+                    "contentHash": skill.content_hash,
+                })).collect::<Vec<_>>(),
+                "writer": skill_profiles.writer.iter().map(|skill| serde_json::json!({
+                    "skillId": skill.skill_id,
+                    "version": skill.version,
+                    "contentHash": skill.content_hash,
+                })).collect::<Vec<_>>(),
+                "reviewer": skill_profiles.reviewer.iter().map(|skill| serde_json::json!({
+                    "skillId": skill.skill_id,
+                    "version": skill.version,
+                    "contentHash": skill.content_hash,
+                })).collect::<Vec<_>>(),
+            })
+            .to_string(),
+        )?;
         state.library_repository.update_note_pipeline_phase(
             &run.id,
             NotePipelinePhase::Analyzing,
@@ -3344,6 +4610,121 @@ pub async fn start<R: Runtime>(
     }
     spawn_analysis(app, run.id.clone(), String::new(), channel).await?;
     Ok(run)
+}
+
+fn coverage_snapshot_for_note(
+    state: &AppState,
+    note_id: &str,
+    conversation_id: &str,
+) -> Result<Option<DeepNoteInputSnapshot>, String> {
+    if let Some(snapshot) = state
+        .library_repository
+        .deep_note_coverage_snapshot(note_id, conversation_id)?
+    {
+        return Ok(Some(snapshot));
+    }
+    let Some(runtime_json) = state
+        .library_repository
+        .latest_completed_deep_note_runtime_json(note_id, conversation_id)?
+    else {
+        return Ok(None);
+    };
+    let runtime = serde_json::from_str::<DeepNoteRuntimeState>(&runtime_json)
+        .map_err(|error| format!("读取已有深度笔记覆盖快照失败：{error}"))?;
+    Ok(Some(runtime.input_snapshot))
+}
+
+pub async fn inspect_start(
+    state: &AppState,
+    conversation_id: &str,
+) -> Result<DeepNoteStartInspection, String> {
+    let conversation = state.conversation_repository.load(conversation_id.trim())?;
+    let Some((note, anchor)) = state
+        .library_repository
+        .latest_deep_note_for_conversation(&conversation.id)?
+    else {
+        return Ok(DeepNoteStartInspection {
+            status: "new".to_string(),
+            note_id: None,
+            note_title: None,
+            covered_message_id: None,
+            covered_message_count: 0,
+            new_message_count: noteworthy_messages(&conversation).len(),
+            message: "当前会话还没有可增量更新的深度笔记。".to_string(),
+        });
+    };
+    let messages = noteworthy_messages(&conversation);
+    let Some(anchor) = anchor else {
+        return Ok(DeepNoteStartInspection {
+            status: "invalidated".to_string(),
+            note_id: Some(note.id),
+            note_title: Some(note.title),
+            covered_message_id: None,
+            covered_message_count: 0,
+            new_message_count: messages.len(),
+            message: "已有笔记缺少可靠的消息锚点，需要重新生成。".to_string(),
+        });
+    };
+    let Some(snapshot) = coverage_snapshot_for_note(state, &note.id, &conversation.id)? else {
+        return Ok(DeepNoteStartInspection {
+            status: "invalidated".to_string(),
+            note_id: Some(note.id),
+            note_title: Some(note.title),
+            covered_message_id: Some(anchor),
+            covered_message_count: 0,
+            new_message_count: messages.len(),
+            message: "已有笔记缺少逐消息与附件内容 Hash，不能安全增量更新；请重新生成。"
+                .to_string(),
+        });
+    };
+    if let Err(error) = validate_recovery_snapshot_from_storage(
+        &state.conversation_repository,
+        &conversation,
+        &snapshot,
+    )
+    .await
+    {
+        return Ok(DeepNoteStartInspection {
+            status: "invalidated".to_string(),
+            note_id: Some(note.id),
+            note_title: Some(note.title),
+            covered_message_id: Some(anchor),
+            covered_message_count: 0,
+            new_message_count: messages.len(),
+            message: format!("已有笔记覆盖快照已失效：{error}"),
+        });
+    }
+    if snapshot.message_ids.last() != Some(&anchor) {
+        return Ok(DeepNoteStartInspection {
+            status: "invalidated".to_string(),
+            note_id: Some(note.id),
+            note_title: Some(note.title),
+            covered_message_id: Some(anchor),
+            covered_message_count: snapshot.message_ids.len(),
+            new_message_count: messages.len().saturating_sub(snapshot.message_ids.len()),
+            message: "已有笔记的来源锚点与覆盖快照不一致，不能安全增量更新；请重新生成。"
+                .to_string(),
+        });
+    }
+    let anchor_index = snapshot.message_ids.len().saturating_sub(1);
+    let new_message_count = messages.len().saturating_sub(anchor_index + 1);
+    Ok(DeepNoteStartInspection {
+        status: if new_message_count == 0 {
+            "upToDate".to_string()
+        } else {
+            "updateAvailable".to_string()
+        },
+        note_id: Some(note.id),
+        note_title: Some(note.title),
+        covered_message_id: Some(anchor),
+        covered_message_count: anchor_index + 1,
+        new_message_count,
+        message: if new_message_count == 0 {
+            "已有深度笔记已经覆盖当前会话，没有新的消息需要合入。".to_string()
+        } else {
+            format!("已有深度笔记；检测到 {new_message_count} 条未合入的新消息。")
+        },
+    })
 }
 
 pub async fn adjust<R: Runtime>(
@@ -3563,7 +4944,12 @@ async fn prepare_manual_recovery<R: Runtime>(
     }
     let conversation = state.conversation_repository.load(&run.conversation_id)?;
     let mut runtime = runtime_state(run)?;
-    validate_recovery_snapshot(&conversation, &runtime.input_snapshot)?;
+    validate_recovery_snapshot_from_storage(
+        &state.conversation_repository,
+        &conversation,
+        &runtime.input_snapshot,
+    )
+    .await?;
     extend_manual_recovery_budget(&mut runtime);
     if reset_failed_sections {
         reset_failed_runtime_nodes(&mut runtime);
@@ -3604,7 +4990,12 @@ pub async fn resume<R: Runtime>(
     {
         let conversation = state.conversation_repository.load(&run.conversation_id)?;
         let runtime = runtime_state(&run)?;
-        validate_recovery_snapshot(&conversation, &runtime.input_snapshot)?;
+        validate_recovery_snapshot_from_storage(
+            &state.conversation_repository,
+            &conversation,
+            &runtime.input_snapshot,
+        )
+        .await?;
     }
     let run = match run.phase {
         NotePipelinePhase::Paused => {
@@ -3690,6 +5081,7 @@ pub async fn restart<R: Runtime>(
         app,
         NotePipelineStartRequest {
             conversation_id: previous.conversation_id.clone(),
+            replace_invalidated: false,
         },
         channel,
     )
@@ -3857,7 +5249,17 @@ pub fn get_detail(state: &AppState, run_id: &str) -> Result<DeepNoteRunDetail, S
             updated_at: section.updated_at,
         })
         .collect();
-    let source_chunk_count = runtime.context_budget.chunk_count;
+    let source_chunks = state
+        .library_repository
+        .list_note_pipeline_source_chunks(run_id)?;
+    let evidence = state
+        .library_repository
+        .list_note_pipeline_evidence(run_id)?;
+    let source_chunk_count = source_chunks.len();
+    let persisted_ledger = state
+        .library_repository
+        .latest_note_pipeline_ledger(run_id)?
+        .unwrap_or_else(|| runtime.ledger.clone());
     Ok(DeepNoteRunDetail {
         run,
         preflight: Some(runtime.preflight),
@@ -3871,9 +5273,10 @@ pub fn get_detail(state: &AppState, run_id: &str) -> Result<DeepNoteRunDetail, S
             .map(|plan| plan.compiled_dag)
             .unwrap_or_default(),
         sections: section_progress,
-        source_chunks: Vec::new(),
-        evidence: Vec::new(),
-        ledger: runtime.ledger,
+        source_chunks,
+        evidence,
+        ledger: persisted_ledger,
+        skill_profiles: runtime.skill_profiles,
         events,
         markdown_preview,
         sidecar_json: state
@@ -3891,12 +5294,33 @@ pub async fn prepare_note_edit(
     let conversation = state
         .conversation_repository
         .load(&request.conversation_id)?;
-    let (provider_id, model_id) = {
+    let summarized_until = state
+        .library_repository
+        .latest_summarized_message_id(&note.id, &conversation.id)?;
+    if let Some(anchor) = summarized_until.as_ref() {
+        let coverage_snapshot = coverage_snapshot_for_note(state, &note.id, &conversation.id)?
+            .ok_or_else(|| {
+                "目标深度笔记缺少逐消息与附件内容 Hash，不能安全生成增量更新。".to_string()
+            })?;
+        validate_recovery_snapshot_from_storage(
+            &state.conversation_repository,
+            &conversation,
+            &coverage_snapshot,
+        )
+        .await
+        .map_err(|error| format!("目标深度笔记覆盖快照已失效：{error}"))?;
+        if coverage_snapshot.message_ids.last() != Some(anchor) {
+            return Err("目标深度笔记的增量锚点与覆盖快照不一致，不能安全生成更新。".to_string());
+        }
+    }
+    let (provider_id, model_id, model_snapshot) = {
         let settings = state
             .model_settings
             .read()
             .map_err(|_| "模型设置锁不可用。".to_string())?;
-        resolve_note_model(&settings, &conversation)?
+        let (provider_id, model_id) = resolve_note_model(&settings, &conversation)?;
+        let model_snapshot = resolve_note_model_snapshot(&settings, &provider_id, &model_id)?;
+        (provider_id, model_id, model_snapshot)
     };
     let (max_output_tokens, thinking_enabled, retry_attempts) = {
         let settings = state
@@ -3940,11 +5364,24 @@ pub async fn prepare_note_edit(
         created_at: 0,
         updated_at: 0,
     };
-    let summarized_until = state
-        .library_repository
-        .latest_summarized_message_id(&note.id, &conversation.id)?;
     let (mut new_transcript, valid_ids, last_message_id) =
-        incremental_transcript(&conversation, summarized_until.as_deref());
+        incremental_transcript(&conversation, summarized_until.as_deref())?;
+    if noteworthy_messages(&conversation)
+        .into_iter()
+        .any(|message| valid_ids.contains(&message.id) && !message.attachments.is_empty())
+    {
+        return Err(
+            "新增消息包含附件；增量编辑不会静默忽略附件内容，请重新生成深度笔记以执行完整 Source Recon。"
+                .to_string(),
+        );
+    }
+    let updated_coverage_snapshot = create_input_snapshot(
+        &state.conversation_repository,
+        &conversation,
+        model_snapshot,
+        conversation.updated_at.max(1),
+    )
+    .await?;
     if new_transcript.trim().is_empty() {
         if request.selected_text.trim().is_empty() {
             return Err("这段对话没有尚未合入目标笔记的新内容。".to_string());
@@ -4094,9 +5531,45 @@ pub async fn prepare_note_edit(
                 new_content,
                 diff,
                 sources,
+                coverage_snapshot_json: serde_json::to_string(&updated_coverage_snapshot)
+                    .map_err(|error| format!("序列化更新覆盖快照失败：{error}"))?,
             })?
     };
     Ok(NoteEditPrepareResult { proposal, warnings })
+}
+
+pub async fn resolve_note_edit(
+    state: &AppState,
+    proposal_id: &str,
+    accepted: bool,
+) -> Result<Option<crate::library::types::LibraryNote>, String> {
+    let _conversation_guard = if accepted {
+        Some(state.conversation_writes.lock().await)
+    } else {
+        None
+    };
+    if accepted {
+        let (conversation_id, snapshot_json) = state
+            .library_repository
+            .pending_note_edit_coverage_snapshot(proposal_id)?
+            .ok_or_else(|| "笔记修改提案不存在或已经处理。".to_string())?;
+        if !snapshot_json.trim().is_empty() {
+            let snapshot = serde_json::from_str::<DeepNoteInputSnapshot>(&snapshot_json)
+                .map_err(|error| format!("读取笔记修改覆盖快照失败：{error}"))?;
+            let conversation = state.conversation_repository.load(&conversation_id)?;
+            validate_recovery_snapshot_from_storage(
+                &state.conversation_repository,
+                &conversation,
+                &snapshot,
+            )
+            .await
+            .map_err(|error| format!("对话在提案生成后发生变化，不能应用旧提案：{error}"))?;
+        }
+    }
+    let _guard = state.library_operations.lock().await;
+    state
+        .library_repository
+        .resolve_note_edit_proposal(proposal_id, accepted)
 }
 
 #[cfg(test)]
@@ -4109,19 +5582,23 @@ mod tests {
             types::ModelRole,
         },
         chat::conversation_types::{
-            AiPermissionMode, MessageStatus, StoredChatMessage, StoredConversation,
+            AiPermissionMode, MessageStatus, StoredChatAttachment, StoredChatMessage,
+            StoredConversation,
         },
         library::types::NotePipelinePhase,
     };
 
     use super::{
         can_pause_phase, compact_ledger_for_planner, context_budget, conversation_chunks,
-        input_snapshot, merge_chunk_digest, reset_failed_nodes, should_fallback_to_chunked_planner,
-        should_retry_note_model_call, validate_recovery_snapshot, ChunkDigest, ConversationChunk,
+        evidence_for_plan, input_snapshot, ledger_has_real_output, merge_chunk_digest,
+        reset_failed_nodes, should_fallback_to_chunked_planner, should_retry_note_model_call,
+        snapshot_conversation_after_validation, validate_recovery_snapshot, ChunkDigest,
+        ConversationChunk,
     };
     use crate::chat::note_pipeline::types::{
-        DeepNoteCapabilities, DeepNoteDagNode, DeepNoteLedger, DeepNoteModelSnapshot,
-        DeepNoteNodeStatus, DeepNoteNodeType, DeepNoteSourceChunk, DeepNoteSourceKind,
+        DeepNoteCapabilities, DeepNoteDagNode, DeepNoteEvidenceStatus, DeepNoteLedger,
+        DeepNoteModelSnapshot, DeepNoteNodeStatus, DeepNoteNodeType, DeepNoteSourceChunk,
+        DeepNoteSourceKind,
     };
 
     fn message(id: &str, role: ModelRole, content: String) -> StoredChatMessage {
@@ -4210,14 +5687,14 @@ mod tests {
     }
 
     #[test]
-    fn recovery_rejects_a_changed_conversation_snapshot() {
+    fn recovery_allows_only_appended_messages_and_rejects_prefix_mutation() {
         let mut conversation = conversation(vec![message(
             "message-1",
             ModelRole::User,
             "original context".to_string(),
         )]);
-        let snapshot = input_snapshot(&conversation, model(Some(128_000)), 1);
-        assert!(validate_recovery_snapshot(&conversation, &snapshot).is_ok());
+        let snapshot = input_snapshot(&conversation, model(Some(128_000)), 1, Vec::new());
+        assert!(validate_recovery_snapshot(&conversation, &snapshot, Vec::new()).is_ok());
 
         conversation.messages.push(message(
             "message-2",
@@ -4225,9 +5702,135 @@ mod tests {
             "new context".to_string(),
         ));
         conversation.updated_at += 1;
-        let error = validate_recovery_snapshot(&conversation, &snapshot).unwrap_err();
-        assert!(error.contains("不能混用旧检查点"));
-        assert!(error.contains("重新生成"));
+        assert!(validate_recovery_snapshot(&conversation, &snapshot, Vec::new()).is_ok());
+
+        let projected = snapshot_conversation_after_validation(&conversation, &snapshot).unwrap();
+        assert_eq!(projected.messages.len(), 1);
+        assert_eq!(projected.messages[0].id, "message-1");
+
+        conversation.messages[0].content = "edited context".to_string();
+        let error = validate_recovery_snapshot(&conversation, &snapshot, Vec::new()).unwrap_err();
+        assert!(error.contains("已经被编辑"));
+    }
+
+    #[test]
+    fn recovery_rejects_attachment_byte_hash_changes() {
+        let mut source_message = message(
+            "message-1",
+            ModelRole::User,
+            "attachment context".to_string(),
+        );
+        source_message.attachments.push(StoredChatAttachment {
+            id: "attachment-1".to_string(),
+            kind: "file".to_string(),
+            name: "source.txt".to_string(),
+            mime_type: "text/plain".to_string(),
+            size_bytes: 8,
+            path: "attachment-1.txt".to_string(),
+            preview_path: None,
+            width: None,
+            height: None,
+        });
+        let conversation = conversation(vec![source_message]);
+        let snapshot = input_snapshot(
+            &conversation,
+            model(Some(128_000)),
+            1,
+            vec!["original-byte-hash".to_string()],
+        );
+
+        let error = validate_recovery_snapshot(
+            &conversation,
+            &snapshot,
+            vec!["changed-byte-hash".to_string()],
+        )
+        .unwrap_err();
+        assert!(error.contains("附件"));
+    }
+
+    #[test]
+    fn evidence_with_explicit_missing_sources_stays_insufficient() {
+        use crate::chat::note_pipeline::types::{
+            compile_plan, DeepNoteOutline, DeepNoteSection, DeepNoteSectionKind,
+        };
+        use crate::library::types::NotePipelineRun;
+
+        let outline = DeepNoteOutline {
+            title: "Evidence".to_string(),
+            sections: vec![DeepNoteSection {
+                id: "sec-1".to_string(),
+                heading: "Missing source".to_string(),
+                kind: DeepNoteSectionKind::Concept,
+                brief: "test".to_string(),
+                purpose: "test".to_string(),
+                depends_on: Vec::new(),
+                evidence_requirements: Vec::new(),
+                success_criteria: vec!["supported".to_string()],
+                source_scope: Vec::new(),
+                target_depth: "standard".to_string(),
+                allow_ai_supplement: false,
+                needs_supplement: false,
+                source_message_ids: vec!["message-missing".to_string()],
+            }],
+            goal: String::new(),
+            audience: String::new(),
+            scope: String::new(),
+            summary: String::new(),
+            weak_points: Vec::new(),
+            hidden_questions: Vec::new(),
+            knowledge_gaps: Vec::new(),
+            misconceptions: Vec::new(),
+            causal_chains: Vec::new(),
+            visualization_opportunities: Vec::new(),
+            allow_ai_supplement: false,
+            evidence_policy: String::new(),
+            source_ids: Vec::new(),
+        };
+        let plan = compile_plan("run-1", 1, outline, "snapshot", "test").unwrap();
+        let run = NotePipelineRun {
+            id: "run-1".to_string(),
+            conversation_id: "conversation-1".to_string(),
+            note_id: None,
+            phase: NotePipelinePhase::Drafting,
+            outline_json: String::new(),
+            selected_section_ids: vec!["sec-1".to_string()],
+            provider_id: "provider-1".to_string(),
+            model_id: "model-1".to_string(),
+            max_output_tokens: 2_048,
+            thinking_enabled: false,
+            retry_attempts: 1,
+            input_snapshot_hash: "snapshot".to_string(),
+            current_plan_version: 1,
+            execution_version: 1,
+            budget_json: "{}".to_string(),
+            preflight_json: "{}".to_string(),
+            sidecar_json: String::new(),
+            idempotency_key: "output-1".to_string(),
+            completed_section_ids: Vec::new(),
+            failed_section_ids: Vec::new(),
+            warnings: Vec::new(),
+            error_message: None,
+            abandoned: false,
+            created_at: 1,
+            updated_at: 1,
+        };
+        let chunks = vec![DeepNoteSourceChunk {
+            chunk_id: "chunk-1".to_string(),
+            source_kind: DeepNoteSourceKind::Conversation,
+            source_id: "conversation-1".to_string(),
+            message_id: Some("message-1".to_string()),
+            attachment_id: None,
+            library_item_id: None,
+            location: "message-1".to_string(),
+            excerpt: "source".to_string(),
+            content_hash: "hash".to_string(),
+            ocr_confidence: None,
+        }];
+
+        let evidence = evidence_for_plan(&run, &plan, &chunks);
+        assert_eq!(evidence.len(), 1);
+        assert_eq!(evidence[0].status, DeepNoteEvidenceStatus::Insufficient);
+        assert!(evidence[0].source_chunk_ids.is_empty());
     }
 
     #[test]
@@ -4287,6 +5890,20 @@ mod tests {
             .section_summaries
             .iter()
             .all(|value| value.chars().count() <= 360));
+    }
+
+    #[test]
+    fn ledger_preparation_requires_complete_coverage_and_semantic_output() {
+        let empty = DeepNoteLedger::default();
+        assert!(!ledger_has_real_output(&empty, false));
+        assert!(!ledger_has_real_output(&empty, true));
+
+        let ledger = DeepNoteLedger {
+            verified_facts: vec!["来源支持的事实".to_string()],
+            ..DeepNoteLedger::default()
+        };
+        assert!(!ledger_has_real_output(&ledger, false));
+        assert!(ledger_has_real_output(&ledger, true));
     }
 
     #[test]

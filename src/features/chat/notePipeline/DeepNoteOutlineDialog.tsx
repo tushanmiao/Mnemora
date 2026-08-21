@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { AlertCircle, Sparkles, X } from "lucide-react";
+import { AlertCircle, GitBranch, HelpCircle, X } from "lucide-react";
 import type { DeepNoteOutline } from "./outlineSchema";
 import "./deep-note.css";
 
@@ -36,7 +36,6 @@ export function DeepNoteOutlineDialog({
       <section className="deep-note-dialog" role="dialog" aria-modal="true" aria-labelledby="deep-note-title">
         <header className="deep-note-dialog-header">
           <div>
-            <span className="deep-note-eyebrow"><Sparkles size={14} />深度笔记提纲</span>
             <h2 id="deep-note-title">{outline.title}</h2>
             {outline.summary ? <p>{outline.summary}</p> : null}
           </div>
@@ -49,6 +48,28 @@ export function DeepNoteOutlineDialog({
           <div className="deep-note-weak-points">
             <AlertCircle size={16} />
             <span>对话暴露的薄弱点：{outline.weakPoints.join("；")}</span>
+          </div>
+        ) : null}
+
+        {(outline.hiddenQuestions?.length ?? 0) > 0
+          || (outline.knowledgeGaps?.length ?? 0) > 0
+          || (outline.misconceptions?.length ?? 0) > 0 ? (
+            <div className="deep-note-weak-points">
+              <HelpCircle size={16} />
+              <span>
+                真正需要解决：{[
+                  ...(outline.hiddenQuestions ?? []),
+                  ...(outline.knowledgeGaps ?? []),
+                  ...(outline.misconceptions ?? []),
+                ].join("；")}
+              </span>
+            </div>
+          ) : null}
+
+        {(outline.visualizationOpportunities?.length ?? 0) > 0 ? (
+          <div className="deep-note-weak-points">
+            <GitBranch size={16} />
+            <span>计划图形化表达：{outline.visualizationOpportunities?.join("；")}</span>
           </div>
         ) : null}
 

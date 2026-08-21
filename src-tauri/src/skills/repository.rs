@@ -84,6 +84,23 @@ impl SkillRepository {
         })
     }
 
+    /// 为可恢复的宿主工作流冻结一份纯方法论正文。与普通 Chat 激活不同，这个接口
+    /// 不开放 Skill 资源或脚本，也不把当前用户输入当成参数；调用方负责把快照与
+    /// Run 一起持久化，并只在真实注入节点时记录应用事件。
+    pub fn render_method_snapshot(&self, skill_id: &str) -> Result<String, String> {
+        let record = self.load_record(skill_id)?;
+        if !record.summary.enabled {
+            return Err(format!("技能“{}”当前已禁用。", record.summary.name));
+        }
+        Ok(format!(
+            "<mnemora_method_skill id=\"{}\" name=\"{}\" version=\"{}\">\n{}\n</mnemora_method_skill>",
+            escape_xml(&record.summary.id),
+            escape_xml(&record.summary.name),
+            escape_xml(&record.summary.version),
+            record.body,
+        ))
+    }
+
     /// 返回模型在 Skill 激活后可以继续按需读取的资源目录。
     /// 审计文件、隐藏路径、符号链接和过大的文件不会进入模型资源目录。
     pub fn list_model_resources(&self, skill_id: &str) -> Result<Vec<SkillFileEntry>, String> {
@@ -792,6 +809,14 @@ mod tests {
                 && skill.enabled
                 && skill.default_enabled
                 && skill.supported_modes.len() == 3
+        }));
+        assert!(skills.iter().any(|skill| {
+            skill.id == "visual-evidence-analysis"
+                && skill.enabled
+                && skill.default_enabled
+                && skill
+                    .supported_modes
+                    .contains(&crate::skills::types::SkillMode::Notes)
         }));
         assert!(skills.iter().any(|skill| {
             skill.id == "trellis-brainstorm"

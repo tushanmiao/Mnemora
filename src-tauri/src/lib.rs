@@ -208,6 +208,7 @@ pub fn run() {
             commands::memory::memory_get_directory,
             commands::memory::memory_open_directory,
             commands::note_pipeline::note_pipeline_start,
+            commands::note_pipeline::note_pipeline_inspect_start,
             commands::note_pipeline::note_pipeline_adjust,
             commands::note_pipeline::note_pipeline_confirm,
             commands::note_pipeline::note_pipeline_resume,

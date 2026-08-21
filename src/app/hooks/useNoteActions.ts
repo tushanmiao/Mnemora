@@ -20,6 +20,7 @@ import {
   confirmNotePipeline,
   getNotePipelineDetail,
   getNotePipeline,
+  inspectNotePipelineStart,
   listResumableNotePipelines,
   pauseNotePipeline,
   prepareNoteEdit,
@@ -521,6 +522,55 @@ export function useNoteActions({
         : "已有一个深度笔记任务正在进行，请完成或取消后再试。");
       return;
     }
+    let inspection;
+    try {
+      inspection = await inspectNotePipelineStart(conversationId);
+    } catch (error) {
+      showFeedback("error", `检查已有深度笔记失败：${noteErrorText(error)}`);
+      return;
+    }
+    if (inspection.status === "upToDate") {
+      showFeedback("success", inspection.message);
+      return;
+    }
+    let replaceInvalidated = false;
+    if (inspection.status === "invalidated") {
+      replaceInvalidated = window.confirm(
+        `${inspection.message}\n\n是否基于当前对话重新生成一份新的深度笔记？原笔记会保留。`,
+      );
+      if (!replaceInvalidated) {
+        showFeedback("error", "已有笔记的覆盖快照已失效，未启动重新生成。");
+        return;
+      }
+    }
+    if (inspection.status === "updateAvailable" && inspection.noteId) {
+      const shouldUpdate = window.confirm(
+        `${inspection.message}\n\n已有笔记「${inspection.noteTitle ?? "未命名"}」。是否只合入新增消息并更新这份笔记？`,
+      );
+      if (!shouldUpdate) {
+        showFeedback("success", "已保留现有笔记，没有启动新的生成任务。");
+        return;
+      }
+      setNoteEditBusy(true);
+      showFeedback("progress", "正在只用新增消息生成增量更新提案…");
+      try {
+        const result = await prepareNoteEdit({
+          noteId: inspection.noteId,
+          conversationId,
+          selectedText: "",
+          sectionHeading: "",
+          requirement: "只使用已有深度笔记覆盖锚点之后新增的对话消息，保留原有内容；生成增量合并提案，不要引入新增消息之外的来源。",
+        });
+        setNoteEditRequest(null);
+        setNoteEditResult(result);
+        setFeedback(null);
+      } catch (error) {
+        showFeedback("error", `生成增量更新提案失败：${noteErrorText(error)}`);
+      } finally {
+        setNoteEditBusy(false);
+      }
+      return;
+    }
     deepNoteRunRef.current = { conversationId, runId: null, cancelRequested: false };
     deepNotePausedRunIdRef.current = null;
     latestDeepNoteRunIdRef.current = null;
@@ -541,7 +591,11 @@ export function useNoteActions({
     });
     showFeedback("progress", "正在启动深度笔记分析…");
     try {
-      const run = await startNotePipeline(conversationId, handleNotePipelineEvent);
+      const run = await startNotePipeline(
+        conversationId,
+        handleNotePipelineEvent,
+        replaceInvalidated,
+      );
       const active = deepNoteRunRef.current;
       if (active) {
         active.runId = run.id;

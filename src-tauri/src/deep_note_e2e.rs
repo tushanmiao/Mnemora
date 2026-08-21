@@ -164,6 +164,7 @@ async fn run(options: Options) -> Result<TestResult, String> {
         &app_handle,
         NotePipelineStartRequest {
             conversation_id: conversation_id.clone(),
+            replace_invalidated: false,
         },
         channel.clone(),
     )
@@ -242,6 +243,37 @@ async fn run(options: Options) -> Result<TestResult, String> {
     if sources.is_empty() {
         return Err("持久化笔记没有章节来源记录。".to_string());
     }
+    if detail.source_chunks.is_empty() || detail.evidence.is_empty() {
+        return Err("完整链路没有返回持久化 Source Chunk 或 Evidence。".to_string());
+    }
+    if detail.nodes.iter().any(|node| {
+        node.section_id.is_some()
+            && matches!(
+                node.node_type,
+                crate::chat::note_pipeline::DeepNoteNodeType::ExtractEvidence
+                    | crate::chat::note_pipeline::DeepNoteNodeType::DraftSection
+                    | crate::chat::note_pipeline::DeepNoteNodeType::ValidateSection
+            )
+            && node.evidence_ids.is_empty()
+    }) {
+        return Err(
+            "至少一个 Evidence/Draft/Validate DAG 节点没有持久化 Evidence ID。".to_string(),
+        );
+    }
+    let sidecar = serde_json::from_str::<serde_json::Value>(&detail.sidecar_json)
+        .map_err(|error| format!("深度笔记 Sidecar 不是有效 JSON：{error}"))?;
+    let sidecar_sections = sidecar
+        .get("sections")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "深度笔记 Sidecar 缺少 sections。".to_string())?;
+    if sidecar_sections.iter().any(|section| {
+        section
+            .get("evidenceIds")
+            .and_then(serde_json::Value::as_array)
+            .is_none_or(Vec::is_empty)
+    }) {
+        return Err("至少一个 Sidecar 章节没有记录 Evidence ID。".to_string());
+    }
 
     let mut event_counts = BTreeMap::new();
     for event in &detail.events {
@@ -251,7 +283,11 @@ async fn run(options: Options) -> Result<TestResult, String> {
         "contextCoverageCompleted",
         "modelCallCompleted",
         "outlineReady",
-        "sectionCompleted",
+        "skillProfileLoaded",
+        "skillApplied",
+        "sourceChunkCreated",
+        "evidenceCreated",
+        "dagNodeCompleted",
         "runCompleted",
     ] {
         if event_counts.get(required).copied().unwrap_or_default() == 0 {

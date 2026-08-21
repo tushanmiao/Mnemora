@@ -677,6 +677,7 @@ pub struct NoteEditProposalCreate {
     pub new_content: String,
     pub diff: String,
     pub sources: Vec<NoteSourceCreate>,
+    pub coverage_snapshot_json: String,
 }
 
 impl NoteSourceCreate {

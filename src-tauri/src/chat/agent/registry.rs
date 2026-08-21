@@ -52,6 +52,7 @@ const MAX_TOOL_PREVIEW_CHARS: usize = 2_000;
 const MAX_TEXT_FILE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_TEXT_LINES: usize = 2_000;
 const MAX_ACTIVE_SKILLS_PER_RUN: usize = 12;
+const DEEP_NOTE_READER_OUTPUT_LIMIT: usize = 64_000;
 
 #[derive(Clone)]
 pub struct ToolRuntimeContext {
@@ -759,6 +760,84 @@ pub async fn execute_tool(
         }
     }?;
     Ok(bound_execution(result, entry.max_output_chars))
+}
+
+/// 深度笔记 Source Recon 使用的确定性只读入口。调用方只能选择四个附件 Reader，
+/// 参数仍复用普通 Agent 的白名单、范围校验、路径边界、超时和输出上限；该入口不会
+/// 暴露发现工具、Skill、网络、工作区、记忆或笔记写入能力。
+pub async fn execute_bounded_attachment_reader(
+    call: &ModelToolCall,
+    conversation_id: &str,
+    attachments: &[StoredChatAttachment],
+    repository: &ConversationRepository,
+    cancellation: &CancellationToken,
+) -> Result<ToolExecution, ModelError> {
+    let entry = find_tool(&call.name).ok_or_else(|| {
+        ModelError::invalid_configuration(format!("来源 Reader 未注册：{}。", call.name))
+    })?;
+    if !matches!(
+        entry.handler,
+        ToolHandler::ReadAttachmentText
+            | ToolHandler::ReadPdfPages
+            | ToolHandler::ReadDocxBlocks
+            | ToolHandler::ReadXlsxRows
+    ) || !entry.read_only
+    {
+        return Err(ModelError::invalid_configuration(
+            "深度笔记来源网关只允许固定的只读附件 Reader。",
+        ));
+    }
+    validate_tool_arguments(call, entry.handler)?;
+    let context = ToolRuntimeContext {
+        conversation_id: conversation_id.to_string(),
+        permission_mode: AiPermissionMode::AskSensitive,
+        attachments: attachments.to_vec(),
+        available_tool_names: vec![call.name.clone()],
+        manual_skill_ids: Vec::new(),
+        model_skills: Vec::new(),
+        max_model_skill_activations: 0,
+        memory_settings: MemorySettings::default(),
+        workspace_root: None,
+    };
+    let result = match entry.handler {
+        ToolHandler::ReadAttachmentText => {
+            let path = resolve_attachment(call, &context, repository, is_text_attachment)?;
+            let arguments = call.arguments.clone();
+            run_blocking(cancellation, move || read_text(&path, &arguments)).await
+        }
+        ToolHandler::ReadPdfPages => {
+            let attachment_id = required_string(&call.arguments, "attachmentId")?.to_string();
+            let path = resolve_attachment(call, &context, repository, is_pdf_attachment)?;
+            let arguments = call.arguments.clone();
+            run_blocking(cancellation, move || {
+                read_pdf(&path, &attachment_id, &arguments)
+            })
+            .await
+        }
+        ToolHandler::ReadDocxBlocks => {
+            let attachment_id = required_string(&call.arguments, "attachmentId")?.to_string();
+            let path = resolve_attachment(call, &context, repository, is_docx_attachment)?;
+            let arguments = call.arguments.clone();
+            run_blocking(cancellation, move || {
+                read_docx_blocks(&path, &attachment_id, &arguments)
+            })
+            .await
+        }
+        ToolHandler::ReadXlsxRows => {
+            let attachment_id = required_string(&call.arguments, "attachmentId")?.to_string();
+            let path = resolve_attachment(call, &context, repository, is_xlsx_attachment)?;
+            let arguments = call.arguments.clone();
+            run_blocking(cancellation, move || {
+                read_xlsx_rows(&path, &attachment_id, &arguments)
+            })
+            .await
+        }
+        _ => unreachable!(),
+    }?;
+    Ok(bound_execution(
+        result,
+        entry.max_output_chars.max(DEEP_NOTE_READER_OUTPUT_LIMIT),
+    ))
 }
 
 /** 对固定工具支持的 JSON Schema 子集执行严格校验，不引入常驻 Schema 引擎。 */
@@ -1765,59 +1844,62 @@ fn append_system_prompt(request: &mut ModelRequest, section: &str) {
 }
 
 fn is_text_attachment(attachment: &StoredChatAttachment) -> bool {
-    matches!(
-        attachment.mime_type.as_str(),
-        "text/plain"
-            | "text/markdown"
-            | "text/csv"
-            | "text/html"
-            | "text/css"
-            | "text/xml"
-            | "application/json"
-            | "application/xml"
-            | "application/javascript"
-    ) || matches!(
-        attachment_extension(&attachment.name).as_str(),
-        "rs" | "ts"
-            | "tsx"
-            | "js"
-            | "jsx"
-            | "mjs"
-            | "cjs"
-            | "py"
-            | "java"
-            | "c"
-            | "cc"
-            | "cpp"
-            | "h"
-            | "hpp"
-            | "cs"
-            | "go"
-            | "rb"
-            | "php"
-            | "swift"
-            | "kt"
-            | "kts"
-            | "sql"
-            | "toml"
-            | "yaml"
-            | "yml"
-            | "xml"
-            | "html"
-            | "htm"
-            | "css"
-            | "scss"
-            | "less"
-            | "sh"
-            | "bash"
-            | "ps1"
-            | "bat"
-            | "cmd"
-            | "ini"
-            | "conf"
-            | "env"
-            | "log"
-    )
+    attachment.mime_type.starts_with("text/")
+        || matches!(
+            attachment.mime_type.as_str(),
+            "application/json"
+                | "application/xml"
+                | "application/javascript"
+                | "application/x-javascript"
+        )
+        || matches!(
+            attachment_extension(&attachment.name).as_str(),
+            "txt"
+                | "md"
+                | "markdown"
+                | "csv"
+                | "json"
+                | "rs"
+                | "ts"
+                | "tsx"
+                | "js"
+                | "jsx"
+                | "mjs"
+                | "cjs"
+                | "py"
+                | "java"
+                | "c"
+                | "cc"
+                | "cpp"
+                | "h"
+                | "hpp"
+                | "cs"
+                | "go"
+                | "rb"
+                | "php"
+                | "swift"
+                | "kt"
+                | "kts"
+                | "sql"
+                | "toml"
+                | "yaml"
+                | "yml"
+                | "xml"
+                | "html"
+                | "htm"
+                | "css"
+                | "scss"
+                | "less"
+                | "sh"
+                | "bash"
+                | "ps1"
+                | "bat"
+                | "cmd"
+                | "ini"
+                | "conf"
+                | "env"
+                | "log"
+        )
 }
 
 fn is_image_attachment(attachment: &StoredChatAttachment) -> bool {
@@ -1825,16 +1907,18 @@ fn is_image_attachment(attachment: &StoredChatAttachment) -> bool {
 }
 
 fn is_pdf_attachment(attachment: &StoredChatAttachment) -> bool {
-    attachment.mime_type == "application/pdf"
+    attachment.mime_type == "application/pdf" || attachment_extension(&attachment.name) == "pdf"
 }
 
 fn is_docx_attachment(attachment: &StoredChatAttachment) -> bool {
     attachment.mime_type
         == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        || attachment_extension(&attachment.name) == "docx"
 }
 
 fn is_xlsx_attachment(attachment: &StoredChatAttachment) -> bool {
     attachment.mime_type == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        || attachment_extension(&attachment.name) == "xlsx"
 }
 
 fn attachment_extension(name: &str) -> String {

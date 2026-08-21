@@ -4,9 +4,9 @@ use tauri::{ipc::Channel, AppHandle, State};
 
 use crate::{
     chat::note_pipeline::{
-        self, DeepNoteRunDetail, NoteEditPrepareRequest, NoteEditPrepareResult,
-        NotePipelineAdjustRequest, NotePipelineConfirmRequest, NotePipelineProgress,
-        NotePipelineStartRequest,
+        self, DeepNoteRunDetail, DeepNoteStartInspection, NoteEditPrepareRequest,
+        NoteEditPrepareResult, NotePipelineAdjustRequest, NotePipelineConfirmRequest,
+        NotePipelineProgress, NotePipelineStartRequest,
     },
     library::types::{LibraryNote, NotePipelineRun},
     state::AppState,
@@ -19,6 +19,14 @@ pub async fn note_pipeline_start(
     on_event: Channel<NotePipelineProgress>,
 ) -> Result<NotePipelineRun, String> {
     note_pipeline::start(&app, request, on_event).await
+}
+
+#[tauri::command]
+pub async fn note_pipeline_inspect_start(
+    state: State<'_, AppState>,
+    conversation_id: String,
+) -> Result<DeepNoteStartInspection, String> {
+    note_pipeline::inspect_start(&state, &conversation_id).await
 }
 
 #[tauri::command]
@@ -132,8 +140,5 @@ pub async fn note_edit_resolve(
     proposal_id: String,
     accepted: bool,
 ) -> Result<Option<LibraryNote>, String> {
-    let _guard = state.library_operations.lock().await;
-    state
-        .library_repository
-        .resolve_note_edit_proposal(&proposal_id, accepted)
+    note_pipeline::resolve_note_edit(&state, &proposal_id, accepted).await
 }

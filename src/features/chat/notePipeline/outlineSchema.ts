@@ -33,6 +33,11 @@ export interface DeepNoteOutline {
   title: string;
   summary: string;
   weakPoints: string[];
+  hiddenQuestions?: string[];
+  knowledgeGaps?: string[];
+  misconceptions?: string[];
+  causalChains?: string[];
+  visualizationOpportunities?: string[];
   allowAiSupplement?: boolean;
   evidencePolicy?: string;
   sourceIds?: string[];
@@ -149,6 +154,15 @@ export function parseDeepNoteOutline(
     title: requiredText(record.title, "笔记标题", MAX_TITLE_CHARS),
     summary: typeof record.summary === "string" ? record.summary.trim() : "",
     weakPoints: stringList(record.weakPoints ?? [], "weakPoints", 100),
+    hiddenQuestions: stringList(record.hiddenQuestions ?? [], "hiddenQuestions", 100),
+    knowledgeGaps: stringList(record.knowledgeGaps ?? [], "knowledgeGaps", 100),
+    misconceptions: stringList(record.misconceptions ?? [], "misconceptions", 100),
+    causalChains: stringList(record.causalChains ?? [], "causalChains", 100),
+    visualizationOpportunities: stringList(
+      record.visualizationOpportunities ?? [],
+      "visualizationOpportunities",
+      100,
+    ),
     allowAiSupplement: record.allowAiSupplement === true,
     evidencePolicy: typeof record.evidencePolicy === "string" ? record.evidencePolicy.trim() : "",
     sourceIds: [...new Set(stringList(record.sourceIds ?? [], "sourceIds", 500))],

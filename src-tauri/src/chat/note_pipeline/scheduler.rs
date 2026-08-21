@@ -68,16 +68,37 @@ impl DeepNoteDagScheduler {
         Ok(())
     }
 
-    pub fn complete_preparation(&mut self) {
+    pub fn complete_preparation(
+        &mut self,
+        source_ready: bool,
+        evidence_by_section: &HashMap<String, Vec<String>>,
+        ledger_ready: bool,
+    ) -> Result<(), String> {
+        let all_evidence_ready = self.nodes.iter().all(|candidate| {
+            candidate.node_type != DeepNoteNodeType::ExtractEvidence
+                || evidence_by_section
+                    .get(candidate.section_id.as_deref().unwrap_or_default())
+                    .is_some_and(|ids| !ids.is_empty())
+        });
         for node in &mut self.nodes {
-            if matches!(
-                node.node_type,
-                DeepNoteNodeType::AnalyzeInput
-                    | DeepNoteNodeType::ReconSource
-                    | DeepNoteNodeType::ExtractEvidence
-                    | DeepNoteNodeType::BuildLedger
-            ) {
+            let evidence_ids = node
+                .section_id
+                .as_ref()
+                .and_then(|section_id| evidence_by_section.get(section_id))
+                .cloned()
+                .unwrap_or_default();
+            let can_complete = match node.node_type {
+                DeepNoteNodeType::AnalyzeInput => true,
+                DeepNoteNodeType::ReconSource => source_ready,
+                DeepNoteNodeType::ExtractEvidence => source_ready && !evidence_ids.is_empty(),
+                DeepNoteNodeType::BuildLedger => ledger_ready && all_evidence_ready,
+                _ => false,
+            };
+            if can_complete {
                 node.status = DeepNoteNodeStatus::Completed;
+                if !evidence_ids.is_empty() {
+                    node.evidence_ids = evidence_ids;
+                }
                 if node.output_ref.is_none() {
                     node.output_ref = Some(match node.node_type {
                         DeepNoteNodeType::AnalyzeInput => "input-snapshot".to_string(),
@@ -94,6 +115,17 @@ impl DeepNoteDagScheduler {
             }
         }
         self.refresh_ready();
+        if self.nodes.iter().any(|node| {
+            matches!(
+                node.node_type,
+                DeepNoteNodeType::ReconSource
+                    | DeepNoteNodeType::ExtractEvidence
+                    | DeepNoteNodeType::BuildLedger
+            ) && node.status != DeepNoteNodeStatus::Completed
+        }) {
+            return Err("深度笔记来源侦察、证据或账本尚未产生真实产物，不能推进 DAG。".to_string());
+        }
+        Ok(())
     }
 
     pub fn reconcile_completed_section(&mut self, section_id: &str) -> Result<(), String> {
@@ -475,6 +507,46 @@ mod tests {
             DeepNoteNodeStatus::Blocked
         );
         assert!(scheduler.ready_section_ids(2).contains(&"c".to_string()));
+    }
+
+    #[test]
+    fn preparation_nodes_require_real_source_evidence_and_ledger_outputs() {
+        let nodes = vec![
+            node("analyze", DeepNoteNodeType::AnalyzeInput, None, &[]),
+            node("recon", DeepNoteNodeType::ReconSource, None, &["analyze"]),
+            node(
+                "evidence:a",
+                DeepNoteNodeType::ExtractEvidence,
+                Some("a"),
+                &["recon"],
+            ),
+            node(
+                "ledger",
+                DeepNoteNodeType::BuildLedger,
+                None,
+                &["evidence:a"],
+            ),
+        ];
+        let mut scheduler = DeepNoteDagScheduler::new(nodes.clone()).unwrap();
+        assert!(scheduler
+            .complete_preparation(false, &HashMap::new(), false)
+            .is_err());
+        assert_ne!(
+            scheduler.node("recon").unwrap().status,
+            DeepNoteNodeStatus::Completed
+        );
+
+        let mut scheduler = DeepNoteDagScheduler::new(nodes).unwrap();
+        let evidence = HashMap::from([("a".to_string(), vec!["evidence-1".to_string()])]);
+        scheduler
+            .complete_preparation(true, &evidence, true)
+            .unwrap();
+        for node_id in ["analyze", "recon", "evidence:a", "ledger"] {
+            assert_eq!(
+                scheduler.node(node_id).unwrap().status,
+                DeepNoteNodeStatus::Completed
+            );
+        }
     }
 
     #[test]

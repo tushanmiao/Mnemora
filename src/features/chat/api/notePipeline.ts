@@ -63,7 +63,9 @@ export interface DeepNotePreflight {
     capabilities: DeepNoteCapabilities;
   };
   requiresTools: boolean;
+  requiresLocalReaders?: boolean;
   requiresVision: boolean;
+  localReaders?: { text: boolean; pdf: boolean; docx: boolean; xlsx: boolean };
   missingCapabilities: string[];
   warnings: string[];
   attachmentIds: string[];
@@ -169,12 +171,49 @@ export interface DeepNoteRunDetail {
   sourceChunkCount: number;
   nodes: DeepNoteDagNode[];
   sections: DeepNoteSectionProgress[];
-  sourceChunks: unknown[];
-  evidence: unknown[];
+  sourceChunks: DeepNoteSourceChunk[];
+  evidence: DeepNoteEvidenceArtifact[];
   ledger: Record<string, unknown>;
+  skillProfiles?: Record<string, unknown>;
   events: NotePipelineEventRecord[];
   markdownPreview: string;
   sidecarJson: string;
+}
+
+export interface DeepNoteSourceChunk {
+  chunkId: string;
+  sourceKind: string;
+  sourceId: string;
+  messageId: string | null;
+  attachmentId: string | null;
+  libraryItemId: string | null;
+  location: string;
+  excerpt: string;
+  contentHash: string;
+  ocrConfidence: number | null;
+}
+
+export interface DeepNoteEvidenceArtifact {
+  evidenceId: string;
+  sectionId: string;
+  sourceChunkIds: string[];
+  claim: string;
+  modelSynthesis: string;
+  sourceExcerpt: string;
+  supportLevel: string;
+  status: string;
+  contentHash: string;
+  createdAt: number;
+}
+
+export interface DeepNoteStartInspection {
+  status: "new" | "updateAvailable" | "upToDate" | "invalidated";
+  noteId: string | null;
+  noteTitle: string | null;
+  coveredMessageId: string | null;
+  coveredMessageCount: number;
+  newMessageCount: number;
+  message: string;
 }
 
 export type NotePipelineEvent =
@@ -241,12 +280,18 @@ function channel(onEvent: (event: NotePipelineEvent) => void) {
 export function startNotePipeline(
   conversationId: string,
   onEvent: (event: NotePipelineEvent) => void,
+  replaceInvalidated = false,
 ) {
   requireTauri();
   return invoke<NotePipelineRun>("note_pipeline_start", {
-    request: { conversationId },
+    request: { conversationId, replaceInvalidated },
     onEvent: channel(onEvent),
   });
+}
+
+export function inspectNotePipelineStart(conversationId: string) {
+  requireTauri();
+  return invoke<DeepNoteStartInspection>("note_pipeline_inspect_start", { conversationId });
 }
 
 export function adjustNotePipeline(

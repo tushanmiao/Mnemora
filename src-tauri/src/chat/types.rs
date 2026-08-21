@@ -330,9 +330,16 @@ impl ChatCompletionRequest {
                 ));
             }
             if self.is_auxiliary_operation() && !message.attachments.is_empty() {
-                return Err(ModelError::invalid_configuration(
-                    "内部辅助请求不能包含附件。",
-                ));
+                let deep_note_vision = self.operation.as_deref() == Some("deepNote")
+                    && message
+                        .attachments
+                        .iter()
+                        .all(|attachment| attachment.kind == "image");
+                if !deep_note_vision {
+                    return Err(ModelError::invalid_configuration(
+                        "内部辅助请求只能在深度笔记视觉来源节点中携带图片附件。",
+                    ));
+                }
             }
             for attachment in &message.attachments {
                 attachment

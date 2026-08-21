@@ -65,6 +65,16 @@ pub struct DeepNoteOutline {
     #[serde(default)]
     pub weak_points: Vec<String>,
     #[serde(default)]
+    pub hidden_questions: Vec<String>,
+    #[serde(default)]
+    pub knowledge_gaps: Vec<String>,
+    #[serde(default)]
+    pub misconceptions: Vec<String>,
+    #[serde(default)]
+    pub causal_chains: Vec<String>,
+    #[serde(default)]
+    pub visualization_opportunities: Vec<String>,
+    #[serde(default)]
     pub allow_ai_supplement: bool,
     #[serde(default)]
     pub evidence_policy: String,
@@ -84,6 +94,12 @@ impl DeepNoteOutline {
         self.audience = self.audience.trim().to_string();
         self.scope = self.scope.trim().to_string();
         self.evidence_policy = self.evidence_policy.trim().to_string();
+        self.weak_points = normalize_string_list(&self.weak_points);
+        self.hidden_questions = normalize_string_list(&self.hidden_questions);
+        self.knowledge_gaps = normalize_string_list(&self.knowledge_gaps);
+        self.misconceptions = normalize_string_list(&self.misconceptions);
+        self.causal_chains = normalize_string_list(&self.causal_chains);
+        self.visualization_opportunities = normalize_string_list(&self.visualization_opportunities);
         if self.sections.is_empty() || self.sections.len() > 40 {
             return Err("深度笔记提纲必须包含 1 到 40 个章节。".to_string());
         }
@@ -233,6 +249,8 @@ pub struct DeepNoteModelSnapshot {
 pub struct DeepNoteInputSnapshot {
     pub conversation_revision: u64,
     pub message_ids: Vec<String>,
+    #[serde(default)]
+    pub message_content_hashes: Vec<String>,
     pub attachment_ids: Vec<String>,
     pub attachment_content_hashes: Vec<String>,
     pub selected_literature_ids: Vec<String>,
@@ -246,6 +264,7 @@ pub struct DeepNoteInputSnapshot {
 #[serde(rename_all = "camelCase")]
 pub enum DeepNoteSourceKind {
     Conversation,
+    Text,
     Pdf,
     Docx,
     Xlsx,
@@ -258,12 +277,27 @@ impl DeepNoteSourceKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Conversation => "conversation",
+            Self::Text => "text",
             Self::Pdf => "pdf",
             Self::Docx => "docx",
             Self::Xlsx => "xlsx",
             Self::Image => "image",
             Self::Literature => "literature",
             Self::Note => "note",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "conversation" => Ok(Self::Conversation),
+            "text" => Ok(Self::Text),
+            "pdf" => Ok(Self::Pdf),
+            "docx" => Ok(Self::Docx),
+            "xlsx" => Ok(Self::Xlsx),
+            "image" => Ok(Self::Image),
+            "literature" => Ok(Self::Literature),
+            "note" => Ok(Self::Note),
+            _ => Err(format!("未知的深度笔记来源类型：{value}")),
         }
     }
 }
@@ -292,6 +326,27 @@ pub enum DeepNoteEvidenceStatus {
     Invalidated,
 }
 
+impl DeepNoteEvidenceStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Verified => "verified",
+            Self::Conflicting => "conflicting",
+            Self::Insufficient => "insufficient",
+            Self::Invalidated => "invalidated",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "verified" => Ok(Self::Verified),
+            "conflicting" => Ok(Self::Conflicting),
+            "insufficient" => Ok(Self::Insufficient),
+            "invalidated" => Ok(Self::Invalidated),
+            _ => Err(format!("未知的深度笔记证据状态：{value}")),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum DeepNoteSupportLevel {
@@ -299,6 +354,27 @@ pub enum DeepNoteSupportLevel {
     Partial,
     Context,
     AiSupplement,
+}
+
+impl DeepNoteSupportLevel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Direct => "direct",
+            Self::Partial => "partial",
+            Self::Context => "context",
+            Self::AiSupplement => "aiSupplement",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "direct" => Ok(Self::Direct),
+            "partial" => Ok(Self::Partial),
+            "context" => Ok(Self::Context),
+            "aiSupplement" | "ai_supplement" => Ok(Self::AiSupplement),
+            _ => Err(format!("未知的深度笔记证据支持级别：{value}")),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -330,6 +406,62 @@ pub struct DeepNoteLedger {
     pub ai_supplements: Vec<String>,
     pub section_summaries: Vec<String>,
     pub global_constraints: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeepNoteLocalReaderCapabilities {
+    pub text: bool,
+    pub pdf: bool,
+    pub docx: bool,
+    pub xlsx: bool,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum DeepNoteSkillProfileKind {
+    Planner,
+    Writer,
+    Reviewer,
+}
+
+impl DeepNoteSkillProfileKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Planner => "planner",
+            Self::Writer => "writer",
+            Self::Reviewer => "reviewer",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeepNoteSkillSnapshot {
+    pub profile: DeepNoteSkillProfileKind,
+    pub skill_id: String,
+    pub name: String,
+    pub version: String,
+    pub content_hash: String,
+    pub rendered_prompt: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeepNoteSkillProfiles {
+    pub planner: Vec<DeepNoteSkillSnapshot>,
+    pub writer: Vec<DeepNoteSkillSnapshot>,
+    pub reviewer: Vec<DeepNoteSkillSnapshot>,
+}
+
+impl DeepNoteSkillProfiles {
+    pub fn for_profile(&self, profile: DeepNoteSkillProfileKind) -> &[DeepNoteSkillSnapshot] {
+        match profile {
+            DeepNoteSkillProfileKind::Planner => &self.planner,
+            DeepNoteSkillProfileKind::Writer => &self.writer,
+            DeepNoteSkillProfileKind::Reviewer => &self.reviewer,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -525,7 +657,9 @@ pub struct DeepNotePreflight {
     pub ready: bool,
     pub model: DeepNoteModelSnapshot,
     pub requires_tools: bool,
+    pub requires_local_readers: bool,
     pub requires_vision: bool,
+    pub local_readers: DeepNoteLocalReaderCapabilities,
     pub missing_capabilities: Vec<String>,
     pub warnings: Vec<String>,
     pub attachment_ids: Vec<String>,
@@ -570,6 +704,7 @@ pub struct DeepNoteRunDetail {
     pub source_chunks: Vec<DeepNoteSourceChunk>,
     pub evidence: Vec<DeepNoteEvidenceArtifact>,
     pub ledger: DeepNoteLedger,
+    pub skill_profiles: DeepNoteSkillProfiles,
     pub events: Vec<DeepNoteEventRecord>,
     pub markdown_preview: String,
     pub sidecar_json: String,
@@ -597,7 +732,21 @@ pub struct DeepNoteRuntimeState {
     pub budget: DeepNoteBudget,
     pub ledger: DeepNoteLedger,
     #[serde(default)]
+    pub skill_profiles: DeepNoteSkillProfiles,
+    #[serde(default)]
     pub context_budget: DeepNoteContextBudget,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeepNoteStartInspection {
+    pub status: String,
+    pub note_id: Option<String>,
+    pub note_title: Option<String>,
+    pub covered_message_id: Option<String>,
+    pub covered_message_count: usize,
+    pub new_message_count: usize,
+    pub message: String,
 }
 
 pub fn compile_plan(
@@ -780,6 +929,8 @@ fn validate_compiled_dag(nodes: &[DeepNoteDagNode]) -> Result<(), String> {
 #[serde(rename_all = "camelCase")]
 pub struct NotePipelineStartRequest {
     pub conversation_id: String,
+    #[serde(default)]
+    pub replace_invalidated: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]

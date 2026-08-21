@@ -13,7 +13,10 @@ use std::{
 use rusqlite::{params, params_from_iter, types::Value, Connection, OptionalExtension, Row};
 use uuid::Uuid;
 
-use crate::chat::note_pipeline::types::DeepNoteSourceChunk;
+use crate::chat::note_pipeline::types::{
+    DeepNoteEvidenceArtifact, DeepNoteEvidenceStatus, DeepNoteInputSnapshot, DeepNoteLedger,
+    DeepNoteSourceChunk, DeepNoteSourceKind, DeepNoteSupportLevel,
+};
 
 use super::{
     import::{import_pdf, ImportOutcome},
@@ -33,7 +36,7 @@ use super::{
     },
 };
 
-const LIBRARY_SCHEMA_VERSION: i64 = 7;
+const LIBRARY_SCHEMA_VERSION: i64 = 8;
 const LIBRARY_DIRECTORY_NAME: &str = "library";
 const LIBRARY_DATABASE_NAME: &str = "library.sqlite3";
 const LIBRARY_FILES_DIRECTORY_NAME: &str = "files";
@@ -736,6 +739,78 @@ impl LibraryRepository {
             .ok_or_else(|| "创建后的深度笔记不存在。".to_string())
     }
 
+    /// 原子创建深度笔记、章节来源和覆盖快照。覆盖快照保存逐消息与附件内容 Hash，
+    /// 后续增量更新前必须先验证它，避免把已编辑、删除或重排的旧来源混入新笔记。
+    pub fn create_note_with_sources_and_coverage(
+        &self,
+        create: LibraryNoteCreate,
+        sources: Vec<NoteSourceCreate>,
+        conversation_id: &str,
+        snapshot: &DeepNoteInputSnapshot,
+    ) -> Result<LibraryNote, String> {
+        let create = create.normalize_and_validate()?;
+        let sources = normalize_note_sources(sources)?;
+        let conversation_id = normalize_identifier("会话 ID", conversation_id)?;
+        let snapshot_json = normalize_coverage_snapshot(snapshot)?;
+        let mut connection = self.open_connection()?;
+        if let Some(item_id) = create.item_id.as_deref() {
+            ensure_active_item_exists(&connection, item_id)?;
+        }
+        let id = Uuid::new_v4().to_string();
+        let now = now_millis_i64();
+        let transaction = connection
+            .transaction()
+            .map_err(|error| format!("开始创建深度笔记失败：{error}"))?;
+        if let Some(group_name) = create.group_name.as_deref() {
+            register_note_group(&transaction, group_name, now)?;
+        }
+        transaction
+            .execute(
+                "INSERT INTO library_notes (id, item_id, title, content, group_name, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)",
+                params![id, create.item_id, create.title, create.content, create.group_name, now, now],
+            )
+            .map_err(|error| format!("创建深度笔记失败：{error}"))?;
+        insert_note_sources(&transaction, &id, sources, now)?;
+        upsert_deep_note_coverage_snapshot(
+            &transaction,
+            &id,
+            &conversation_id,
+            &snapshot_json,
+            now,
+        )?;
+        transaction
+            .commit()
+            .map_err(|error| format!("提交深度笔记失败：{error}"))?;
+        self.get_note_with_connection(&connection, &id)?
+            .ok_or_else(|| "创建后的深度笔记不存在。".to_string())
+    }
+
+    pub fn deep_note_coverage_snapshot(
+        &self,
+        note_id: &str,
+        conversation_id: &str,
+    ) -> Result<Option<DeepNoteInputSnapshot>, String> {
+        let note_id = normalize_identifier("笔记 ID", note_id)?;
+        let conversation_id = normalize_identifier("会话 ID", conversation_id)?;
+        let connection = self.open_connection()?;
+        let snapshot_json = connection
+            .query_row(
+                "SELECT snapshot_json FROM deep_note_coverage_snapshots
+                 WHERE note_id = ? AND conversation_id = ?",
+                params![note_id, conversation_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| format!("读取深度笔记覆盖快照失败：{error}"))?;
+        snapshot_json
+            .map(|json| {
+                serde_json::from_str::<DeepNoteInputSnapshot>(&json)
+                    .map_err(|error| format!("解析深度笔记覆盖快照失败：{error}"))
+            })
+            .transpose()
+    }
+
     pub fn list_note_sources(&self, note_id: &str) -> Result<Vec<NoteSource>, String> {
         let note_id = normalize_identifier("笔记 ID", note_id)?;
         let connection = self.open_connection()?;
@@ -805,7 +880,7 @@ impl LibraryRepository {
         if !(256..=131_072).contains(&create.max_output_tokens) {
             return Err("深度笔记输出 Token 上限无效。".to_string());
         }
-        if !(1..=5).contains(&create.retry_attempts) {
+        if create.retry_attempts > 5 {
             return Err("深度笔记重试次数无效。".to_string());
         }
         let connection = self.open_connection()?;
@@ -1162,23 +1237,27 @@ impl LibraryRepository {
         node_id: &str,
         status: &str,
         attempt_count: u8,
+        evidence_ids: &[String],
         output_ref: Option<&str>,
         validation_json: &str,
         error_message: Option<&str>,
     ) -> Result<(), String> {
         let run_id = normalize_identifier("任务 ID", run_id)?;
         let node_id = normalize_identifier("DAG 节点 ID", node_id)?;
+        let evidence_ids_json = serde_json::to_string(evidence_ids)
+            .map_err(|error| format!("序列化深度笔记 DAG 证据失败：{error}"))?;
         let connection = self.open_connection()?;
         let now = now_millis_i64();
         let changed = connection
             .execute(
                 "UPDATE note_pipeline_nodes
-                 SET status = ?, attempt_count = ?, output_ref = ?, validation_json = ?,
-                     error_message = ?, updated_at = ?
+                 SET status = ?, attempt_count = ?, evidence_ids_json = ?, output_ref = ?,
+                     validation_json = ?, error_message = ?, updated_at = ?
                  WHERE run_id = ? AND plan_version = ? AND node_id = ?",
                 params![
                     status,
                     i64::from(attempt_count),
+                    evidence_ids_json,
                     output_ref,
                     validation_json,
                     error_message,
@@ -1245,6 +1324,202 @@ impl LibraryRepository {
         transaction
             .commit()
             .map_err(|error| format!("提交深度笔记来源分块失败：{error}"))
+    }
+
+    pub fn list_note_pipeline_source_chunks(
+        &self,
+        run_id: &str,
+    ) -> Result<Vec<DeepNoteSourceChunk>, String> {
+        let run_id = normalize_identifier("任务 ID", run_id)?;
+        let connection = self.open_connection()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT chunk_id, source_kind, source_id, message_id, attachment_id,
+                        library_item_id, location, excerpt, content_hash, ocr_confidence
+                 FROM note_pipeline_source_chunks WHERE run_id = ?
+                 ORDER BY created_at ASC, chunk_id ASC",
+            )
+            .map_err(|error| format!("准备深度笔记来源分块查询失败：{error}"))?;
+        let rows = statement
+            .query_map(params![run_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, Option<f32>>(9)?,
+                ))
+            })
+            .map_err(|error| format!("查询深度笔记来源分块失败：{error}"))?;
+        rows.map(|row| {
+            let raw = row.map_err(|error| format!("读取深度笔记来源分块失败：{error}"))?;
+            Ok(DeepNoteSourceChunk {
+                chunk_id: raw.0,
+                source_kind: DeepNoteSourceKind::parse(&raw.1)?,
+                source_id: raw.2,
+                message_id: raw.3,
+                attachment_id: raw.4,
+                library_item_id: raw.5,
+                location: raw.6,
+                excerpt: raw.7,
+                content_hash: raw.8,
+                ocr_confidence: raw.9,
+            })
+        })
+        .collect()
+    }
+
+    pub fn replace_note_pipeline_evidence(
+        &self,
+        run_id: &str,
+        evidence: &[DeepNoteEvidenceArtifact],
+    ) -> Result<(), String> {
+        let run_id = normalize_identifier("任务 ID", run_id)?;
+        let mut connection = self.open_connection()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| format!("开始保存深度笔记证据失败：{error}"))?;
+        transaction
+            .execute(
+                "DELETE FROM note_pipeline_evidence WHERE run_id = ?",
+                params![run_id],
+            )
+            .map_err(|error| format!("清理深度笔记旧证据失败：{error}"))?;
+        for item in evidence {
+            transaction
+                .execute(
+                    "INSERT INTO note_pipeline_evidence (
+                        run_id, evidence_id, section_id, source_chunk_ids_json, claim_text,
+                        model_synthesis, source_excerpt, support_level, status, content_hash,
+                        created_at
+                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    params![
+                        run_id,
+                        item.evidence_id,
+                        item.section_id,
+                        serde_json::to_string(&item.source_chunk_ids)
+                            .map_err(|error| format!("序列化证据来源失败：{error}"))?,
+                        item.claim,
+                        item.model_synthesis,
+                        item.source_excerpt,
+                        item.support_level.as_str(),
+                        item.status.as_str(),
+                        item.content_hash,
+                        i64::try_from(item.created_at).unwrap_or(i64::MAX),
+                    ],
+                )
+                .map_err(|error| format!("保存深度笔记证据失败：{error}"))?;
+        }
+        transaction
+            .commit()
+            .map_err(|error| format!("提交深度笔记证据失败：{error}"))
+    }
+
+    pub fn list_note_pipeline_evidence(
+        &self,
+        run_id: &str,
+    ) -> Result<Vec<DeepNoteEvidenceArtifact>, String> {
+        let run_id = normalize_identifier("任务 ID", run_id)?;
+        let connection = self.open_connection()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT evidence_id, section_id, source_chunk_ids_json, claim_text,
+                        model_synthesis, source_excerpt, support_level, status, content_hash,
+                        created_at
+                 FROM note_pipeline_evidence WHERE run_id = ?
+                 ORDER BY created_at ASC, evidence_id ASC",
+            )
+            .map_err(|error| format!("准备深度笔记证据查询失败：{error}"))?;
+        let rows = statement
+            .query_map(params![run_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, i64>(9)?,
+                ))
+            })
+            .map_err(|error| format!("查询深度笔记证据失败：{error}"))?;
+        rows.map(|row| {
+            let raw = row.map_err(|error| format!("读取深度笔记证据失败：{error}"))?;
+            Ok(DeepNoteEvidenceArtifact {
+                evidence_id: raw.0,
+                section_id: raw.1,
+                source_chunk_ids: serde_json::from_str(&raw.2)
+                    .map_err(|error| format!("解析证据来源失败：{error}"))?,
+                claim: raw.3,
+                model_synthesis: raw.4,
+                source_excerpt: raw.5,
+                support_level: DeepNoteSupportLevel::parse(&raw.6)?,
+                status: DeepNoteEvidenceStatus::parse(&raw.7)?,
+                content_hash: raw.8,
+                created_at: i64_to_u64(raw.9),
+            })
+        })
+        .collect()
+    }
+
+    pub fn save_note_pipeline_ledger(
+        &self,
+        run_id: &str,
+        version: u32,
+        ledger: &DeepNoteLedger,
+        patch_json: &str,
+    ) -> Result<(), String> {
+        let run_id = normalize_identifier("任务 ID", run_id)?;
+        let ledger_json = serde_json::to_string(ledger)
+            .map_err(|error| format!("序列化深度笔记账本失败：{error}"))?;
+        let connection = self.open_connection()?;
+        connection
+            .execute(
+                "INSERT INTO note_pipeline_ledgers (
+                    run_id, version, ledger_json, patch_json, created_at
+                 ) VALUES (?, ?, ?, ?, ?)
+                 ON CONFLICT(run_id, version) DO UPDATE SET
+                    ledger_json = excluded.ledger_json,
+                    patch_json = excluded.patch_json",
+                params![
+                    run_id,
+                    i64::from(version),
+                    ledger_json,
+                    patch_json,
+                    now_millis_i64(),
+                ],
+            )
+            .map_err(|error| format!("保存深度笔记账本失败：{error}"))?;
+        Ok(())
+    }
+
+    pub fn latest_note_pipeline_ledger(
+        &self,
+        run_id: &str,
+    ) -> Result<Option<DeepNoteLedger>, String> {
+        let run_id = normalize_identifier("任务 ID", run_id)?;
+        let connection = self.open_connection()?;
+        let raw = connection
+            .query_row(
+                "SELECT ledger_json FROM note_pipeline_ledgers
+                 WHERE run_id = ? ORDER BY version DESC LIMIT 1",
+                params![run_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| format!("读取深度笔记账本失败：{error}"))?;
+        raw.map(|value| {
+            serde_json::from_str(&value).map_err(|error| format!("解析深度笔记账本失败：{error}"))
+        })
+        .transpose()
     }
 
     pub fn append_note_pipeline_event(
@@ -1613,6 +1888,65 @@ impl LibraryRepository {
             .map_err(|error| format!("读取笔记增量锚点失败：{error}"))
     }
 
+    /// 查找某个会话最近一次由深度笔记管线写入的笔记及其增量锚点。
+    /// 只有带 summarized_until_message_id 的来源才参与匹配，避免把普通“保存消息为笔记”
+    /// 误判成可增量更新的深度笔记。
+    pub fn latest_deep_note_for_conversation(
+        &self,
+        conversation_id: &str,
+    ) -> Result<Option<(LibraryNote, Option<String>)>, String> {
+        let conversation_id = normalize_identifier("会话 ID", conversation_id)?;
+        let connection = self.open_connection()?;
+        let note_id = connection
+            .query_row(
+                "SELECT note_id FROM note_sources
+                 WHERE conversation_id = ? AND summarized_until_message_id IS NOT NULL
+                 ORDER BY created_at DESC LIMIT 1",
+                params![conversation_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| format!("读取会话已有深度笔记失败：{error}"))?;
+        let Some(note_id) = note_id else {
+            return Ok(None);
+        };
+        let note = self
+            .get_note_with_connection(&connection, &note_id)?
+            .ok_or_else(|| "会话关联的深度笔记已不存在。".to_string())?;
+        let anchor = connection
+            .query_row(
+                "SELECT summarized_until_message_id FROM note_sources
+                 WHERE note_id = ? AND conversation_id = ?
+                   AND summarized_until_message_id IS NOT NULL
+                 ORDER BY created_at DESC LIMIT 1",
+                params![note_id, conversation_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| format!("读取会话深度笔记锚点失败：{error}"))?;
+        Ok(Some((note, anchor)))
+    }
+
+    pub fn latest_completed_deep_note_runtime_json(
+        &self,
+        note_id: &str,
+        conversation_id: &str,
+    ) -> Result<Option<String>, String> {
+        let note_id = normalize_identifier("笔记 ID", note_id)?;
+        let conversation_id = normalize_identifier("会话 ID", conversation_id)?;
+        let connection = self.open_connection()?;
+        connection
+            .query_row(
+                "SELECT preflight_json FROM note_pipeline_runs
+                 WHERE note_id = ? AND conversation_id = ? AND phase = 'done'
+                 ORDER BY updated_at DESC LIMIT 1",
+                params![note_id, conversation_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| format!("读取已完成深度笔记运行快照失败：{error}"))
+    }
+
     pub fn create_note_edit_proposal(
         &self,
         create: NoteEditProposalCreate,
@@ -1637,6 +1971,8 @@ impl LibraryRepository {
         }
         let sources_json = serde_json::to_string(&sources)
             .map_err(|error| format!("序列化修改来源失败：{error}"))?;
+        let coverage_snapshot_json =
+            normalize_coverage_snapshot_json(&create.coverage_snapshot_json)?;
         let connection = self.open_connection()?;
         let note = self
             .get_note_with_connection(&connection, &note_id)?
@@ -1650,8 +1986,8 @@ impl LibraryRepository {
                 "INSERT INTO note_edit_proposals (
                     id, note_id, conversation_id, source_message_id, expected_note_updated_at,
                     old_title, new_title, old_content, new_content, diff_text, sources_json,
-                    status, created_at, updated_at
-                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
+                    coverage_snapshot_json, status, created_at, updated_at
+                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
                 params![
                     id,
                     note_id,
@@ -1664,6 +2000,7 @@ impl LibraryRepository {
                     normalized.content,
                     create.diff,
                     sources_json,
+                    coverage_snapshot_json,
                     now,
                     now,
                 ],
@@ -1671,6 +2008,24 @@ impl LibraryRepository {
             .map_err(|error| format!("保存笔记修改提案失败：{error}"))?;
         get_note_edit_proposal_with_connection(&connection, &id)?
             .ok_or_else(|| "创建后的笔记修改提案不存在。".to_string())
+    }
+
+    pub fn pending_note_edit_coverage_snapshot(
+        &self,
+        proposal_id: &str,
+    ) -> Result<Option<(String, String)>, String> {
+        let proposal_id = normalize_identifier("修改提案 ID", proposal_id)?;
+        let connection = self.open_connection()?;
+        connection
+            .query_row(
+                "SELECT conversation_id, coverage_snapshot_json
+                 FROM note_edit_proposals
+                 WHERE id = ? AND status = 'pending'",
+                params![proposal_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(|error| format!("读取笔记修改提案覆盖快照失败：{error}"))
     }
 
     pub fn resolve_note_edit_proposal(
@@ -1686,7 +2041,8 @@ impl LibraryRepository {
         let raw = transaction
             .query_row(
                 "SELECT note_id, expected_note_updated_at, old_title, new_title,
-                        old_content, new_content, sources_json, status
+                        old_content, new_content, sources_json, coverage_snapshot_json, status,
+                        conversation_id
                  FROM note_edit_proposals WHERE id = ?",
                 params![proposal_id],
                 |row| {
@@ -1699,13 +2055,15 @@ impl LibraryRepository {
                         row.get::<_, String>(5)?,
                         row.get::<_, String>(6)?,
                         row.get::<_, String>(7)?,
+                        row.get::<_, String>(8)?,
+                        row.get::<_, String>(9)?,
                     ))
                 },
             )
             .optional()
             .map_err(|error| format!("读取笔记修改提案失败：{error}"))?
             .ok_or_else(|| "笔记修改提案不存在。".to_string())?;
-        if raw.7 != "pending" {
+        if raw.8 != "pending" {
             return Err("笔记修改提案已经处理。".to_string());
         }
         let now = now_millis_i64();
@@ -1745,6 +2103,16 @@ impl LibraryRepository {
         let sources = serde_json::from_str::<Vec<NoteSourceCreate>>(&raw.6)
             .map_err(|error| format!("读取修改来源失败：{error}"))?;
         insert_note_sources(&transaction, &raw.0, sources, updated_at)?;
+        if !raw.7.is_empty() {
+            let coverage_snapshot_json = normalize_coverage_snapshot_json(&raw.7)?;
+            upsert_deep_note_coverage_snapshot(
+                &transaction,
+                &raw.0,
+                &raw.9,
+                &coverage_snapshot_json,
+                updated_at,
+            )?;
+        }
         transaction
             .execute(
                 "UPDATE note_edit_proposals SET status = 'applied', updated_at = ? WHERE id = ?",
@@ -2842,6 +3210,29 @@ fn migrate(connection: &Connection) -> Result<(), String> {
             )
             .map_err(|error| format!("升级深度笔记 Plan-and-Execute 结构失败：{error}"))?;
     }
+    // v8：保存深度笔记完整覆盖快照，并让增量编辑提案在应用时原子推进快照。
+    // 快照包含有序消息 ID、逐消息 Hash 和附件真实字节 Hash，用于拒绝编辑、删除、
+    // 重排或附件替换后的不安全恢复与增量合并。
+    if version <= 7 {
+        connection
+            .execute_batch(
+                "BEGIN IMMEDIATE;
+                 CREATE TABLE IF NOT EXISTS deep_note_coverage_snapshots (
+                    note_id TEXT NOT NULL REFERENCES library_notes(id) ON DELETE CASCADE,
+                    conversation_id TEXT NOT NULL,
+                    snapshot_json TEXT NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    PRIMARY KEY (note_id, conversation_id)
+                 );
+                 CREATE INDEX IF NOT EXISTS deep_note_coverage_conversation
+                    ON deep_note_coverage_snapshots(conversation_id, updated_at DESC);
+                 ALTER TABLE note_edit_proposals
+                    ADD COLUMN coverage_snapshot_json TEXT NOT NULL DEFAULT '';
+                 PRAGMA user_version = 8;
+                 COMMIT;",
+            )
+            .map_err(|error| format!("升级深度笔记覆盖快照结构失败：{error}"))?;
+    }
     Ok(())
 }
 
@@ -3142,6 +3533,51 @@ fn normalize_note_sources(sources: Vec<NoteSourceCreate>) -> Result<Vec<NoteSour
         .collect()
 }
 
+fn normalize_coverage_snapshot(snapshot: &DeepNoteInputSnapshot) -> Result<String, String> {
+    if snapshot.message_ids.is_empty()
+        || snapshot.message_ids.len() != snapshot.message_content_hashes.len()
+        || snapshot.attachment_ids.len() != snapshot.attachment_content_hashes.len()
+    {
+        return Err("深度笔记覆盖快照缺少完整的消息或附件 Hash。".to_string());
+    }
+    let json = serde_json::to_string(snapshot)
+        .map_err(|error| format!("序列化深度笔记覆盖快照失败：{error}"))?;
+    if json.len() > MAX_NOTE_PIPELINE_JSON_BYTES {
+        return Err("深度笔记覆盖快照过长。".to_string());
+    }
+    Ok(json)
+}
+
+fn normalize_coverage_snapshot_json(value: &str) -> Result<String, String> {
+    if value.trim().is_empty() {
+        return Ok(String::new());
+    }
+    let snapshot = serde_json::from_str::<DeepNoteInputSnapshot>(value)
+        .map_err(|error| format!("解析深度笔记覆盖快照失败：{error}"))?;
+    normalize_coverage_snapshot(&snapshot)
+}
+
+fn upsert_deep_note_coverage_snapshot(
+    connection: &Connection,
+    note_id: &str,
+    conversation_id: &str,
+    snapshot_json: &str,
+    updated_at: i64,
+) -> Result<(), String> {
+    connection
+        .execute(
+            "INSERT INTO deep_note_coverage_snapshots (
+                note_id, conversation_id, snapshot_json, updated_at
+             ) VALUES (?, ?, ?, ?)
+             ON CONFLICT(note_id, conversation_id) DO UPDATE SET
+                snapshot_json = excluded.snapshot_json,
+                updated_at = excluded.updated_at",
+            params![note_id, conversation_id, snapshot_json, updated_at],
+        )
+        .map_err(|error| format!("保存深度笔记覆盖快照失败：{error}"))?;
+    Ok(())
+}
+
 fn insert_note_sources(
     connection: &Connection,
     note_id: &str,
@@ -3419,6 +3855,9 @@ mod tests {
     use rusqlite::Connection;
 
     use super::LibraryRepository;
+    use crate::chat::note_pipeline::types::{
+        DeepNoteCapabilities, DeepNoteInputSnapshot, DeepNoteModelSnapshot,
+    };
     use crate::library::types::{
         LibraryAnnotationColor, LibraryAnnotationCreate, LibraryAnnotationKind,
         LibraryAnnotationRect, LibraryAnnotationUpdate, LibraryItemUpdate, LibraryListRequest,
@@ -3437,6 +3876,38 @@ mod tests {
                 .unwrap_or_default()
                 .as_nanos()
         ))
+    }
+
+    fn coverage_snapshot(message_ids: &[&str]) -> DeepNoteInputSnapshot {
+        DeepNoteInputSnapshot {
+            conversation_revision: message_ids.len() as u64,
+            message_ids: message_ids
+                .iter()
+                .map(|value| (*value).to_string())
+                .collect(),
+            message_content_hashes: message_ids
+                .iter()
+                .map(|value| format!("hash-{value}"))
+                .collect(),
+            attachment_ids: Vec::new(),
+            attachment_content_hashes: Vec::new(),
+            selected_literature_ids: Vec::new(),
+            selected_note_ids: Vec::new(),
+            model: DeepNoteModelSnapshot {
+                provider_id: "provider-1".to_string(),
+                model_id: "model-1".to_string(),
+                api_model: "model-1".to_string(),
+                context_window_tokens: Some(128_000),
+                capabilities: DeepNoteCapabilities {
+                    tools: true,
+                    vision: Some(true),
+                    reasoning: Some(true),
+                    structured_outputs: true,
+                },
+            },
+            permission_mode: "askSensitive".to_string(),
+            created_at: 1,
+        }
     }
 
     #[test]
@@ -3770,7 +4241,7 @@ mod tests {
         let version: i64 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 7);
+        assert_eq!(version, 8);
         let tables: i64 = connection
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master
@@ -3926,6 +4397,31 @@ mod tests {
         assert!(repository.get_note(&note.id).unwrap().group_name.is_none());
         assert!(!repository.delete_note_group("英语").unwrap());
 
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn note_pipeline_run_accepts_zero_retries_when_auto_retry_is_disabled() {
+        let directory = test_directory("note-pipeline-zero-retries");
+        let repository = LibraryRepository::new(directory.clone());
+
+        let run = repository
+            .create_note_pipeline_run(NotePipelineRunCreate {
+                id: "run-zero-retries".to_string(),
+                conversation_id: "conversation-zero-retries".to_string(),
+                provider_id: "provider-1".to_string(),
+                model_id: "model-1".to_string(),
+                max_output_tokens: 4_096,
+                thinking_enabled: false,
+                retry_attempts: 0,
+                input_snapshot_hash: "snapshot-zero-retries".to_string(),
+                budget_json: "{}".to_string(),
+                preflight_json: "{}".to_string(),
+                idempotency_key: "output-zero-retries".to_string(),
+            })
+            .unwrap();
+
+        assert_eq!(run.retry_attempts, 0);
         let _ = fs::remove_dir_all(directory);
     }
 
@@ -4237,6 +4733,19 @@ mod tests {
                 ],
             )
             .unwrap();
+        repository
+            .update_note_pipeline_node_state(
+                &run.id,
+                1,
+                "node-completed",
+                "completed",
+                2,
+                &["evidence-1".to_string()],
+                Some("section:completed"),
+                "{\"valid\":true}",
+                None,
+            )
+            .unwrap();
         {
             let connection = repository.open_connection().unwrap();
             connection
@@ -4279,14 +4788,18 @@ mod tests {
         assert_eq!(failed.revision_count, 0);
 
         let connection = repository.open_connection().unwrap();
-        let completed_node: (String, i64) = connection
+        let completed_node: (String, i64, String) = connection
             .query_row(
-                "SELECT status, attempt_count FROM note_pipeline_nodes WHERE node_id = 'node-completed'",
+                "SELECT status, attempt_count, evidence_ids_json
+                 FROM note_pipeline_nodes WHERE node_id = 'node-completed'",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .unwrap();
-        assert_eq!(completed_node, ("completed".to_string(), 0));
+        assert_eq!(
+            completed_node,
+            ("completed".to_string(), 2, "[\"evidence-1\"]".to_string())
+        );
         let retried_node: (String, i64, Option<String>) = connection
             .query_row(
                 "SELECT status, attempt_count, error_message FROM note_pipeline_nodes WHERE node_id = 'node-review'",
@@ -4313,6 +4826,79 @@ mod tests {
             .prepare_note_pipeline_retry(&run.id, false)
             .unwrap_err()
             .contains("5 次人工恢复上限"));
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn deep_note_coverage_snapshot_advances_only_when_update_is_applied() {
+        let directory = test_directory("deep-note-coverage");
+        let repository = LibraryRepository::new(directory.clone());
+        let initial_snapshot = coverage_snapshot(&["message-a", "message-b"]);
+        let note = repository
+            .create_note_with_sources_and_coverage(
+                LibraryNoteCreate {
+                    item_id: None,
+                    title: "Deep note".to_string(),
+                    content: "# Deep note\n\nInitial".to_string(),
+                    group_name: None,
+                },
+                vec![NoteSourceCreate {
+                    section_id: "sec-1".to_string(),
+                    origin: NoteSourceOrigin::Conversation,
+                    conversation_id: Some("conversation-1".to_string()),
+                    message_id: Some("message-b".to_string()),
+                    summarized_until_message_id: Some("message-b".to_string()),
+                }],
+                "conversation-1",
+                &initial_snapshot,
+            )
+            .unwrap();
+        assert_eq!(
+            repository
+                .deep_note_coverage_snapshot(&note.id, "conversation-1")
+                .unwrap(),
+            Some(initial_snapshot.clone())
+        );
+
+        let updated_snapshot = coverage_snapshot(&["message-a", "message-b", "message-c"]);
+        let proposal = repository
+            .create_note_edit_proposal(NoteEditProposalCreate {
+                id: "proposal-coverage".to_string(),
+                note_id: note.id.clone(),
+                conversation_id: "conversation-1".to_string(),
+                source_message_id: Some("message-c".to_string()),
+                expected_note_updated_at: note.updated_at,
+                old_title: note.title.clone(),
+                new_title: note.title.clone(),
+                old_content: note.content.clone(),
+                new_content: "# Deep note\n\nUpdated".to_string(),
+                diff: "update message-c".to_string(),
+                sources: vec![NoteSourceCreate {
+                    section_id: "edit-1".to_string(),
+                    origin: NoteSourceOrigin::Conversation,
+                    conversation_id: Some("conversation-1".to_string()),
+                    message_id: Some("message-c".to_string()),
+                    summarized_until_message_id: Some("message-c".to_string()),
+                }],
+                coverage_snapshot_json: serde_json::to_string(&updated_snapshot).unwrap(),
+            })
+            .unwrap();
+
+        assert_eq!(
+            repository
+                .deep_note_coverage_snapshot(&note.id, "conversation-1")
+                .unwrap(),
+            Some(initial_snapshot)
+        );
+        repository
+            .resolve_note_edit_proposal(&proposal.id, true)
+            .unwrap();
+        assert_eq!(
+            repository
+                .deep_note_coverage_snapshot(&note.id, "conversation-1")
+                .unwrap(),
+            Some(updated_snapshot)
+        );
         let _ = fs::remove_dir_all(directory);
     }
 
@@ -4348,6 +4934,7 @@ mod tests {
                 new_content: "# New title\n\nNew body".to_string(),
                 diff: "--- old\n+++ new".to_string(),
                 sources: vec![source.clone()],
+                coverage_snapshot_json: String::new(),
             };
 
         repository
