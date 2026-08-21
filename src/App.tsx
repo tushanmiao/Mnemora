@@ -29,7 +29,7 @@ import {
 import type { AiPermissionMode } from "./types/chat";
 import { resolveConversationModel } from "./types/modelSettings";
 import { matchModelDefaults, resolveSupportsFunctionCalling, resolveSupportsReasoning, resolveSupportsVision } from "./data/modelMatching";
-import type { WorkLibraryView } from "./features/workspace/types";
+import type { ActiveWorkNoteContext, WorkLibraryView } from "./features/workspace/types";
 import { findWorkspaceView } from "./features/workspace/viewRegistry";
 import { ActivityBar } from "./features/workspace/components/ActivityBar";
 import { WorkspaceViewHost } from "./features/workspace/components/WorkspaceViewHost";
@@ -82,6 +82,7 @@ function App() {
   } = navigation;
   const [modelMenuRequest, setModelMenuRequest] = useState(0);
   const [composerFocusRequest, setComposerFocusRequest] = useState(0);
+  const [activeWorkNoteContext, setActiveWorkNoteContext] = useState<ActiveWorkNoteContext | null>(null);
 
   useEffect(() => {
     const disposeLifecycle = initializeWorkspaceLifecycle();
@@ -215,6 +216,7 @@ function App() {
     saveStableConversation: conversations.saveStableConversation,
     protectConversation: conversations.protectConversation,
     releaseConversation: conversations.releaseConversation,
+    activeWorkNoteContext,
   });
 
   const chatSurfaceVisible = activeView === "workspace" && (
@@ -341,6 +343,33 @@ function App() {
   const activeWorkResourceLabel = library.selectedItem?.title
     ?? selectedWorkCollection?.name
     ?? workResourceLabel[workLibraryView];
+
+  const handleToggleWorkContextPanel = useCallback(() => {
+    if (activeWorkNoteContext) {
+      if (workContextPanelOpen && workContextView === "chat") {
+        setWorkContextPanelOpen(false);
+        return;
+      }
+      if (!conversations.currentConversation) {
+        if (conversations.currentConversationId) {
+          void conversations.ensureCurrentConversationLoaded();
+        } else {
+          conversations.createNewConversation();
+        }
+      }
+      setWorkContextView("chat");
+      setWorkContextPanelOpen(true);
+      return;
+    }
+    setWorkContextPanelOpen((open) => !open);
+  }, [
+    activeWorkNoteContext,
+    conversations,
+    setWorkContextPanelOpen,
+    setWorkContextView,
+    workContextPanelOpen,
+    workContextView,
+  ]);
 
   const chatWorkspace = (
     <ChatWorkspace
@@ -506,10 +535,17 @@ function App() {
             selectionError: library.selectionError,
             sort: workLibrarySort,
             contextPanelOpen: workContextPanelOpen,
+            noteChatOpen: workContextPanelOpen && workContextView === "chat",
             chatBusy: chatRuntime.requestInFlight,
             literatureNavigationRequest: references.literatureNavigationRequest,
-            onToggleContextPanel: () => setWorkContextPanelOpen((open) => !open),
+            noteRefreshVersion: noteActions.noteEditRefresh?.noteId === activeWorkNoteContext?.noteId
+              ? (noteActions.noteEditRefresh?.version ?? 0)
+              : 0,
+            onToggleContextPanel: handleToggleWorkContextPanel,
             onAskSelection: references.addLiteratureReference,
+            onAskNoteSelection: references.addNoteReference,
+            onEditNoteSelection: noteActions.openSelectionNoteEdit,
+            onActiveNoteContextChange: setActiveWorkNoteContext,
             onPdfDocumentsChange: references.setWorkPdfDocuments,
             onLiteratureNavigationHandled: references.handleLiteratureNavigationHandled,
             onImport: library.importPdfs,
@@ -537,6 +573,9 @@ function App() {
                 linkedLibraryItemIds: conversations.currentConversation?.linkedLibraryItemIds ?? [],
                 literatureReferenceError: references.literatureReferenceError,
                 conversationAvailable: conversations.currentConversation !== null,
+                conversations: conversations.conversationListItems,
+                currentConversationId: conversations.currentConversationId,
+                activeNoteContext: activeWorkNoteContext,
                 libraryItem: library.selectedItem,
                 collections: library.collections,
                 itemSaving: library.actionPending,
@@ -545,6 +584,8 @@ function App() {
                 onLinkedLibraryItemIdsChange: references.updateLinkedLibraryItemIds,
                 onAddLiteratureReference: references.addLiteratureReference,
                 onClearLiteratureReferenceError: references.clearLiteratureReferenceError,
+                onConversationChange: conversations.selectConversation,
+                onCreateConversation: conversations.createNewConversation,
                 onSaveLibraryItem: library.saveItem,
                 resize: {
                   value: layout.preferences.workContextWidth,

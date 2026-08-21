@@ -1,4 +1,4 @@
-import { Suspense, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import { useI18n } from "../../../i18n/I18nProvider";
 import type { WorkspaceMode } from "../types";
 import { findWorkspaceView } from "../viewRegistry";
@@ -18,16 +18,32 @@ export function WorkspaceViewHost({
 }: WorkspaceViewHostProps) {
   const { t } = useI18n();
   const [retryKey, setRetryKey] = useState(0);
+  const stageRef = useRef<HTMLElement>(null);
+  const [contextLayout, setContextLayout] = useState<"split" | "drawer">("split");
   const definition = findWorkspaceView(mode);
   if (!definition) throw new Error(`未知工作区视图：${mode}`);
   const ViewComponent = definition.component;
   const viewLabel = t(definition.labelKey);
 
+  useEffect(() => {
+    const stage = stageRef.current;
+    if (!stage || typeof ResizeObserver === "undefined") return;
+    const update = (width: number) => {
+      setContextLayout(width >= 940 ? "split" : "drawer");
+    };
+    update(stage.getBoundingClientRect().width);
+    const observer = new ResizeObserver(([entry]) => update(entry.contentRect.width));
+    observer.observe(stage);
+    return () => observer.disconnect();
+  }, []);
+
   return (
     <section
+      ref={stageRef}
       className="workspace-stage"
       data-workspace-mode={mode}
       data-context-open={contextOpen ? "true" : "false"}
+      data-context-layout={contextLayout}
     >
       <WorkspaceViewBoundary
         key={`${mode}:${retryKey}`}

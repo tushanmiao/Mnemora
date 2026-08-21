@@ -25,11 +25,13 @@ import type {
   LibraryItemUpdate,
   LibrarySort,
 } from "../../library/types";
-import type { LiteratureReference } from "../../../types/chat";
+import type { LiteratureReference, NoteReference } from "../../../types/chat";
 import { usePdfReaderBridge } from "../../pdf/context/PdfReaderContext";
 import type {
+  ActiveWorkNoteContext,
   LiteratureNavigationRequest,
   WorkLibraryView,
+  WorkNoteSourceContext,
   WorkPdfDocument,
 } from "../types";
 import { useWorkSession } from "../hooks/useWorkSession";
@@ -58,10 +60,19 @@ export type WorkWorkspaceProps = {
   selectionError: string;
   sort: LibrarySort;
   contextPanelOpen: boolean;
+  noteChatOpen: boolean;
   chatBusy: boolean;
   literatureNavigationRequest: LiteratureNavigationRequest | null;
+  noteRefreshVersion: number;
   onToggleContextPanel: () => void;
   onAskSelection: (reference: LiteratureReference) => void;
+  onAskNoteSelection: (reference: NoteReference) => void;
+  onEditNoteSelection: (selection: {
+    noteId: string;
+    selectedText: string;
+    sectionHeading: string;
+  }) => void;
+  onActiveNoteContextChange: (context: ActiveWorkNoteContext | null) => void;
   onPdfDocumentsChange: (documents: WorkPdfDocument[]) => void;
   onLiteratureNavigationHandled: (requestId: string) => void;
   onImport: () => Promise<unknown>;
@@ -94,10 +105,15 @@ export function WorkWorkspace({
   selectionError,
   sort,
   contextPanelOpen,
+  noteChatOpen,
   chatBusy,
   literatureNavigationRequest,
+  noteRefreshVersion,
   onToggleContextPanel,
   onAskSelection,
+  onAskNoteSelection,
+  onEditNoteSelection,
+  onActiveNoteContextChange,
   onPdfDocumentsChange,
   onLiteratureNavigationHandled,
   onImport,
@@ -119,6 +135,7 @@ export function WorkWorkspace({
   const [sortMenuOpen, setSortMenuOpen] = useState(false);
   const [itemMenuId, setItemMenuId] = useState<string | null>(null);
   const [noteTotal, setNoteTotal] = useState(0);
+  const [sourceNavigation, setSourceNavigation] = useState<WorkNoteSourceContext | null>(null);
   const menuAreaRef = useRef<HTMLDivElement>(null);
   const libraryContextRef = useRef({ libraryView, searchQuery, collectionName });
   const pdfDocuments = useMemo<WorkPdfDocument[]>(() => session.tabs.flatMap((tab) => (
@@ -136,6 +153,12 @@ export function WorkWorkspace({
   }, [onPdfDocumentsChange, pdfDocuments]);
 
   useEffect(() => () => onPdfDocumentsChange([]), [onPdfDocumentsChange]);
+
+  useEffect(() => {
+    if (session.activeTab.kind !== "note") onActiveNoteContextChange(null);
+  }, [onActiveNoteContextChange, session.activeTab.kind]);
+
+  useEffect(() => () => onActiveNoteContextChange(null), [onActiveNoteContextChange]);
 
   useEffect(() => {
     const previous = libraryContextRef.current;
@@ -184,6 +207,14 @@ export function WorkWorkspace({
     session.activeTab.id,
     session.openPdfReference,
   ]);
+
+  useEffect(() => {
+    const source = sourceNavigation;
+    if (!source || session.activeTab.id !== `pdf:${source.sourcePdfId}`) return;
+    if (pdfController?.itemId !== source.sourcePdfId) return;
+    if (source.sourcePageIndex !== null) pdfController.goToPage(source.sourcePageIndex);
+    setSourceNavigation(null);
+  }, [pdfController, session.activeTab.id, sourceNavigation]);
 
   useEffect(() => {
     function closeMenus(event: MouseEvent) {
@@ -271,8 +302,20 @@ export function WorkWorkspace({
         <Suspense fallback={<div className="work-library-state" role="status"><LoaderCircle className="work-library-spinner" size={24} /><span>{t("work.preparingNotes")}</span></div>}>
           <NoteWorkspace
             noteId={session.activeTab.resourceId}
+            source={session.activeTab.noteSource ?? null}
+            chatOpen={noteChatOpen}
+            chatBusy={chatBusy}
+            refreshVersion={noteRefreshVersion}
             onUpdated={session.updateNoteTab}
             onDeleted={() => session.closeTab(session.activeTab.id)}
+            onToggleChat={onToggleContextPanel}
+            onAskSelection={onAskNoteSelection}
+            onEditSelection={onEditNoteSelection}
+            onContextChange={onActiveNoteContextChange}
+            onOpenSourcePdf={(source) => {
+              setSourceNavigation(source);
+              session.openPdfReference(source.sourcePdfId, source.sourcePdfTitle);
+            }}
           />
         </Suspense>
       ) : (

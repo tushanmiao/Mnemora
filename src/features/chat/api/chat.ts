@@ -15,6 +15,16 @@ export type ChatCompletionRequest = {
   slashSkillId?: string;
   permissionMode?: AiPermissionMode;
   workspaceMode?: "chat" | "work" | "notes";
+  workspaceContext?: {
+    kind: "note";
+    noteId: string;
+    noteTitle: string;
+    noteRevisionHash: string;
+    noteSnapshot: string;
+    sourcePdfId?: string;
+    sourcePdfTitle?: string;
+    sourcePageIndex?: number;
+  };
   messages: Array<{
     role: MessageRole;
     content: string;

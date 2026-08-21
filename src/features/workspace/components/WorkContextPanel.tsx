@@ -12,6 +12,7 @@ import {
   ListTree,
   LoaderCircle,
   MessageCircle,
+  MessagesSquare,
   MoreHorizontal,
   NotebookPen,
   PanelRightClose,
@@ -19,6 +20,7 @@ import {
   Star,
 } from "lucide-react";
 import type { LiteratureReference } from "../../../types/chat";
+import type { ConversationListItem } from "../../../types/conversation";
 import type {
   LibraryCollection,
   LibraryItem,
@@ -28,7 +30,7 @@ import {
   PanelResizeHandle,
   type PanelResizeHandleProps,
 } from "../../layout/components/PanelResizeHandle";
-import type { WorkContextView } from "../types";
+import type { ActiveWorkNoteContext, WorkContextView } from "../types";
 import { usePdfReaderBridge } from "../../pdf/context/PdfReaderContext";
 import { createLiteratureReference, MAX_LINKED_LIBRARY_ITEMS } from "../../chat/utils/literatureReferences";
 import type { WorkPdfDocument } from "../types";
@@ -50,6 +52,9 @@ export type WorkContextPanelProps = {
   linkedLibraryItemIds: string[];
   literatureReferenceError: string;
   conversationAvailable: boolean;
+  conversations: ConversationListItem[];
+  currentConversationId: string | null;
+  activeNoteContext: ActiveWorkNoteContext | null;
   libraryItem: LibraryItem | null;
   collections: LibraryCollection[];
   itemSaving: boolean;
@@ -58,6 +63,8 @@ export type WorkContextPanelProps = {
   onLinkedLibraryItemIdsChange: (itemIds: string[]) => void;
   onAddLiteratureReference: (reference: LiteratureReference) => void;
   onClearLiteratureReferenceError: () => void;
+  onConversationChange: (conversationId: string) => void;
+  onCreateConversation: () => void;
   onSaveLibraryItem: (update: LibraryItemUpdate) => Promise<LibraryItem>;
   resize: Omit<PanelResizeHandleProps, "edge" | "label">;
 };
@@ -81,6 +88,9 @@ export function WorkContextPanel({
   linkedLibraryItemIds,
   literatureReferenceError,
   conversationAvailable,
+  conversations,
+  currentConversationId,
+  activeNoteContext,
   libraryItem,
   collections,
   itemSaving,
@@ -89,6 +99,8 @@ export function WorkContextPanel({
   onLinkedLibraryItemIdsChange,
   onAddLiteratureReference,
   onClearLiteratureReferenceError,
+  onConversationChange,
+  onCreateConversation,
   onSaveLibraryItem,
   resize,
 }: WorkContextPanelProps) {
@@ -103,6 +115,16 @@ export function WorkContextPanel({
     return () => document.removeEventListener("mousedown", closeMore);
   }, []);
 
+  useEffect(() => {
+    if (activeNoteContext && activeView !== "chat" && activeView !== "info") {
+      onViewChange("chat");
+    }
+  }, [activeNoteContext, activeView, onViewChange]);
+
+  const visibleTabs = activeNoteContext
+    ? contextTabs.filter((tab) => tab.id === "info" || tab.id === "chat")
+    : contextTabs;
+
   return (
     <aside className="work-context-panel" aria-label="当前资源工具">
       <PanelResizeHandle
@@ -114,19 +136,32 @@ export function WorkContextPanel({
       <div className="work-context-body">
         {activeView === "chat" ? (
           <div className="work-context-chat">
-            <LiteratureChatScope
-              documents={pdfDocuments}
-              linkedLibraryItemIds={linkedLibraryItemIds}
-              error={literatureReferenceError}
-              disabled={!conversationAvailable || chatBusy}
-              onLinkedLibraryItemIdsChange={onLinkedLibraryItemIdsChange}
-              onAddLiteratureReference={onAddLiteratureReference}
-              onClearError={onClearLiteratureReferenceError}
-            />
+            {activeNoteContext ? (
+              <NoteChatScope
+                note={activeNoteContext}
+                conversations={conversations}
+                currentConversationId={currentConversationId}
+                disabled={chatBusy}
+                onConversationChange={onConversationChange}
+                onCreateConversation={onCreateConversation}
+              />
+            ) : (
+              <LiteratureChatScope
+                documents={pdfDocuments}
+                linkedLibraryItemIds={linkedLibraryItemIds}
+                error={literatureReferenceError}
+                disabled={!conversationAvailable || chatBusy}
+                onLinkedLibraryItemIdsChange={onLinkedLibraryItemIdsChange}
+                onAddLiteratureReference={onAddLiteratureReference}
+                onClearError={onClearLiteratureReferenceError}
+              />
+            )}
             {chatPanel}
           </div>
         ) : activeView === "info" ? (
-          libraryItem ? (
+          activeNoteContext ? (
+            <NoteContextInfo note={activeNoteContext} />
+          ) : libraryItem ? (
             <LibraryItemInfoPanel
               item={libraryItem}
               collections={collections}
@@ -173,7 +208,7 @@ export function WorkContextPanel({
         </button>
 
         <div className="work-context-tool-list" role="tablist" aria-label="上下文工具">
-          {contextTabs.map(({ id, label, icon: Icon }) => {
+          {visibleTabs.map(({ id, label, icon: Icon }) => {
             const active = activeView === id;
             return (
               <button
@@ -225,6 +260,106 @@ export function WorkContextPanel({
         </div>
       </nav>
     </aside>
+  );
+}
+
+function NoteContextInfo({ note }: { note: ActiveWorkNoteContext }) {
+  return (
+    <section className="work-context-info work-note-context-info" aria-label="当前笔记信息">
+      <header>
+        <NotebookPen size={18} />
+        <div>
+          <h2 title={note.noteTitle}>{note.noteTitle}</h2>
+          <span>当前笔记上下文</span>
+        </div>
+      </header>
+      <dl>
+        <div><dt>资源类型</dt><dd>Markdown 笔记</dd></div>
+        <div><dt>版本</dt><dd title={note.revisionHash}>{note.revisionHash}</dd></div>
+        <div><dt>Chat 读取</dt><dd>Tool 按需 / 非 Tool 有界快照</dd></div>
+        <div><dt>来源 PDF</dt><dd>{note.source?.sourcePdfTitle ?? "无"}</dd></div>
+        <div><dt>来源页码</dt><dd>{note.source?.sourcePageIndex === null || note.source?.sourcePageIndex === undefined ? "无" : `第 ${note.source.sourcePageIndex + 1} 页`}</dd></div>
+      </dl>
+      <p>AI 修改只生成候选差异，确认后才写入；笔记版本变化时后端会拒绝覆盖。</p>
+    </section>
+  );
+}
+
+type NoteChatScopeProps = {
+  note: ActiveWorkNoteContext;
+  conversations: ConversationListItem[];
+  currentConversationId: string | null;
+  disabled: boolean;
+  onConversationChange: (conversationId: string) => void;
+  onCreateConversation: () => void;
+};
+
+function NoteChatScope({
+  note,
+  conversations,
+  currentConversationId,
+  disabled,
+  onConversationChange,
+  onCreateConversation,
+}: NoteChatScopeProps) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const current = conversations.find((item) => item.id === currentConversationId) ?? null;
+  const recent = conversations.slice(0, 12);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const close = (event: MouseEvent) => {
+      if (!menuRef.current?.contains(event.target as Node)) setMenuOpen(false);
+    };
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [menuOpen]);
+
+  return (
+    <section className="work-note-chat-scope" aria-label="当前笔记上下文 Chat">
+      <div className="work-note-context-copy">
+        <NotebookPen size={15} />
+        <div>
+          <strong title={note.noteTitle}>{note.noteTitle}</strong>
+          <span>
+            当前笔记
+            {note.source ? ` · ${note.source.sourcePdfTitle}${note.source.sourcePageIndex === null ? "" : ` 第 ${note.source.sourcePageIndex + 1} 页`}` : ""}
+          </span>
+        </div>
+      </div>
+      <div className="work-note-conversation-switcher" ref={menuRef}>
+        <button type="button" disabled={disabled} aria-expanded={menuOpen} onClick={() => setMenuOpen((open) => !open)}>
+          <MessagesSquare size={14} />
+          <span title={current?.title ?? "未选择对话"}>{current?.title ?? "选择对话"}</span>
+          <ChevronDown size={13} />
+        </button>
+        {menuOpen ? (
+          <div className="work-note-conversation-menu" role="menu">
+            <header>
+              <strong>笔记 Chat 会话</strong>
+              <button type="button" onClick={() => { onCreateConversation(); setMenuOpen(false); }}>新建</button>
+            </header>
+            <div>
+              {recent.length > 0 ? recent.map((conversation) => (
+                <button
+                  className={conversation.id === currentConversationId ? "is-active" : ""}
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={conversation.id === currentConversationId}
+                  key={conversation.id}
+                  onClick={() => { onConversationChange(conversation.id); setMenuOpen(false); }}
+                >
+                  <span><strong>{conversation.title}</strong><small>{conversation.preview}</small></span>
+                  <time>{new Date(conversation.updatedAt).toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" })}</time>
+                </button>
+              )) : <p>暂无会话，先新建一个当前笔记 Chat。</p>}
+            </div>
+            <footer>同一时间只加载一个会话，切换不会挂载第二套消息列表。</footer>
+          </div>
+        ) : null}
+      </div>
+    </section>
   );
 }
 

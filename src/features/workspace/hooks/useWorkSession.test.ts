@@ -44,4 +44,49 @@ describe("normalizeWorkSession", () => {
     expect(session.tabs[1]).toMatchObject({ kind: "note", resourceId: "note-1" });
     expect(session.activeTabId).toBe("note:note-1");
   });
+
+  it("恢复 PDF 笔记的轻量来源上下文", () => {
+    const session = normalizeWorkSession({
+      tabs: [{
+        id: "note:note-2",
+        kind: "note",
+        title: "带来源的笔记",
+        closable: true,
+        resourceId: "note-2",
+        noteSource: {
+          sourcePdfId: "item-2",
+          sourcePdfTitle: "Source Paper",
+          sourcePageIndex: 6,
+        },
+      }],
+      activeTabId: "note:note-2",
+    });
+    expect(session.tabs[1]).toMatchObject({
+      noteSource: {
+        sourcePdfId: "item-2",
+        sourcePdfTitle: "Source Paper",
+        sourcePageIndex: 6,
+      },
+    });
+  });
+
+  it("丢弃来源页码损坏的笔记页签", () => {
+    const session = normalizeWorkSession({
+      tabs: [{
+        id: "note:note-broken",
+        kind: "note",
+        title: "损坏来源",
+        closable: true,
+        resourceId: "note-broken",
+        noteSource: {
+          sourcePdfId: "item-2",
+          sourcePdfTitle: "Source Paper",
+          sourcePageIndex: -1,
+        },
+      }],
+      activeTabId: "note:note-broken",
+    });
+    expect(session.tabs).toHaveLength(1);
+    expect(session.activeTabId).toBe("library");
+  });
 });

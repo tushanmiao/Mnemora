@@ -1208,6 +1208,7 @@ async fn model_call_with_runtime(
             slash_skill_id: None,
             permission_mode: Default::default(),
             workspace_mode: ChatWorkspaceMode::Notes,
+            workspace_context: None,
             messages: vec![ChatModelMessage {
                 role: ModelRole::User,
                 content: user_prompt,

@@ -6,6 +6,7 @@ import type {
   LibraryNote,
   LibraryNoteSummary,
 } from "../../library/types";
+import type { WorkNoteSourceContext } from "../../workspace/types";
 
 export type PdfOutlineEntry = {
   id: string;
@@ -47,7 +48,10 @@ export type PdfReaderController = {
   createNote: (title: string, content: string) => Promise<LibraryNote>;
   updateNote: (noteId: string, title: string, content: string) => Promise<LibraryNote>;
   deleteNote: (noteId: string) => Promise<boolean>;
-  openNote: (note: Pick<LibraryNote, "id" | "title">) => void;
+  openNote: (
+    note: Pick<LibraryNote, "id" | "title">,
+    source?: WorkNoteSourceContext,
+  ) => void;
 };
 
 type PdfReaderContextValue = {

@@ -37,6 +37,25 @@ pub enum ChatWorkspaceMode {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum ChatWorkspaceContext {
+    #[serde(rename = "note")]
+    Note {
+        note_id: String,
+        note_title: String,
+        note_revision_hash: String,
+        #[serde(default)]
+        note_snapshot: Option<String>,
+        #[serde(default)]
+        source_pdf_id: Option<String>,
+        #[serde(default)]
+        source_pdf_title: Option<String>,
+        #[serde(default)]
+        source_page_index: Option<u32>,
+    },
+}
+
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatModelMessage {
     pub role: ModelRole,
@@ -67,6 +86,8 @@ pub struct ChatCompletionRequest {
     pub permission_mode: AiPermissionMode,
     #[serde(default)]
     pub workspace_mode: ChatWorkspaceMode,
+    #[serde(default)]
+    pub workspace_context: Option<ChatWorkspaceContext>,
     pub messages: Vec<ChatModelMessage>,
     #[serde(default)]
     pub options: ModelOptions,
@@ -209,6 +230,43 @@ impl ChatCompletionRequest {
             return Err(ModelError::invalid_configuration(format!(
                 "聊天历史不能超过 {MAX_MESSAGES} 条消息。"
             )));
+        }
+        if let Some(ChatWorkspaceContext::Note {
+            note_id,
+            note_title,
+            note_revision_hash,
+            note_snapshot,
+            source_pdf_id,
+            source_pdf_title,
+            ..
+        }) = &self.workspace_context
+        {
+            validate_stable_id("Workspace note ID", note_id)
+                .map_err(ModelError::invalid_configuration)?;
+            if note_title.trim().is_empty() || note_title.chars().count() > 500 {
+                return Err(ModelError::invalid_configuration("当前笔记标题无效。"));
+            }
+            if note_revision_hash.trim().is_empty() || note_revision_hash.len() > 160 {
+                return Err(ModelError::invalid_configuration("当前笔记版本无效。"));
+            }
+            if note_snapshot
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.len() > 32 * 1024 + 128)
+            {
+                return Err(ModelError::invalid_configuration(
+                    "当前笔记快照超过 32 KB。",
+                ));
+            }
+            if let Some(source_pdf_id) = source_pdf_id {
+                validate_stable_id("Workspace source PDF ID", source_pdf_id)
+                    .map_err(ModelError::invalid_configuration)?;
+            }
+            if source_pdf_title
+                .as_ref()
+                .is_some_and(|title| title.chars().count() > 500)
+            {
+                return Err(ModelError::invalid_configuration("来源 PDF 标题过长。"));
+            }
         }
         if self.system_prompt.len() > MAX_SYSTEM_PROMPT_BYTES {
             return Err(ModelError::invalid_configuration("System Prompt 过长。"));
@@ -425,6 +483,36 @@ impl ChatCompletionRequest {
             });
         }
         let mut system_prompt = super::prompt::prepend_core_system_prompt(&self.system_prompt);
+        if let Some(ChatWorkspaceContext::Note {
+            note_id,
+            note_title,
+            note_revision_hash,
+            note_snapshot,
+            source_pdf_id,
+            source_pdf_title,
+            source_page_index,
+        }) = &self.workspace_context
+        {
+            let source = source_pdf_id
+                .as_ref()
+                .map(|id| {
+                    format!(
+                        "\n来源 PDF ID：{}\n来源 PDF：{}{}",
+                        id,
+                        source_pdf_title.as_deref().unwrap_or("未命名 PDF"),
+                        source_page_index
+                            .map(|page| format!("\n打开笔记时所在页：第 {} 页", page + 1))
+                            .unwrap_or_default(),
+                    )
+                })
+                .unwrap_or_default();
+            system_prompt.push_str(&format!(
+                "\n\n<mnemora_active_note>\n当前右侧是‘当前笔记上下文 Chat’。\n笔记 ID：{note_id}\n笔记标题：{note_title}\n界面版本：{note_revision_hash}{source}\n需要正文时必须调用 note_read 读取该 ID；不要假装已经读取，也不要根据标题或来源 PDF 猜测内容。用户明确加入的选区引用优先于整篇读取。{}\n</mnemora_active_note>",
+                note_snapshot.as_ref().map(|snapshot| format!(
+                    "\n当前模型没有 Tool 能力，以下是界面显式提供的有界笔记快照；只可依据这份快照回答，截断部分不可猜测：\n<note_snapshot>\n{snapshot}\n</note_snapshot>"
+                )).unwrap_or_else(|| "\n当前模型具有 Tool 能力，界面快照未注入；按需调用 note_read。".to_string())
+            ));
+        }
         let skill_prompt = skill_repository
             .render_activated_skills(&self.activated_skill_ids, last_user_content.as_deref())
             .map_err(ModelError::invalid_configuration)?;
@@ -461,7 +549,7 @@ mod tests {
         types::{ModelOptions, ModelRole},
     };
 
-    use super::{ChatCompletionRequest, ChatWorkspaceMode, ModelStreamEvent};
+    use super::{ChatCompletionRequest, ChatWorkspaceContext, ChatWorkspaceMode, ModelStreamEvent};
     use crate::chat::{conversation_types::StoredChatAttachment, storage::ConversationRepository};
 
     fn image_attachment(id: &str, path: &str) -> StoredChatAttachment {
@@ -490,6 +578,7 @@ mod tests {
             slash_skill_id: None,
             permission_mode: AiPermissionMode::AskSensitive,
             workspace_mode: ChatWorkspaceMode::Chat,
+            workspace_context: None,
             messages: vec![super::ChatModelMessage {
                 role: ModelRole::User,
                 content: content.to_string(),
@@ -502,6 +591,34 @@ mod tests {
     #[test]
     fn accepts_minimal_text_request() {
         request("Hello").validate().unwrap();
+    }
+
+    #[test]
+    fn active_note_context_injects_bounded_snapshot() {
+        let root = std::env::temp_dir().join(format!("mnemora-active-note-{}", Uuid::new_v4()));
+        let repository = ConversationRepository::new(root.join("conversations"));
+        let skills = crate::skills::SkillRepository::new(root.join("builtin"), root.join("skills"));
+        let mut value = request("解释当前笔记");
+        value.workspace_mode = ChatWorkspaceMode::Work;
+        value.workspace_context = Some(ChatWorkspaceContext::Note {
+            note_id: "note-1".to_string(),
+            note_title: "研究笔记".to_string(),
+            note_revision_hash: "revision-1".to_string(),
+            note_snapshot: Some("# 结论\n\n测试快照".to_string()),
+            source_pdf_id: Some("paper-1".to_string()),
+            source_pdf_title: Some("Paper".to_string()),
+            source_page_index: Some(2),
+        });
+
+        let model = value
+            .into_model_request("model".to_string(), &repository, &skills)
+            .unwrap();
+        let prompt = model.system_prompt.unwrap();
+        assert!(prompt.contains("笔记 ID：note-1"));
+        assert!(prompt.contains("<note_snapshot>"));
+        assert!(prompt.contains("测试快照"));
+        assert!(prompt.contains("第 3 页"));
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

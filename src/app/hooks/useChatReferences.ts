@@ -151,9 +151,21 @@ export function useChatReferences({
     }
     noteReferencesRef.current = result.references;
     setNoteReferences(result.references);
-    setNotesContextPanelOpen(true);
+    if (workspaceMode === "work") {
+      setWorkContextPanelOpen(true);
+      setWorkContextView("chat");
+    } else {
+      setNotesContextPanelOpen(true);
+    }
     focusComposer();
-  }, [conversations, focusComposer, setNotesContextPanelOpen]);
+  }, [
+    conversations,
+    focusComposer,
+    setNotesContextPanelOpen,
+    setWorkContextPanelOpen,
+    setWorkContextView,
+    workspaceMode,
+  ]);
   const removeNoteReference = useCallback((referenceId: string) => {
     const next = noteReferencesRef.current.filter((reference) => reference.id !== referenceId);
     noteReferencesRef.current = next;

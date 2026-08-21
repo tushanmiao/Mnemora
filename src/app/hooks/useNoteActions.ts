@@ -143,6 +143,7 @@ export function useNoteActions({
   const [noteEditRequest, setNoteEditRequest] = useState<NoteEditDialogRequest | null>(null);
   const [noteEditResult, setNoteEditResult] = useState<NoteEditPrepareResult | null>(null);
   const [noteEditBusy, setNoteEditBusy] = useState(false);
+  const [noteEditRefresh, setNoteEditRefresh] = useState<{ noteId: string; version: number } | null>(null);
 
   const showFeedback = useCallback((kind: NoteFeedback["kind"], text: string) => {
     if (feedbackTimerRef.current !== null) window.clearTimeout(feedbackTimerRef.current);
@@ -1005,6 +1006,10 @@ export function useNoteActions({
       const updated = await resolveNoteEdit(noteEditResult.proposal.id, true);
       if (!updated) throw new Error("修改提案已失效。");
       setNoteEditResult(null);
+      setNoteEditRefresh((current) => ({
+        noteId: updated.id,
+        version: (current?.version ?? 0) + 1,
+      }));
       showFeedback("success", `已更新笔记「${updated.title}」，旧版本已自动备份。`);
     } catch (error) {
       showFeedback("error", `应用笔记修改失败：${noteErrorText(error)}`);
@@ -1036,6 +1041,7 @@ export function useNoteActions({
     noteEditRequest,
     noteEditResult,
     noteEditBusy,
+    noteEditRefresh,
     saveConversationAsNote,
     summarizeConversationAsNote,
     startDeepNote,

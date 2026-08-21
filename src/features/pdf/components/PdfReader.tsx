@@ -30,6 +30,7 @@ import type { PdfOutlineEntry, PdfReaderController } from "../context/PdfReaderC
 import { usePdfReaderBridge } from "../context/PdfReaderContext";
 import { PDF_ANNOTATION_COLORS, type PdfTextSelection } from "../types";
 import type { LiteratureReference } from "../../../types/chat";
+import type { WorkNoteSourceContext } from "../../workspace/types";
 import { useI18n } from "../../../i18n/I18nProvider";
 import {
   createLiteratureReference,
@@ -52,7 +53,10 @@ const MAX_SEARCH_RESULTS = 100;
 type PdfReaderProps = {
   item: LibraryItem;
   onOpenExternal: (itemId: string) => Promise<LibraryItem>;
-  onOpenNote: (note: Pick<LibraryNote, "id" | "title">) => void;
+  onOpenNote: (
+    note: Pick<LibraryNote, "id" | "title">,
+    source?: WorkNoteSourceContext,
+  ) => void;
   onAskSelection: (reference: LiteratureReference) => void;
 };
 
@@ -495,7 +499,11 @@ export function PdfReader({ item, onOpenExternal, onOpenNote, onAskSelection }: 
       createNote: resources.createNote,
       updateNote: resources.updateNote,
       deleteNote: resources.deleteNote,
-      openNote: onOpenNote,
+      openNote: (note) => onOpenNote(note, {
+        sourcePdfId: item.id,
+        sourcePdfTitle: item.title,
+        sourcePageIndex: Math.max(0, currentPage - 1),
+      }),
     };
   }, [
     annotationColor,

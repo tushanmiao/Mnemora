@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { LibraryItem, LibraryNote } from "../../library/types";
-import type { WorkResourceTab } from "../types";
+import type { WorkNoteSourceContext, WorkResourceTab } from "../types";
 
 const WORK_SESSION_STORAGE_KEY = "mnemora.work-session.v1";
 const MAX_OPEN_WORK_TABS = 20;
@@ -25,6 +25,16 @@ function validResourceTab(value: unknown): value is WorkResourceTab {
   const validPrefix = tab.kind === "pdf"
     ? typeof tab.id === "string" && tab.id.startsWith("pdf:")
     : tab.kind === "note" && typeof tab.id === "string" && tab.id.startsWith("note:");
+  const validNoteSource = tab.noteSource === undefined || (
+    tab.kind === "note"
+    && Boolean(tab.noteSource)
+    && typeof tab.noteSource?.sourcePdfId === "string"
+    && tab.noteSource.sourcePdfId.length > 0
+    && typeof tab.noteSource.sourcePdfTitle === "string"
+    && tab.noteSource.sourcePdfTitle.trim().length > 0
+    && (tab.noteSource.sourcePageIndex === null
+      || (Number.isInteger(tab.noteSource.sourcePageIndex) && tab.noteSource.sourcePageIndex >= 0))
+  );
   return validKind
     && validPrefix
     && typeof tab.title === "string"
@@ -32,7 +42,8 @@ function validResourceTab(value: unknown): value is WorkResourceTab {
     && tab.title.length <= 500
     && tab.closable === true
     && typeof tab.resourceId === "string"
-    && tab.resourceId.length > 0;
+    && tab.resourceId.length > 0
+    && validNoteSource;
 }
 
 export function normalizeWorkSession(value: unknown): StoredWorkSession {
@@ -84,14 +95,21 @@ export function useWorkSession() {
       : current);
   }, []);
 
-  const openNote = useCallback((note: Pick<LibraryNote, "id" | "title">) => {
+  const openNote = useCallback((
+    note: Pick<LibraryNote, "id" | "title">,
+    noteSource?: WorkNoteSourceContext,
+  ) => {
     const tabId = `note:${note.id}`;
     setSession((current) => {
       const existing = current.tabs.find((tab) => tab.id === tabId);
       if (existing) {
         return {
           ...current,
-          tabs: current.tabs.map((tab) => tab.id === tabId ? { ...tab, title: note.title } : tab),
+          tabs: current.tabs.map((tab) => tab.id === tabId ? {
+            ...tab,
+            title: note.title,
+            noteSource: noteSource ?? tab.noteSource,
+          } : tab),
           activeTabId: tabId,
         };
       }
@@ -103,6 +121,7 @@ export function useWorkSession() {
           title: note.title,
           closable: true,
           resourceId: note.id,
+          noteSource,
         },
       ].slice(-(MAX_OPEN_WORK_TABS - 1));
       return {

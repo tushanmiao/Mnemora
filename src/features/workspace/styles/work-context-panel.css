@@ -69,6 +69,196 @@
   background: var(--color-surface);
 }
 
+.work-note-chat-scope {
+  position: relative;
+  z-index: 45;
+  display: grid;
+  min-width: 0;
+  padding: 8px 9px;
+  grid-template-columns: minmax(0, 1fr) minmax(124px, 42%);
+  align-items: center;
+  gap: 8px;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+
+.work-note-context-copy {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+}
+
+.work-note-context-copy > svg {
+  flex: 0 0 auto;
+  color: var(--color-accent);
+}
+
+.work-note-context-copy > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.work-note-context-copy strong,
+.work-note-context-copy span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.work-note-context-copy strong {
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-meta);
+}
+
+.work-note-context-copy span {
+  color: var(--color-muted);
+  font-size: var(--font-size-micro);
+}
+
+.work-note-conversation-switcher {
+  position: relative;
+  min-width: 0;
+}
+
+.work-note-conversation-switcher > button {
+  display: grid;
+  width: 100%;
+  height: 30px;
+  min-width: 0;
+  padding: 0 7px;
+  grid-template-columns: 15px minmax(0, 1fr) 13px;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--color-border);
+  border-radius: 5px;
+  color: var(--color-text-secondary);
+  background: var(--color-surface-raised);
+  cursor: pointer;
+  font-size: var(--font-size-micro);
+}
+
+.work-note-conversation-switcher > button span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.work-note-conversation-switcher > button:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.work-note-conversation-menu {
+  position: absolute;
+  top: 36px;
+  right: 0;
+  z-index: 65;
+  display: grid;
+  width: min(330px, calc(100vw - 76px));
+  max-height: 360px;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-panel);
+  background: var(--color-surface-raised);
+  box-shadow: var(--shadow-menu);
+}
+
+.work-note-conversation-menu > header,
+.work-note-conversation-menu > footer {
+  display: flex;
+  padding: 7px 9px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--color-muted);
+  font-size: var(--font-size-micro);
+}
+
+.work-note-conversation-menu > header {
+  border-bottom: 1px solid var(--color-border-soft);
+}
+
+.work-note-conversation-menu > header strong {
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-meta);
+}
+
+.work-note-conversation-menu > header button {
+  padding: 0;
+  border: 0;
+  color: var(--color-accent);
+  background: transparent;
+  cursor: pointer;
+  font-size: var(--font-size-micro);
+}
+
+.work-note-conversation-menu > div {
+  min-height: 0;
+  padding: 4px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.work-note-conversation-menu > div > button {
+  display: grid;
+  width: 100%;
+  min-height: 44px;
+  padding: 6px 7px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  border-radius: 5px;
+  color: var(--color-text-secondary);
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.work-note-conversation-menu > div > button:hover,
+.work-note-conversation-menu > div > button.is-active {
+  background: var(--color-hover);
+}
+
+.work-note-conversation-menu > div > button.is-active {
+  color: var(--color-accent);
+}
+
+.work-note-conversation-menu > div > button > span {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.work-note-conversation-menu strong,
+.work-note-conversation-menu small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.work-note-conversation-menu small,
+.work-note-conversation-menu time {
+  color: var(--color-muted);
+  font-size: var(--font-size-micro);
+}
+
+.work-note-conversation-menu > div > p {
+  margin: 0;
+  padding: 18px 10px;
+  color: var(--color-muted);
+  font-size: var(--font-size-micro);
+  text-align: center;
+}
+
+.work-note-conversation-menu > footer {
+  border-top: 1px solid var(--color-border-soft);
+  line-height: 1.45;
+}
+
 .work-literature-scope-row {
   display: flex;
   min-width: 0;

@@ -13,6 +13,7 @@ import type { ChatAttachment } from "../../../types/attachment";
 import type { Conversation } from "../../../types/conversation";
 import type { SkillActivationSelection, SkillSummary } from "../../../types/skill";
 import type { WorkspaceMode } from "../../workspace/types";
+import type { ActiveWorkNoteContext } from "../../workspace/types";
 import {
   activeContextMessages,
   compressionCandidates,
@@ -58,6 +59,7 @@ type UseChatRuntimeOptions = {
   saveStableConversation: (conversation: Conversation) => void;
   protectConversation: (conversationId: string) => void;
   releaseConversation: (conversationId: string) => void;
+  activeWorkNoteContext?: ActiveWorkNoteContext | null;
 };
 
 export function useChatRuntime({
@@ -72,6 +74,7 @@ export function useChatRuntime({
   saveStableConversation,
   protectConversation,
   releaseConversation,
+  activeWorkNoteContext = null,
 }: UseChatRuntimeOptions) {
   const [requestInFlight, setRequestInFlight] = useState(false);
   const streaming = useStreamingRun({
@@ -143,6 +146,18 @@ export function useChatRuntime({
         slashSkillId,
         permissionMode: runningConversation.permissionMode,
         workspaceMode: completionWorkspaceMode,
+        workspaceContext: completionWorkspaceMode === "work" && activeWorkNoteContext
+          ? {
+              kind: "note" as const,
+              noteId: activeWorkNoteContext.noteId,
+              noteTitle: activeWorkNoteContext.noteTitle,
+              noteRevisionHash: activeWorkNoteContext.revisionHash,
+              noteSnapshot: activeWorkNoteContext.noteSnapshot,
+              sourcePdfId: activeWorkNoteContext.source?.sourcePdfId,
+              sourcePdfTitle: activeWorkNoteContext.source?.sourcePdfTitle,
+              sourcePageIndex: activeWorkNoteContext.source?.sourcePageIndex ?? undefined,
+            }
+          : undefined,
         messages: modelMessages,
         options: {
           maxOutputTokens: appSettings.maxOutputTokens,
@@ -224,6 +239,7 @@ export function useChatRuntime({
     }
   }, [
     appSettings,
+    activeWorkNoteContext,
     cacheConversation,
     conversationsRef,
     protectConversation,

@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import {
   Bot,
   BookOpenText,
   Boxes,
+  Check,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -14,6 +15,7 @@ import {
   FolderInput,
   Layers3,
   LoaderCircle,
+  MessageCircle,
   MessageSquarePlus,
   MoreHorizontal,
   NotebookPen,
@@ -23,6 +25,7 @@ import {
   Search,
   Sparkles,
   Trash2,
+  X,
 } from "lucide-react";
 import type { ConversationListItem } from "../../../types/conversation";
 import type { LibraryCollection } from "../../library/types";
@@ -124,6 +127,15 @@ export function Sidebar({
   const [activeSection, setActiveSection] = useState<"recent" | "collections" | "projects">("recent");
   const [listMenuOpen, setListMenuOpen] = useState(false);
   const [conversationMenu, setConversationMenu] = useState<string | null>(null);
+  const [sidebarPopover, setSidebarPopover] = useState<{
+    kind: "extensions" | "conversations";
+    anchor: "extensions" | "search" | "conversation";
+  } | null>(null);
+  const [conversationQuery, setConversationQuery] = useState("");
+  const [pickerMenuPosition, setPickerMenuPosition] = useState<{
+    top: number;
+    left: number;
+  } | null>(null);
   const menuAreaRef = useRef<HTMLDivElement>(null);
   const loadMoreRef = useRef<HTMLDivElement>(null);
 
@@ -132,6 +144,9 @@ export function Sidebar({
       if (!menuAreaRef.current?.contains(event.target as Node)) {
         setListMenuOpen(false);
         setConversationMenu(null);
+        setPickerMenuPosition(null);
+        setSidebarPopover(null);
+        setConversationQuery("");
       }
     }
 
@@ -140,10 +155,69 @@ export function Sidebar({
   }, []);
 
   useEffect(() => {
-    if (!collapsed) return;
+    if (!collapsed) {
+      setSidebarPopover(null);
+      setConversationQuery("");
+    } else {
+      setExtensionsOpen(false);
+    }
     setListMenuOpen(false);
     setConversationMenu(null);
+    setPickerMenuPosition(null);
   }, [collapsed]);
+
+  useEffect(() => {
+    setExtensionsOpen(false);
+    setListMenuOpen(false);
+    setConversationMenu(null);
+    setPickerMenuPosition(null);
+    setSidebarPopover(null);
+    setConversationQuery("");
+  }, [mode]);
+
+  useEffect(() => {
+    if (!sidebarPopover) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setSidebarPopover(null);
+      setConversationMenu(null);
+      setPickerMenuPosition(null);
+      setConversationQuery("");
+    };
+    document.addEventListener("keydown", closeOnEscape);
+    return () => document.removeEventListener("keydown", closeOnEscape);
+  }, [sidebarPopover]);
+
+  const closeSidebarPopover = () => {
+    setSidebarPopover(null);
+    setConversationMenu(null);
+    setPickerMenuPosition(null);
+    setConversationQuery("");
+  };
+
+  const openConversationPicker = (anchor: "search" | "conversation") => {
+    if (sidebarPopover?.kind === "conversations" && sidebarPopover.anchor === anchor) {
+      closeSidebarPopover();
+      return;
+    }
+    setConversationMenu(null);
+    setPickerMenuPosition(null);
+    setListMenuOpen(false);
+    setExtensionsOpen(false);
+    setConversationQuery("");
+    setSidebarPopover({ kind: "conversations", anchor });
+  };
+
+  const openExtensionsPicker = () => {
+    if (sidebarPopover?.kind === "extensions") {
+      closeSidebarPopover();
+      return;
+    }
+    setConversationMenu(null);
+    setPickerMenuPosition(null);
+    setListMenuOpen(false);
+    setSidebarPopover({ kind: "extensions", anchor: "extensions" });
+  };
 
   useEffect(() => {
     const target = loadMoreRef.current;
@@ -171,6 +245,68 @@ export function Sidebar({
     onLoadMoreConversations,
   ]);
 
+  const conversationPicker = (
+    <ConversationPicker
+      t={t}
+      conversations={conversations}
+      loading={conversationListLoading}
+      error={conversationListError}
+      hasMore={conversationListHasMore}
+      currentConversationId={currentConversationId}
+      query={conversationQuery}
+      openConversationMenu={conversationMenu}
+      onQueryChange={setConversationQuery}
+      onSelect={(conversationId) => {
+        onSelectConversation(conversationId);
+        closeSidebarPopover();
+      }}
+      onCreate={() => {
+        onCreateConversation();
+        closeSidebarPopover();
+      }}
+      onLoadMore={onLoadMoreConversations}
+      pickerMenuPosition={pickerMenuPosition}
+      onOpenConversationMenu={(conversationId, anchor) => {
+        if (conversationMenu === conversationId) {
+          setConversationMenu(null);
+          setPickerMenuPosition(null);
+          return;
+        }
+        setConversationMenu(conversationId);
+        setPickerMenuPosition(resolvePickerMenuPosition(anchor.getBoundingClientRect()));
+        setListMenuOpen(false);
+      }}
+      onCloseConversationMenu={() => {
+        setConversationMenu(null);
+        setPickerMenuPosition(null);
+      }}
+      onExport={(conversationId, format) => {
+        closeSidebarPopover();
+        onExportConversation(conversationId, format);
+      }}
+      onSaveAsNote={(conversationId) => {
+        closeSidebarPopover();
+        onSaveConversationAsNote(conversationId);
+      }}
+      onSummarizeToNote={(conversationId) => {
+        closeSidebarPopover();
+        onSummarizeConversationToNote(conversationId);
+      }}
+      onGenerateDeepNote={(conversationId) => {
+        closeSidebarPopover();
+        onGenerateDeepNote(conversationId);
+      }}
+      onUpdateExistingNote={(conversationId) => {
+        closeSidebarPopover();
+        onUpdateExistingNote(conversationId);
+      }}
+      onDelete={(conversationId) => {
+        closeSidebarPopover();
+        onDeleteConversation(conversationId);
+      }}
+    />
+  );
+
   return (
     <aside
       className={`sidebar${collapsed ? " sidebar-collapsed" : ""}`}
@@ -197,57 +333,123 @@ export function Sidebar({
       {mode === "chat" ? (
         <>
           <nav className="sidebar-actions" aria-label={t("sidebar.primary")}>
-        <button
-          className="sidebar-action sidebar-action-primary"
-          type="button"
-          title={collapsed ? t("sidebar.newChat") : undefined}
-          onClick={onCreateConversation}
-        >
-          <MessageSquarePlus size={18} />
-          <span>{t("sidebar.newChat")}</span>
-        </button>
-        <button className="sidebar-action" type="button" title={collapsed ? t("sidebar.search") : undefined}>
-          <Search size={18} />
-          <span>{t("sidebar.search")}</span>
-        </button>
-        <button
-          className="sidebar-action"
-          type="button"
-          title={collapsed ? t("sidebar.extensions") : undefined}
-          aria-expanded={extensionsOpen}
-          onClick={() => {
-            if (collapsed) {
-              setExtensionsOpen(true);
-              onToggleCollapse();
-              return;
-            }
-            setExtensionsOpen((open) => !open);
-          }}
-        >
-          <Boxes size={18} />
-          <span>{t("sidebar.extensions")}</span>
-          <ChevronDown className={`sidebar-chevron${extensionsOpen ? " sidebar-chevron-open" : ""}`} size={16} />
-        </button>
-
-        {extensionsOpen && !collapsed ? (
-          <div className="extension-list">
-            {extensionItems.map(({ id, label, icon: Icon }) => (
+            <button
+              className="sidebar-action sidebar-action-primary"
+              type="button"
+              title={collapsed ? t("sidebar.newChat") : undefined}
+              onClick={() => {
+                closeSidebarPopover();
+                setExtensionsOpen(false);
+                onCreateConversation();
+              }}
+            >
+              <MessageSquarePlus size={18} />
+              <span>{t("sidebar.newChat")}</span>
+            </button>
+            <div className="sidebar-action-anchor">
               <button
-                className="extension-item"
+                className={`sidebar-action${
+                  sidebarPopover?.kind === "conversations" && sidebarPopover.anchor === "search"
+                    ? " sidebar-action-active"
+                    : ""
+                }`}
                 type="button"
-                key={id}
-                onClick={id === "skills" ? onOpenSkills : undefined}
+                title={collapsed ? t("sidebar.search") : undefined}
+                aria-haspopup="dialog"
+                aria-expanded={sidebarPopover?.kind === "conversations" && sidebarPopover.anchor === "search"}
+                onClick={() => openConversationPicker("search")}
               >
-                <Icon size={15} />
-                <span>{label}</span>
+                <Search size={18} />
+                <span>{t("sidebar.search")}</span>
               </button>
-            ))}
-          </div>
-        ) : null}
+              {sidebarPopover?.kind === "conversations" && sidebarPopover.anchor === "search"
+                ? conversationPicker
+                : null}
+            </div>
+            <div className="sidebar-action-anchor">
+              <button
+                className={`sidebar-action${
+                  collapsed && sidebarPopover?.kind === "extensions" ? " sidebar-action-active" : ""
+                }`}
+                type="button"
+                title={collapsed ? t("sidebar.extensions") : undefined}
+                aria-haspopup={collapsed ? "dialog" : undefined}
+                aria-expanded={collapsed
+                  ? sidebarPopover?.kind === "extensions"
+                  : extensionsOpen}
+                onClick={() => {
+                  if (collapsed) {
+                    openExtensionsPicker();
+                    return;
+                  }
+                  closeSidebarPopover();
+                  setExtensionsOpen((open) => !open);
+                }}
+              >
+                <Boxes size={18} />
+                <span>{t("sidebar.extensions")}</span>
+                <ChevronDown className={`sidebar-chevron${extensionsOpen ? " sidebar-chevron-open" : ""}`} size={16} />
+              </button>
+              {collapsed && sidebarPopover?.kind === "extensions" ? (
+                <ExtensionPicker
+                  items={extensionItems}
+                  onOpenSkills={() => {
+                    closeSidebarPopover();
+                    onOpenSkills();
+                  }}
+                />
+              ) : null}
+            </div>
+
+            {extensionsOpen && !collapsed ? (
+              <div className="extension-list">
+                {extensionItems.map(({ id, label, icon: Icon }) => (
+                  <button
+                    className="extension-item"
+                    type="button"
+                    key={id}
+                    disabled={id !== "skills"}
+                    onClick={id === "skills" ? () => {
+                      setExtensionsOpen(false);
+                      onOpenSkills();
+                    } : undefined}
+                  >
+                    <Icon size={15} />
+                    <span>{label}</span>
+                  </button>
+                ))}
+              </div>
+            ) : null}
           </nav>
 
           <div className="sidebar-divider" />
 
+          {collapsed ? (
+            <section className="collapsed-conversation-section" aria-label={t("sidebar.conversationCategories")}>
+              <div className="collapsed-sidebar-divider" aria-hidden="true" />
+              <div className="collapsed-conversation-anchor">
+                <button
+                  className={`sidebar-action collapsed-conversation-button${
+                    sidebarPopover?.kind === "conversations" && sidebarPopover.anchor === "conversation"
+                      ? " sidebar-action-active"
+                      : ""
+                  }`}
+                  type="button"
+                  title={t("sidebar.switchConversation")}
+                  aria-label={t("sidebar.switchConversation")}
+                  aria-haspopup="dialog"
+                  aria-expanded={sidebarPopover?.kind === "conversations" && sidebarPopover.anchor === "conversation"}
+                  onClick={() => openConversationPicker("conversation")}
+                >
+                  <MessageCircle size={18} />
+                  <span>{t("sidebar.conversations")}</span>
+                </button>
+                {sidebarPopover?.kind === "conversations" && sidebarPopover.anchor === "conversation"
+                  ? conversationPicker
+                  : null}
+              </div>
+            </section>
+          ) : (
           <section className="conversation-section" aria-label={t("sidebar.conversationCategories")}>
         <div className="conversation-tabs">
           <button
@@ -343,6 +545,7 @@ export function Sidebar({
                       setConversationMenu((current) =>
                         current === conversation.id ? null : conversation.id,
                       );
+                      setPickerMenuPosition(null);
                       setListMenuOpen(false);
                     }}
                   >
@@ -413,6 +616,7 @@ export function Sidebar({
           )}
         </div>
           </section>
+          )}
         </>
       ) : (
         <WorkSidebarNavigation
@@ -456,8 +660,244 @@ export function Sidebar({
   );
 }
 
+type ExtensionPickerItem = {
+  id: string;
+  label: string;
+  icon: typeof Bot;
+};
+
+function ExtensionPicker({
+  items,
+  onOpenSkills,
+}: {
+  items: ExtensionPickerItem[];
+  onOpenSkills: () => void;
+}) {
+  const { t } = useI18n();
+  return (
+    <section
+      className="sidebar-popover sidebar-extension-popover"
+      role="dialog"
+      aria-labelledby="sidebar-extension-picker-title"
+    >
+      <header className="sidebar-popover-heading">
+        <div>
+          <strong id="sidebar-extension-picker-title">{t("sidebar.extensions")}</strong>
+          <span>{t("sidebar.extensionsDescription")}</span>
+        </div>
+      </header>
+      <div className="sidebar-extension-grid">
+        {items.map(({ id, label, icon: Icon }) => (
+          <button
+            type="button"
+            key={id}
+            disabled={id !== "skills"}
+            onClick={id === "skills" ? onOpenSkills : undefined}
+          >
+            <Icon size={17} />
+            <span>{label}</span>
+            {id !== "skills" ? <small>{t("sidebar.comingSoon")}</small> : null}
+          </button>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+type ConversationPickerProps = {
+  t: ReturnType<typeof useI18n>["t"];
+  conversations: ConversationListItem[];
+  loading: boolean;
+  error: string;
+  hasMore: boolean;
+  currentConversationId: string | null;
+  query: string;
+  openConversationMenu: string | null;
+  pickerMenuPosition: { top: number; left: number } | null;
+  onQueryChange: (query: string) => void;
+  onSelect: (conversationId: string) => void;
+  onCreate: () => void;
+  onLoadMore: () => void;
+  onOpenConversationMenu: (conversationId: string, anchor: HTMLButtonElement) => void;
+  onCloseConversationMenu: () => void;
+  onExport: (conversationId: string, format: "markdown" | "json") => void;
+  onSaveAsNote: (conversationId: string) => void;
+  onSummarizeToNote: (conversationId: string) => void;
+  onGenerateDeepNote: (conversationId: string) => void;
+  onUpdateExistingNote: (conversationId: string) => void;
+  onDelete: (conversationId: string) => void;
+};
+
+function ConversationPicker({
+  t,
+  conversations,
+  loading,
+  error,
+  hasMore,
+  currentConversationId,
+  query,
+  openConversationMenu,
+  pickerMenuPosition,
+  onQueryChange,
+  onSelect,
+  onCreate,
+  onLoadMore,
+  onOpenConversationMenu,
+  onCloseConversationMenu,
+  onExport,
+  onSaveAsNote,
+  onSummarizeToNote,
+  onGenerateDeepNote,
+  onUpdateExistingNote,
+  onDelete,
+}: ConversationPickerProps) {
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  const filtered = normalizedQuery
+    ? conversations.filter((conversation) => (
+        conversation.title.toLocaleLowerCase().includes(normalizedQuery)
+        || conversation.preview.toLocaleLowerCase().includes(normalizedQuery)
+      ))
+    : conversations;
+  const pinned = filtered.filter((conversation) => conversation.pinned);
+  const recent = filtered.filter((conversation) => !conversation.pinned);
+  const selected = conversations.find((conversation) => conversation.id === currentConversationId) ?? null;
+  const hasResults = pinned.length > 0 || recent.length > 0;
+
+  const renderConversation = (conversation: ConversationListItem) => {
+    const active = conversation.id === currentConversationId;
+    return (
+      <div className="conversation-picker-item-wrap" key={conversation.id}>
+        <button
+          className={`conversation-picker-item${active ? " is-active" : ""}`}
+          type="button"
+          aria-current={active ? "page" : undefined}
+          onClick={() => onSelect(conversation.id)}
+        >
+          <span className="conversation-picker-icon" aria-hidden="true">
+            {active ? <Check size={14} /> : <MessageCircle size={14} />}
+          </span>
+          <span className="conversation-picker-copy">
+            <strong title={conversation.title}>{conversation.title}</strong>
+            <small title={conversation.preview}>{conversation.preview || t("sidebar.noPreview")}</small>
+          </span>
+          <time>{formatConversationTime(conversation.updatedAt)}</time>
+        </button>
+        <button
+          className="conversation-picker-more"
+          type="button"
+          title={t("sidebar.conversationActions")}
+          aria-expanded={openConversationMenu === conversation.id}
+          onClick={(event) => onOpenConversationMenu(conversation.id, event.currentTarget)}
+        >
+          <MoreHorizontal size={15} />
+        </button>
+        {openConversationMenu === conversation.id ? (
+          <ConversationMenu
+            t={t}
+            onExport={(format) => onExport(conversation.id, format)}
+            onSaveAsNote={() => onSaveAsNote(conversation.id)}
+            onSummarizeToNote={() => onSummarizeToNote(conversation.id)}
+            onGenerateDeepNote={() => onGenerateDeepNote(conversation.id)}
+            onUpdateExistingNote={() => onUpdateExistingNote(conversation.id)}
+            onDelete={() => onDelete(conversation.id)}
+            className="conversation-menu-floating"
+            style={pickerMenuPosition ?? undefined}
+          />
+        ) : null}
+      </div>
+    );
+  };
+
+  return (
+    <section
+      className="sidebar-popover conversation-picker"
+      role="dialog"
+      aria-labelledby="sidebar-conversation-picker-title"
+    >
+      <header className="conversation-picker-header">
+        <div>
+          <strong id="sidebar-conversation-picker-title">{t("sidebar.conversations")}</strong>
+          <span title={selected?.title ?? t("chat.noConversation")}>{selected?.title ?? t("chat.noConversation")}</span>
+        </div>
+        <button type="button" onClick={onCreate}><MessageSquarePlus size={15} />{t("sidebar.newChatShort")}</button>
+      </header>
+      <label className="conversation-picker-search">
+        <Search size={15} aria-hidden="true" />
+        <input
+          autoFocus
+          type="search"
+          value={query}
+          placeholder={t("sidebar.searchConversations")}
+          aria-label={t("sidebar.searchConversations")}
+          onChange={(event) => onQueryChange(event.target.value)}
+        />
+        {query ? (
+          <button type="button" title={t("sidebar.clearSearch")} onClick={() => onQueryChange("")}>
+            <X size={14} />
+          </button>
+        ) : null}
+      </label>
+      <div className="conversation-picker-list" onScroll={onCloseConversationMenu}>
+        {pinned.length > 0 ? (
+          <section className="conversation-picker-group">
+            <header><Pin size={13} /><span>{t("sidebar.pinned")}</span></header>
+            {pinned.map(renderConversation)}
+          </section>
+        ) : null}
+        {recent.length > 0 ? (
+          <section className="conversation-picker-group">
+            <header><MessageCircle size={13} /><span>{t("sidebar.recent")}</span></header>
+            {recent.map(renderConversation)}
+          </section>
+        ) : null}
+        {!hasResults && !loading ? (
+          <div className="conversation-picker-empty">
+            <MessageCircle size={20} />
+            <strong>{query ? t("sidebar.noConversationMatches") : t("chat.emptyNoConversation")}</strong>
+            <span>{query ? t("sidebar.adjustConversationSearch") : t("sidebar.firstConversation")}</span>
+          </div>
+        ) : null}
+        {error ? (
+          <div className="conversation-picker-status" role="alert">
+            <span>{error}</span><button type="button" onClick={onLoadMore}>{t("sidebar.retryLoad")}</button>
+          </div>
+        ) : loading ? (
+          <div className="conversation-picker-status" role="status"><LoaderCircle size={15} />{t("common.loading")}</div>
+        ) : hasMore ? (
+          <div className="conversation-picker-status"><button type="button" onClick={onLoadMore}>{t("sidebar.loadMore")}</button></div>
+        ) : null}
+      </div>
+      <footer>{t("sidebar.conversationPickerHint")}</footer>
+    </section>
+  );
+}
+
+function formatConversationTime(timestamp: number) {
+  const date = new Date(timestamp);
+  const now = new Date();
+  const sameDay = date.getFullYear() === now.getFullYear()
+    && date.getMonth() === now.getMonth()
+    && date.getDate() === now.getDate();
+  if (sameDay) return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return date.toLocaleDateString([], { month: "2-digit", day: "2-digit" });
+}
+
+function resolvePickerMenuPosition(anchor: DOMRect) {
+  const viewportPadding = 8;
+  const menuWidth = 190;
+  const menuHeight = Math.min(430, window.innerHeight - viewportPadding * 2);
+  const maxLeft = Math.max(viewportPadding, window.innerWidth - menuWidth - viewportPadding);
+  const maxTop = Math.max(viewportPadding, window.innerHeight - menuHeight - viewportPadding);
+  return {
+    left: Math.min(maxLeft, Math.max(viewportPadding, anchor.right - menuWidth)),
+    top: Math.min(maxTop, Math.max(viewportPadding, anchor.bottom + 4)),
+  };
+}
+
 type ConversationMenuProps = {
   t: ReturnType<typeof useI18n>["t"];
+  className?: string;
+  style?: CSSProperties;
   onExport: (format: "markdown" | "json") => void;
   onSaveAsNote: () => void;
   onSummarizeToNote: () => void;
@@ -468,6 +908,8 @@ type ConversationMenuProps = {
 
 function ConversationMenu({
   t,
+  className,
+  style,
   onExport,
   onSaveAsNote,
   onSummarizeToNote,
@@ -476,7 +918,11 @@ function ConversationMenu({
   onDelete,
 }: ConversationMenuProps) {
   return (
-    <div className="sidebar-menu conversation-menu" role="menu">
+    <div
+      className={`sidebar-menu conversation-menu${className ? ` ${className}` : ""}`}
+      role="menu"
+      style={style}
+    >
       <button className="sidebar-menu-item" type="button" role="menuitem">
         <Pencil size={16} />
         <span>{t("sidebar.rename")}</span>

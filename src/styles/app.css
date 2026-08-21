@@ -80,7 +80,7 @@ button {
   grid-template-columns: minmax(0, 1fr);
 }
 
-.workspace-stage[data-workspace-mode="work"][data-context-open="true"] {
+.workspace-stage[data-workspace-mode="work"][data-context-open="true"][data-context-layout="split"] {
   grid-template-columns:
     minmax(520px, 1fr)
     clamp(
@@ -90,7 +90,7 @@ button {
     );
 }
 
-.workspace-stage[data-workspace-mode="notes"][data-context-open="true"] {
+.workspace-stage[data-workspace-mode="notes"][data-context-open="true"][data-context-layout="split"] {
   grid-template-columns:
     minmax(520px, 1fr)
     clamp(
@@ -259,16 +259,11 @@ select:focus-visible {
   }
 }
 
-@media (max-width: 1240px) {
-  .workspace-stage[data-workspace-mode="work"][data-context-open="true"] {
-    grid-template-columns: minmax(0, 1fr);
-  }
+.workspace-stage[data-context-open="true"][data-context-layout="drawer"] {
+  grid-template-columns: minmax(0, 1fr);
+}
 
-  .workspace-stage[data-workspace-mode="notes"][data-context-open="true"] {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .workspace-stage[data-workspace-mode="work"] .work-context-panel {
+.workspace-stage[data-workspace-mode="work"][data-context-layout="drawer"] .work-context-panel {
     position: absolute;
     z-index: 25;
     top: 0;
@@ -276,9 +271,9 @@ select:focus-visible {
     bottom: 0;
     width: min(var(--work-context-width, 440px), calc(100% - 48px));
     box-shadow: var(--shadow-panel);
-  }
+}
 
-  .workspace-stage[data-workspace-mode="notes"] .notes-context-panel {
+.workspace-stage[data-workspace-mode="notes"][data-context-layout="drawer"] .notes-context-panel {
     position: absolute;
     z-index: 25;
     top: 0;
@@ -286,10 +281,9 @@ select:focus-visible {
     bottom: 0;
     width: min(var(--notes-context-width, 440px), calc(100% - 48px));
     box-shadow: var(--shadow-panel);
-  }
 }
 
-@media (max-width: 940px) {
+@media (max-width: 820px) {
   .workspace-stage[data-workspace-mode="work"] .work-context-panel,
   .workspace-stage[data-workspace-mode="notes"] .notes-context-panel {
     width: 100%;

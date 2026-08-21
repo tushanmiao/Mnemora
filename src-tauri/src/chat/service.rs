@@ -31,7 +31,8 @@ use crate::{
 };
 
 use super::types::{
-    ChatCompletionRequest, ChatCompletionResponse, ChatStreamRequest, ModelStreamEvent,
+    ChatCompletionRequest, ChatCompletionResponse, ChatStreamRequest, ChatWorkspaceContext,
+    ModelStreamEvent,
 };
 
 struct ResolvedTarget {
@@ -1467,6 +1468,13 @@ async fn prepare_call(
     let requested_skill =
         !request.activated_skill_ids.is_empty() || request.slash_skill_id.is_some();
     let use_agent_tools = !is_auxiliary_operation && target.supports_tools;
+    if use_agent_tools {
+        if let Some(ChatWorkspaceContext::Note { note_snapshot, .. }) =
+            request.workspace_context.as_mut()
+        {
+            *note_snapshot = None;
+        }
+    }
     if !use_agent_tools && requested_skill {
         request.system_prompt.push_str(
             "\n\n当前模型配置不支持结构化工具调用，因此本轮没有加载或执行用户指定的 Skill。请直接回答可以仅凭对话上下文回答的部分，并明确说明无法执行该 Skill。",
@@ -1878,6 +1886,7 @@ mod tests {
             slash_skill_id: None,
             permission_mode: AiPermissionMode::AskSensitive,
             workspace_mode: ChatWorkspaceMode::Chat,
+            workspace_context: None,
             messages,
             options: ModelOptions::default(),
         }
