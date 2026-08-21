@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Check, Code2, Copy, Eye, LoaderCircle, RotateCcw, X } from "lucide-react";
 import { useElementVisibility } from "../hooks/useElementVisibility";
+import { renderMermaid } from "../utils/mermaidRuntime";
 import { sanitizeMermaidSvg, mermaidThemeConfig } from "../utils/mermaidSecurity";
 import { MARKDOWN_RENDER_LIMITS } from "../utils/renderLimits";
 import "../styles/enhanced-markdown.css";
@@ -13,10 +14,11 @@ type MermaidBlockProps = {
 type Status = "source" | "loading" | "ready" | "error";
 
 let renderSequence = 0;
+const MERMAID_RENDER_DEBOUNCE_MS = 120;
 
 export function MermaidBlock({ code, streaming = false }: MermaidBlockProps) {
   const { ref, visible } = useElementVisibility<HTMLDivElement>();
-  const [status, setStatus] = useState<Status>(streaming ? "source" : "source");
+  const [status, setStatus] = useState<Status>("source");
   const [svg, setSvg] = useState("");
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
@@ -60,22 +62,25 @@ export function MermaidBlock({ code, streaming = false }: MermaidBlockProps) {
     const host = ref.current;
     if (!host) return () => { cancelled = true; };
     const currentId = `mnemora-mermaid-${++renderSequence}`;
-    void import("mermaid").then(async ({ default: mermaid }) => {
+    const timer = window.setTimeout(() => {
       if (cancelled) return;
-      mermaid.initialize(mermaidThemeConfig(host));
-      await mermaid.parse(code, { suppressErrors: false });
-      const result = await mermaid.render(currentId, code);
-      if (cancelled) return;
-      setSvg(sanitizeMermaidSvg(result.svg));
-      setStatus("ready");
-    }).catch((reason: unknown) => {
-      if (cancelled) return;
-      setSvg("");
-      setStatus("error");
-      setError(reason instanceof Error ? reason.message : "Mermaid 图表解析失败");
-    });
+      // A disclosure panel may have become visible in this frame. Measuring
+      // once makes its current width available before Mermaid lays out SVG.
+      void host.getBoundingClientRect();
+      void renderMermaid(code, currentId, mermaidThemeConfig(host)).then((result) => {
+        if (cancelled) return;
+        setSvg(sanitizeMermaidSvg(result.svg));
+        setStatus("ready");
+      }).catch((reason: unknown) => {
+        if (cancelled) return;
+        setSvg("");
+        setStatus("error");
+        setError(reason instanceof Error ? reason.message : "Mermaid 图表解析失败");
+      });
+    }, MERMAID_RENDER_DEBOUNCE_MS);
     return () => {
       cancelled = true;
+      window.clearTimeout(timer);
     };
   }, [code, ref, retryKey, showSource, streaming, themeRevision, visible]);
 
@@ -119,7 +124,7 @@ export function MermaidBlock({ code, streaming = false }: MermaidBlockProps) {
         <>
           {status === "loading" && !showSource ? <div className="markdown-enhanced-status"><LoaderCircle className="message-spin" size={15} />正在生成图表…</div> : null}
           {status === "error" && !showSource ? <div className="markdown-enhanced-error"><X size={15} /><span>{error}</span></div> : null}
-          {showSource || status !== "ready" ? <pre className="markdown-mermaid-source"><code>{code}</code></pre> : null}
+          {showSource || status === "source" || status === "error" ? <pre className="markdown-mermaid-source"><code>{code}</code></pre> : null}
         </>
       ) : null}
       {status === "ready" && !showSource ? (

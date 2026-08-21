@@ -7,8 +7,10 @@ use serde::{Deserialize, Serialize};
 pub enum ToolRisk {
     BuiltinRead,
     ConversationRead,
+    NetworkRead,
     MemoryRead,
     MemoryWrite,
+    NoteWrite,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

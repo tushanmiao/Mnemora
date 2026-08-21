@@ -21,7 +21,7 @@ metadata:
     resource-cost: medium
     source-repository: https://github.com/github/awesome-copilot
     source-path: skills/convert-word-to-md/SKILL.md
-    source-revision: 786bdcfc65b669faee10803db460a7218858ad21
+    source-revision: e4a1f57fd9d8c22d2a345d498fe6fde306c6456e
     attribution: "Convert Word to Markdown skill from GitHub's awesome-copilot repository, licensed under MIT."
     adapted: true
     adaptation-notes: 将原版 MarkItDown/Python 转换工作流改为 Mnemora 纯 Rust、有界的 DOCX 内容块读取；不创建中间 Markdown 文件。

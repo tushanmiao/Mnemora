@@ -14,6 +14,7 @@ import type { ModelSettings } from "../../types/modelSettings";
 import { resolveConversationModel } from "../../types/modelSettings";
 import {
   adjustNotePipeline,
+  abandonNotePipelinesForConversation,
   cancelNotePipeline,
   confirmNotePipeline,
   getNotePipelineDetail,
@@ -885,6 +886,34 @@ export function useNoteActions({
     showFeedback,
   ]);
 
+  const abandonDeepNoteForConversation = useCallback(async (conversationId: string) => {
+    const active = deepNoteRunRef.current;
+    if (!active || active.conversationId !== conversationId) return 0;
+    try {
+      const count = await abandonNotePipelinesForConversation(conversationId);
+      if (count > 0) {
+        setDeepNoteProgress((current) => current ? {
+          ...current,
+          phase: "cancelled",
+          message: "来源对话已删除，深度笔记任务已遗弃，不会继续重试。",
+          terminal: true,
+          degraded: false,
+          activity: null,
+          updatedAt: Date.now(),
+        } : current);
+        setDeepNoteControlBusy(false);
+        setDeepNoteActive(false);
+        setDeepNoteReview(null);
+        setDeepNoteDetail(null);
+        deepNoteRunRef.current = null;
+      }
+      return count;
+    } catch (error) {
+      showFeedback("error", `遗弃深度笔记任务失败：${noteErrorText(error)}`);
+      throw error;
+    }
+  }, [showFeedback]);
+
   const openConversationNoteEdit = useCallback(async (conversationId: string) => {
     if (noteEditBusy) return;
     setNoteEditBusy(true);
@@ -1017,6 +1046,7 @@ export function useNoteActions({
     retryDeepNote,
     restartDeepNote,
     cancelDeepNote,
+    abandonDeepNoteForConversation,
     openConversationNoteEdit,
     openSelectionNoteEdit,
     prepareExistingNoteEdit,

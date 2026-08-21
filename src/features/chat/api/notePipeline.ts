@@ -41,6 +41,7 @@ export interface NotePipelineRun {
   failedSectionIds: string[];
   warnings: string[];
   errorMessage: string | null;
+  abandoned?: boolean;
   createdAt: number;
   updatedAt: number;
 }
@@ -308,6 +309,16 @@ export function restartNotePipeline(
 export function cancelNotePipeline(runId: string) {
   if (!isTauri()) return Promise.resolve(false);
   return invoke<boolean>("note_pipeline_cancel", { runId });
+}
+
+export function abandonNotePipeline(runId: string) {
+  requireTauri();
+  return invoke<NotePipelineRun>("note_pipeline_abandon", { runId });
+}
+
+export function abandonNotePipelinesForConversation(conversationId: string) {
+  requireTauri();
+  return invoke<number>("note_pipeline_abandon_for_conversation", { conversationId });
 }
 
 export function pauseNotePipeline(runId: string) {

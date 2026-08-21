@@ -3595,6 +3595,9 @@ pub async fn resume<R: Runtime>(
 ) -> Result<NotePipelineRun, String> {
     let state = app.state::<AppState>();
     let run = state.library_repository.get_note_pipeline_run(&run_id)?;
+    if run.abandoned {
+        return Err("该深度笔记任务已遗弃，不能继续。".to_string());
+    }
     if run.phase != NotePipelinePhase::Cancelled
         && !state.is_note_pipeline_run_active(&run.id).await
     {
@@ -3640,6 +3643,9 @@ pub async fn retry<R: Runtime>(
 ) -> Result<NotePipelineRun, String> {
     let state = app.state::<AppState>();
     let run = state.library_repository.get_note_pipeline_run(&run_id)?;
+    if run.abandoned {
+        return Err("该深度笔记任务已遗弃，不能重试。".to_string());
+    }
     if !matches!(
         run.phase,
         NotePipelinePhase::Error | NotePipelinePhase::Blocked
@@ -3657,6 +3663,9 @@ pub async fn restart<R: Runtime>(
 ) -> Result<NotePipelineRun, String> {
     let state = app.state::<AppState>();
     let previous = state.library_repository.get_note_pipeline_run(&run_id)?;
+    if previous.abandoned {
+        return Err("该深度笔记任务已遗弃，不能重新生成。".to_string());
+    }
     if !matches!(
         previous.phase,
         NotePipelinePhase::Error | NotePipelinePhase::Blocked | NotePipelinePhase::Cancelled
@@ -3715,6 +3724,9 @@ pub async fn cancel<R: Runtime>(app: &AppHandle<R>, run_id: &str) -> Result<bool
         return Ok(true);
     }
     let run = state.library_repository.get_note_pipeline_run(run_id)?;
+    if run.abandoned {
+        return Ok(false);
+    }
     if matches!(
         run.phase,
         NotePipelinePhase::Done | NotePipelinePhase::Cancelled
@@ -3730,6 +3742,37 @@ pub async fn cancel<R: Runtime>(app: &AppHandle<R>, run_id: &str) -> Result<bool
         None,
     )?;
     Ok(true)
+}
+
+/// 用户明确删除来源会话时调用。先停止后台请求，再将任务永久标记为已遗弃；
+/// 与普通“停止”不同，遗弃任务不会出现在恢复列表，也不能继续、重试或重新生成。
+pub async fn abandon<R: Runtime>(
+    app: &AppHandle<R>,
+    run_id: &str,
+) -> Result<NotePipelineRun, String> {
+    let state = app.state::<AppState>();
+    let _ = state.cancel_note_pipeline_run(run_id).await;
+    if !wait_for_pipeline_task_to_stop(&state, run_id).await {
+        return Err("深度笔记后台任务仍在结束处理中，请稍后再试。".to_string());
+    }
+    let _guard = state.library_operations.lock().await;
+    state.library_repository.abandon_note_pipeline_run(run_id)
+}
+
+pub async fn abandon_for_conversation<R: Runtime>(
+    app: &AppHandle<R>,
+    conversation_id: &str,
+) -> Result<usize, String> {
+    let state = app.state::<AppState>();
+    let runs = state
+        .library_repository
+        .list_note_pipeline_runs_for_conversation(conversation_id)?;
+    let mut abandoned = 0;
+    for run in runs {
+        abandon(app, &run.id).await?;
+        abandoned += 1;
+    }
+    Ok(abandoned)
 }
 
 pub async fn pause<R: Runtime>(
@@ -3892,6 +3935,7 @@ pub async fn prepare_note_edit(
         failed_section_ids: Vec::new(),
         warnings: Vec::new(),
         error_message: None,
+        abandoned: false,
         created_at: 0,
         updated_at: 0,
     };

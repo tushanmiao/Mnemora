@@ -67,7 +67,13 @@ export interface ToolTrace {
   callId: string;
   name: string;
   status: ToolTraceStatus;
-  risk: "builtinRead" | "conversationRead" | "memoryRead" | "memoryWrite";
+  risk:
+    | "builtinRead"
+    | "conversationRead"
+    | "networkRead"
+    | "memoryRead"
+    | "memoryWrite"
+    | "noteWrite";
   argumentSummary: string;
   preview?: string;
   durationMs?: number;

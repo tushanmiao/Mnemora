@@ -4,10 +4,11 @@
 
 use std::{fs, path::PathBuf};
 
-use tauri::State;
+use tauri::{AppHandle, State};
 
 use crate::{
     chat::conversation_types::{ConversationListItem, ConversationListPage, StoredConversation},
+    chat::note_pipeline,
     library::types::{
         LibraryNote, LibraryNoteCreate, MAX_NOTE_CONTENT_CHARS, MAX_NOTE_TITLE_CHARS,
     },
@@ -73,9 +74,12 @@ pub async fn save_conversation(
 
 #[tauri::command]
 pub async fn delete_conversation(
+    app: AppHandle,
     state: State<'_, AppState>,
     conversation_id: String,
 ) -> Result<bool, String> {
+    // 删除来源会话前先遗弃其未完成深度笔记，避免后台任务继续读取已不存在的文件并反复恢复。
+    let _ = note_pipeline::abandon_for_conversation(&app, &conversation_id).await?;
     let _write_guard = state.conversation_writes.lock().await;
     let _library_guard = state.library_operations.lock().await;
     let conversations = state.conversation_repository.clone();
@@ -92,7 +96,10 @@ pub async fn delete_conversation(
 }
 
 #[tauri::command]
-pub async fn clear_conversations(state: State<'_, AppState>) -> Result<(), String> {
+pub async fn clear_conversations(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    for conversation in state.conversation_repository.list()? {
+        let _ = note_pipeline::abandon_for_conversation(&app, &conversation.id).await?;
+    }
     let _write_guard = state.conversation_writes.lock().await;
     let _library_guard = state.library_operations.lock().await;
     let conversations = state.conversation_repository.clone();

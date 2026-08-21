@@ -399,6 +399,7 @@ fn append_agent_runtime_prompt(request: &mut ModelRequest, max_agent_rounds: u16
 async fn execute_parallel_safe_tools(
     state: &AppState,
     context: &ToolRuntimeContext,
+    run_cache: &SkillRunCache,
     cancellation: &CancellationToken,
     calls: &[ModelToolCall],
 ) -> Vec<Option<ParallelToolExecution>> {
@@ -417,16 +418,20 @@ async fn execute_parallel_safe_tools(
         let conversations = state.conversation_repository.clone();
         let skills = state.skill_repository.clone();
         let memory = state.memory_repository.clone();
+        let library = state.library_repository.clone();
+        let library_operations = state.library_operations.clone();
+        let mut skill_cache = run_cache.clone();
         let cancellation = cancellation.clone();
         tasks.spawn(async move {
             let started = Instant::now();
-            let mut skill_cache = SkillRunCache::default();
             let result = agent::execute_tool(
                 &call,
                 &context,
                 &conversations,
                 &skills,
                 &memory,
+                &library,
+                &library_operations,
                 &mut skill_cache,
                 &cancellation,
             )
@@ -481,7 +486,12 @@ async fn run_agent_complete(
         request.tools.retain(|tool| {
             matches!(
                 tool.name.as_str(),
-                "skill" | "search_tools" | "search_skills"
+                "activate_skill"
+                    | "inspect_skill"
+                    | "search_tools"
+                    | "inspect_tool"
+                    | "search_skills"
+                    | "read_skill_resource"
             )
         });
     }
@@ -490,7 +500,7 @@ async fn run_agent_complete(
         call_count: 0,
         ..ModelUsage::default()
     };
-    let mut skill_cache = SkillRunCache::default();
+    let mut skill_cache = SkillRunCache::with_activated(&tool_context.manual_skill_ids);
     let mut activated_skill_ids = Vec::new();
     let mut tool_traces = Vec::new();
     let max_agent_rounds = agent_round_limit(state);
@@ -613,6 +623,7 @@ async fn run_agent_complete(
                 tool_traces,
             });
         }
+        agent::validate_disclosed_tool_calls(&request, &response.tool_calls)?;
         if final_call {
             return Err(ModelError::invalid_response(
                 "最终汇总调用仍返回了工具请求，无法安全继续执行。",
@@ -635,9 +646,14 @@ async fn run_agent_complete(
             tool_calls: tool_calls.clone(),
             tool_result: None,
         });
-        let mut parallel_results =
-            execute_parallel_safe_tools(state, tool_context, execution.cancellation, &tool_calls)
-                .await;
+        let mut parallel_results = execute_parallel_safe_tools(
+            state,
+            tool_context,
+            &skill_cache,
+            execution.cancellation,
+            &tool_calls,
+        )
+        .await;
         for (index, call) in tool_calls.into_iter().enumerate() {
             let result = if let Some(result) = parallel_results[index].take() {
                 result
@@ -663,6 +679,8 @@ async fn run_agent_complete(
                         &state.conversation_repository,
                         &state.skill_repository,
                         &state.memory_repository,
+                        &state.library_repository,
+                        &state.library_operations,
                         &mut skill_cache,
                         execution.cancellation,
                     )
@@ -766,7 +784,12 @@ async fn run_agent_stream(
         request.tools.retain(|tool| {
             matches!(
                 tool.name.as_str(),
-                "skill" | "search_tools" | "search_skills"
+                "activate_skill"
+                    | "inspect_skill"
+                    | "search_tools"
+                    | "inspect_tool"
+                    | "search_skills"
+                    | "read_skill_resource"
             )
         });
     }
@@ -774,7 +797,7 @@ async fn run_agent_stream(
         call_count: 0,
         ..ModelUsage::default()
     };
-    let mut skill_cache = SkillRunCache::default();
+    let mut skill_cache = SkillRunCache::with_activated(&tool_context.manual_skill_ids);
     let mut activated_skill_ids = Vec::<String>::new();
     let max_agent_rounds = agent_round_limit(state);
     let mut tool_call_total = 0usize;
@@ -863,6 +886,7 @@ async fn run_agent_stream(
             summary.usage = (run_usage.call_count > 0).then_some(run_usage);
             return Ok(ModelStreamOutcome::Completed(summary));
         }
+        agent::validate_disclosed_tool_calls(&request, &summary.tool_calls)?;
         if final_call {
             return Err(ModelError::invalid_response(
                 "最终汇总调用仍返回了工具请求，无法安全继续执行。",
@@ -910,8 +934,14 @@ async fn run_agent_stream(
                 },
             )?;
         }
-        let mut parallel_results =
-            execute_parallel_safe_tools(state, tool_context, cancellation, &tool_calls).await;
+        let mut parallel_results = execute_parallel_safe_tools(
+            state,
+            tool_context,
+            &skill_cache,
+            cancellation,
+            &tool_calls,
+        )
+        .await;
         for (index, call) in tool_calls.into_iter().enumerate() {
             let result = if let Some(result) = parallel_results[index].take() {
                 emit_tool_trace(
@@ -1093,6 +1123,8 @@ async fn execute_agent_tool(
         &state.conversation_repository,
         &state.skill_repository,
         &state.memory_repository,
+        &state.library_repository,
+        &state.library_operations,
         skill_cache,
         cancellation,
     )
@@ -1448,7 +1480,18 @@ async fn prepare_call(
         .map_err(|_| ModelError::provider("应用设置暂时不可用，请重新启动应用后再试。"))?
         .memory;
     let tool_context = if use_agent_tools {
-        agent::build_runtime_context(&request, &state.skill_repository, memory_settings)?
+        let working_directory = state
+            .app_settings
+            .read()
+            .map_err(|_| ModelError::provider("应用设置暂时不可用，请重新启动应用后再试。"))?
+            .working_directory
+            .clone();
+        agent::build_runtime_context(
+            &request,
+            &state.skill_repository,
+            memory_settings,
+            &working_directory,
+        )?
     } else {
         ToolRuntimeContext::disabled(request.permission_mode)
     };
@@ -1665,7 +1708,10 @@ fn agent_round_limit(state: &AppState) -> u16 {
 }
 
 fn is_business_tool(name: &str) -> bool {
-    !matches!(name, "search_tools" | "search_skills")
+    !matches!(
+        name,
+        "search_tools" | "inspect_tool" | "search_skills" | "inspect_skill"
+    )
 }
 
 fn should_retry(error: &ModelError) -> bool {

@@ -4,13 +4,19 @@
 //! 输出截断；模型协议转换仍由 `ai/providers` 负责。一次 Run 的 Skill 正文缓存由
 //! `SkillRunCache` 持有，Run 结束后随栈帧释放。
 
+mod artifacts;
 pub mod catalog;
 mod documents;
+mod knowledge;
+mod notes;
 pub mod registry;
 pub mod types;
+mod web;
+mod workspace;
 
 pub use registry::{
     apply_tool_disclosures, argument_summary, build_runtime_context, configure_model_request,
-    execute_tool, parallel_safe, requires_approval, tool_risk, SkillRunCache, ToolRuntimeContext,
+    execute_tool, parallel_safe, requires_approval, tool_risk, validate_disclosed_tool_calls,
+    SkillRunCache, ToolRuntimeContext,
 };
 pub use types::{ToolExecution, ToolTraceSnapshot, ToolTraceStatus};

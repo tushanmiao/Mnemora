@@ -2,7 +2,7 @@
 
 - 仓库：https://github.com/github/awesome-copilot
 - 原始路径：`skills/convert-word-to-md/SKILL.md`
-- 固定版本：`786bdcfc65b669faee10803db460a7218858ad21`
+- 固定版本：`e4a1f57fd9d8c22d2a345d498fe6fde306c6456e`
 - 许可证：MIT
 - 许可证依据：仓库根目录 `LICENSE`，目标 Skill 未声明不同许可证；许可证已原样保存在本目录。
 

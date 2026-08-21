@@ -1,0 +1,7 @@
+本目录中的适配 Skill 不复制 Trellis 源代码，仅引用并改写其工作流思想。
+
+上游项目：Trellis
+上游仓库：https://github.com/mindfold-ai/Trellis
+上游许可证：GNU Affero General Public License version 3 (AGPL-3.0)
+
+如需复制上游代码或其受许可证约束的资源，请阅读上游仓库中的完整 LICENSE，并单独完成许可证审查。

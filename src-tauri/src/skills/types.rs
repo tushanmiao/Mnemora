@@ -76,6 +76,16 @@ pub struct SkillFileEntry {
     pub size_bytes: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillResourceRead {
+    pub path: String,
+    pub start_line: usize,
+    pub end_line: usize,
+    pub total_lines: usize,
+    pub size_bytes: u64,
+    pub content: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SkillSummary {

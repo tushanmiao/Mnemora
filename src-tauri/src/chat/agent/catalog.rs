@@ -18,6 +18,28 @@ pub enum ToolNamespace {
     Attachment,
     Document,
     Memory,
+    Workspace,
+    Knowledge,
+    Web,
+    Artifact,
+    Note,
+}
+
+impl ToolNamespace {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Discovery => "discovery",
+            Self::Skill => "skill",
+            Self::Attachment => "attachment",
+            Self::Document => "document",
+            Self::Memory => "memory",
+            Self::Workspace => "workspace",
+            Self::Knowledge => "knowledge",
+            Self::Web => "web",
+            Self::Artifact => "artifact",
+            Self::Note => "note",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -31,8 +53,11 @@ pub enum ToolResourceCost {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolHandler {
     SearchTools,
+    InspectTool,
     SearchSkills,
-    Skill,
+    InspectSkill,
+    ActivateSkill,
+    ReadSkillResource,
     ReadAttachmentText,
     ReadPdfPages,
     ReadDocxBlocks,
@@ -40,6 +65,20 @@ pub enum ToolHandler {
     MemoryRead,
     MemorySearch,
     MemoryModify,
+    WorkspaceList,
+    WorkspaceGlob,
+    WorkspaceSearch,
+    WorkspaceRead,
+    KnowledgeList,
+    KnowledgeSearch,
+    KnowledgeRead,
+    WebSearch,
+    WebFetch,
+    PresentArtifact,
+    NoteList,
+    NoteRead,
+    NoteCreate,
+    NoteUpdate,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,12 +108,17 @@ const DEFAULT_OUTPUT_LIMIT: usize = 20_000;
 pub(super) const MAX_DISCOVERY_QUERY_CHARS: usize = 200;
 pub(super) const MAX_DISCOVERY_RESULTS: usize = 12;
 pub(super) const MAX_SKILL_ARGUMENT_CHARS: usize = 2_000;
+pub(super) const MAX_SKILL_RESOURCE_PATH_CHARS: usize = 1_000;
+pub(super) const MAX_SKILL_RESOURCE_READ_BYTES: usize = 32_000;
 pub(super) const DEFAULT_ATTACHMENT_READ_BYTES: usize = 8_000;
 pub(super) const MAX_ATTACHMENT_READ_BYTES: usize = 32_000;
 pub(super) const MAX_PDF_PAGES_PER_CALL: usize = 12;
 pub(super) const DEFAULT_MEMORY_READ_BYTES: usize = 8_000;
 pub(super) const MAX_MEMORY_READ_BYTES: usize = 32_000;
 pub(super) const MAX_MEMORY_MODIFY_BYTES: usize = 16_000;
+pub(super) const MAX_WORKSPACE_PATH_CHARS: usize = 2_000;
+pub(super) const MAX_WEB_URL_CHARS: usize = 4_096;
+pub(super) const MAX_ARTIFACT_CHARS: usize = 100_000;
 
 impl ToolEntry {
     pub fn model_tool(&self) -> ModelTool {
@@ -98,7 +142,29 @@ fn discovery_schema() -> Value {
     })
 }
 
-fn skill_schema() -> Value {
+fn inspect_tool_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "name": { "type": "string", "minLength": 1, "maxLength": 128 }
+        },
+        "required": ["name"],
+        "additionalProperties": false
+    })
+}
+
+fn skill_id_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "id": { "type": "string", "minLength": 1, "maxLength": 128 }
+        },
+        "required": ["id"],
+        "additionalProperties": false
+    })
+}
+
+fn activate_skill_schema() -> Value {
     json!({
         "type": "object",
         "properties": {
@@ -106,6 +172,212 @@ fn skill_schema() -> Value {
             "arguments": { "type": "string", "maxLength": MAX_SKILL_ARGUMENT_CHARS }
         },
         "required": ["id"],
+        "additionalProperties": false
+    })
+}
+
+fn read_skill_resource_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "id": { "type": "string", "minLength": 1, "maxLength": 64 },
+            "path": { "type": "string", "minLength": 1, "maxLength": MAX_SKILL_RESOURCE_PATH_CHARS },
+            "startLine": { "type": "integer", "minimum": 1 },
+            "endLine": { "type": "integer", "minimum": 1 },
+            "maxBytes": { "type": "integer", "minimum": 1, "maximum": MAX_SKILL_RESOURCE_READ_BYTES }
+        },
+        "required": ["id", "path"],
+        "additionalProperties": false
+    })
+}
+
+fn workspace_list_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "path": { "type": "string", "maxLength": MAX_WORKSPACE_PATH_CHARS },
+            "depth": { "type": "integer", "minimum": 1, "maximum": 4 },
+            "cursor": { "type": "integer", "minimum": 0, "maximum": 100000 },
+            "limit": { "type": "integer", "minimum": 1, "maximum": 200 }
+        },
+        "additionalProperties": false
+    })
+}
+
+fn workspace_glob_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "pattern": { "type": "string", "minLength": 1, "maxLength": 500 },
+            "cursor": { "type": "integer", "minimum": 0, "maximum": 100000 },
+            "limit": { "type": "integer", "minimum": 1, "maximum": 200 }
+        },
+        "required": ["pattern"],
+        "additionalProperties": false
+    })
+}
+
+fn workspace_search_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "query": { "type": "string", "minLength": 1, "maxLength": 500 },
+            "glob": { "type": "string", "maxLength": 500 },
+            "caseSensitive": { "type": "boolean" },
+            "limit": { "type": "integer", "minimum": 1, "maximum": 200 }
+        },
+        "required": ["query"],
+        "additionalProperties": false
+    })
+}
+
+fn workspace_read_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "path": { "type": "string", "minLength": 1, "maxLength": MAX_WORKSPACE_PATH_CHARS },
+            "startLine": { "type": "integer", "minimum": 1 },
+            "endLine": { "type": "integer", "minimum": 1 },
+            "maxBytes": { "type": "integer", "minimum": 1, "maximum": 32000 }
+        },
+        "required": ["path"],
+        "additionalProperties": false
+    })
+}
+
+fn knowledge_list_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "kind": { "type": "string", "enum": ["all", "note", "document"] },
+            "query": { "type": "string", "maxLength": 500 },
+            "cursor": { "type": "integer", "minimum": 0, "maximum": 500 },
+            "limit": { "type": "integer", "minimum": 1, "maximum": 50 }
+        },
+        "additionalProperties": false
+    })
+}
+
+fn knowledge_search_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "query": { "type": "string", "minLength": 1, "maxLength": 500 },
+            "kind": { "type": "string", "enum": ["all", "note", "document"] },
+            "limit": { "type": "integer", "minimum": 1, "maximum": 50 }
+        },
+        "required": ["query"],
+        "additionalProperties": false
+    })
+}
+
+fn knowledge_read_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "kind": { "type": "string", "enum": ["note", "document"] },
+            "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "startLine": { "type": "integer", "minimum": 1 },
+            "endLine": { "type": "integer", "minimum": 1 },
+            "maxBytes": { "type": "integer", "minimum": 1, "maximum": 32000 },
+            "pages": {
+                "type": "array",
+                "items": { "type": "integer", "minimum": 1 },
+                "minItems": 1,
+                "maxItems": 12
+            }
+        },
+        "required": ["kind", "id"],
+        "additionalProperties": false
+    })
+}
+
+fn web_search_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "query": { "type": "string", "minLength": 1, "maxLength": 500 },
+            "limit": { "type": "integer", "minimum": 1, "maximum": 20 }
+        },
+        "required": ["query"],
+        "additionalProperties": false
+    })
+}
+
+fn web_fetch_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "url": { "type": "string", "minLength": 1, "maxLength": MAX_WEB_URL_CHARS },
+            "maxBytes": { "type": "integer", "minimum": 1, "maximum": 2097152 }
+        },
+        "required": ["url"],
+        "additionalProperties": false
+    })
+}
+
+fn present_artifact_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+            "kind": { "type": "string", "enum": ["markdown", "code", "json", "mermaid", "html", "text"] },
+            "language": { "type": "string", "maxLength": 80 },
+            "content": { "type": "string", "minLength": 1, "maxLength": MAX_ARTIFACT_CHARS }
+        },
+        "required": ["title", "kind", "content"],
+        "additionalProperties": false
+    })
+}
+
+fn note_list_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "query": { "type": "string", "maxLength": 500 },
+            "cursor": { "type": "integer", "minimum": 0, "maximum": 100000 },
+            "limit": { "type": "integer", "minimum": 1, "maximum": 100 }
+        },
+        "additionalProperties": false
+    })
+}
+
+fn note_read_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "startLine": { "type": "integer", "minimum": 1 },
+            "endLine": { "type": "integer", "minimum": 1 },
+            "maxBytes": { "type": "integer", "minimum": 1, "maximum": 32000 }
+        },
+        "required": ["id"],
+        "additionalProperties": false
+    })
+}
+
+fn note_create_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+            "content": { "type": "string", "minLength": 1, "maxLength": 100000 },
+            "groupName": { "type": "string", "maxLength": 120 }
+        },
+        "required": ["title", "content"],
+        "additionalProperties": false
+    })
+}
+
+fn note_update_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+            "content": { "type": "string", "minLength": 1, "maxLength": 100000 }
+        },
+        "required": ["id", "title", "content"],
         "additionalProperties": false
     })
 }
@@ -219,7 +491,7 @@ fn memory_modify_schema() -> Value {
 pub static TOOL_ENTRIES: &[ToolEntry] = &[
     ToolEntry {
         name: "search_tools",
-        description: "按任务关键词搜索当前会话可用工具的轻量目录；命中后具体工具契约会在下一轮按需披露。",
+        description: "按任务关键词搜索当前会话可用工具的轻量目录；命中后必须先 inspect_tool 查看契约，不能直接猜参数执行。",
         input_schema: discovery_schema,
         namespace: ToolNamespace::Discovery,
         handler: ToolHandler::SearchTools,
@@ -231,8 +503,21 @@ pub static TOOL_ENTRIES: &[ToolEntry] = &[
         max_output_chars: DEFAULT_OUTPUT_LIMIT,
     },
     ToolEntry {
+        name: "inspect_tool",
+        description: "查看 search_tools 命中的工具完整参数契约、权限、成本和输出边界；成功后该工具才会在下一轮变为可执行。",
+        input_schema: inspect_tool_schema,
+        namespace: ToolNamespace::Discovery,
+        handler: ToolHandler::InspectTool,
+        risk: ToolRisk::BuiltinRead,
+        read_only: true,
+        parallel_safe: false,
+        approval: ToolApprovalPolicy::Never,
+        resource_cost: ToolResourceCost::Low,
+        max_output_chars: DEFAULT_OUTPUT_LIMIT,
+    },
+    ToolEntry {
         name: "search_skills",
-        description: "按任务关键词搜索当前工作区可用 Skill 的名称和说明；只返回目录，不加载 Skill 正文。",
+        description: "按任务关键词补充搜索当前工作区可用 Skill 的轻量目录；不加载 Skill 正文。",
         input_schema: discovery_schema,
         namespace: ToolNamespace::Discovery,
         handler: ToolHandler::SearchSkills,
@@ -244,11 +529,52 @@ pub static TOOL_ENTRIES: &[ToolEntry] = &[
         max_output_chars: DEFAULT_OUTPUT_LIMIT,
     },
     ToolEntry {
-        name: "skill",
-        description: "按 ID 加载一个与当前任务描述匹配的可用 Skill 完整工作说明；匹配时应主动调用，同一运行无需重复加载。",
-        input_schema: skill_schema,
+        name: "inspect_skill",
+        description: "查看轻量目录中某个 Skill 的适用范围、来源、资源和所需工具，不加载完整 SKILL.md 正文。",
+        input_schema: skill_id_schema,
         namespace: ToolNamespace::Skill,
-        handler: ToolHandler::Skill,
+        handler: ToolHandler::InspectSkill,
+        risk: ToolRisk::BuiltinRead,
+        read_only: true,
+        parallel_safe: false,
+        approval: ToolApprovalPolicy::Never,
+        resource_cost: ToolResourceCost::Low,
+        max_output_chars: DEFAULT_OUTPUT_LIMIT,
+    },
+    ToolEntry {
+        name: "activate_skill",
+        description: "加载已经 inspect_skill 检查过且与当前任务匹配的 Skill 完整工作说明；同一运行无需重复激活。",
+        input_schema: activate_skill_schema,
+        namespace: ToolNamespace::Skill,
+        handler: ToolHandler::ActivateSkill,
+        risk: ToolRisk::BuiltinRead,
+        read_only: true,
+        parallel_safe: false,
+        approval: ToolApprovalPolicy::Never,
+        resource_cost: ToolResourceCost::Low,
+        max_output_chars: DEFAULT_OUTPUT_LIMIT,
+    },
+    ToolEntry {
+        name: "read_skill_resource",
+        description: "按需读取已激活 Skill 目录内的有界 UTF-8 参考资源；拒绝路径逃逸、隐藏路径、符号链接和审计文件。",
+        input_schema: read_skill_resource_schema,
+        namespace: ToolNamespace::Skill,
+        handler: ToolHandler::ReadSkillResource,
+        risk: ToolRisk::BuiltinRead,
+        read_only: true,
+        parallel_safe: true,
+        approval: ToolApprovalPolicy::Never,
+        resource_cost: ToolResourceCost::Low,
+        max_output_chars: 40_000,
+    },
+    // Compatibility lookup for persisted traces and older integrations. It is
+    // intentionally never disclosed by configure_model_request.
+    ToolEntry {
+        name: "skill",
+        description: "兼容旧版本的 Skill 激活名称；新请求必须使用 inspect_skill -> activate_skill。",
+        input_schema: activate_skill_schema,
+        namespace: ToolNamespace::Skill,
+        handler: ToolHandler::ActivateSkill,
         risk: ToolRisk::BuiltinRead,
         read_only: true,
         parallel_safe: false,
@@ -347,6 +673,188 @@ pub static TOOL_ENTRIES: &[ToolEntry] = &[
         resource_cost: ToolResourceCost::Low,
         max_output_chars: DEFAULT_OUTPUT_LIMIT,
     },
+    ToolEntry {
+        name: "workspace_list",
+        description: "在用户配置的工作目录内列出有界目录树；跳过依赖、构建产物、符号链接和敏感文件。",
+        input_schema: workspace_list_schema,
+        namespace: ToolNamespace::Workspace,
+        handler: ToolHandler::WorkspaceList,
+        risk: ToolRisk::ConversationRead,
+        read_only: true,
+        parallel_safe: true,
+        approval: ToolApprovalPolicy::ReadOnly,
+        resource_cost: ToolResourceCost::Low,
+        max_output_chars: DEFAULT_OUTPUT_LIMIT,
+    },
+    ToolEntry {
+        name: "workspace_glob",
+        description: "用 Glob 模式查找用户工作目录内的文件；结果分页且不会越过工作区根目录。",
+        input_schema: workspace_glob_schema,
+        namespace: ToolNamespace::Workspace,
+        handler: ToolHandler::WorkspaceGlob,
+        risk: ToolRisk::ConversationRead,
+        read_only: true,
+        parallel_safe: true,
+        approval: ToolApprovalPolicy::ReadOnly,
+        resource_cost: ToolResourceCost::Medium,
+        max_output_chars: DEFAULT_OUTPUT_LIMIT,
+    },
+    ToolEntry {
+        name: "workspace_search",
+        description: "在用户工作目录的文本和代码文件中进行有界关键词搜索，返回文件、行号和稳定引用。",
+        input_schema: workspace_search_schema,
+        namespace: ToolNamespace::Workspace,
+        handler: ToolHandler::WorkspaceSearch,
+        risk: ToolRisk::ConversationRead,
+        read_only: true,
+        parallel_safe: false,
+        approval: ToolApprovalPolicy::ReadOnly,
+        resource_cost: ToolResourceCost::Medium,
+        max_output_chars: 32_000,
+    },
+    ToolEntry {
+        name: "workspace_read",
+        description: "按行读取用户工作目录内的 UTF-8 文本或代码文件；拒绝路径逃逸、符号链接和敏感凭据。",
+        input_schema: workspace_read_schema,
+        namespace: ToolNamespace::Workspace,
+        handler: ToolHandler::WorkspaceRead,
+        risk: ToolRisk::ConversationRead,
+        read_only: true,
+        parallel_safe: true,
+        approval: ToolApprovalPolicy::ReadOnly,
+        resource_cost: ToolResourceCost::Low,
+        max_output_chars: 32_000,
+    },
+    ToolEntry {
+        name: "knowledge_list",
+        description: "分页列出 Mnemora 本地笔记与文献的轻量目录，不预载完整正文或 PDF。",
+        input_schema: knowledge_list_schema,
+        namespace: ToolNamespace::Knowledge,
+        handler: ToolHandler::KnowledgeList,
+        risk: ToolRisk::ConversationRead,
+        read_only: true,
+        parallel_safe: false,
+        approval: ToolApprovalPolicy::ReadOnly,
+        resource_cost: ToolResourceCost::Low,
+        max_output_chars: DEFAULT_OUTPUT_LIMIT,
+    },
+    ToolEntry {
+        name: "knowledge_search",
+        description: "在 Mnemora 本地笔记正文和文献元数据中执行有界词法检索，明确区分无结果与读取失败。",
+        input_schema: knowledge_search_schema,
+        namespace: ToolNamespace::Knowledge,
+        handler: ToolHandler::KnowledgeSearch,
+        risk: ToolRisk::ConversationRead,
+        read_only: true,
+        parallel_safe: false,
+        approval: ToolApprovalPolicy::ReadOnly,
+        resource_cost: ToolResourceCost::Medium,
+        max_output_chars: 32_000,
+    },
+    ToolEntry {
+        name: "knowledge_read",
+        description: "按行读取本地笔记，或按页读取文献 PDF 文本层，并返回稳定知识库引用。",
+        input_schema: knowledge_read_schema,
+        namespace: ToolNamespace::Knowledge,
+        handler: ToolHandler::KnowledgeRead,
+        risk: ToolRisk::ConversationRead,
+        read_only: true,
+        parallel_safe: false,
+        approval: ToolApprovalPolicy::ReadOnly,
+        resource_cost: ToolResourceCost::High,
+        max_output_chars: 32_000,
+    },
+    ToolEntry {
+        name: "web_search",
+        description: "搜索公开网页，返回带来源 ID、标题、URL、摘要和检索时间的外部不可信结果。",
+        input_schema: web_search_schema,
+        namespace: ToolNamespace::Web,
+        handler: ToolHandler::WebSearch,
+        risk: ToolRisk::NetworkRead,
+        read_only: true,
+        parallel_safe: true,
+        approval: ToolApprovalPolicy::ReadOnly,
+        resource_cost: ToolResourceCost::Medium,
+        max_output_chars: 32_000,
+    },
+    ToolEntry {
+        name: "web_fetch",
+        description: "安全抓取公开 HTTP/HTTPS 文本页面；逐次校验重定向和 DNS，拒绝本机及私有网络地址。",
+        input_schema: web_fetch_schema,
+        namespace: ToolNamespace::Web,
+        handler: ToolHandler::WebFetch,
+        risk: ToolRisk::NetworkRead,
+        read_only: true,
+        parallel_safe: true,
+        approval: ToolApprovalPolicy::ReadOnly,
+        resource_cost: ToolResourceCost::Medium,
+        max_output_chars: 40_000,
+    },
+    ToolEntry {
+        name: "present_artifact",
+        description: "把 Markdown、代码、JSON、Mermaid、HTML 或纯文本整理为本轮结构化交付；不会自动写入磁盘。",
+        input_schema: present_artifact_schema,
+        namespace: ToolNamespace::Artifact,
+        handler: ToolHandler::PresentArtifact,
+        risk: ToolRisk::BuiltinRead,
+        read_only: true,
+        parallel_safe: false,
+        approval: ToolApprovalPolicy::Never,
+        resource_cost: ToolResourceCost::Low,
+        max_output_chars: MAX_ARTIFACT_CHARS,
+    },
+    ToolEntry {
+        name: "note_list",
+        description: "分页列出 Mnemora 笔记轻量目录；只返回标题、预览、分组和稳定笔记 ID。",
+        input_schema: note_list_schema,
+        namespace: ToolNamespace::Note,
+        handler: ToolHandler::NoteList,
+        risk: ToolRisk::ConversationRead,
+        read_only: true,
+        parallel_safe: false,
+        approval: ToolApprovalPolicy::ReadOnly,
+        resource_cost: ToolResourceCost::Low,
+        max_output_chars: 32_000,
+    },
+    ToolEntry {
+        name: "note_read",
+        description: "按行读取 Mnemora 笔记正文，并返回稳定的笔记与行号引用。",
+        input_schema: note_read_schema,
+        namespace: ToolNamespace::Note,
+        handler: ToolHandler::NoteRead,
+        risk: ToolRisk::ConversationRead,
+        read_only: true,
+        parallel_safe: false,
+        approval: ToolApprovalPolicy::ReadOnly,
+        resource_cost: ToolResourceCost::Low,
+        max_output_chars: 32_000,
+    },
+    ToolEntry {
+        name: "note_create",
+        description: "在用户权限允许时创建一条 Mnemora 全局 Markdown 笔记；返回真实持久化后的笔记 ID。",
+        input_schema: note_create_schema,
+        namespace: ToolNamespace::Note,
+        handler: ToolHandler::NoteCreate,
+        risk: ToolRisk::NoteWrite,
+        read_only: false,
+        parallel_safe: false,
+        approval: ToolApprovalPolicy::Sensitive,
+        resource_cost: ToolResourceCost::Medium,
+        max_output_chars: DEFAULT_OUTPUT_LIMIT,
+    },
+    ToolEntry {
+        name: "note_update",
+        description: "在用户权限允许时更新指定 Mnemora 笔记的标题和 Markdown 正文；不会删除笔记。",
+        input_schema: note_update_schema,
+        namespace: ToolNamespace::Note,
+        handler: ToolHandler::NoteUpdate,
+        risk: ToolRisk::NoteWrite,
+        read_only: false,
+        parallel_safe: false,
+        approval: ToolApprovalPolicy::Sensitive,
+        resource_cost: ToolResourceCost::Medium,
+        max_output_chars: DEFAULT_OUTPUT_LIMIT,
+    },
 ];
 
 pub fn find_tool(name: &str) -> Option<&'static ToolEntry> {
@@ -365,6 +873,11 @@ pub fn assert_valid_registry() {
                 | ToolNamespace::Attachment
                 | ToolNamespace::Document
                 | ToolNamespace::Memory
+                | ToolNamespace::Workspace
+                | ToolNamespace::Knowledge
+                | ToolNamespace::Web
+                | ToolNamespace::Artifact
+                | ToolNamespace::Note
         ) && matches!(
             entry.resource_cost,
             ToolResourceCost::Low | ToolResourceCost::Medium | ToolResourceCost::High
@@ -398,5 +911,21 @@ mod tests {
             assert_eq!(definition.input_schema["type"], "object");
             assert_eq!(definition.input_schema["additionalProperties"], false);
         }
+    }
+
+    #[test]
+    fn network_tools_use_a_distinct_network_read_risk() {
+        use crate::chat::agent::types::ToolRisk;
+
+        assert_eq!(find_tool("web_search").unwrap().risk, ToolRisk::NetworkRead);
+        assert_eq!(find_tool("web_fetch").unwrap().risk, ToolRisk::NetworkRead);
+    }
+
+    #[test]
+    fn note_mutations_use_a_distinct_note_write_risk() {
+        use crate::chat::agent::types::ToolRisk;
+
+        assert_eq!(find_tool("note_create").unwrap().risk, ToolRisk::NoteWrite);
+        assert_eq!(find_tool("note_update").unwrap().risk, ToolRisk::NoteWrite);
     }
 }

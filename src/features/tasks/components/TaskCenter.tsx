@@ -374,6 +374,7 @@ function TaskStatusIcon({ status }: { status: TaskRunStatus }) {
   if (status === "completed") return <Check size={15} />;
   if (status === "failed") return <XCircle size={15} />;
   if (status === "stopped") return <CircleStop size={15} />;
+  if (status === "abandoned") return <CircleStop size={15} />;
   if (status === "paused") return <Pause size={15} />;
   if (status === "waiting") return <AlertTriangle size={15} />;
   return <LoaderCircle className="task-center-spin" size={15} />;

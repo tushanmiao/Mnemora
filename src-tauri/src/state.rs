@@ -3,7 +3,7 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     fs,
     path::PathBuf,
-    sync::{Mutex as StdMutex, RwLock},
+    sync::{Arc, Mutex as StdMutex, RwLock},
     time::Duration,
 };
 use tokio::sync::{oneshot, Mutex, Semaphore};
@@ -47,7 +47,7 @@ pub struct AppState {
     pub english_audio_operations: Mutex<()>,
     pub conversation_writes: Mutex<()>,
     pub library_repository: LibraryRepository,
-    pub library_operations: Mutex<()>,
+    pub library_operations: Arc<Mutex<()>>,
     pub sync_settings: RwLock<SyncSettings>,
     pub sync_settings_repository: SyncSettingsRepository,
     pub sync_secrets: SyncSecretStore,
@@ -158,7 +158,7 @@ impl AppState {
             english_audio_operations: Mutex::new(()),
             conversation_writes: Mutex::new(()),
             library_repository,
-            library_operations: Mutex::new(()),
+            library_operations: Arc::new(Mutex::new(())),
             sync_settings: RwLock::new(sync_settings),
             sync_settings_repository,
             sync_secrets,

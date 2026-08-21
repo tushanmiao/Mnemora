@@ -592,6 +592,7 @@ pub struct NotePipelineRun {
     pub failed_section_ids: Vec<String>,
     pub warnings: Vec<String>,
     pub error_message: Option<String>,
+    pub abandoned: bool,
     pub created_at: u64,
     pub updated_at: u64,
 }

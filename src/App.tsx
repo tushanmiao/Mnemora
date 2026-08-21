@@ -641,7 +641,7 @@ function App() {
           setWorkspaceMode("chat");
         }}
         onDeleteConversation={(conversationId) => {
-          if (!window.confirm("确定删除这个对话吗？关联笔记不会删除，但部分来源跳转将失效。")) return;
+          if (!window.confirm("确定删除这个对话吗？未完成的深度笔记任务将被遗弃终止且不能恢复；已生成笔记不会删除，但部分来源跳转将失效。")) return;
           conversations.deleteConversation(conversationId);
         }}
         onExportConversation={(conversationId, format) => {
@@ -663,7 +663,7 @@ function App() {
           void noteActions.openConversationNoteEdit(conversationId);
         }}
         onClearConversations={() => {
-          if (!window.confirm("确定清空全部对话吗？关联笔记不会删除，但其对话来源跳转将全部失效。")) return;
+          if (!window.confirm("确定清空全部对话吗？相关的未完成深度笔记任务将被遗弃终止且不能恢复；已生成笔记不会删除，但对话来源跳转将全部失效。")) return;
           conversations.clearConversations();
         }}
         onLoadMoreConversations={conversations.loadMoreConversations}

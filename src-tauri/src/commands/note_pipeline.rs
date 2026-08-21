@@ -72,6 +72,22 @@ pub async fn note_pipeline_cancel(app: AppHandle, run_id: String) -> Result<bool
 }
 
 #[tauri::command]
+pub async fn note_pipeline_abandon(
+    app: AppHandle,
+    run_id: String,
+) -> Result<NotePipelineRun, String> {
+    note_pipeline::abandon(&app, &run_id).await
+}
+
+#[tauri::command]
+pub async fn note_pipeline_abandon_for_conversation(
+    app: AppHandle,
+    conversation_id: String,
+) -> Result<usize, String> {
+    note_pipeline::abandon_for_conversation(&app, &conversation_id).await
+}
+
+#[tauri::command]
 pub async fn note_pipeline_pause(
     app: AppHandle,
     run_id: String,

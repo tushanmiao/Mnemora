@@ -6,7 +6,8 @@ export type TaskRunStatus =
   | "paused"
   | "completed"
   | "failed"
-  | "stopped";
+  | "stopped"
+  | "abandoned";
 
 export type TaskRunStepKind = "phase" | "reasoning" | "skill" | "tool";
 

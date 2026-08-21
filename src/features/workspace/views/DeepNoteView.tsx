@@ -137,6 +137,7 @@ export default function DeepNoteView() {
   const tone = phaseTone(phase);
   const terminal = runtime.progress?.terminal || TERMINAL_PHASES.has(phase);
   const paused = phase === "paused";
+  const abandoned = Boolean(runtime.detail?.run.abandoned);
   const failed = phase === "error" || phase === "blocked";
   const stopped = phase === "cancelled";
   const canPause = Boolean(runtime.progress?.runId ?? runtime.detail?.run.id) && PAUSABLE_PHASES.has(phase);
@@ -246,7 +247,7 @@ export default function DeepNoteView() {
               <BrainCircuit size={14} />重新生成
             </button>
           </div>
-        ) : stopped ? (
+        ) : stopped && !abandoned ? (
           <div className="deep-note-run-actions">
             <button className="settings-button settings-button-primary" type="button" disabled={runtime.controlBusy} onClick={runtime.onResume}>
               <Play size={14} />从检查点继续
@@ -309,6 +310,9 @@ export default function DeepNoteView() {
         ) : null}
         {runtime.progress?.degraded ? (
           <div className="deep-note-terminal-message is-warning"><AlertTriangle size={16} /><div><strong>已保存部分结果</strong><p>停止前已完成的章节已经写入笔记库，未完成章节没有被标记为成功。</p></div></div>
+        ) : null}
+        {abandoned ? (
+          <div className="deep-note-terminal-message is-warning"><PauseCircle size={16} /><div><strong>任务已遗弃</strong><p>来源对话已删除，任务检查点仍保留用于诊断，但不会继续、重试或重新生成。</p></div></div>
         ) : null}
         {(runtime.detail?.run.warnings.length ?? 0) > 0 ? (
           <div className="deep-note-warning-list">{runtime.detail?.run.warnings.map((warning) => <p key={warning}><AlertTriangle size={14} />{warning}</p>)}</div>

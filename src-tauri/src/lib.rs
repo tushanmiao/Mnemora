@@ -213,6 +213,8 @@ pub fn run() {
             commands::note_pipeline::note_pipeline_retry,
             commands::note_pipeline::note_pipeline_restart,
             commands::note_pipeline::note_pipeline_cancel,
+            commands::note_pipeline::note_pipeline_abandon,
+            commands::note_pipeline::note_pipeline_abandon_for_conversation,
             commands::note_pipeline::note_pipeline_pause,
             commands::note_pipeline::note_pipeline_list_resumable,
             commands::note_pipeline::note_pipeline_get,

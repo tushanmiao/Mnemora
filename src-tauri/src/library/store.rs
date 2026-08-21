@@ -604,6 +604,71 @@ impl LibraryRepository {
         Ok(note_ids)
     }
 
+    /// Agent 只读工具使用的有界笔记目录。正文仍由 `get_note` 按需读取，
+    /// 避免为了目录或搜索一次性把全部笔记内容载入内存。
+    pub fn list_notes_page_for_agent(
+        &self,
+        query: &str,
+        offset: usize,
+        limit: usize,
+    ) -> Result<(Vec<LibraryNoteSummary>, usize), String> {
+        let query = query.trim();
+        if query.chars().count() > 500 {
+            return Err("笔记搜索内容过长。".to_string());
+        }
+        if !(1..=200).contains(&limit) || offset > 100_000 {
+            return Err("笔记目录分页参数超出允许范围。".to_string());
+        }
+        let connection = self.open_connection()?;
+        let pattern = format!("%{query}%");
+        let filter = if query.is_empty() {
+            "(n.item_id IS NULL OR i.deleted_at IS NULL)"
+        } else {
+            "(n.item_id IS NULL OR i.deleted_at IS NULL) AND (n.title LIKE ? OR n.content LIKE ?)"
+        };
+        let count_sql = format!(
+            "SELECT COUNT(*) FROM library_notes n LEFT JOIN library_items i ON i.id = n.item_id WHERE {filter}"
+        );
+        let total: i64 = if query.is_empty() {
+            connection.query_row(&count_sql, [], |row| row.get(0))
+        } else {
+            connection.query_row(&count_sql, params![pattern, pattern], |row| row.get(0))
+        }
+        .map_err(|error| format!("读取笔记总数失败：{error}"))?;
+        let list_sql = format!(
+            "SELECT n.id, n.item_id, i.title, n.title, substr(n.content, 1, 600),
+                    length(n.content), n.group_name, n.created_at, n.updated_at
+             FROM library_notes n
+             LEFT JOIN library_items i ON i.id = n.item_id
+             WHERE {filter}
+             ORDER BY n.updated_at DESC, n.id ASC
+             LIMIT ? OFFSET ?"
+        );
+        let mut statement = connection
+            .prepare(&list_sql)
+            .map_err(|error| format!("准备笔记目录查询失败：{error}"))?;
+        let mut notes = Vec::new();
+        if query.is_empty() {
+            let rows = statement
+                .query_map(params![limit as i64, offset as i64], note_summary_from_row)
+                .map_err(|error| format!("查询笔记目录失败：{error}"))?;
+            for row in rows {
+                notes.push(row.map_err(|error| format!("读取笔记目录失败：{error}"))?);
+            }
+        } else {
+            let rows = statement
+                .query_map(
+                    params![pattern, pattern, limit as i64, offset as i64],
+                    note_summary_from_row,
+                )
+                .map_err(|error| format!("查询笔记目录失败：{error}"))?;
+            for row in rows {
+                notes.push(row.map_err(|error| format!("读取笔记目录失败：{error}"))?);
+            }
+        }
+        Ok((notes, usize::try_from(total).unwrap_or(usize::MAX)))
+    }
+
     pub fn get_note(&self, note_id: &str) -> Result<LibraryNote, String> {
         let note_id = normalize_identifier("笔记 ID", note_id)?;
         let connection = self.open_connection()?;
@@ -783,6 +848,60 @@ impl LibraryRepository {
             .ok_or_else(|| "深度笔记任务不存在。".to_string())
     }
 
+    /// 将任务标记为不可恢复的“已遗弃”。保留事件与诊断记录，但后续恢复扫描、
+    /// 重试和重新生成都不会再把它视为当前任务。
+    pub fn abandon_note_pipeline_run(&self, run_id: &str) -> Result<NotePipelineRun, String> {
+        let run_id = normalize_identifier("任务 ID", run_id)?;
+        let connection = self.open_connection()?;
+        let transaction = connection
+            .unchecked_transaction()
+            .map_err(|error| format!("开始遗弃深度笔记任务失败：{error}"))?;
+        let current_phase: Option<String> = transaction
+            .query_row(
+                "SELECT phase FROM note_pipeline_runs WHERE id = ?",
+                params![run_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| format!("读取待遗弃深度笔记任务失败：{error}"))?;
+        let Some(current_phase) = current_phase else {
+            return Err("深度笔记任务不存在。".to_string());
+        };
+        if current_phase == NotePipelinePhase::Done.as_str() {
+            return Err("已完成的深度笔记不能遗弃。".to_string());
+        }
+        {
+            let next_sequence: i64 = transaction
+                .query_row(
+                    "SELECT COALESCE(MAX(sequence), 0) + 1 FROM note_pipeline_events WHERE run_id = ?",
+                    params![run_id],
+                    |row| row.get(0),
+                )
+                .map_err(|error| format!("读取深度笔记事件序号失败：{error}"))?;
+            let now = now_millis_i64();
+            transaction
+                .execute(
+                    "UPDATE note_pipeline_runs
+                     SET phase = 'cancelled', error_message = 'mnemora:abandoned', updated_at = ?
+                     WHERE id = ?",
+                    params![now, run_id],
+                )
+                .map_err(|error| format!("遗弃深度笔记任务失败：{error}"))?;
+            transaction
+                .execute(
+                    "INSERT INTO note_pipeline_events (
+                        run_id, sequence, event_type, node_id, payload_json, created_at
+                     ) VALUES (?, ?, 'runAbandoned', NULL, '{}', ?)",
+                    params![run_id, next_sequence, now],
+                )
+                .map_err(|error| format!("记录深度笔记遗弃事件失败：{error}"))?;
+        }
+        transaction
+            .commit()
+            .map_err(|error| format!("提交深度笔记遗弃状态失败：{error}"))?;
+        self.get_note_pipeline_run(&run_id)
+    }
+
     pub fn list_resumable_note_pipeline_runs(&self) -> Result<Vec<NotePipelineRun>, String> {
         let connection = self.open_connection()?;
         let mut statement = connection
@@ -794,7 +913,8 @@ impl LibraryRepository {
                        'drafting', 'validating', 'replanning', 'assembling', 'persisting',
                        'paused', 'blocked', 'error'
                     )
-                    OR (candidate.phase = 'cancelled' AND candidate.note_id IS NULL)
+                    OR (candidate.phase = 'cancelled' AND candidate.note_id IS NULL
+                        AND (candidate.error_message IS NULL OR candidate.error_message <> 'mnemora:abandoned'))
                  )
                  AND NOT EXISTS (
                     SELECT 1 FROM note_pipeline_runs AS newer
@@ -818,6 +938,31 @@ impl LibraryRepository {
             }
         }
         Ok(runs)
+    }
+
+    pub fn list_note_pipeline_runs_for_conversation(
+        &self,
+        conversation_id: &str,
+    ) -> Result<Vec<NotePipelineRun>, String> {
+        let conversation_id = normalize_identifier("会话 ID", conversation_id)?;
+        let connection = self.open_connection()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT id FROM note_pipeline_runs
+                 WHERE conversation_id = ? AND phase NOT IN ('done')
+                   AND (error_message IS NULL OR error_message <> 'mnemora:abandoned')
+                 ORDER BY updated_at DESC",
+            )
+            .map_err(|error| format!("准备会话深度笔记任务查询失败：{error}"))?;
+        let ids = statement
+            .query_map(params![conversation_id], |row| row.get::<_, String>(0))
+            .map_err(|error| format!("查询会话深度笔记任务失败：{error}"))?;
+        ids.map(|id| {
+            let id = id.map_err(|error| format!("读取会话深度笔记任务失败：{error}"))?;
+            get_note_pipeline_run_with_connection(&connection, &id)?
+                .ok_or_else(|| "会话深度笔记任务不存在。".to_string())
+        })
+        .collect()
     }
 
     pub fn save_note_pipeline_outline(
@@ -2867,6 +3012,7 @@ fn get_note_pipeline_run_with_connection(
         failed_section_ids,
         warnings: serde_json::from_str(&raw.11)
             .map_err(|error| format!("解析深度笔记检查提示失败：{error}"))?,
+        abandoned: raw.12.as_deref() == Some("mnemora:abandoned"),
         error_message: raw.12,
         created_at: i64_to_u64(raw.13),
         updated_at: i64_to_u64(raw.14),
@@ -3901,6 +4047,40 @@ mod tests {
 
         assert!(repository
             .list_resumable_note_pipeline_runs()
+            .unwrap()
+            .is_empty());
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn abandoned_runs_are_persisted_and_excluded_from_recovery() {
+        let directory = test_directory("note-pipeline-abandoned");
+        let repository = LibraryRepository::new(directory.clone());
+        let run = repository
+            .create_note_pipeline_run(NotePipelineRunCreate {
+                id: "abandoned-run".to_string(),
+                conversation_id: "conversation-abandoned".to_string(),
+                provider_id: "provider-1".to_string(),
+                model_id: "model-1".to_string(),
+                max_output_tokens: 4_096,
+                thinking_enabled: false,
+                retry_attempts: 5,
+                input_snapshot_hash: "snapshot-abandoned".to_string(),
+                budget_json: "{}".to_string(),
+                preflight_json: "{}".to_string(),
+                idempotency_key: "output-abandoned".to_string(),
+            })
+            .unwrap();
+
+        let abandoned = repository.abandon_note_pipeline_run(&run.id).unwrap();
+        assert!(abandoned.abandoned);
+        assert_eq!(abandoned.phase, NotePipelinePhase::Cancelled);
+        assert!(repository
+            .list_resumable_note_pipeline_runs()
+            .unwrap()
+            .is_empty());
+        assert!(repository
+            .list_note_pipeline_runs_for_conversation("conversation-abandoned")
             .unwrap()
             .is_empty());
         let _ = fs::remove_dir_all(directory);

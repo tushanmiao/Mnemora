@@ -2,7 +2,7 @@
 
 - 仓库：https://github.com/openai/skills
 - 原始路径：`skills/.curated/pdf/SKILL.md`
-- 固定版本：`49f948faa9258a0c61caceaf225e179651397431`
+- 固定版本：`33a75a7b572867072dc0674bee8e63e06c19e67b`
 - 许可证：Apache License 2.0
 - 许可证依据：该 Skill 目录自带 `LICENSE.txt`，已原样保存在本目录。
 

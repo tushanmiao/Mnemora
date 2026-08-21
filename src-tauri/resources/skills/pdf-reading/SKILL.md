@@ -21,7 +21,7 @@ metadata:
     resource-cost: high
     source-repository: https://github.com/openai/skills
     source-path: skills/.curated/pdf/SKILL.md
-    source-revision: 49f948faa9258a0c61caceaf225e179651397431
+    source-revision: 33a75a7b572867072dc0674bee8e63e06c19e67b
     attribution: "PDF Skill by OpenAI, licensed under Apache-2.0."
     adapted: true
     adaptation-notes: 仅保留与 Mnemora 当前按页文本读取能力相符的工作流；移除 Python、Poppler、PDF 创建和视觉渲染依赖。

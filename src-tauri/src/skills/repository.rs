@@ -3,7 +3,7 @@
 use std::{
     collections::{BTreeMap, HashSet},
     fs::{self, OpenOptions},
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -11,8 +11,8 @@ use std::{
 use super::{
     parser::{parse_skill, validate_skill_id},
     types::{
-        SkillDetail, SkillFileEntry, SkillFileKind, SkillListResult, SkillRecord, SkillSource,
-        SkillStateEntry, SkillStateFile, SkillSummary,
+        SkillDetail, SkillFileEntry, SkillFileKind, SkillListResult, SkillRecord,
+        SkillResourceRead, SkillSource, SkillStateEntry, SkillStateFile, SkillSummary,
     },
 };
 
@@ -21,6 +21,8 @@ const MAX_ACTIVATED_SKILLS: usize = 12;
 const MAX_ACTIVATED_PROMPT_BYTES: usize = 192 * 1024;
 const MAX_DETAIL_FILES: usize = 512;
 const MAX_DETAIL_DEPTH: usize = 8;
+const MAX_MODEL_RESOURCE_FILE_BYTES: u64 = 2 * 1024 * 1024;
+const MAX_MODEL_RESOURCE_LINES: usize = 2_000;
 
 #[derive(Clone)]
 pub struct SkillRepository {
@@ -79,6 +81,76 @@ impl SkillRepository {
             summary: record.summary,
             markdown: record.markdown,
             files,
+        })
+    }
+
+    /// 返回模型在 Skill 激活后可以继续按需读取的资源目录。
+    /// 审计文件、隐藏路径、符号链接和过大的文件不会进入模型资源目录。
+    pub fn list_model_resources(&self, skill_id: &str) -> Result<Vec<SkillFileEntry>, String> {
+        let record = self.load_record(skill_id)?;
+        collect_model_resources(&record.directory)
+    }
+
+    /// 读取已激活 Skill 目录内的一段 UTF-8 文本资源。调用方仍需负责检查
+    /// 当前 Run 是否确实激活了该 Skill，并对最终 Tool 输出执行字节上限截断。
+    pub fn read_model_resource(
+        &self,
+        skill_id: &str,
+        relative_path: &str,
+        start_line: usize,
+        end_line: usize,
+    ) -> Result<SkillResourceRead, String> {
+        let record = self.load_record(skill_id)?;
+        let (path, normalized) = resolve_model_resource_path(&record.directory, relative_path)?;
+        let metadata =
+            fs::metadata(&path).map_err(|error| format!("读取 Skill 资源元数据失败：{error}"))?;
+        if !metadata.is_file() {
+            return Err("Skill 资源路径不是普通文件。".to_string());
+        }
+        if metadata.len() > MAX_MODEL_RESOURCE_FILE_BYTES {
+            return Err(format!(
+                "Skill 文本资源超过 {} MB 的单文件读取上限。",
+                MAX_MODEL_RESOURCE_FILE_BYTES / 1024 / 1024
+            ));
+        }
+        let bytes = fs::read(&path).map_err(|error| format!("读取 Skill 资源失败：{error}"))?;
+        if bytes.iter().take(8_192).any(|byte| *byte == 0) {
+            return Err("该 Skill 资源看起来是二进制文件，不能作为文本读取。".to_string());
+        }
+        let text = String::from_utf8(bytes)
+            .map_err(|_| "Skill 资源必须使用 UTF-8 编码才能提供给模型。".to_string())?;
+        let lines = text.lines().collect::<Vec<_>>();
+        let total_lines = lines.len();
+        if total_lines > 0 && start_line > total_lines {
+            return Err(format!(
+                "Skill 资源只有 {total_lines} 行，起始行 {start_line} 超出范围。"
+            ));
+        }
+        if end_line < start_line || end_line.saturating_sub(start_line) >= MAX_MODEL_RESOURCE_LINES
+        {
+            return Err(format!(
+                "Skill 资源行范围无效，单次最多读取 {MAX_MODEL_RESOURCE_LINES} 行。"
+            ));
+        }
+        let actual_end = end_line.min(total_lines);
+        let content = if total_lines == 0 {
+            String::new()
+        } else {
+            lines
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| (*index + 1) >= start_line && (*index + 1) <= actual_end)
+                .map(|(index, line)| format!("{:>6}: {line}", index + 1))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        Ok(SkillResourceRead {
+            path: normalized,
+            start_line,
+            end_line: actual_end,
+            total_lines,
+            size_bytes: metadata.len(),
+            content,
         })
     }
 
@@ -148,12 +220,18 @@ impl SkillRepository {
                 .and_then(|content| slash_arguments(content, &record.summary.triggers))
                 .unwrap_or_default();
             let body = render_arguments(&record.body, arguments);
+            let resources = collect_model_resources(&record.directory)?;
+            let resource_catalog = render_model_resource_catalog(&resources);
             let section = format!(
                 "<mnemora_skill id=\"{}\" name=\"{}\" version=\"{}\">\n{}\n</mnemora_skill>",
                 escape_xml(&record.summary.id),
                 escape_xml(&record.summary.name),
                 escape_xml(&record.summary.version),
-                body
+                if resource_catalog.is_empty() {
+                    body
+                } else {
+                    format!("{body}\n\n{resource_catalog}")
+                }
             );
             total_bytes = total_bytes.saturating_add(section.len());
             if total_bytes > MAX_ACTIVATED_PROMPT_BYTES {
@@ -388,6 +466,119 @@ fn collect_detail_files(
     Ok(())
 }
 
+fn collect_model_resources(root: &Path) -> Result<Vec<SkillFileEntry>, String> {
+    let mut files = Vec::new();
+    collect_detail_files(root, root, 0, &mut files)?;
+    files.retain(|entry| is_model_resource_entry(root, entry));
+    files.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(files)
+}
+
+fn is_model_resource_entry(root: &Path, entry: &SkillFileEntry) -> bool {
+    entry.size_bytes <= MAX_MODEL_RESOURCE_FILE_BYTES
+        && validate_model_resource_relative(&entry.path).is_ok()
+        && has_text_prefix(&root.join(&entry.path))
+}
+
+fn has_text_prefix(path: &Path) -> bool {
+    let Ok(mut file) = fs::File::open(path) else {
+        return false;
+    };
+    let mut prefix = [0_u8; 8_192];
+    let Ok(read) = file.read(&mut prefix) else {
+        return false;
+    };
+    !prefix[..read].contains(&0) && std::str::from_utf8(&prefix[..read]).is_ok()
+}
+
+fn render_model_resource_catalog(resources: &[SkillFileEntry]) -> String {
+    if resources.is_empty() {
+        return String::new();
+    }
+    let files = resources
+        .iter()
+        .map(|file| format!("- {}（{} bytes）", file.path, file.size_bytes))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "<mnemora_skill_resources>\n以下资源不会自动加入上下文。仅在确有需要时调用 read_skill_resource 按行读取 UTF-8 文本：\n{files}\n</mnemora_skill_resources>"
+    )
+}
+
+fn resolve_model_resource_path(
+    root: &Path,
+    relative_path: &str,
+) -> Result<(PathBuf, String), String> {
+    let relative = validate_model_resource_relative(relative_path)?;
+    let root_metadata =
+        fs::symlink_metadata(root).map_err(|error| format!("读取 Skill 目录失败：{error}"))?;
+    if root_metadata.file_type().is_symlink() || !root_metadata.is_dir() {
+        return Err("Skill 目录不是可安全读取的普通目录。".to_string());
+    }
+    let canonical_root = root
+        .canonicalize()
+        .map_err(|error| format!("解析 Skill 目录失败：{error}"))?;
+    let mut candidate = root.to_path_buf();
+    for component in relative.components() {
+        candidate.push(component.as_os_str());
+        let metadata = fs::symlink_metadata(&candidate)
+            .map_err(|error| format!("Skill 资源不存在或不可读取：{error}"))?;
+        if metadata.file_type().is_symlink() {
+            return Err("Skill 资源路径不能包含符号链接。".to_string());
+        }
+    }
+    let resolved = candidate
+        .canonicalize()
+        .map_err(|error| format!("解析 Skill 资源失败：{error}"))?;
+    if !resolved.starts_with(&canonical_root) {
+        return Err("Skill 资源路径越过了当前 Skill 目录。".to_string());
+    }
+    let normalized = relative.to_string_lossy().replace('\\', "/");
+    Ok((resolved, normalized))
+}
+
+fn validate_model_resource_relative(value: &str) -> Result<PathBuf, String> {
+    let value = value.trim();
+    if value.is_empty() || value.chars().count() > 1_000 {
+        return Err("Skill 资源路径必须是 1 到 1000 个字符。".to_string());
+    }
+    let relative = Path::new(value);
+    if relative.is_absolute() {
+        return Err("Skill 资源必须使用 Skill 目录内的相对路径。".to_string());
+    }
+    for component in relative.components() {
+        match component {
+            std::path::Component::Normal(name) => {
+                let name = name.to_string_lossy();
+                if name.starts_with('.') {
+                    return Err("Skill 资源不能读取隐藏路径。".to_string());
+                }
+            }
+            _ => return Err("Skill 资源路径不能包含当前目录、父目录、根目录或盘符。".to_string()),
+        }
+    }
+    let file_name = relative
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "Skill 资源文件名无效。".to_string())?
+        .to_ascii_lowercase();
+    if matches!(
+        file_name.as_str(),
+        "skill.md"
+            | "source.md"
+            | "license"
+            | "license.txt"
+            | "notice"
+            | "notice.txt"
+            | "copying"
+            | "copying.md"
+            | "third_party_notices.md"
+    ) {
+        return Err("Skill 的正文、来源和许可证审计文件不能通过资源工具重复读取。".to_string());
+    }
+    Ok(relative.to_path_buf())
+}
+
 fn classify_file(relative: &str) -> SkillFileKind {
     if relative == "SKILL.md" {
         SkillFileKind::SkillMd
@@ -583,7 +774,7 @@ mod tests {
                 .required_tools,
             vec!["read_xlsx_rows"]
         );
-        assert_eq!(skills.len(), 13);
+        assert!(skills.len() >= 14);
         assert!(skills.iter().any(|skill| {
             skill.id == "question-framing"
                 && skill.enabled
@@ -601,6 +792,13 @@ mod tests {
                 && skill.enabled
                 && skill.default_enabled
                 && skill.supported_modes.len() == 3
+        }));
+        assert!(skills.iter().any(|skill| {
+            skill.id == "trellis-brainstorm"
+                && skill.enabled
+                && skill.default_enabled
+                && skill.supported_modes.len() == 3
+                && skill.required_tools.is_empty()
         }));
         assert!(!skills
             .iter()
@@ -629,6 +827,56 @@ mod tests {
             .unwrap();
         assert!(!rendered.contains("github.com"));
         assert!(!rendered.contains("a1dc48e68138490d522c04cbf5822214c6eb1202"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn skill_resources_are_listed_and_read_only_after_activation() {
+        let root =
+            std::env::temp_dir().join(format!("mnemora-skill-resource-{}", uuid::Uuid::new_v4()));
+        let skill_dir = root.join("builtin").join("resource-demo");
+        fs::create_dir_all(skill_dir.join("references")).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nid: resource-demo\nname: Resource demo\ndescription: test\nversion: 1.0.0\n---\n正文\n",
+        )
+        .unwrap();
+        fs::write(
+            skill_dir.join("references").join("guide.md"),
+            "第一行\n第二行\n第三行\n",
+        )
+        .unwrap();
+        fs::write(skill_dir.join("SOURCE.md"), "审计来源").unwrap();
+        fs::write(skill_dir.join(".hidden.md"), "隐藏内容").unwrap();
+        fs::write(skill_dir.join("binary.bin"), [0_u8, 1, 2, 3]).unwrap();
+
+        let repository = SkillRepository::new(root.join("builtin"), root.join("data"));
+        let resources = repository.list_model_resources("resource-demo").unwrap();
+        assert_eq!(resources.len(), 1);
+        assert!(resources
+            .iter()
+            .any(|file| file.path == "references/guide.md"));
+
+        let selected = repository
+            .read_model_resource("resource-demo", "references/guide.md", 2, 3)
+            .unwrap();
+        assert_eq!(selected.start_line, 2);
+        assert_eq!(selected.end_line, 3);
+        assert!(selected.content.contains("第二行"));
+        assert!(selected.content.contains("第三行"));
+
+        assert!(repository
+            .read_model_resource("resource-demo", "SKILL.md", 1, 2)
+            .is_err());
+        assert!(repository
+            .read_model_resource("resource-demo", "../SKILL.md", 1, 2)
+            .is_err());
+        assert!(repository
+            .read_model_resource("resource-demo", ".hidden.md", 1, 2)
+            .is_err());
+        assert!(repository
+            .read_model_resource("resource-demo", "binary.bin", 1, 2)
+            .is_err());
         let _ = fs::remove_dir_all(root);
     }
 }

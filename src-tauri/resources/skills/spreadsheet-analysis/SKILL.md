@@ -21,7 +21,7 @@ metadata:
     resource-cost: medium
     source-repository: https://github.com/github/awesome-copilot
     source-path: skills/convert-excel-to-md/SKILL.md
-    source-revision: 786bdcfc65b669faee10803db460a7218858ad21
+    source-revision: e4a1f57fd9d8c22d2a345d498fe6fde306c6456e
     attribution: "Convert Excel to Markdown skill from GitHub's awesome-copilot repository, licensed under MIT."
     adapted: true
     adaptation-notes: 将原版 MarkItDown/Python 转换流程改为 Mnemora 纯 Rust、按工作表和行范围读取；不生成中间文件，也不运行宏或公式。

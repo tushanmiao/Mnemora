@@ -16,7 +16,7 @@ import type {
 
 export const RECENT_TERMINAL_TASK_MS = 15 * 60 * 1_000;
 
-const TERMINAL_STATUSES = new Set<TaskRunStatus>(["completed", "failed", "stopped"]);
+const TERMINAL_STATUSES = new Set<TaskRunStatus>(["completed", "failed", "stopped", "abandoned"]);
 
 type Language = "zh" | "en";
 
@@ -34,6 +34,7 @@ const deepNoteStatusLabels: Record<Language, Record<TaskRunStatus, string>> = {
     completed: "已完成",
     failed: "失败",
     stopped: "已停止",
+    abandoned: "已遗弃",
   },
   en: {
     running: "Running",
@@ -42,6 +43,7 @@ const deepNoteStatusLabels: Record<Language, Record<TaskRunStatus, string>> = {
     completed: "Completed",
     failed: "Failed",
     stopped: "Stopped",
+    abandoned: "Abandoned",
   },
 };
 
@@ -53,6 +55,7 @@ const chatStatusLabels: Record<Language, Record<TaskRunStatus, string>> = {
     completed: "处理完成",
     failed: "处理失败",
     stopped: "已停止",
+    abandoned: "已遗弃",
   },
   en: {
     running: "Agent running",
@@ -61,6 +64,7 @@ const chatStatusLabels: Record<Language, Record<TaskRunStatus, string>> = {
     completed: "Completed",
     failed: "Failed",
     stopped: "Stopped",
+    abandoned: "Abandoned",
   },
 };
 
@@ -74,7 +78,7 @@ export function projectDeepNoteTaskRun(
   const sourceId = source.progress?.runId ?? run?.id ?? null;
   if (!phase || !sourceId) return null;
 
-  const status = deepNoteRunStatus(phase);
+  const status = source.detail?.run.abandoned ? "abandoned" : deepNoteRunStatus(phase);
   const updatedAt = source.progress?.updatedAt ?? run?.updatedAt ?? now;
   if (TERMINAL_STATUSES.has(status) && now - updatedAt > RECENT_TERMINAL_TASK_MS) return null;
 
@@ -183,6 +187,7 @@ export function sortTaskRuns(tasks: readonly TaskRunProjection[]): TaskRunProjec
     paused: 2,
     running: 3,
     stopped: 4,
+    abandoned: 4,
     completed: 5,
   };
   return [...tasks].sort((left, right) => (

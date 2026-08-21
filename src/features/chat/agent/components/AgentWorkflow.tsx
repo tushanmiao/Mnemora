@@ -266,8 +266,11 @@ function stepStatusLabel(step: WorkflowStep, language: "zh" | "en") {
 
 function toolNameLabel(name: string, language: "zh" | "en") {
   if (name === "search_tools") return language === "en" ? "Search tool catalog" : "搜索工具目录";
+  if (name === "inspect_tool") return language === "en" ? "Inspect tool contract" : "查看工具契约";
   if (name === "search_skills") return language === "en" ? "Search skill catalog" : "搜索技能目录";
-  if (name === "skill") return language === "en" ? "Load skill" : "加载技能";
+  if (name === "inspect_skill") return language === "en" ? "Inspect skill" : "查看技能说明";
+  if (name === "activate_skill" || name === "skill") return language === "en" ? "Load skill" : "加载技能";
+  if (name === "read_skill_resource") return language === "en" ? "Read skill resource" : "读取技能资源";
   if (name === "read_attachment_text") return language === "en" ? "Read text attachment" : "读取文本附件";
   if (name === "read_pdf_pages") return language === "en" ? "Read PDF pages" : "读取 PDF 页面";
   if (name === "read_docx_blocks") return language === "en" ? "Read DOCX blocks" : "读取 DOCX 内容";
@@ -275,6 +278,20 @@ function toolNameLabel(name: string, language: "zh" | "en") {
   if (name === "memory_read") return language === "en" ? "Read memory" : "读取记忆";
   if (name === "memory_search") return language === "en" ? "Search memory" : "搜索记忆";
   if (name === "memory_modify") return language === "en" ? "Update memory" : "更新记忆";
+  if (name === "workspace_list") return language === "en" ? "List workspace" : "列出工作区";
+  if (name === "workspace_glob") return language === "en" ? "Find workspace files" : "查找工作区文件";
+  if (name === "workspace_search") return language === "en" ? "Search workspace" : "搜索工作区";
+  if (name === "workspace_read") return language === "en" ? "Read workspace file" : "读取工作区文件";
+  if (name === "knowledge_list") return language === "en" ? "List knowledge base" : "列出知识库";
+  if (name === "knowledge_search") return language === "en" ? "Search knowledge base" : "搜索知识库";
+  if (name === "knowledge_read") return language === "en" ? "Read knowledge source" : "读取知识来源";
+  if (name === "web_search") return language === "en" ? "Search the web" : "搜索网页";
+  if (name === "web_fetch") return language === "en" ? "Read web page" : "读取网页";
+  if (name === "present_artifact") return language === "en" ? "Prepare artifact" : "整理交付内容";
+  if (name === "note_list") return language === "en" ? "List notes" : "列出笔记";
+  if (name === "note_read") return language === "en" ? "Read note" : "读取笔记";
+  if (name === "note_create") return language === "en" ? "Create note" : "创建笔记";
+  if (name === "note_update") return language === "en" ? "Update note" : "更新笔记";
   return name;
 }
 
