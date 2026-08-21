@@ -15,11 +15,12 @@ import {
   RotateCcw,
   Sparkles,
   Square,
+  Trash2,
   Wrench,
   X,
   XCircle,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import type { ChatMessage } from "../../../types/chat";
 import { useI18n } from "../../../i18n/I18nProvider";
 import type { DeepNoteRunDetail } from "../../chat/api/notePipeline";
@@ -42,6 +43,7 @@ import "../styles/task-center.css";
 
 type TaskCenterProps = {
   chatMessage: ChatMessage | null;
+  showChatTask?: boolean;
   deepNoteDetail: DeepNoteRunDetail | null;
   deepNoteProgress: DeepNoteProgress | null;
   deepNoteReviewTitle?: string | null;
@@ -54,7 +56,12 @@ type TaskCenterProps = {
   onRetryDeepNoteTask: () => void;
   onRestartDeepNoteTask: () => void;
   onStopDeepNoteTask: () => void;
+  onAbandonDeepNoteTask: () => void;
 };
+
+type TaskCenterPosition = { x: number; y: number };
+const TASK_CENTER_POSITION_KEY = "mnemora.task-center.position.v1";
+const VIEWPORT_MARGIN = 8;
 
 const copy = {
   zh: {
@@ -74,6 +81,8 @@ const copy = {
     retry: "重试失败步骤",
     restart: "重新生成",
     stop: "停止",
+    abandon: "遗弃任务",
+    abandonConfirm: "永久遗弃这个深度笔记任务吗？\n\n后台请求会停止，任务将从进度面板中关闭，并且不能继续、重试或重新生成。已保存的笔记不会删除。",
     details: "完整详情",
     showContent: "查看过程内容",
     taskList: "任务列表",
@@ -95,6 +104,8 @@ const copy = {
     retry: "Retry failed step",
     restart: "Regenerate",
     stop: "Stop",
+    abandon: "Discard task",
+    abandonConfirm: "Permanently discard this deep-note task?\n\nBackground work will stop, the task will close, and it cannot be resumed, retried, or regenerated. Saved notes will not be deleted.",
     details: "Full details",
     showContent: "Show process content",
     taskList: "Task list",
@@ -103,6 +114,7 @@ const copy = {
 
 export function TaskCenter({
   chatMessage,
+  showChatTask = true,
   deepNoteDetail,
   deepNoteProgress,
   deepNoteReviewTitle,
@@ -115,14 +127,26 @@ export function TaskCenter({
   onRetryDeepNoteTask,
   onRestartDeepNoteTask,
   onStopDeepNoteTask,
+  onAbandonDeepNoteTask,
 }: TaskCenterProps) {
   const { language } = useI18n();
   const text = copy[language];
   const [clock, setClock] = useState(Date.now());
   const [open, setOpen] = useState(false);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const [position, setPosition] = useState<TaskCenterPosition | null>(loadTaskCenterPosition);
+  const [dragging, setDragging] = useState(false);
   const rootRef = useRef<HTMLElement>(null);
-  const previouslyLiveRef = useRef<Set<string>>(new Set());
+  const dragRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    originX: number;
+    originY: number;
+    suppressClick: boolean;
+  } | null>(null);
+  const dragMovedRef = useRef(false);
+  const suppressTriggerClickRef = useRef(false);
   const chatCanStream = Boolean(chatMessage && (
     chatMessage.status === "pending" || chatMessage.status === "streaming"
   ));
@@ -135,7 +159,7 @@ export function TaskCenter({
       progress: deepNoteProgress,
       reviewTitle: deepNoteReviewTitle,
     }, language, clock),
-    projectChatTaskRun(chatMessage, reasoning, chatCanStream || streaming !== null, language, clock),
+    showChatTask ? projectChatTaskRun(chatMessage, reasoning, chatCanStream || streaming !== null, language, clock) : null,
   ].filter((task): task is TaskRunProjection => task !== null)), [
     chatCanStream,
     chatMessage,
@@ -145,6 +169,7 @@ export function TaskCenter({
     deepNoteReviewTitle,
     language,
     reasoning,
+    showChatTask,
   ]);
 
   const liveTasks = tasks.filter((task) => !isTaskRunTerminal(task.status));
@@ -161,12 +186,6 @@ export function TaskCenter({
       setSelectedTaskId(tasks[0].id);
     }
   }, [selectedTaskId, tasks]);
-
-  useEffect(() => {
-    const currentLive = new Set(liveTasks.map((task) => task.id));
-    if (previouslyLiveRef.current.size > 0 && currentLive.size === 0) setOpen(false);
-    previouslyLiveRef.current = currentLive;
-  }, [liveTasks]);
 
   useEffect(() => {
     if (liveTasks.length === 0) return undefined;
@@ -201,6 +220,82 @@ export function TaskCenter({
     };
   }, [open]);
 
+  const clampPosition = useCallback((next: TaskCenterPosition) => {
+    const root = rootRef.current;
+    const panel = root?.querySelector<HTMLElement>(".task-center-panel");
+    const trigger = root?.querySelector<HTMLElement>(".task-center-trigger");
+    const width = Math.max(root?.offsetWidth ?? 0, panel?.offsetWidth ?? 0, trigger?.offsetWidth ?? 0);
+    const height = open
+      ? (trigger?.offsetHeight ?? 40) + 7 + (panel?.offsetHeight ?? 0)
+      : (trigger?.offsetHeight ?? root?.offsetHeight ?? 40);
+    return {
+      x: Math.min(Math.max(VIEWPORT_MARGIN, next.x), Math.max(VIEWPORT_MARGIN, window.innerWidth - width - VIEWPORT_MARGIN)),
+      y: Math.min(Math.max(VIEWPORT_MARGIN, next.y), Math.max(VIEWPORT_MARGIN, window.innerHeight - height - VIEWPORT_MARGIN)),
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (!position) return undefined;
+    const clamp = () => setPosition((current) => current ? clampPosition(current) : current);
+    const frame = window.requestAnimationFrame(clamp);
+    window.addEventListener("resize", clamp);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener("resize", clamp);
+    };
+  }, [clampPosition, open, position !== null]);
+
+  const beginDrag = (event: ReactPointerEvent<HTMLElement>) => {
+    if (event.button !== 0 || (event.target as HTMLElement).closest("button:not(.task-center-trigger)")) return;
+    const rect = rootRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    dragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      originX: position?.x ?? rect.left,
+      originY: position?.y ?? rect.top,
+      suppressClick: event.currentTarget.classList.contains("task-center-trigger"),
+    };
+    dragMovedRef.current = false;
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const moveDrag = (event: ReactPointerEvent<HTMLElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const deltaX = event.clientX - drag.startX;
+    const deltaY = event.clientY - drag.startY;
+    if (!dragMovedRef.current && Math.hypot(deltaX, deltaY) < 4) return;
+    dragMovedRef.current = true;
+    setDragging(true);
+    setPosition(clampPosition({ x: drag.originX + deltaX, y: drag.originY + deltaY }));
+  };
+
+  const endDrag = (event: ReactPointerEvent<HTMLElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    dragRef.current = null;
+    setDragging(false);
+    if (dragMovedRef.current) {
+      const finalPosition = clampPosition({
+        x: drag.originX + event.clientX - drag.startX,
+        y: drag.originY + event.clientY - drag.startY,
+      });
+      suppressTriggerClickRef.current = drag.suppressClick;
+      setPosition(finalPosition);
+      persistTaskCenterPosition(finalPosition);
+    }
+  };
+
+  const resetPosition = () => {
+    setPosition(null);
+    try { window.localStorage.removeItem(TASK_CENTER_POSITION_KEY); } catch { /* 存储不可用时仍可复位当前会话 */ }
+  };
+
   if (!primaryTask || !selectedTask) return null;
 
   const triggerTitle = tasks.length > 1
@@ -217,7 +312,12 @@ export function TaskCenter({
   };
 
   return (
-    <aside className="task-center" ref={rootRef} data-open={open ? "true" : "false"}>
+    <aside
+      className={`task-center${dragging ? " is-dragging" : ""}`}
+      ref={rootRef}
+      data-open={open ? "true" : "false"}
+      style={position ? { left: position.x, top: position.y, right: "auto" } as CSSProperties : undefined}
+    >
       <button
         className="task-center-trigger"
         data-status={primaryTask.status}
@@ -225,7 +325,18 @@ export function TaskCenter({
         title={`${text.open}：${triggerTitle}`}
         aria-label={`${text.open}：${triggerTitle}`}
         aria-expanded={open}
-        onClick={() => setOpen((value) => !value)}
+        onPointerDown={beginDrag}
+        onPointerMove={moveDrag}
+        onPointerUp={endDrag}
+        onPointerCancel={endDrag}
+        onDoubleClick={resetPosition}
+        onClick={() => {
+          if (suppressTriggerClickRef.current) {
+            suppressTriggerClickRef.current = false;
+            return;
+          }
+          setOpen((value) => !value);
+        }}
       >
         <span className="task-center-trigger-icon" aria-hidden="true">
           <TaskStatusIcon status={primaryTask.status} />
@@ -239,7 +350,15 @@ export function TaskCenter({
 
       {open ? (
         <section className="task-center-panel" aria-label={text.title}>
-          <header className="task-center-panel-header">
+          <header
+            className="task-center-panel-header"
+            title={language === "en" ? "Drag to move; double-click to reset" : "拖动可移动；双击恢复默认位置"}
+            onPointerDown={beginDrag}
+            onPointerMove={moveDrag}
+            onPointerUp={endDrag}
+            onPointerCancel={endDrag}
+            onDoubleClick={resetPosition}
+          >
             <span><ListChecks size={16} />{text.title}</span>
             <small>{liveTasks.length > 0 ? text.runningTasks(liveTasks.length) : text.recentTasks(tasks.length)}</small>
             <button className="icon-button" type="button" title={text.close} aria-label={text.close} onClick={() => setOpen(false)}>
@@ -323,6 +442,20 @@ export function TaskCenter({
                 <Square size={13} />{text.stop}
               </button>
             ) : null}
+            {selectedTask.kind === "deepNote" && selectedTask.canAbandon ? (
+              <button
+                className="task-center-abandon"
+                type="button"
+                disabled={deepNoteControlBusy}
+                onClick={() => {
+                  if (!window.confirm(text.abandonConfirm)) return;
+                  setOpen(false);
+                  onAbandonDeepNoteTask();
+                }}
+              >
+                <Trash2 size={14} />{text.abandon}
+              </button>
+            ) : null}
             <button className="task-center-open-details" type="button" onClick={handleOpenDetails}>
               <ExternalLink size={14} />{text.details}
             </button>
@@ -331,6 +464,24 @@ export function TaskCenter({
       ) : null}
     </aside>
   );
+}
+
+function loadTaskCenterPosition(): TaskCenterPosition | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const value: unknown = JSON.parse(window.localStorage.getItem(TASK_CENTER_POSITION_KEY) ?? "null");
+    if (!value || typeof value !== "object") return null;
+    const { x, y } = value as Partial<TaskCenterPosition>;
+    return typeof x === "number" && Number.isFinite(x) && typeof y === "number" && Number.isFinite(y)
+      ? { x, y }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function persistTaskCenterPosition(position: TaskCenterPosition) {
+  try { window.localStorage.setItem(TASK_CENTER_POSITION_KEY, JSON.stringify(position)); } catch { /* 忽略受限存储环境 */ }
 }
 
 function TaskMetrics({ task, language }: { task: TaskRunProjection; language: "zh" | "en" }) {
@@ -359,6 +510,16 @@ function TaskStep({ step, language }: { step: TaskRunStepProjection; language: "
           <details>
             <summary>{text.showContent}</summary>
             <pre>{step.content}</pre>
+          </details>
+        ) : null}
+        {step.kind === "skill" && step.skill ? (
+          <small className="task-center-step-meta">{step.skill.id} · v{step.skill.version} · {step.skill.activation}</small>
+        ) : null}
+        {step.kind === "tool" && step.tool ? (
+          <details className="task-center-step-detail">
+            <summary>调用详情</summary>
+            <code>{step.tool.argumentSummary}</code>
+            {step.tool.preview ? <p>{step.tool.preview}</p> : null}
           </details>
         ) : null}
       </div>

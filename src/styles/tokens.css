@@ -27,6 +27,9 @@
   --font-size-row: 13px;
   --reading-font-family: var(--ui-font-family);
   --reading-font-size: 14px;
+  --note-font-size: 16px;
+  --note-line-height: 1.85;
+  --note-font-family: var(--reading-font-family);
   --reading-letter-spacing: 0px;
   --on-accent: #ffffff;
 

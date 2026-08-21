@@ -2,9 +2,12 @@ import {
   lazy,
   Suspense,
   useCallback,
+  useDeferredValue,
   useEffect,
+  useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
 } from "react";
@@ -15,6 +18,7 @@ import {
   FileCode2,
   FileText,
   LoaderCircle,
+  ListTree,
   MessageCircle,
   Quote,
   Save,
@@ -32,7 +36,17 @@ import type {
   ActiveWorkNoteContext,
   WorkNoteSourceContext,
 } from "../../workspace/types";
-import { lineAtOffset, revisionHash } from "../utils/notesWorkspace";
+import {
+  lineAtOffset,
+  loadNotesLayout,
+  OUTLINE_DEFAULT_WIDTH,
+  OUTLINE_MAX_WIDTH,
+  OUTLINE_MIN_WIDTH,
+  persistNotesLayout,
+  revisionHash,
+} from "../utils/notesWorkspace";
+import { extractMarkdownOutline, type MarkdownOutlineItem } from "../../chat/markdown/utils/outline";
+import { PanelResizeHandle } from "../../layout/components/PanelResizeHandle";
 import { NoteSourcesBar } from "./NoteSourcesBar";
 import type { NoteSelectionMenu } from "./NoteEditor";
 import "../styles/notes.css";
@@ -105,6 +119,8 @@ export function NoteWorkspace({
   onOpenSourcePdf,
 }: NoteWorkspaceProps) {
   const previewRef = useRef<HTMLDivElement>(null);
+  const sourceRef = useRef<HTMLTextAreaElement>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
   const lastContextRef = useRef<ActiveWorkNoteContext | null>(null);
   const loadRequestRef = useRef(0);
   const [note, setNote] = useState<LibraryNote | null>(null);
@@ -114,7 +130,13 @@ export function NoteWorkspace({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [mode, setMode] = useState<"source" | "preview">("source");
+  const [outlineLayout, setOutlineLayout] = useState(loadNotesLayout);
   const [selectionMenu, setSelectionMenu] = useState<NoteSelectionMenu | null>(null);
+  const deferredContent = useDeferredValue(content);
+  const outline = useMemo(
+    () => extractMarkdownOutline(deferredContent, `note-${noteId}`),
+    [deferredContent, noteId],
+  );
 
   const loadNote = useCallback(async ({
     quiet = false,
@@ -212,14 +234,15 @@ export function NoteWorkspace({
       return;
     }
     const rect = editor.getBoundingClientRect();
+    const bodyRect = bodyRef.current?.getBoundingClientRect() ?? rect;
     const keyboardEvent = "key" in event;
     setSelectionMenu({
       left: keyboardEvent
-        ? 18
-        : Math.min(rect.width - 224, Math.max(12, event.clientX - rect.left)),
+        ? Math.max(18, rect.left - bodyRect.left + 18)
+        : Math.min(bodyRect.width - 224, Math.max(12, event.clientX - bodyRect.left)),
       top: keyboardEvent
         ? 18
-        : Math.min(rect.height - 44, Math.max(12, event.clientY - rect.top + 10)),
+        : Math.min(bodyRect.height - 44, Math.max(12, event.clientY - bodyRect.top + 10)),
       text: selectedText.slice(0, MAX_SELECTION_CHARACTERS),
       startLine: lineAtOffset(editor.value, editor.selectionStart),
       endLine: lineAtOffset(editor.value, editor.selectionEnd),
@@ -236,7 +259,7 @@ export function NoteWorkspace({
     }
     const text = selection.toString().trim();
     if (!text) return;
-    const rect = host.getBoundingClientRect();
+    const rect = bodyRef.current?.getBoundingClientRect() ?? host.getBoundingClientRect();
     setSelectionMenu({
       left: Math.min(rect.width - 224, Math.max(12, event.clientX - rect.left)),
       top: Math.min(rect.height - 44, Math.max(12, event.clientY - rect.top + 10)),
@@ -295,6 +318,46 @@ export function NoteWorkspace({
     clearSelection();
   };
 
+  const jumpToOutline = (item: MarkdownOutlineItem) => {
+    setSelectionMenu(null);
+    if (mode === "preview") {
+      const host = previewRef.current;
+      const heading = host?.querySelector<HTMLElement>(`#${CSS.escape(item.id)}`);
+      if (host && heading) {
+        const hostRect = host.getBoundingClientRect();
+        const headingRect = heading.getBoundingClientRect();
+        const targetTop = host.scrollTop + headingRect.top - hostRect.top - 18;
+        host.scrollTo({ top: Math.max(0, targetTop), behavior: "smooth" });
+      }
+      return;
+    }
+    const editor = sourceRef.current;
+    if (!editor) return;
+    const style = window.getComputedStyle(editor);
+    const lineHeight = Number.parseFloat(style.lineHeight) || 26;
+    const paddingTop = Number.parseFloat(style.paddingTop) || 0;
+    const line = lineAtOffset(content, item.offset);
+    editor.focus({ preventScroll: true });
+    editor.setSelectionRange(item.offset, item.offset);
+    editor.scrollTop = Math.max(0, (line - 1) * lineHeight + paddingTop - 18);
+  };
+
+  const previewOutlineWidth = (width: number) => {
+    bodyRef.current?.style.setProperty("--note-workspace-outline-width", `${width}px`);
+  };
+
+  const commitOutlineWidth = (width: number) => {
+    const next = { ...outlineLayout, outlineWidth: width };
+    setOutlineLayout(next);
+    persistNotesLayout(next);
+  };
+
+  const toggleOutline = () => {
+    const next = { ...outlineLayout, outlineOpen: !outlineLayout.outlineOpen };
+    setOutlineLayout(next);
+    persistNotesLayout(next);
+  };
+
   if (loading) {
     return <div className="work-library-state" role="status"><LoaderCircle className="work-library-spinner" size={24} /><span>正在打开笔记</span></div>;
   }
@@ -321,6 +384,9 @@ export function NoteWorkspace({
             {mode === "source" ? <Eye size={15} /> : <FileCode2 size={15} />}
             <span>{mode === "source" ? "预览" : "Markdown"}</span>
           </button>
+          <button className={outlineLayout.outlineOpen ? "is-active" : ""} type="button" title={outlineLayout.outlineOpen ? "收起笔记大纲" : "展开笔记大纲"} aria-pressed={outlineLayout.outlineOpen} onClick={toggleOutline}>
+            <ListTree size={15} /><span>大纲</span>
+          </button>
           <button type="button" disabled={!dirty || saving || !title.trim()} onClick={() => void save()}>
             {saving ? <LoaderCircle className="is-spinning" size={15} /> : <Save size={15} />}
             <span>{saving ? "正在保存" : "保存"}</span>
@@ -343,25 +409,61 @@ export function NoteWorkspace({
       <NoteSourcesBar noteId={note.id} />
       <div className="note-workspace-document">
         <input className="note-workspace-title" value={title} maxLength={500} aria-label="笔记标题" onChange={(event) => setTitle(event.target.value)} />
-        <div className="note-workspace-body">
-          {mode === "source" ? (
-            <textarea
-              className="note-workspace-content"
-              value={content}
-              maxLength={500_000}
-              aria-label="Markdown 笔记正文"
-              onMouseUp={showSourceSelection}
-              onKeyUp={showSourceSelection}
-              onScroll={() => setSelectionMenu(null)}
-              onChange={(event) => setContent(event.target.value)}
-            />
-          ) : (
-            <div ref={previewRef} className="note-workspace-preview" onMouseUp={showPreviewSelection} onScroll={() => setSelectionMenu(null)}>
-              <Suspense fallback={<div className="work-library-state" role="status"><LoaderCircle className="work-library-spinner" size={20} /><span>正在加载预览</span></div>}>
-                <MarkdownNotePreview noteId={note.id} content={content} />
-              </Suspense>
-            </div>
-          )}
+        <div
+          ref={bodyRef}
+          className="note-workspace-body"
+          data-outline={outlineLayout.outlineOpen ? "open" : "closed"}
+          style={{ "--note-workspace-outline-width": `${outlineLayout.outlineWidth}px` } as CSSProperties}
+        >
+          {outlineLayout.outlineOpen ? (
+            <aside className="note-workspace-outline" aria-label="笔记大纲">
+              <header><ListTree size={14} /><strong>大纲</strong><span>{outline.length}</span></header>
+              <nav>
+                {outline.length > 0 ? outline.map((item) => (
+                  <button
+                    type="button"
+                    key={item.id}
+                    title={item.title}
+                    style={{ paddingInlineStart: `${12 + (item.level - 1) * 13}px` }}
+                    onClick={() => jumpToOutline(item)}
+                  >
+                    {item.title}
+                  </button>
+                )) : <p>没有检测到标题。使用 “#” 开头的标题行即可建立大纲。</p>}
+              </nav>
+              <PanelResizeHandle
+                edge="right"
+                value={outlineLayout.outlineWidth}
+                defaultValue={OUTLINE_DEFAULT_WIDTH}
+                minValue={OUTLINE_MIN_WIDTH}
+                maxValue={OUTLINE_MAX_WIDTH}
+                label="调整笔记大纲宽度"
+                onPreview={previewOutlineWidth}
+                onCommit={commitOutlineWidth}
+              />
+            </aside>
+          ) : null}
+          <div className="note-workspace-surface">
+            {mode === "source" ? (
+              <textarea
+                ref={sourceRef}
+                className="note-workspace-content"
+                value={content}
+                maxLength={500_000}
+                aria-label="Markdown 笔记正文"
+                onMouseUp={showSourceSelection}
+                onKeyUp={showSourceSelection}
+                onScroll={() => setSelectionMenu(null)}
+                onChange={(event) => setContent(event.target.value)}
+              />
+            ) : (
+              <div ref={previewRef} className="note-workspace-preview" onMouseUp={showPreviewSelection} onScroll={() => setSelectionMenu(null)}>
+                <Suspense fallback={<div className="work-library-state" role="status"><LoaderCircle className="work-library-spinner" size={20} /><span>正在加载预览</span></div>}>
+                  <MarkdownNotePreview noteId={note.id} content={content} />
+                </Suspense>
+              </div>
+            )}
+          </div>
           {selectionMenu ? (
             <div className="notes-selection-menu note-workspace-selection-menu" style={{ left: selectionMenu.left, top: selectionMenu.top }} onMouseDown={(event) => event.preventDefault()}>
               <button type="button" onClick={() => { void navigator.clipboard?.writeText(selectionMenu.text); clearSelection(); }}><Copy size={13} />复制</button>

@@ -8,14 +8,17 @@ import {
   LoaderCircle,
   MoreHorizontal,
   NotebookText,
+  Pencil,
   Search,
+  SlidersHorizontal,
   Trash2,
 } from "lucide-react";
-import type { Dispatch, SetStateAction } from "react";
+import { useState, type Dispatch, type SetStateAction } from "react";
 import type { LibraryNoteGroup, LibraryNoteSummary } from "../../library/types";
 import { formatNoteSize, NOTE_TIME_FORMATTER } from "../utils/notesWorkspace";
 
 export type GroupFilter = "all" | "unfiled" | { group: string };
+export type NoteSort = "updatedDesc" | "updatedAsc" | "createdDesc" | "createdAsc" | "titleAsc" | "titleDesc" | "sizeDesc" | "sizeAsc";
 
 type NotesBrowserProps = {
   notes: LibraryNoteSummary[];
@@ -26,7 +29,8 @@ type NotesBrowserProps = {
   unfiledCount: number;
   query: string;
   setQuery: (query: string) => void;
-  creatorName: string;
+  sort: NoteSort;
+  setSort: (sort: NoteSort) => void;
   rowMenu: string | null;
   setRowMenu: Dispatch<SetStateAction<string | null>>;
   loading: boolean;
@@ -38,6 +42,7 @@ type NotesBrowserProps = {
   onRemoveGroup: (name: string) => void;
   onOpenNote: (noteId: string) => void;
   onAssignGroup: (noteId: string, groupName: string | null) => void;
+  onRenameNote: (note: LibraryNoteSummary, title: string) => Promise<boolean>;
   onRemoveNote: (note: LibraryNoteSummary) => void;
 };
 
@@ -51,7 +56,8 @@ export function NotesBrowser({
   unfiledCount,
   query,
   setQuery,
-  creatorName,
+  sort,
+  setSort,
   rowMenu,
   setRowMenu,
   loading,
@@ -63,8 +69,32 @@ export function NotesBrowser({
   onRemoveGroup,
   onOpenNote,
   onAssignGroup,
+  onRenameNote,
   onRemoveNote,
 }: NotesBrowserProps) {
+  const [renamingNoteId, setRenamingNoteId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
+  const [renameBusy, setRenameBusy] = useState(false);
+
+  const startRename = (note: LibraryNoteSummary) => {
+    setRowMenu(null);
+    setRenamingNoteId(note.id);
+    setRenameDraft(note.title);
+  };
+
+  const finishRename = async (note: LibraryNoteSummary) => {
+    if (renameBusy || renamingNoteId !== note.id) return;
+    const nextTitle = renameDraft.trim();
+    if (!nextTitle || nextTitle === note.title) {
+      setRenamingNoteId(null);
+      return;
+    }
+    setRenameBusy(true);
+    const renamed = await onRenameNote(note, nextTitle);
+    setRenameBusy(false);
+    if (renamed) setRenamingNoteId(null);
+  };
+
   return (
     <section className="notes-browser" aria-label="Markdown 笔记库">
       <header className="notes-browser-toolbar">
@@ -134,6 +164,19 @@ export function NotesBrowser({
               <Search size={14} />
               <input value={query} placeholder="搜索笔记" onChange={(event) => setQuery(event.target.value)} />
             </label>
+            <label className="notes-sort-control" title="笔记排序">
+              <SlidersHorizontal size={14} />
+              <select value={sort} aria-label="笔记排序" onChange={(event) => setSort(event.target.value as NoteSort)}>
+                <option value="updatedDesc">最近更新</option>
+                <option value="updatedAsc">最早更新</option>
+                <option value="createdDesc">最近创建</option>
+                <option value="createdAsc">最早创建</option>
+                <option value="titleAsc">标题 A–Z</option>
+                <option value="titleDesc">标题 Z–A</option>
+                <option value="sizeDesc">大小：从大到小</option>
+                <option value="sizeAsc">大小：从小到大</option>
+              </select>
+            </label>
             <span className="notes-browser-count">{filteredNotes.length} 篇笔记</span>
           </div>
           {error ? <div className="notes-error" role="alert">{error}</div> : null}
@@ -148,17 +191,36 @@ export function NotesBrowser({
           ) : (
             <div className="notes-table" role="table" aria-label="笔记列表">
               <div className="notes-table-head" role="row">
-                <span role="columnheader">标题</span><span role="columnheader">创建者</span>
+                <span role="columnheader">标题</span><span role="columnheader">创建时间</span>
                 <span role="columnheader">最后修改</span><span role="columnheader">分组</span>
                 <span role="columnheader">大小</span><span role="columnheader" aria-label="操作" />
               </div>
               <div className="notes-table-body" role="rowgroup">
                 {filteredNotes.map((note) => (
                   <div className="notes-table-row" role="row" key={note.id}>
-                    <button type="button" className="notes-table-title" role="cell" title={note.contentPreview || "空白笔记"} onClick={() => onOpenNote(note.id)}>
-                      <FileText size={16} /><span>{note.title}</span>
-                    </button>
-                    <span role="cell" className="notes-table-muted" title={creatorName}>{creatorName}</span>
+                    {renamingNoteId === note.id ? (
+                      <label className="notes-table-title notes-table-title-editor" role="cell">
+                        <FileText size={16} />
+                        <input
+                          autoFocus
+                          value={renameDraft}
+                          maxLength={240}
+                          disabled={renameBusy}
+                          aria-label={`重命名 ${note.title}`}
+                          onChange={(event) => setRenameDraft(event.target.value)}
+                          onBlur={() => void finishRename(note)}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter") { event.preventDefault(); void finishRename(note); }
+                            if (event.key === "Escape") { event.preventDefault(); setRenamingNoteId(null); }
+                          }}
+                        />
+                      </label>
+                    ) : (
+                      <button type="button" className="notes-table-title" role="cell" title={note.contentPreview || "空白笔记"} onClick={() => onOpenNote(note.id)}>
+                        <FileText size={16} /><span>{note.title}</span>
+                      </button>
+                    )}
+                    <span role="cell" className="notes-table-muted">{NOTE_TIME_FORMATTER.format(note.createdAt)}</span>
                     <span role="cell" className="notes-table-muted">{NOTE_TIME_FORMATTER.format(note.updatedAt)}</span>
                     <span role="cell">
                       <select value={note.groupName ?? ""} aria-label={`${note.title} 所属分组`} onChange={(event) => onAssignGroup(note.id, event.target.value || null)}>
@@ -166,7 +228,7 @@ export function NotesBrowser({
                         {groups.map((group) => <option value={group.name} key={group.name}>{group.name}</option>)}
                       </select>
                     </span>
-                    <span role="cell" className="notes-table-muted">{formatNoteSize(note.contentChars)}</span>
+                    <span role="cell" className="notes-table-muted" title={`${note.contentChars} 个字符`}>{formatNoteSize(note.contentBytes)}</span>
                     <span role="cell" className="notes-table-actions">
                       <button
                         type="button"
@@ -181,6 +243,9 @@ export function NotesBrowser({
                       </button>
                       {rowMenu === note.id ? (
                         <div className="notes-row-menu" role="menu" onMouseDown={(event) => event.stopPropagation()}>
+                          <button type="button" role="menuitem" onClick={() => startRename(note)}>
+                            <Pencil size={14} /><span>重命名</span>
+                          </button>
                           <button type="button" role="menuitem" className="notes-row-menu-danger" onClick={() => onRemoveNote(note)}>
                             <Trash2 size={14} /><span>删除笔记</span>
                           </button>

@@ -6,6 +6,7 @@ import {
   MoreHorizontal,
   PanelRight,
   PanelRightClose,
+  ListChecks,
   ShieldCheck,
   Sun,
 } from "lucide-react";
@@ -24,6 +25,8 @@ type ChatHeaderProps = {
   onPermissionChange: (permission: AiPermissionMode) => void;
   onToggleTheme: () => void;
   onClosePanel?: () => void;
+  showTaskProgress?: boolean;
+  onToggleTaskProgress?: (enabled: boolean) => void;
 };
 
 export function ChatHeader({
@@ -35,6 +38,8 @@ export function ChatHeader({
   onPermissionChange,
   onToggleTheme,
   onClosePanel,
+  showTaskProgress = true,
+  onToggleTaskProgress,
 }: ChatHeaderProps) {
   const { t } = useI18n();
   const permissionLabels: Record<AiPermissionMode, string> = {
@@ -111,6 +116,18 @@ export function ChatHeader({
           </button>
         ) : !compact ? (
           <>
+            {onToggleTaskProgress ? (
+              <button
+                className={`icon-button${showTaskProgress ? " is-active" : ""}`}
+                type="button"
+                title={showTaskProgress ? t("chat.hideTaskProgress") : t("chat.showTaskProgress")}
+                aria-label={showTaskProgress ? t("chat.hideTaskProgress") : t("chat.showTaskProgress")}
+                aria-pressed={showTaskProgress}
+                onClick={() => onToggleTaskProgress(!showTaskProgress)}
+              >
+                <ListChecks size={18} />
+              </button>
+            ) : null}
             <button
               className="icon-button"
               type="button"

@@ -97,4 +97,20 @@ describe("trimConversationCache", () => {
       estimateConversationTextBytes(plain) + 2_000,
     );
   });
+
+  it("includes the ordered Agent event ledger in the cache budget", () => {
+    const plain = conversation("plain-agent", "question");
+    const withEvents = conversation("event-agent", "question");
+    withEvents.messages[0].agentEvents = [{
+      id: "event-with-a-long-stable-identifier",
+      sequence: 1,
+      createdAt: 100,
+      kind: "tool",
+      callId: "tool-call-with-a-long-stable-identifier",
+    }];
+
+    expect(estimateConversationTextBytes(withEvents)).toBeGreaterThan(
+      estimateConversationTextBytes(plain) + 100,
+    );
+  });
 });

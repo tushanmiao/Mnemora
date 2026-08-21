@@ -42,6 +42,8 @@ export interface WorkflowStep {
   reasoningLabel?: "reasoning" | "summary";
   skill?: ActivatedSkillSnapshot;
   tool?: ToolTrace;
+  sequence?: number;
+  createdAt?: number;
 }
 
 export interface AgentWorkflowProjection {

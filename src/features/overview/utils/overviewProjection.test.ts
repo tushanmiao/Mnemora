@@ -5,7 +5,7 @@ describe("projectOverviewSnapshot", () => {
   it("merges recent activity and sorts it by update time", () => {
     const snapshot = projectOverviewSnapshot(
       [{ id: "c1", title: "对话", preview: "问题", messageCount: 1, assistantId: null, providerId: null, modelId: null, projectId: null, collectionId: null, pinned: false, createdAt: 1, updatedAt: 3 }],
-      [{ id: "n1", itemId: null, itemTitle: null, title: "笔记", contentPreview: "内容", contentChars: 2, groupName: null, createdAt: 1, updatedAt: 5 }],
+      [{ id: "n1", itemId: null, itemTitle: null, title: "笔记", contentPreview: "内容", contentChars: 2, contentBytes: 6, groupName: null, createdAt: 1, updatedAt: 5 }],
       [],
       4,
       2,

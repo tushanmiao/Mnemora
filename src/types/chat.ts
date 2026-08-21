@@ -85,6 +85,25 @@ export interface ToolTrace {
   approvalId?: string;
 }
 
+/**
+ * Agent 活动只保存顺序和对既有快照的引用，避免把 reasoning、Skill、Tool
+ * 内容在同一条消息中重复持久化。sequence 由运行时按真实到达顺序分配。
+ */
+export type AgentActivityEvent = {
+  id: string;
+  sequence: number;
+  createdAt: number;
+} & (
+  | {
+      kind: "reasoning";
+      startOffset: number;
+      endOffset: number;
+      reasoningLabel: "reasoning" | "summary";
+    }
+  | { kind: "skill"; skillId: string }
+  | { kind: "tool"; callId: string }
+);
+
 /** 用户明确从 Work 文献中加入本轮问题的结构化引用。 */
 export interface LiteratureReference {
   /** 引用唯一标识，用于时间线渲染和待发送列表管理。 */
@@ -141,6 +160,8 @@ export interface ChatMessage {
   usage?: ModelUsage;
   activatedSkills?: ActivatedSkillSnapshot[];
   toolTraces?: ToolTrace[];
+  /** 真实流式活动的有序索引；旧消息没有时继续使用兼容字段投影。 */
+  agentEvents?: AgentActivityEvent[];
   /** 新 Agent Runtime 的稳定身份；旧会话没有该字段。 */
   agentRunId?: string;
   /** 可随消息快速加载的有界投影，完整流程由兼容字段或事件存储恢复。 */

@@ -61,6 +61,9 @@ export function createAssistantMessage(
       protocol: selectedModel.provider.protocol,
     },
     activatedSkills,
+    // 空事件账本表示“本轮尚未发生真实 Agent 活动”。它与旧消息缺少该字段
+    // 有意区分，避免用户预选 Skill 在模型尚未加载/执行前就被显示为工作流。
+    agentEvents: [],
   };
 }
 

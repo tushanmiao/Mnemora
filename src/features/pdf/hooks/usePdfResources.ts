@@ -197,6 +197,7 @@ function noteSummary(note: LibraryNote): LibraryNoteSummary {
     title: note.title,
     contentPreview: note.content.slice(0, 600),
     contentChars: note.content.length,
+    contentBytes: new TextEncoder().encode(note.content).byteLength,
     groupName: note.groupName,
     createdAt: note.createdAt,
     updatedAt: note.updatedAt,

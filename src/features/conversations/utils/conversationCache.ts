@@ -46,6 +46,17 @@ export function estimateConversationTextBytes(conversation: Conversation) {
       characters += trace.argumentSummary.length + (trace.preview?.length ?? 0);
       characters += (trace.errorKind?.length ?? 0) + (trace.approvalId?.length ?? 0);
     }
+    for (const event of message.agentEvents ?? []) {
+      characters += event.id.length + event.kind.length;
+      characters += event.createdAt.toString().length + event.sequence.toString().length;
+      if (event.kind === "reasoning") {
+        characters += event.reasoningLabel.length;
+      } else if (event.kind === "skill") {
+        characters += event.skillId.length;
+      } else {
+        characters += event.callId.length;
+      }
+    }
     if (message.workflowSummary) characters += 96;
     if (message.usage) characters += 192;
   }

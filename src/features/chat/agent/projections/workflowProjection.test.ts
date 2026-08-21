@@ -99,6 +99,72 @@ describe("projectAgentWorkflow", () => {
       skillCount: 0,
     });
   });
+  it("restores the persisted reasoning, tool, and skill order", () => {
+    const projection = projectAgentWorkflow(message({
+      reasoning: "先查资料，再解释结果",
+      activatedSkills: [{
+        id: "research",
+        name: "Research",
+        version: "1.0.0",
+        contentHash: "hash",
+        activation: "model",
+      }],
+      toolTraces: [{
+        callId: "call-1",
+        name: "web_search",
+        status: "completed",
+        risk: "networkRead",
+        argumentSummary: "{}",
+      }],
+      agentEvents: [
+        { id: "event-tool", sequence: 2, createdAt: 200, kind: "tool", callId: "call-1" },
+        { id: "event-reasoning", sequence: 1, createdAt: 100, kind: "reasoning", startOffset: 0, endOffset: 4, reasoningLabel: "reasoning" },
+        { id: "event-skill", sequence: 3, createdAt: 300, kind: "skill", skillId: "research" },
+      ],
+    }));
+
+    expect(projection.steps.map((step) => step.kind)).toEqual(["reasoning", "tool", "skill"]);
+    expect(projection.steps.map((step) => step.sequence)).toEqual([1, 2, 3]);
+  });
+
+  it("does not claim that a selected skill was executed without a runtime event", () => {
+    const projection = projectAgentWorkflow(message({
+      activatedSkills: [{
+        id: "question-framing",
+        name: "Question framing",
+        version: "1.0.0",
+        contentHash: "hash",
+        activation: "manual",
+      }],
+      agentEvents: [],
+    }));
+
+    expect(projection.steps).toEqual([]);
+    expect(projection.summary.skillCount).toBe(0);
+  });
+
+  it("keeps legacy messages compatible when no event ledger is present", () => {
+    const projection = projectAgentWorkflow(message({
+      reasoning: "legacy reasoning",
+      activatedSkills: [{
+        id: "legacy-skill",
+        name: "Legacy skill",
+        version: "1.0.0",
+        contentHash: "hash",
+        activation: "model",
+      }],
+      toolTraces: [{
+        callId: "legacy-call",
+        name: "memory_read",
+        status: "completed",
+        risk: "memoryRead",
+        argumentSummary: "{}",
+      }],
+    }));
+
+    expect(projection.steps.map((step) => step.kind)).toEqual(["reasoning", "skill", "tool"]);
+  });
+
   it("labels OpenAI Responses reasoning as a provider summary", () => {
     const projection = projectAgentWorkflow(message({
       reasoning: "**Explaining the transaction model**",

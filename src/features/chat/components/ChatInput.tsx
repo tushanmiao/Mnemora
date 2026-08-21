@@ -800,7 +800,7 @@ export function ChatInput({
           />
 
           <div className="composer-toolbar">
-            <div className="composer-tools">
+            <div className="composer-controls">
               {onModelChange ? (
                 <ModelSelector
                   groups={modelGroups}
@@ -814,77 +814,79 @@ export function ChatInput({
                   onChange={onModelChange}
                 />
               ) : null}
-              <button
-                className={attachmentBadge ? "icon-button icon-button-attachment-limited" : "icon-button"}
-                type="button"
-                title={attachmentButtonTitle}
-                aria-label={attachmentButtonTitle}
-                disabled={inputDisabled || (supportsVision === false && supportsTools !== true)}
-                onClick={() => void openAttachmentPicker()}
-              >
-                <Paperclip size={18} />
-                {attachmentBadge ? (
-                  <span className="attachment-capability-badge" aria-hidden="true">{attachmentBadge}</span>
+              <div className="composer-tools">
+                <button
+                  className={attachmentBadge ? "icon-button icon-button-attachment-limited" : "icon-button"}
+                  type="button"
+                  title={attachmentButtonTitle}
+                  aria-label={attachmentButtonTitle}
+                  disabled={inputDisabled || (supportsVision === false && supportsTools !== true)}
+                  onClick={() => void openAttachmentPicker()}
+                >
+                  <Paperclip size={18} />
+                  {attachmentBadge ? (
+                    <span className="attachment-capability-badge" aria-hidden="true">{attachmentBadge}</span>
+                  ) : null}
+                </button>
+                {showLiteraturePicker ? (
+                  <button className="icon-button" type="button" title={t("chat.selectLiterature")} disabled={inputDisabled}>
+                    <BookOpenText size={18} />
+                  </button>
                 ) : null}
-              </button>
-              {showLiteraturePicker ? (
-                <button className="icon-button" type="button" title={t("chat.selectLiterature")} disabled={inputDisabled}>
-                  <BookOpenText size={18} />
-                </button>
-              ) : null}
-              <SkillPicker
-                skills={skills}
-                selectedSkillIds={selectedSkillIds}
-                disabled={inputDisabled || supportsTools !== true}
-                disabledReason={supportsTools !== true ? t("chat.toolsUnsupported") : undefined}
-                onChange={onSelectedSkillsChange}
-              />
-              <div className="composer-note-control" ref={noteControlRef}>
-                <button className="icon-button" type="button" title={t("chat.noteActions")} aria-label={t("chat.noteActions")} aria-expanded={noteMenuOpen} disabled={inputDisabled || !hasMessages} onClick={() => { setNoteMenuOpen((value) => !value); setReasoningMenuOpen(false); }}>
-                  <NotebookPen size={18} />
-                </button>
-                {noteMenuOpen ? (
-                  <div className="composer-note-menu" role="menu" aria-label={t("chat.noteActions")}>
-                    <button type="button" role="menuitem" disabled={!hasMessages} onClick={() => { onSaveConversationAsNote?.(); setNoteMenuOpen(false); }}>{t("sidebar.saveAsNote")}</button>
-                    <button type="button" role="menuitem" disabled={!hasMessages} onClick={() => { onSummarizeConversationToNote?.(); setNoteMenuOpen(false); }}>{t("sidebar.summarizeToNote")}</button>
-                    <button type="button" role="menuitem" disabled={!hasMessages} onClick={() => { onGenerateDeepNote?.(); setNoteMenuOpen(false); }}>{t("sidebar.deepNote")}</button>
-                    <button type="button" role="menuitem" disabled={!hasMessages} onClick={() => { onUpdateExistingNote?.(); setNoteMenuOpen(false); }}>{t("sidebar.updateExistingNote")}</button>
-                    <div className="composer-menu-divider" />
-                    <button type="button" role="menuitem" disabled={!hasMessages} onClick={() => { onExportConversation?.("markdown"); setNoteMenuOpen(false); }}><Download size={14} />{t("sidebar.exportMarkdown")}</button>
-                    <button type="button" role="menuitem" disabled={!hasMessages} onClick={() => { onExportConversation?.("json"); setNoteMenuOpen(false); }}><Download size={14} />{t("sidebar.exportJson")}</button>
-                  </div>
-                ) : null}
-              </div>
-              <div className="composer-reasoning-control" ref={reasoningControlRef}>
-                <button className={`icon-button composer-reasoning-trigger${thinkingEnabled ? " skill-picker-active" : ""}`} type="button" title={reasoningAvailable ? `${t("chat.reasoningSettings")}：${reasoningEffortLabel}` : t("chat.reasoningUnsupported")} aria-label={reasoningAvailable ? `${t("chat.reasoningSettings")}：${reasoningEffortLabel}` : t("chat.reasoningUnsupported")} aria-expanded={reasoningMenuOpen} disabled={inputDisabled || !reasoningAvailable} onClick={() => { setReasoningMenuOpen((value) => !value); setNoteMenuOpen(false); }}>
-                  <Brain size={18} />
-                  {thinkingEnabled ? <span className="composer-reasoning-trigger-label">{reasoningEffortLabel}</span> : null}
-                </button>
-                {reasoningMenuOpen && reasoningAvailable ? (
-                  <div className="composer-reasoning-menu" role="menu" aria-label={t("chat.reasoningSettings")}>
-                    <label className="composer-toggle-row"><span>{t("general.thinking")}</span><input type="checkbox" checked={thinkingEnabled} onChange={(event) => onThinkingChange?.(event.target.checked)} /></label>
-                    {effectiveEfforts.length > 0 ? (
-                      <div className="composer-reasoning-effort-group">
-                        <span className="composer-reasoning-effort-label">{t("chat.reasoningEffort")}</span>
-                        <div className="composer-reasoning-options">
-                          {effectiveEfforts.map((effort) => {
-                            const selected = reasoningEffort === effort;
-                            return (
-                              <button type="button" role="menuitemradio" aria-checked={selected} className={selected ? "composer-reasoning-selected" : ""} key={effort} disabled={!thinkingEnabled} onClick={() => onReasoningEffortChange?.(effort)}>
-                                <span>{t(REASONING_EFFORT_LABEL_KEYS[effort])}</span>
-                                {selected ? <Check size={12} /> : null}
-                              </button>
-                            );
-                          })}
-                          <button type="button" role="menuitemradio" aria-checked={reasoningEffort === null} className={reasoningEffort === null ? "composer-reasoning-selected" : ""} disabled={!thinkingEnabled} onClick={() => onReasoningEffortChange?.(null)}>
-                            <span>{t("chat.reasoningAuto")}</span>
-                            {reasoningEffort === null ? <Check size={12} /> : null}
-                          </button>
+                <SkillPicker
+                  skills={skills}
+                  selectedSkillIds={selectedSkillIds}
+                  disabled={inputDisabled || supportsTools !== true}
+                  disabledReason={supportsTools !== true ? t("chat.toolsUnsupported") : undefined}
+                  onChange={onSelectedSkillsChange}
+                />
+                <div className="composer-note-control" ref={noteControlRef}>
+                  <button className="icon-button" type="button" title={t("chat.noteActions")} aria-label={t("chat.noteActions")} aria-expanded={noteMenuOpen} disabled={inputDisabled || !hasMessages} onClick={() => { setNoteMenuOpen((value) => !value); setReasoningMenuOpen(false); }}>
+                    <NotebookPen size={18} />
+                  </button>
+                  {noteMenuOpen ? (
+                    <div className="composer-note-menu" role="menu" aria-label={t("chat.noteActions")}>
+                      <button type="button" role="menuitem" disabled={!hasMessages} onClick={() => { onSaveConversationAsNote?.(); setNoteMenuOpen(false); }}>{t("sidebar.saveAsNote")}</button>
+                      <button type="button" role="menuitem" disabled={!hasMessages} onClick={() => { onSummarizeConversationToNote?.(); setNoteMenuOpen(false); }}>{t("sidebar.summarizeToNote")}</button>
+                      <button type="button" role="menuitem" disabled={!hasMessages} onClick={() => { onGenerateDeepNote?.(); setNoteMenuOpen(false); }}>{t("sidebar.deepNote")}</button>
+                      <button type="button" role="menuitem" disabled={!hasMessages} onClick={() => { onUpdateExistingNote?.(); setNoteMenuOpen(false); }}>{t("sidebar.updateExistingNote")}</button>
+                      <div className="composer-menu-divider" />
+                      <button type="button" role="menuitem" disabled={!hasMessages} onClick={() => { onExportConversation?.("markdown"); setNoteMenuOpen(false); }}><Download size={14} />{t("sidebar.exportMarkdown")}</button>
+                      <button type="button" role="menuitem" disabled={!hasMessages} onClick={() => { onExportConversation?.("json"); setNoteMenuOpen(false); }}><Download size={14} />{t("sidebar.exportJson")}</button>
+                    </div>
+                  ) : null}
+                </div>
+                <div className="composer-reasoning-control" ref={reasoningControlRef}>
+                  <button className={`icon-button composer-reasoning-trigger${thinkingEnabled ? " skill-picker-active" : ""}`} type="button" title={reasoningAvailable ? `${t("chat.reasoningSettings")}：${reasoningEffortLabel}` : t("chat.reasoningUnsupported")} aria-label={reasoningAvailable ? `${t("chat.reasoningSettings")}：${reasoningEffortLabel}` : t("chat.reasoningUnsupported")} aria-expanded={reasoningMenuOpen} disabled={inputDisabled || !reasoningAvailable} onClick={() => { setReasoningMenuOpen((value) => !value); setNoteMenuOpen(false); }}>
+                    <Brain size={18} />
+                    {thinkingEnabled ? <span className="composer-reasoning-trigger-label">{reasoningEffortLabel}</span> : null}
+                  </button>
+                  {reasoningMenuOpen && reasoningAvailable ? (
+                    <div className="composer-reasoning-menu" role="menu" aria-label={t("chat.reasoningSettings")}>
+                      <label className="composer-toggle-row"><span>{t("general.thinking")}</span><input type="checkbox" checked={thinkingEnabled} onChange={(event) => onThinkingChange?.(event.target.checked)} /></label>
+                      {effectiveEfforts.length > 0 ? (
+                        <div className="composer-reasoning-effort-group">
+                          <span className="composer-reasoning-effort-label">{t("chat.reasoningEffort")}</span>
+                          <div className="composer-reasoning-options">
+                            {effectiveEfforts.map((effort) => {
+                              const selected = reasoningEffort === effort;
+                              return (
+                                <button type="button" role="menuitemradio" aria-checked={selected} className={selected ? "composer-reasoning-selected" : ""} key={effort} disabled={!thinkingEnabled} onClick={() => onReasoningEffortChange?.(effort)}>
+                                  <span>{t(REASONING_EFFORT_LABEL_KEYS[effort])}</span>
+                                  {selected ? <Check size={12} /> : null}
+                                </button>
+                              );
+                            })}
+                            <button type="button" role="menuitemradio" aria-checked={reasoningEffort === null} className={reasoningEffort === null ? "composer-reasoning-selected" : ""} disabled={!thinkingEnabled} onClick={() => onReasoningEffortChange?.(null)}>
+                              <span>{t("chat.reasoningAuto")}</span>
+                              {reasoningEffort === null ? <Check size={12} /> : null}
+                            </button>
+                          </div>
                         </div>
-                      </div>
-                    ) : null}
-                  </div>
-                ) : null}
+                      ) : null}
+                    </div>
+                  ) : null}
+                </div>
               </div>
             </div>
 

@@ -10,6 +10,11 @@ export const FONT_PRESET_VALUES: Record<Exclude<FontPreset, "custom">, Pick<AppS
   academic: { chineseFontFamily: "simsun", latinFontFamily: "timesNewRoman" },
 };
 
+export const NOTE_FONT_PRESET_VALUES: Record<Exclude<FontPreset, "custom">, Pick<AppSettings, "noteChineseFontFamily" | "noteLatinFontFamily">> = {
+  system: { noteChineseFontFamily: "system", noteLatinFontFamily: "system" },
+  academic: { noteChineseFontFamily: "simsun", noteLatinFontFamily: "timesNewRoman" },
+};
+
 const CHINESE_FONT_STACKS: Record<ChineseFontFamily, string> = {
   system: '"Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", sans-serif',
   microsoftYaHei: '"Microsoft YaHei UI", "Microsoft YaHei", sans-serif',
@@ -29,4 +34,8 @@ const LATIN_FONT_STACKS: Record<LatinFontFamily, string> = {
 /** 字体标识映射为固定 CSS 栈，不接受用户输入的任意 CSS。 */
 export function resolveReadingFontFamily(settings: Pick<AppSettings, "chineseFontFamily" | "latinFontFamily">) {
   return `${LATIN_FONT_STACKS[settings.latinFontFamily]}, ${CHINESE_FONT_STACKS[settings.chineseFontFamily]}`;
+}
+
+export function resolveNoteFontFamily(settings: Pick<AppSettings, "noteChineseFontFamily" | "noteLatinFontFamily">) {
+  return `${LATIN_FONT_STACKS[settings.noteLatinFontFamily]}, ${CHINESE_FONT_STACKS[settings.noteChineseFontFamily]}`;
 }

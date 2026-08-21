@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::memory::MemorySettings;
 
-pub const CURRENT_APP_SETTINGS_VERSION: u32 = 11;
+pub const CURRENT_APP_SETTINGS_VERSION: u32 = 13;
 pub const DEFAULT_GLOBAL_SYSTEM_PROMPT: &str = concat!(
     "你是 Mnemora 的学习与研究助手。\n",
     "优先直接回答问题，并根据复杂度使用清晰的标题、列表、表格或代码块。\n",
@@ -202,6 +202,16 @@ pub struct AppSettings {
     pub chinese_font_family: ChineseFontFamily,
     #[serde(default)]
     pub latin_font_family: LatinFontFamily,
+    #[serde(default = "default_note_font_size")]
+    pub note_font_size: u8,
+    #[serde(default = "default_note_line_height")]
+    pub note_line_height: f32,
+    #[serde(default)]
+    pub note_font_preset: FontPreset,
+    #[serde(default)]
+    pub note_chinese_font_family: ChineseFontFamily,
+    #[serde(default)]
+    pub note_latin_font_family: LatinFontFamily,
     #[serde(default)]
     pub launch_at_startup: bool,
     #[serde(default = "default_true")]
@@ -229,6 +239,8 @@ pub struct AppSettings {
     pub system_prompt: String,
     #[serde(default)]
     pub request_debug_enabled: bool,
+    #[serde(default = "default_true")]
+    pub show_chat_task_progress: bool,
     #[serde(default)]
     pub update_proxy: UpdateProxySettings,
     #[serde(default)]
@@ -255,6 +267,14 @@ fn default_font_size() -> u8 {
     14
 }
 
+fn default_note_font_size() -> u8 {
+    16
+}
+
+fn default_note_line_height() -> f32 {
+    1.85
+}
+
 fn default_surface_opacity() -> u8 {
     92
 }
@@ -277,6 +297,11 @@ impl Default for AppSettings {
             font_preset: FontPreset::System,
             chinese_font_family: ChineseFontFamily::System,
             latin_font_family: LatinFontFamily::System,
+            note_font_size: 16,
+            note_line_height: 1.85,
+            note_font_preset: FontPreset::System,
+            note_chinese_font_family: ChineseFontFamily::System,
+            note_latin_font_family: LatinFontFamily::System,
             launch_at_startup: false,
             retry_enabled: true,
             retry_attempts: 5,
@@ -290,6 +315,7 @@ impl Default for AppSettings {
             response_language: ResponseLanguage::FollowInput,
             system_prompt: DEFAULT_GLOBAL_SYSTEM_PROMPT.to_string(),
             request_debug_enabled: false,
+            show_chat_task_progress: true,
             update_proxy: UpdateProxySettings::default(),
             memory: MemorySettings::default(),
         }
@@ -349,6 +375,12 @@ impl AppSettings {
         }
         if !(12..=28).contains(&self.font_size) {
             return Err("Font size must be between 12 and 28".to_string());
+        }
+        if !(12..=32).contains(&self.note_font_size) {
+            return Err("Note font size must be between 12 and 32".to_string());
+        }
+        if !self.note_line_height.is_finite() || !(1.3..=2.4).contains(&self.note_line_height) {
+            return Err("Note line height must be between 1.3 and 2.4".to_string());
         }
         if !self.letter_spacing.is_finite() || !(0.0..=1.5).contains(&self.letter_spacing) {
             return Err("Text letter spacing must be between 0 and 1.5 px".to_string());
@@ -494,9 +526,12 @@ mod tests {
         assert_eq!(settings.theme_preset, ThemePreset::Mnemora);
         assert!(settings.stream_enabled);
         assert!(!settings.request_debug_enabled);
+        assert!(settings.show_chat_task_progress);
         assert_eq!(settings.retry_attempts, 5);
         assert_eq!(settings.agent_max_rounds, 20);
         assert_eq!(settings.font_size, 14);
+        assert_eq!(settings.note_font_size, 16);
+        assert_eq!(settings.note_line_height, 1.85);
         assert_eq!(settings.letter_spacing, 0.0);
         assert_eq!(settings.font_preset, super::FontPreset::System);
         assert_eq!(settings.theme_background.surface_opacity, 92);
@@ -612,6 +647,77 @@ mod tests {
             super::ChineseFontFamily::System
         );
         assert_eq!(settings.latin_font_family, super::LatinFontFamily::System);
+    }
+
+    #[test]
+    fn version_eleven_settings_receive_note_typography_defaults() {
+        let value = serde_json::json!({
+            "version": 11,
+            "interfaceLanguage": "zh",
+            "theme": "system",
+            "themePreset": "mnemora",
+            "themeColor": "neutral",
+            "fontSize": 15,
+            "fontPreset": "system",
+            "chineseFontFamily": "system",
+            "latinFontFamily": "system",
+            "retryEnabled": true,
+            "retryAttempts": 5,
+            "maxOutputTokens": 32768
+        });
+        let settings: AppSettings = serde_json::from_value(value).unwrap();
+        let settings = settings.normalize_and_validate().unwrap();
+
+        assert_eq!(settings.version, CURRENT_APP_SETTINGS_VERSION);
+        assert_eq!(settings.note_font_size, 16);
+        assert_eq!(settings.note_line_height, 1.85);
+        assert_eq!(settings.note_font_preset, super::FontPreset::System);
+        assert_eq!(
+            settings.note_chinese_font_family,
+            super::ChineseFontFamily::System
+        );
+        assert_eq!(
+            settings.note_latin_font_family,
+            super::LatinFontFamily::System
+        );
+        assert!(settings.show_chat_task_progress);
+    }
+
+    #[test]
+    fn version_twelve_settings_receive_the_chat_task_panel_default() {
+        let value = serde_json::json!({
+            "version": 12,
+            "interfaceLanguage": "zh",
+            "theme": "system",
+            "themePreset": "mnemora",
+            "themeColor": "neutral",
+            "fontSize": 14,
+            "noteFontSize": 16,
+            "noteLineHeight": 1.85,
+            "retryEnabled": true,
+            "retryAttempts": 5,
+            "maxOutputTokens": 32768
+        });
+        let settings: AppSettings = serde_json::from_value(value).unwrap();
+        let settings = settings.normalize_and_validate().unwrap();
+
+        assert_eq!(settings.version, CURRENT_APP_SETTINGS_VERSION);
+        assert!(settings.show_chat_task_progress);
+    }
+
+    #[test]
+    fn rejects_note_typography_outside_supported_ranges() {
+        let too_small = AppSettings {
+            note_font_size: 11,
+            ..AppSettings::default()
+        };
+        assert!(too_small.normalize_and_validate().is_err());
+
+        let too_loose = AppSettings {
+            note_line_height: 2.45,
+            ..AppSettings::default()
+        };
+        assert!(too_loose.normalize_and_validate().is_err());
     }
 
     #[test]

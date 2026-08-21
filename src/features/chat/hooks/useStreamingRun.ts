@@ -22,6 +22,9 @@ type ActiveStreamRun = {
   conversationId: string;
   messageId: string;
   terminalReceived: boolean;
+  nextSequence: number;
+  reasoningEventId: string | null;
+  reasoningLength: number;
 };
 
 type UseStreamingRunOptions = {
@@ -64,6 +67,7 @@ export function useStreamingRun({
           status: terminal.status,
           usage: terminal.usage ?? message.usage,
           toolTraces: message.toolTraces?.map(({ approvalId: _approvalId, ...trace }) => trace),
+          agentEvents: message.agentEvents?.slice(-256),
           agentRunId: run.runId,
           errorMessage: terminal.errorMessage,
           updatedAt,
@@ -109,9 +113,37 @@ export function useStreamingRun({
         return;
       case "reasoningDelta":
         appendStreamingReasoningDelta(run.messageId, event.delta);
+        updateMessageMetadata(run, (message) => {
+          const nextLength = run.reasoningLength + event.delta.length;
+          run.reasoningLength = nextLength;
+          const reasoningEventId = run.reasoningEventId ?? crypto.randomUUID();
+          if (!run.reasoningEventId) {
+            run.reasoningEventId = reasoningEventId;
+            const events = [...(message.agentEvents ?? [])];
+            events.push({
+              id: reasoningEventId,
+              sequence: run.nextSequence++,
+              createdAt: Date.now(),
+              kind: "reasoning",
+              startOffset: run.reasoningLength - event.delta.length,
+              endOffset: nextLength,
+              reasoningLabel: message.modelSnapshot?.protocol === "openAiResponses" ? "summary" : "reasoning",
+            });
+            return { ...message, agentEvents: events.slice(-256) };
+          }
+          return {
+            ...message,
+              agentEvents: (message.agentEvents ?? []).map((item) => item.id === reasoningEventId && item.kind === "reasoning"
+                ? { ...item, endOffset: nextLength }
+                : item),
+          };
+        });
         return;
       case "toolTrace":
       case "toolApprovalRequested":
+        // 一个 Tool/Approval 事件结束当前 reasoning 片段；后续模型再次输出
+        // reasoning 时创建新片段，才能在投影中恢复“思考 → 工具 → 思考”。
+        run.reasoningEventId = null;
         updateMessageMetadata(run, (message) => {
           const nextTrace = {
             ...event.trace,
@@ -124,16 +156,28 @@ export function useStreamingRun({
             toolTraces: existing < 0
               ? [...traces, nextTrace]
               : traces.map((trace, index) => index === existing ? nextTrace : trace),
+            agentEvents: existing < 0
+              ? [...(message.agentEvents ?? []), {
+                  id: crypto.randomUUID(),
+                  sequence: run.nextSequence++,
+                  createdAt: Date.now(),
+                  kind: "tool" as const,
+                  callId: nextTrace.callId,
+                }].slice(-256)
+              : message.agentEvents,
           };
         });
         return;
       case "skillActivated":
-        updateMessageMetadata(run, (message) => (
-          message.activatedSkills?.some((skill) => skill.id === event.skillId)
-            ? message
-            : {
-                ...message,
-                activatedSkills: [
+        run.reasoningEventId = null;
+        updateMessageMetadata(run, (message) => {
+          const hasSnapshot = message.activatedSkills?.some((skill) => skill.id === event.skillId) === true;
+          const alreadyRecorded = message.agentEvents?.some((item) => item.kind === "skill" && item.skillId === event.skillId) === true;
+          return {
+            ...message,
+            activatedSkills: hasSnapshot
+              ? message.activatedSkills
+              : [
                   ...(message.activatedSkills ?? []),
                   {
                     id: event.skillId,
@@ -143,8 +187,17 @@ export function useStreamingRun({
                     activation: "model" as const,
                   },
                 ],
-              }
-        ));
+            agentEvents: alreadyRecorded
+              ? message.agentEvents
+              : [...(message.agentEvents ?? []), {
+                  id: crypto.randomUUID(),
+                  sequence: run.nextSequence++,
+                  createdAt: Date.now(),
+                  kind: "skill" as const,
+                  skillId: event.skillId,
+                }].slice(-256),
+          };
+        });
         return;
       case "completed":
         run.terminalReceived = true;
@@ -174,6 +227,9 @@ export function useStreamingRun({
       conversationId,
       messageId,
       terminalReceived: false,
+      nextSequence: 1,
+      reasoningEventId: null,
+      reasoningLength: 0,
     };
     activeRunRef.current = run;
     try {
@@ -189,7 +245,7 @@ export function useStreamingRun({
     } finally {
       if (activeRunRef.current?.runId === run.runId) activeRunRef.current = null;
     }
-  }, [finalizeRun, handleEvent]);
+  }, [finalizeRun, handleEvent, updateMessageMetadata]);
 
   const stopGeneration = useCallback(() => {
     const run = activeRunRef.current;

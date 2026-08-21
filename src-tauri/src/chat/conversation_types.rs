@@ -28,6 +28,7 @@ const MAX_LITERATURE_PAGE_INDEX: u32 = 1_000_000;
 const MAX_NOTE_REFERENCES_PER_MESSAGE: usize = 10;
 const MAX_NOTE_REFERENCE_TEXT_BYTES: usize = 16 * 1024;
 const MAX_NOTE_REFERENCE_TOTAL_BYTES: usize = 64 * 1024;
+const MAX_AGENT_ACTIVITY_EVENTS: usize = 256;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -96,6 +97,59 @@ pub struct ActivatedSkillSnapshot {
     pub version: String,
     pub content_hash: String,
     pub activation: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ReasoningExposure {
+    Reasoning,
+    Summary,
+}
+
+/** 有序事件只引用消息中已有的 reasoning/Skill/Tool 快照，不复制大段内容。 */
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum AgentActivityEvent {
+    Reasoning {
+        id: String,
+        sequence: u32,
+        created_at: u64,
+        start_offset: usize,
+        end_offset: usize,
+        reasoning_label: ReasoningExposure,
+    },
+    Skill {
+        id: String,
+        sequence: u32,
+        created_at: u64,
+        skill_id: String,
+    },
+    Tool {
+        id: String,
+        sequence: u32,
+        created_at: u64,
+        call_id: String,
+    },
+}
+
+impl AgentActivityEvent {
+    fn id(&self) -> &str {
+        match self {
+            Self::Reasoning { id, .. } | Self::Skill { id, .. } | Self::Tool { id, .. } => id,
+        }
+    }
+
+    fn sequence(&self) -> u32 {
+        match self {
+            Self::Reasoning { sequence, .. }
+            | Self::Skill { sequence, .. }
+            | Self::Tool { sequence, .. } => *sequence,
+        }
+    }
 }
 
 /** 会话消息中附件的轻量元数据；文件正文保存在会话独立目录，不写入 JSON。 */
@@ -271,6 +325,12 @@ pub struct StoredChatMessage {
     pub activated_skills: Vec<ActivatedSkillSnapshot>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_traces: Vec<crate::chat::agent::ToolTraceSnapshot>,
+    /**
+     * `None` 表示旧版会话从未写入事件账本；`Some([])` 表示新版消息已经采用事件模型，
+     * 但本轮没有发生真实的 reasoning、Skill 或 Tool 活动。两者必须跨重启保持可区分。
+     */
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_events: Option<Vec<AgentActivityEvent>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_run_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -498,6 +558,68 @@ impl StoredConversation {
             if message.tool_traces.len() > 128 {
                 return Err("Chat message cannot contain more than 128 tool traces".to_string());
             }
+            if let Some(agent_events) = message.agent_events.as_ref() {
+                if agent_events.len() > MAX_AGENT_ACTIVITY_EVENTS {
+                    return Err(format!("Chat message cannot contain more than {MAX_AGENT_ACTIVITY_EVENTS} agent events"));
+                }
+                let skill_ids = message
+                    .activated_skills
+                    .iter()
+                    .map(|skill| skill.id.as_str())
+                    .collect::<std::collections::HashSet<_>>();
+                let tool_ids = message
+                    .tool_traces
+                    .iter()
+                    .map(|trace| trace.call_id.as_str())
+                    .collect::<std::collections::HashSet<_>>();
+                let mut event_ids = std::collections::HashSet::new();
+                let mut previous_sequence = None;
+                for event in agent_events {
+                    validate_stable_id("Agent event ID", event.id())?;
+                    if !event_ids.insert(event.id()) {
+                        return Err("Chat message contains duplicate agent event IDs".to_string());
+                    }
+                    if previous_sequence.is_some_and(|previous| event.sequence() <= previous) {
+                        return Err(
+                            "Chat message agent event sequence must be strictly increasing"
+                                .to_string(),
+                        );
+                    }
+                    previous_sequence = Some(event.sequence());
+                    match event {
+                        AgentActivityEvent::Reasoning {
+                            start_offset,
+                            end_offset,
+                            ..
+                        } => {
+                            let reasoning_utf16_len = message
+                                .reasoning
+                                .as_deref()
+                                .map(|value| value.encode_utf16().count())
+                                .unwrap_or(0);
+                            if end_offset <= start_offset || *end_offset > reasoning_utf16_len {
+                                return Err(
+                                    "Chat message reasoning event range is invalid".to_string()
+                                );
+                            }
+                        }
+                        AgentActivityEvent::Skill { skill_id, .. }
+                            if !skill_ids.contains(skill_id.as_str()) =>
+                        {
+                            return Err(
+                                "Chat message agent event references an unknown skill".to_string()
+                            );
+                        }
+                        AgentActivityEvent::Tool { call_id, .. }
+                            if !tool_ids.contains(call_id.as_str()) =>
+                        {
+                            return Err("Chat message agent event references an unknown tool call"
+                                .to_string());
+                        }
+                        _ => {}
+                    }
+                }
+            }
             if let Some(run_id) = message.agent_run_id.as_deref() {
                 validate_stable_id("Agent Run ID", run_id)?;
             }
@@ -609,6 +731,7 @@ mod tests {
                 usage: None,
                 activated_skills: Vec::new(),
                 tool_traces: Vec::new(),
+                agent_events: Some(Vec::new()),
                 agent_run_id: None,
                 workflow_summary: None,
                 error_message: None,
@@ -642,6 +765,65 @@ mod tests {
             kind: LiteratureReferenceKind::Selection,
             text: "Evidence".to_string(),
         }
+    }
+
+    #[test]
+    fn validates_agent_event_references_and_utf16_reasoning_ranges() {
+        let mut conversation = conversation_with_message(ModelRole::Assistant);
+        let message = &mut conversation.messages[0];
+        message.reasoning = Some("A😀B".to_string());
+        message.activated_skills.push(ActivatedSkillSnapshot {
+            id: "question-framing".to_string(),
+            name: "Question framing".to_string(),
+            version: "1.0.0".to_string(),
+            content_hash: "sha256:abc".to_string(),
+            activation: "manual".to_string(),
+        });
+        message.agent_events = Some(vec![
+            AgentActivityEvent::Reasoning {
+                id: "event-1".to_string(),
+                sequence: 1,
+                created_at: 1,
+                start_offset: 0,
+                end_offset: 4,
+                reasoning_label: ReasoningExposure::Reasoning,
+            },
+            AgentActivityEvent::Skill {
+                id: "event-2".to_string(),
+                sequence: 2,
+                created_at: 2,
+                skill_id: "question-framing".to_string(),
+            },
+        ]);
+        assert!(conversation.validate().is_ok());
+
+        conversation.messages[0].agent_events.as_mut().unwrap()[0] =
+            AgentActivityEvent::Reasoning {
+                id: "event-1".to_string(),
+                sequence: 1,
+                created_at: 1,
+                start_offset: 0,
+                end_offset: 5,
+                reasoning_label: ReasoningExposure::Reasoning,
+            };
+        assert!(conversation.validate().is_err());
+    }
+
+    #[test]
+    fn preserves_empty_agent_event_ledger_while_legacy_field_stays_absent() {
+        let conversation = conversation_with_message(ModelRole::Assistant);
+        let value = serde_json::to_value(&conversation).unwrap();
+        assert_eq!(value["messages"][0]["agentEvents"], json!([]));
+
+        let mut legacy = value;
+        legacy["messages"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("agentEvents");
+        let restored: StoredConversation = serde_json::from_value(legacy).unwrap();
+        assert!(restored.messages[0].agent_events.is_none());
+        let saved_again = serde_json::to_value(restored).unwrap();
+        assert!(saved_again["messages"][0].get("agentEvents").is_none());
     }
 
     #[test]

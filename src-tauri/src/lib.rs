@@ -192,6 +192,7 @@ pub fn run() {
             commands::library::library_list_note_sources,
             commands::library::library_import_markdown_notes,
             commands::library::library_update_note,
+            commands::library::library_rename_note,
             commands::library::library_delete_note,
             commands::library::library_list_note_groups,
             commands::library::library_create_note_group,

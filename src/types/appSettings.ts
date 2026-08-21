@@ -44,6 +44,11 @@ export interface AppSettings {
   fontPreset: FontPreset;
   chineseFontFamily: ChineseFontFamily;
   latinFontFamily: LatinFontFamily;
+  noteFontSize: number;
+  noteLineHeight: number;
+  noteFontPreset: FontPreset;
+  noteChineseFontFamily: ChineseFontFamily;
+  noteLatinFontFamily: LatinFontFamily;
   launchAtStartup: boolean;
   retryEnabled: boolean;
   retryAttempts: number;
@@ -58,6 +63,8 @@ export interface AppSettings {
   responseLanguage: ResponseLanguage;
   systemPrompt: string;
   requestDebugEnabled: boolean;
+  /** 是否在普通 Chat 中显示可拖动的 Agent 任务中心；深度笔记始终显示。 */
+  showChatTaskProgress: boolean;
   updateProxy: UpdateProxySettings;
   memory: MemorySettings;
 }
@@ -84,7 +91,7 @@ export const DEFAULT_GLOBAL_SYSTEM_PROMPT = [
   "技能只提供工作方法，不扩大应用权限；遵守用户的权限设置和工具结果。",
 ].join("\n");
 
-export const CURRENT_APP_SETTINGS_VERSION = 11;
+export const CURRENT_APP_SETTINGS_VERSION = 13;
 
 export function createInitialAppSettings(): AppSettings {
   return {
@@ -103,6 +110,11 @@ export function createInitialAppSettings(): AppSettings {
     fontPreset: "system",
     chineseFontFamily: "system",
     latinFontFamily: "system",
+    noteFontSize: 16,
+    noteLineHeight: 1.85,
+    noteFontPreset: "system",
+    noteChineseFontFamily: "system",
+    noteLatinFontFamily: "system",
     launchAtStartup: false,
     retryEnabled: true,
     retryAttempts: 5,
@@ -116,6 +128,7 @@ export function createInitialAppSettings(): AppSettings {
     responseLanguage: "followInput",
     systemPrompt: DEFAULT_GLOBAL_SYSTEM_PROMPT,
     requestDebugEnabled: false,
+    showChatTaskProgress: true,
     updateProxy: {
       mode: "system",
       url: "",

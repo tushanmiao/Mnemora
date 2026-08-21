@@ -121,6 +121,8 @@ export interface LibraryNoteSummary {
   title: string;
   contentPreview: string;
   contentChars: number;
+  /** UTF-8 编码后的正文大小，区别于面向阅读的字符数。 */
+  contentBytes: number;
   groupName: string | null;
   createdAt: number;
   updatedAt: number;
@@ -165,6 +167,11 @@ export interface LibraryNoteUpdate {
   noteId: string;
   title: string;
   content: string;
+}
+
+export interface LibraryNoteRename {
+  noteId: string;
+  title: string;
 }
 
 export interface LibraryNoteImportFailure {

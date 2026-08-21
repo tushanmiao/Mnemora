@@ -175,6 +175,7 @@ describe("taskRunProjection", () => {
       canResume: false,
       canRetry: true,
       canRestart: true,
+      canAbandon: true,
     });
   });
 
@@ -188,6 +189,23 @@ describe("taskRunProjection", () => {
       canResume: true,
       canRetry: false,
       canRestart: true,
+      canAbandon: true,
+    });
+  });
+
+  it("已遗弃的任务不允许任何恢复或再次遗弃操作", () => {
+    const detail = deepNoteDetail();
+    detail.run.abandoned = true;
+    detail.run.phase = "cancelled";
+    const task = projectDeepNoteTaskRun({ detail, progress: null }, "zh", 2_000);
+
+    expect(task).toMatchObject({
+      status: "abandoned",
+      canResume: false,
+      canRetry: false,
+      canRestart: false,
+      canStop: false,
+      canAbandon: false,
     });
   });
 });

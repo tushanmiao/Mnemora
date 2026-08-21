@@ -24,6 +24,8 @@
   background: var(--color-surface-raised);
   box-shadow: var(--shadow-composer);
   transition: border-color 140ms ease, background-color 140ms ease;
+  container-name: composer;
+  container-type: inline-size;
 }
 
 .composer-box:focus-within {
@@ -144,17 +146,27 @@
 .composer-skill-tags button:disabled { cursor: not-allowed; opacity: 0.5; }
 
 .composer-toolbar {
-  display: flex;
+  position: relative;
+  display: grid;
   min-width: 0;
   padding: 1px 2px 0;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: space-between;
   gap: 6px;
+}
+
+.composer-controls {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 2px;
 }
 
 .composer-tools {
   display: flex;
   min-width: 0;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
   align-items: center;
   gap: 2px;
   color: var(--color-muted);
@@ -168,9 +180,12 @@
 .composer-model-control,
 .composer-note-control,
 .composer-reasoning-control { position: relative; }
+.composer-model-control { min-width: 0; flex: 0 1 auto; }
 .composer-model-button {
   display: flex;
+  width: 100%;
   height: 32px;
+  min-width: 0;
   max-width: 190px;
   padding: 0 8px;
   align-items: center;
@@ -255,10 +270,90 @@
 
 .composer-actions {
   display: flex;
-  min-width: 0;
+  min-width: max-content;
   flex: 0 0 auto;
   align-items: center;
   gap: 4px;
+}
+
+/*
+ * Composer 根据自己的可用宽度重排，而不是依赖整个应用窗口。
+ * 窄栏中模型成为独立的第一层；能力工具可继续换行；上下文与发送始终保持为一个原子操作组。
+ */
+@container composer (max-width: 480px) {
+  .composer-toolbar {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "controls"
+      "actions";
+    align-items: end;
+    column-gap: 8px;
+    row-gap: 3px;
+  }
+
+  .composer-controls {
+    width: 100%;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    grid-area: controls;
+    align-items: start;
+    gap: 3px;
+  }
+
+  .composer-model-control {
+    width: 100%;
+  }
+
+  .composer-model-button {
+    width: min(100%, 220px);
+    max-width: 100%;
+  }
+
+  .composer-tools {
+    width: 100%;
+    align-content: end;
+  }
+
+  .composer-actions {
+    grid-area: actions;
+    justify-self: end;
+    align-self: end;
+  }
+
+  .composer-model-control,
+  .skill-picker,
+  .composer-note-control,
+  .composer-reasoning-control {
+    position: static;
+  }
+
+  .composer-model-menu,
+  .skill-picker-menu,
+  .composer-note-menu,
+  .composer-reasoning-menu {
+    right: auto;
+    bottom: calc(100% + 7px);
+    left: 0;
+    max-width: 100%;
+  }
+
+  .composer-model-menu {
+    width: min(300px, 100%);
+  }
+
+  .skill-picker-menu {
+    width: min(320px, 100%);
+  }
+
+  .composer-note-menu {
+    width: min(240px, 100%);
+    min-width: 0;
+  }
+
+  .composer-reasoning-menu {
+    width: min(260px, 100%);
+    min-width: 0;
+  }
 }
 
 .chat-workspace-panel .composer-area {

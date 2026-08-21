@@ -14,6 +14,7 @@ import type { ModelSettings } from "../../types/modelSettings";
 import { resolveConversationModel } from "../../types/modelSettings";
 import {
   adjustNotePipeline,
+  abandonNotePipeline,
   abandonNotePipelinesForConversation,
   cancelNotePipeline,
   confirmNotePipeline,
@@ -140,6 +141,9 @@ export function useNoteActions({
   const detailRequestSequenceRef = useRef(0);
   const detailRefreshTimerRef = useRef<number | null>(null);
   const latestDeepNoteRunIdRef = useRef<string | null>(null);
+  // 取消/遗弃后，通道仍可能把已经排队的终态事件送到前端。记录这些 run id，
+  // 防止旧事件把已经关闭的任务重新渲染出来。
+  const ignoredDeepNoteRunIdsRef = useRef<Set<string>>(new Set());
   const [noteEditRequest, setNoteEditRequest] = useState<NoteEditDialogRequest | null>(null);
   const [noteEditResult, setNoteEditResult] = useState<NoteEditPrepareResult | null>(null);
   const [noteEditBusy, setNoteEditBusy] = useState(false);
@@ -196,6 +200,7 @@ export function useNoteActions({
     const eventRunId = event.type === "progress" || event.type === "error"
       ? event.runId
       : event.run.id;
+    if (ignoredDeepNoteRunIdsRef.current.has(eventRunId)) return;
     if (latestDeepNoteRunIdRef.current && latestDeepNoteRunIdRef.current !== eventRunId) return;
     latestDeepNoteRunIdRef.current = eventRunId;
     if (event.type === "progress") {
@@ -890,6 +895,7 @@ export function useNoteActions({
   const abandonDeepNoteForConversation = useCallback(async (conversationId: string) => {
     const active = deepNoteRunRef.current;
     if (!active || active.conversationId !== conversationId) return 0;
+    if (active.runId) ignoredDeepNoteRunIdsRef.current.add(active.runId);
     try {
       const count = await abandonNotePipelinesForConversation(conversationId);
       if (count > 0) {
@@ -910,10 +916,36 @@ export function useNoteActions({
       }
       return count;
     } catch (error) {
+      if (active.runId) ignoredDeepNoteRunIdsRef.current.delete(active.runId);
       showFeedback("error", `遗弃深度笔记任务失败：${noteErrorText(error)}`);
       throw error;
     }
   }, [showFeedback]);
+
+  const abandonDeepNote = useCallback(async () => {
+    const runId = deepNoteRunRef.current?.runId ?? deepNoteDetail?.run.id ?? deepNoteProgress?.runId;
+    if (!runId || deepNoteControlBusy) return;
+    ignoredDeepNoteRunIdsRef.current.add(runId);
+    setDeepNoteControlBusy(true);
+    showFeedback("progress", "正在停止后台请求并永久遗弃任务…");
+    try {
+      await abandonNotePipeline(runId);
+      latestDeepNoteRunIdRef.current = null;
+      detailRequestSequenceRef.current += 1;
+      if (detailRefreshTimerRef.current !== null) {
+        window.clearTimeout(detailRefreshTimerRef.current);
+        detailRefreshTimerRef.current = null;
+      }
+      finishDeepNoteRun();
+      setDeepNoteDetail(null);
+      setDeepNoteProgress(null);
+      showFeedback("success", "深度笔记任务已遗弃，不会恢复、重试或重新生成。");
+    } catch (error) {
+      ignoredDeepNoteRunIdsRef.current.delete(runId);
+      setDeepNoteControlBusy(false);
+      showFeedback("error", `遗弃深度笔记任务失败：${noteErrorText(error)}`);
+    }
+  }, [deepNoteControlBusy, deepNoteDetail?.run.id, deepNoteProgress?.runId, finishDeepNoteRun, showFeedback]);
 
   const openConversationNoteEdit = useCallback(async (conversationId: string) => {
     if (noteEditBusy) return;
@@ -1052,6 +1084,7 @@ export function useNoteActions({
     retryDeepNote,
     restartDeepNote,
     cancelDeepNote,
+    abandonDeepNote,
     abandonDeepNoteForConversation,
     openConversationNoteEdit,
     openSelectionNoteEdit,

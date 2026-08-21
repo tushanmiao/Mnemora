@@ -7,7 +7,7 @@ import {
   useLayoutPreferences,
 } from "../../features/layout/hooks/useLayoutPreferences";
 import { resolveThemeBackgroundCss } from "../../features/settings/utils/themeBackground";
-import { resolveReadingFontFamily } from "../../features/settings/utils/fontSettings";
+import { resolveNoteFontFamily, resolveReadingFontFamily } from "../../features/settings/utils/fontSettings";
 
 const CHAT_WORKSPACE_MIN_WIDTH = 420;
 const WORK_MAIN_MIN_WIDTH = 520;
@@ -67,6 +67,9 @@ export function useWorkspaceLayout(
     "--reading-font-size": `${appSettings.fontSize}px`,
     "--reading-letter-spacing": `${appSettings.letterSpacing}px`,
     "--reading-font-family": resolveReadingFontFamily(appSettings),
+    "--note-font-size": `${appSettings.noteFontSize}px`,
+    "--note-line-height": String(appSettings.noteLineHeight),
+    "--note-font-family": resolveNoteFontFamily(appSettings),
     "--app-custom-background": customBackground ?? "var(--color-app)",
     "--app-surface-opacity": `${customBackground ? appSettings.themeBackground.surfaceOpacity : 100}%`,
     "--sidebar-width": `${sidebarWidth}px`,

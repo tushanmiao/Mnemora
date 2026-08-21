@@ -202,6 +202,16 @@ export function useChatRuntime({
                     )),
                   ].slice(0, 12),
                   toolTraces: response.toolTraces,
+                  agentEvents: buildResponseAgentEvents(
+                    assistantMessageId,
+                    response.reasoning ?? "",
+                    (message.activatedSkills ?? []).filter((skill) => (
+                      completionRequest.activatedSkillIds?.includes(skill.id)
+                    )),
+                    modelActivatedSkills,
+                    response.toolTraces ?? [],
+                    completedAt,
+                  ),
                   updatedAt: completedAt,
                 };
             return {
@@ -555,4 +565,32 @@ export function useChatRuntime({
     deleteMessage,
     compactConversation,
   };
+}
+
+function buildResponseAgentEvents(
+  messageId: string,
+  reasoning: string,
+  manualSkills: ChatMessage["activatedSkills"],
+  modelSkills: ChatMessage["activatedSkills"],
+  tools: ChatMessage["toolTraces"],
+  createdAt: number,
+): ChatMessage["agentEvents"] {
+  const events: NonNullable<ChatMessage["agentEvents"]> = [];
+  let sequence = 1;
+  for (const skill of manualSkills ?? []) {
+    events.push({ id: `${messageId}:skill:${skill.id}`, sequence: sequence++, createdAt, kind: "skill", skillId: skill.id });
+  }
+  if (reasoning.trim()) {
+    events.push({
+      id: `${messageId}:reasoning`, sequence: sequence++, createdAt, kind: "reasoning",
+      startOffset: 0, endOffset: reasoning.length, reasoningLabel: "reasoning",
+    });
+  }
+  for (const skill of modelSkills ?? []) {
+    events.push({ id: `${messageId}:skill:${skill.id}`, sequence: sequence++, createdAt, kind: "skill", skillId: skill.id });
+  }
+  for (const tool of tools ?? []) {
+    events.push({ id: `${messageId}:tool:${tool.callId}`, sequence: sequence++, createdAt, kind: "tool", callId: tool.callId });
+  }
+  return events;
 }

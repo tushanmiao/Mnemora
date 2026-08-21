@@ -153,6 +153,30 @@
 .notes-browser-tools .notes-search { width: min(420px, 100%); margin: 0; }
 .notes-browser-count { margin-left: auto; color: var(--color-muted); font-size: 10px; }
 
+.notes-sort-control {
+  display: flex;
+  height: 32px;
+  padding: 0 7px;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  color: var(--color-muted);
+  background: var(--color-surface-raised);
+}
+
+.notes-sort-control:focus-within {
+  border-color: var(--color-accent);
+}
+
+.notes-sort-control select {
+  border: 0;
+  outline: 0;
+  color: var(--color-text-secondary);
+  background: transparent;
+  font-size: 10px;
+}
+
 .notes-table {
   display: flex;
   min-height: 0;
@@ -211,6 +235,19 @@
 }
 .notes-table-title > svg { color: var(--color-accent); }
 .notes-table-title span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.notes-table-title-editor input {
+  width: 100%;
+  min-width: 0;
+  height: 29px;
+  padding: 0 7px;
+  border: 1px solid var(--color-accent);
+  border-radius: 5px;
+  outline: 0;
+  color: var(--color-text);
+  background: var(--color-surface-raised);
+  font-size: 12px;
+}
 
 .notes-table-muted {
   overflow: hidden;
@@ -467,27 +504,26 @@ button.note-source-chip:hover { color: var(--color-accent); background: var(--co
   outline: 0;
   color: var(--color-text);
   background: var(--color-surface-layer);
-  font-family: "Cascadia Code", Consolas, var(--reading-font-family);
-  font-size: max(13px, var(--app-font-size, 14px));
-  letter-spacing: var(--reading-letter-spacing);
-  line-height: 1.75;
+  font-family: var(--note-font-family);
+  font-size: var(--note-font-size);
+  line-height: var(--note-line-height);
   tab-size: 2;
   scrollbar-width: thin;
 }
-.notes-preview-host { width: 100%; height: 100%; overflow-y: auto; scrollbar-width: thin; }
+.notes-preview-host { width: 100%; height: 100%; overflow-y: auto; scrollbar-color: var(--color-border) transparent; scrollbar-width: thin; }
 
 /* 预览排版：无侧栏时尽量利用宽度；打开 AI 面板后随可用空间自然收窄。 */
 .notes-markdown-preview {
-  width: min(100%, 1480px);
+  width: 100%;
+  max-width: none;
   min-height: 100%;
-  margin: 0 auto;
+  margin: 0;
   padding: 34px clamp(26px, 4vw, 64px) 84px;
 }
 .notes-markdown-preview .markdown-content {
-  font-family: var(--reading-font-family);
-  font-size: var(--app-font-size, 14px);
-  letter-spacing: var(--reading-letter-spacing);
-  line-height: 1.85;
+  font-family: var(--note-font-family);
+  font-size: var(--note-font-size);
+  line-height: var(--note-line-height);
 }
 .notes-markdown-preview .markdown-outline { display: none; }
 
@@ -502,19 +538,19 @@ button.note-source-chip:hover { color: var(--color-accent); background: var(--co
   margin: 30px 0 18px;
   padding-bottom: 12px;
   border-bottom: 2px solid var(--color-accent);
-  font-size: calc(var(--app-font-size, 14px) + 11px);
+  font-size: calc(var(--note-font-size) + 11px);
   letter-spacing: 0.01em;
 }
 .notes-markdown-preview .markdown-content h2 {
   margin: 34px 0 14px;
   padding-bottom: 8px;
   border-bottom: 1px solid var(--color-border);
-  font-size: calc(var(--app-font-size, 14px) + 6px);
+  font-size: calc(var(--note-font-size) + 6px);
 }
 .notes-markdown-preview .markdown-content h3 {
   margin: 26px 0 10px;
   color: var(--color-accent);
-  font-size: calc(var(--app-font-size, 14px) + 3px);
+  font-size: calc(var(--note-font-size) + 3px);
 }
 .notes-markdown-preview .markdown-content h4 {
   margin: 22px 0 8px;
@@ -553,7 +589,7 @@ button.note-source-chip:hover { color: var(--color-accent); background: var(--co
 .notes-markdown-preview .markdown-content blockquote {
   margin: 16px 0;
   padding: 10px 16px;
-  border-left: 3px solid var(--color-accent);
+  border-left: 1px solid var(--color-accent);
   border-radius: 0 6px 6px 0;
 }
 

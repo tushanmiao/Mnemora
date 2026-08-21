@@ -38,6 +38,11 @@
   gap: 4px;
 }
 
+.chat-header-actions > .icon-button.is-active {
+  color: var(--color-accent);
+  background: var(--color-accent-soft);
+}
+
 .model-selector {
   position: relative;
   min-width: 0;

@@ -25,7 +25,7 @@ export function useChatReferences({
   setWorkContextPanelOpen,
   setWorkContextView,
   setNotesContextPanelOpen,
-  focusComposer,
+  requestComposerFocus,
 }: {
   conversations: ConversationsRuntime;
   workspaceMode: WorkspaceMode;
@@ -35,7 +35,7 @@ export function useChatReferences({
   setWorkContextPanelOpen: (open: boolean) => void;
   setWorkContextView: (view: WorkContextView) => void;
   setNotesContextPanelOpen: (open: boolean) => void;
-  focusComposer: () => void;
+  requestComposerFocus: (delayMs?: number) => void;
 }) {
   const [quotes, setQuotes] = useState<ChatQuote[]>([]);
   const [literatureReferences, setLiteratureReferences] = useState<LiteratureReference[]>([]);
@@ -86,25 +86,12 @@ export function useChatReferences({
     }));
   }, [conversations]);
 
-  const addLiteratureReference = useCallback((reference: LiteratureReference) => {
-    setWorkContextPanelOpen(true);
-    setWorkContextView("chat");
-    if (!conversations.currentConversation) {
-      if (conversations.currentConversationId) {
-        void conversations.ensureCurrentConversationLoaded().then((loaded) => {
-          if (loaded) addLiteratureReference(reference);
-          else setLiteratureReferenceError("恢复当前对话失败，请重新选择对话。");
-        });
-        return;
-      }
-      setLiteratureReferenceError("请先新建或选择一个对话，再加入文献引用。");
-      return;
-    }
+  const commitLiteratureReference = useCallback((reference: LiteratureReference) => {
     if (conversations.requestInFlightRef.current) {
       setLiteratureReferenceError("AI 正在生成，结束后再加入新的文献引用。");
       return;
     }
-    focusComposer();
+    requestComposerFocus();
     const result = appendLiteratureReference(literatureReferencesRef.current, reference);
     setLiteratureReferenceError(result.error);
     if (!result.added) return;
@@ -118,7 +105,24 @@ export function useChatReferences({
       ]),
       updatedAt: Date.now(),
     }));
-  }, [conversations, focusComposer, setWorkContextPanelOpen, setWorkContextView]);
+  }, [conversations, requestComposerFocus]);
+
+  const addLiteratureReference = useCallback((reference: LiteratureReference) => {
+    setWorkContextPanelOpen(true);
+    setWorkContextView("chat");
+    if (!conversations.currentConversation) {
+      if (conversations.currentConversationId) {
+        void conversations.ensureCurrentConversationLoaded().then((loaded) => {
+          if (loaded) commitLiteratureReference(reference);
+          else setLiteratureReferenceError("恢复当前对话失败，请重新选择对话。");
+        });
+        return;
+      }
+      setLiteratureReferenceError("请先新建或选择一个对话，再加入文献引用。");
+      return;
+    }
+    commitLiteratureReference(reference);
+  }, [commitLiteratureReference, conversations, setWorkContextPanelOpen, setWorkContextView]);
 
   const removeLiteratureReference = useCallback((referenceId: string) => {
     const next = literatureReferencesRef.current.filter((reference) => reference.id !== referenceId);
@@ -132,35 +136,72 @@ export function useChatReferences({
     setLiteratureReferenceError("");
   }, []);
 
-  const addNoteReference = useCallback((reference: NoteReference) => {
-    if (!conversations.currentConversation) {
-      if (conversations.currentConversationId) {
-        void conversations.ensureCurrentConversationLoaded().then((loaded) => {
-          if (loaded) addNoteReference(reference);
-        });
-        return;
-      }
-      preserveNoteReferencesRef.current = true;
-      conversations.createNewConversation();
+  const commitNoteReference = useCallback((reference: NoteReference) => {
+    if (conversations.requestInFlightRef.current) {
+      window.alert("AI 正在生成，结束后再加入新的笔记引用。");
+      return false;
     }
-    if (conversations.requestInFlightRef.current) return;
     const result = appendNoteReference(noteReferencesRef.current, reference);
     if (!result.added) {
       if (result.error) window.alert(result.error);
-      return;
+      return false;
     }
     noteReferencesRef.current = result.references;
     setNoteReferences(result.references);
+    return true;
+  }, [conversations.requestInFlightRef]);
+
+  const createConversationWithNoteReference = useCallback((reference: NoteReference) => {
+    if (!commitNoteReference(reference)) {
+      return false;
+    }
+    // createNewConversation 会同步切换 currentConversationId；提前设置保留标记，
+    // 让切换会话的 effect 不会把刚加入输入框的引用清空。
+    preserveNoteReferencesRef.current = true;
+    conversations.createNewConversation();
+    requestComposerFocus(16);
+    return true;
+  }, [commitNoteReference, conversations, requestComposerFocus]);
+
+  const addNoteReference = useCallback((reference: NoteReference) => {
+    // 先打开目标 Chat，再异步恢复会话。笔记正文不应等待磁盘读取完成后才出现侧栏，
+    // 否则用户会把没有任何视觉反馈的等待误认为界面卡死。
     if (workspaceMode === "work") {
-      setWorkContextPanelOpen(true);
       setWorkContextView("chat");
+      setWorkContextPanelOpen(true);
     } else {
       setNotesContextPanelOpen(true);
     }
-    focusComposer();
+    // 侧栏与 Chat 输入框可能仍处在懒加载/挂载阶段。延后一帧聚焦，避免只有
+    // “面板已打开”的状态变化，却没有把光标真正交给输入框。
+    requestComposerFocus(0);
+
+    if (!conversations.currentConversation) {
+      if (conversations.currentConversationId) {
+        void conversations.ensureCurrentConversationLoaded().then((loaded) => {
+          if (loaded) {
+            commitNoteReference(reference);
+            requestComposerFocus();
+          }
+          else if (createConversationWithNoteReference(reference)) {
+            window.alert("恢复原对话失败，已新建一个对话并保留这条笔记引用。");
+          }
+        }).catch(() => {
+          if (createConversationWithNoteReference(reference)) {
+            window.alert("恢复原对话失败，已新建一个对话并保留这条笔记引用。");
+          }
+        });
+        return;
+      }
+      createConversationWithNoteReference(reference);
+      return;
+    }
+    if (commitNoteReference(reference)) requestComposerFocus(16);
   }, [
+    commitNoteReference,
     conversations,
-    focusComposer,
+    createConversationWithNoteReference,
+    requestComposerFocus,
     setNotesContextPanelOpen,
     setWorkContextPanelOpen,
     setWorkContextView,

@@ -2,9 +2,22 @@ const DANGEROUS_SVG_TAGS = new Set(["script", "foreignobject", "iframe", "object
 const MERMAID_NODE_SHAPES = "rect, polygon, circle, ellipse, path";
 const MERMAID_PALETTE_SIZE = 6;
 
+export type MermaidSvgMetrics = {
+  width: number;
+  height: number;
+  aspectRatio: number;
+};
+
+export type SanitizedMermaidSvg = {
+  svg: string;
+  metrics: MermaidSvgMetrics;
+};
+
 /** Mermaid 输出由受信任的渲染器生成，但仍移除脚本、外链和事件属性。 */
-export function sanitizeMermaidSvg(svg: string) {
-  if (typeof DOMParser === "undefined" || typeof document === "undefined") return svg;
+export function sanitizeMermaidSvg(svg: string): SanitizedMermaidSvg {
+  if (typeof DOMParser === "undefined" || typeof document === "undefined") {
+    return { svg, metrics: extractMermaidSvgMetrics(svg) };
+  }
   const parsed = new DOMParser().parseFromString(svg, "image/svg+xml");
   const root = parsed.documentElement;
   if (!root || root.tagName.toLowerCase() !== "svg") throw new Error("Mermaid 未生成有效 SVG");
@@ -26,9 +39,35 @@ export function sanitizeMermaidSvg(svg: string) {
   }
 
   markDefaultFlowchartNodes(root);
+  const metrics = extractMermaidSvgMetrics(root.outerHTML);
   root.setAttribute("role", "img");
+  root.setAttribute("width", "100%");
+  root.setAttribute("height", "100%");
+  root.setAttribute("preserveAspectRatio", "xMidYMid meet");
+  root.style.removeProperty("max-width");
+  root.style.removeProperty("background");
+  root.style.removeProperty("background-color");
+  root.setAttribute("data-mnemora-mermaid", "true");
   root.removeAttribute("aria-roledescription");
-  return new XMLSerializer().serializeToString(root);
+  return { svg: new XMLSerializer().serializeToString(root), metrics };
+}
+
+export function extractMermaidSvgMetrics(svg: string): MermaidSvgMetrics {
+  const viewBox = svg.match(/\bviewBox\s*=\s*["']\s*([-+\d.eE]+)[\s,]+([-+\d.eE]+)[\s,]+([-+\d.eE]+)[\s,]+([-+\d.eE]+)\s*["']/i);
+  let width = viewBox ? Number(viewBox[3]) : parseSvgDimension(svg, "width");
+  let height = viewBox ? Number(viewBox[4]) : parseSvgDimension(svg, "height");
+  if (!Number.isFinite(width) || width <= 0) width = 640;
+  if (!Number.isFinite(height) || height <= 0) height = 360;
+  return { width, height, aspectRatio: width / height };
+}
+
+export function isLargeMermaidDiagram(metrics: MermaidSvgMetrics) {
+  return metrics.width > 1_800 || metrics.height > 1_200 || metrics.aspectRatio > 3.2 || metrics.aspectRatio < 0.38;
+}
+
+function parseSvgDimension(svg: string, attribute: "width" | "height") {
+  const match = svg.match(new RegExp(`\\b${attribute}\\s*=\\s*["']\\s*([-+\\d.eE]+)`, "i"));
+  return match ? Number(match[1]) : Number.NaN;
 }
 
 /**
@@ -73,13 +112,43 @@ export function mermaidThemeConfig(host: HTMLElement) {
   const readColor = (name: string, fallback: string) => resolveMermaidColor(shell, name, fallback);
   const dark = shell.getAttribute("data-theme") === "dark";
   return {
-    theme: dark ? "dark" as const : "base" as const,
+    // 始终从 base 主题出发并显式注入明暗色，避免 Mermaid dark 主题中的
+    // 黑色内嵌背景与应用表面色叠加后形成无法阅读的色块。
+    theme: "base" as const,
     securityLevel: "strict" as const,
     startOnLoad: false,
     htmlLabels: false,
+    wrap: true,
+    markdownAutoWrap: true,
+    fontSize: 13,
     suppressErrorRendering: true,
+    flowchart: {
+      useMaxWidth: true,
+      diagramPadding: 10,
+      nodeSpacing: 28,
+      rankSpacing: 38,
+      wrappingWidth: 190,
+      curve: "basis" as const,
+    },
+    sequence: {
+      useMaxWidth: true,
+      diagramMarginX: 16,
+      diagramMarginY: 16,
+      actorMargin: 42,
+      messageMargin: 28,
+      boxMargin: 8,
+      boxTextMargin: 5,
+      noteMargin: 8,
+      actorFontSize: 13,
+      noteFontSize: 12,
+    },
+    class: { useMaxWidth: true, diagramPadding: 10, nodeSpacing: 28, rankSpacing: 38 },
+    state: { useMaxWidth: true, nodeSpacing: 28, rankSpacing: 38, fontSize: 13 },
+    er: { useMaxWidth: true, diagramPadding: 10 },
+    mindmap: { useMaxWidth: true, padding: 10, maxNodeWidth: 190 },
     themeVariables: {
-      background: readColor("--color-surface", dark ? "#1d2024" : "#ffffff"),
+      background: "transparent",
+      fontSize: "13px",
       primaryColor: dark ? "#263f55" : "#dcecff",
       primaryTextColor: readColor("--color-text", dark ? "#edf0f2" : "#202427"),
       textColor: readColor("--color-text", dark ? "#edf0f2" : "#202427"),

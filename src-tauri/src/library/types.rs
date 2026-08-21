@@ -363,6 +363,7 @@ pub struct LibraryNoteSummary {
     pub group_name: Option<String>,
     pub created_at: u64,
     pub updated_at: u64,
+    pub content_bytes: usize,
 }
 
 /// 笔记分组（轻量标签式，按名称关联；空分组也会保留）。
@@ -757,6 +758,21 @@ pub struct LibraryNoteUpdate {
     pub title: String,
     #[serde(default)]
     pub content: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryNoteRename {
+    pub note_id: String,
+    pub title: String,
+}
+
+impl LibraryNoteRename {
+    pub fn normalize_and_validate(mut self) -> Result<Self, String> {
+        self.note_id = normalize_identifier("笔记 ID", &self.note_id)?;
+        self.title = normalize_text("笔记标题", &self.title, MAX_NOTE_TITLE_CHARS, false)?;
+        Ok(self)
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]

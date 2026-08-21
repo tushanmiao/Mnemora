@@ -83,6 +83,13 @@ function App() {
   const [modelMenuRequest, setModelMenuRequest] = useState(0);
   const [composerFocusRequest, setComposerFocusRequest] = useState(0);
   const [activeWorkNoteContext, setActiveWorkNoteContext] = useState<ActiveWorkNoteContext | null>(null);
+  const requestComposerFocus = useCallback((delayMs = 0) => {
+    window.setTimeout(() => {
+      window.requestAnimationFrame(() => {
+        setComposerFocusRequest((request) => request + 1);
+      });
+    }, delayMs);
+  }, []);
 
   useEffect(() => {
     const disposeLifecycle = initializeWorkspaceLifecycle();
@@ -116,7 +123,7 @@ function App() {
     setWorkContextPanelOpen,
     setWorkContextView,
     setNotesContextPanelOpen,
-    focusComposer: () => setComposerFocusRequest((request) => request + 1),
+    requestComposerFocus,
   });
 
   const currentModel = useMemo(() => {
@@ -382,6 +389,10 @@ function App() {
         theme: settings.resolvedTheme,
         onPermissionChange: handlePermissionChange,
         onToggleTheme: settings.toggleTheme,
+        showTaskProgress: settings.appSettings.showChatTaskProgress,
+        onToggleTaskProgress: (enabled) => {
+          void settings.saveAppSettings({ ...settings.appSettings, showChatTaskProgress: enabled });
+        },
       }}
       messages={{
         messages: conversations.currentConversation?.messages ?? [],
@@ -635,6 +646,7 @@ function App() {
       />
       <TaskCenter
         chatMessage={latestAssistantMessage}
+        showChatTask={settings.appSettings.showChatTaskProgress}
         deepNoteDetail={noteActions.deepNoteDetail}
         deepNoteProgress={noteActions.deepNoteProgress}
         deepNoteReviewTitle={noteActions.deepNoteReview?.outline.title}
@@ -646,6 +658,7 @@ function App() {
         onRetryDeepNoteTask={() => { void noteActions.retryDeepNote(); }}
         onRestartDeepNoteTask={() => { void noteActions.restartDeepNote(); }}
         onStopDeepNoteTask={() => { void noteActions.cancelDeepNote(); }}
+        onAbandonDeepNoteTask={() => { void noteActions.abandonDeepNote(); }}
         onOpenChatTask={(messageId) => {
           changeWorkspaceMode("chat");
           requestAnimationFrame(() => {

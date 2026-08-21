@@ -4142,6 +4142,7 @@ mod tests {
             usage: None,
             activated_skills: Vec::new(),
             tool_traces: Vec::new(),
+            agent_events: Some(Vec::new()),
             agent_run_id: None,
             workflow_summary: None,
             error_message: None,

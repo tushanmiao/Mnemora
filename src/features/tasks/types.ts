@@ -1,3 +1,5 @@
+import type { ActivatedSkillSnapshot, ToolTrace } from "../../types/chat";
+
 export type TaskRunKind = "chatAgent" | "deepNote";
 
 export type TaskRunStatus =
@@ -27,6 +29,11 @@ export interface TaskRunStepProjection {
   description?: string;
   content?: string;
   status: TaskRunStepStatus;
+  sequence?: number;
+  createdAt?: number;
+  reasoningLabel?: "reasoning" | "summary";
+  skill?: ActivatedSkillSnapshot;
+  tool?: ToolTrace;
 }
 
 export interface TaskRunMetrics {
@@ -60,4 +67,5 @@ export interface TaskRunProjection {
   canRetry: boolean;
   canRestart: boolean;
   canStop: boolean;
+  canAbandon: boolean;
 }

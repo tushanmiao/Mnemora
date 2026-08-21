@@ -263,6 +263,7 @@
   flex-direction: column;
   overflow: hidden;
   background: var(--color-surface-layer);
+  container-type: inline-size;
 }
 
 .note-workspace-preview {
@@ -272,18 +273,20 @@
   overflow-y: auto;
   background: var(--color-surface-layer);
   scrollbar-width: thin;
+  scrollbar-color: var(--color-border) transparent;
 }
 
 .note-workspace-preview .notes-markdown-preview {
-  width: min(980px, calc(100% - 48px));
-  margin: 0 auto;
-  padding: 26px 0 60px;
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 30px clamp(24px, 3.5vw, 64px) 72px;
 }
 
 .note-workspace-preview .notes-markdown-preview .markdown-content {
-  font-family: var(--reading-font-family);
-  font-size: var(--app-font-size, 14px);
-  letter-spacing: var(--reading-letter-spacing);
+  font-family: var(--note-font-family);
+  font-size: var(--note-font-size);
+  line-height: var(--note-line-height);
 }
 
 .note-workspace > header {
@@ -362,18 +365,51 @@
 
 .note-workspace-body {
   position: relative;
+  display: grid;
   min-width: 0;
   min-height: 0;
   flex: 1;
+  grid-template-columns: var(--note-workspace-outline-width, 232px) minmax(0, 1fr);
   overflow: hidden;
 }
 
+.note-workspace-body[data-outline="closed"] { grid-template-columns: minmax(0, 1fr); }
+
+.note-workspace-outline {
+  position: relative;
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  grid-template-rows: 42px minmax(0, 1fr);
+  overflow: hidden;
+  border-right: 1px solid var(--color-border-soft);
+  background: var(--color-sidebar-layer);
+}
+
+.note-workspace-outline > header {
+  display: flex;
+  padding: 0 12px;
+  align-items: center;
+  gap: 7px;
+  border-bottom: 1px solid var(--color-border-soft);
+  color: var(--color-muted);
+}
+
+.note-workspace-outline > header strong { color: var(--color-text-secondary); font-size: 11px; }
+.note-workspace-outline > header span { margin-inline-start: auto; font-size: 10px; }
+.note-workspace-outline > nav { min-height: 0; padding: 7px 6px 20px; overflow-y: auto; scrollbar-width: thin; }
+.note-workspace-outline > nav button { display: block; width: 100%; min-height: 30px; padding-block: 5px; padding-inline-end: 8px; overflow: hidden; border: 0; border-radius: 4px; color: var(--color-muted); background: transparent; font-size: 10px; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+.note-workspace-outline > nav button:hover { color: var(--color-text); background: var(--color-hover); }
+.note-workspace-outline > nav p { margin: 8px; color: var(--color-muted); font-size: 10px; line-height: 1.55; }
+
+.note-workspace-surface { min-width: 0; min-height: 0; overflow: hidden; }
+.note-workspace-surface > .note-workspace-content,
+.note-workspace-surface > .note-workspace-preview { width: 100%; height: 100%; }
+
 .note-workspace-title,
 .note-workspace-content {
-  font-family: var(--reading-font-family);
-  letter-spacing: var(--reading-letter-spacing);
-  width: min(980px, calc(100% - 48px));
-  margin-inline: auto;
+  font-family: var(--note-font-family);
+  width: 100%;
   border: 0;
   outline: 0;
   color: var(--color-text);
@@ -382,7 +418,7 @@
 
 .note-workspace-title {
   height: 58px;
-  padding: 12px 0 8px;
+  padding: 12px clamp(26px, 4vw, 68px) 8px;
   border-bottom: 1px solid var(--color-border-soft);
   font-size: 20px;
   font-weight: 680;
@@ -393,11 +429,13 @@
   display: block;
   height: 100%;
   min-height: 0;
-  padding: 18px 0 48px;
+  padding: 22px clamp(26px, 4vw, 68px) 56px;
   resize: none;
   font: inherit;
-  font-size: 13px;
-  line-height: 1.75;
+  font-size: var(--note-font-size);
+  line-height: var(--note-line-height);
+  scrollbar-color: var(--color-border) transparent;
+  scrollbar-width: thin;
 }
 
 .note-workspace-origin > button {
@@ -438,8 +476,24 @@
 
   .note-workspace-title,
   .note-workspace-content {
-    width: calc(100% - 32px);
+    padding-inline: 20px;
   }
+
+  .note-workspace-body { grid-template-columns: min(200px, var(--note-workspace-outline-width, 200px)) minmax(0, 1fr); }
+}
+
+@media (max-width: 760px) {
+  .note-workspace-body,
+  .note-workspace-body[data-outline="open"] { grid-template-columns: minmax(0, 1fr); }
+  .note-workspace-outline { display: none; }
+}
+
+/* PDF 笔记会在宽桌面窗口中被右侧 Chat 压缩，因此不能只依赖视口宽度。
+   以笔记工作区自身宽度为准收起大纲，正文才能继续占满可用区域。 */
+@container (max-width: 760px) {
+  .note-workspace-body,
+  .note-workspace-body[data-outline="open"] { grid-template-columns: minmax(0, 1fr); }
+  .note-workspace-outline { display: none; }
 }
 
 .is-spinning {

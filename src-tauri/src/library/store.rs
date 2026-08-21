@@ -23,8 +23,8 @@ use super::{
         LibraryAnnotationRect, LibraryAnnotationUpdate, LibraryCollection, LibraryImportFailure,
         LibraryImportResult, LibraryItem, LibraryItemUpdate, LibraryListPage, LibraryListRequest,
         LibraryNote, LibraryNoteCreate, LibraryNoteGroup, LibraryNoteImportFailure,
-        LibraryNoteImportResult, LibraryNoteSummary, LibraryNoteUpdate, LibraryReadingState,
-        LibraryReadingStateUpdate, LibrarySort, LibraryView, NoteEditProposal,
+        LibraryNoteImportResult, LibraryNoteRename, LibraryNoteSummary, LibraryNoteUpdate,
+        LibraryReadingState, LibraryReadingStateUpdate, LibrarySort, LibraryView, NoteEditProposal,
         NoteEditProposalCreate, NotePipelinePhase, NotePipelineRun, NotePipelineRunCreate,
         NotePipelineSection, NotePipelineSectionCreate, NotePipelineSectionStatus, NoteSource,
         NoteSourceCreate, NoteSourceOrigin, MAX_NOTE_IMPORT_BYTES, MAX_NOTE_IMPORT_FILES,
@@ -551,7 +551,8 @@ impl LibraryRepository {
         let (sql, values) = if let Some(item_id) = item_id {
             (
                 "SELECT n.id, n.item_id, i.title, n.title, substr(n.content, 1, 600),
-                        length(n.content), n.group_name, n.created_at, n.updated_at
+                        length(n.content), n.group_name, n.created_at, n.updated_at,
+                        length(CAST(n.content AS BLOB))
                  FROM library_notes n
                  LEFT JOIN library_items i ON i.id = n.item_id
                  WHERE n.item_id = ? AND i.deleted_at IS NULL
@@ -561,7 +562,8 @@ impl LibraryRepository {
         } else {
             (
                 "SELECT n.id, n.item_id, i.title, n.title, substr(n.content, 1, 600),
-                        length(n.content), n.group_name, n.created_at, n.updated_at
+                        length(n.content), n.group_name, n.created_at, n.updated_at,
+                        length(CAST(n.content AS BLOB))
                  FROM library_notes n
                  LEFT JOIN library_items i ON i.id = n.item_id
                  WHERE n.item_id IS NULL OR i.deleted_at IS NULL
@@ -637,7 +639,8 @@ impl LibraryRepository {
         .map_err(|error| format!("读取笔记总数失败：{error}"))?;
         let list_sql = format!(
             "SELECT n.id, n.item_id, i.title, n.title, substr(n.content, 1, 600),
-                    length(n.content), n.group_name, n.created_at, n.updated_at
+                    length(n.content), n.group_name, n.created_at, n.updated_at,
+                    length(CAST(n.content AS BLOB))
              FROM library_notes n
              LEFT JOIN library_items i ON i.id = n.item_id
              WHERE {filter}
@@ -1960,6 +1963,29 @@ impl LibraryRepository {
             .ok_or_else(|| "更新后的笔记不存在。".to_string())
     }
 
+    pub fn rename_note(&self, rename: LibraryNoteRename) -> Result<LibraryNote, String> {
+        let rename = rename.normalize_and_validate()?;
+        let connection = self.open_connection()?;
+        let changed = connection
+            .execute(
+                "UPDATE library_notes
+                 SET title = ?, updated_at = ?
+                 WHERE id = ? AND (
+                    item_id IS NULL OR EXISTS (
+                        SELECT 1 FROM library_items i
+                        WHERE i.id = library_notes.item_id AND i.deleted_at IS NULL
+                    )
+                 )",
+                params![rename.title, now_millis_i64(), rename.note_id],
+            )
+            .map_err(|error| format!("重命名文献笔记失败：{error}"))?;
+        if changed == 0 {
+            return Err("笔记不存在或所属文献位于回收站。".to_string());
+        }
+        self.get_note_with_connection(&connection, &rename.note_id)?
+            .ok_or_else(|| "重命名后的笔记不存在。".to_string())
+    }
+
     pub fn delete_note(&self, note_id: &str) -> Result<bool, String> {
         let note_id = normalize_identifier("笔记 ID", note_id)?;
         let connection = self.open_connection()?;
@@ -2907,6 +2933,7 @@ fn note_summary_from_row(row: &Row<'_>) -> rusqlite::Result<LibraryNoteSummary> 
         group_name: row.get(6)?,
         created_at: i64_to_u64(row.get(7)?),
         updated_at: i64_to_u64(row.get(8)?),
+        content_bytes: usize::try_from(row.get::<_, i64>(9)?).unwrap_or(usize::MAX),
     })
 }
 
@@ -3395,8 +3422,8 @@ mod tests {
     use crate::library::types::{
         LibraryAnnotationColor, LibraryAnnotationCreate, LibraryAnnotationKind,
         LibraryAnnotationRect, LibraryAnnotationUpdate, LibraryItemUpdate, LibraryListRequest,
-        LibraryNoteCreate, LibraryNoteUpdate, LibraryReadingStateUpdate, LibraryView,
-        NoteEditProposalCreate, NotePipelinePhase, NotePipelineRunCreate,
+        LibraryNoteCreate, LibraryNoteRename, LibraryNoteUpdate, LibraryReadingStateUpdate,
+        LibraryView, NoteEditProposalCreate, NotePipelinePhase, NotePipelineRunCreate,
         NotePipelineSectionCreate, NotePipelineSectionStatus, NoteSourceCreate, NoteSourceOrigin,
         MAX_PDF_RANGE_BYTES,
     };
@@ -3621,12 +3648,21 @@ mod tests {
         let summaries = repository.list_notes(None).unwrap();
         assert_eq!(summaries[0].content_preview.chars().count(), 600);
         assert_eq!(summaries[0].content_chars, 700);
+        assert_eq!(summaries[0].content_bytes, 700);
+        let renamed = repository
+            .rename_note(LibraryNoteRename {
+                note_id: note.id.clone(),
+                title: "Renamed without loading content".to_string(),
+            })
+            .unwrap();
+        assert_eq!(renamed.title, "Renamed without loading content");
+        assert_eq!(renamed.content, "x".repeat(700));
 
         let global_note = repository
             .create_note(LibraryNoteCreate {
                 item_id: None,
                 title: "Global markdown".to_string(),
-                content: "# Global\n\nIndependent note".to_string(),
+                content: "# 全局\n\n独立笔记".to_string(),
                 group_name: None,
             })
             .unwrap();
@@ -3635,6 +3671,16 @@ mod tests {
         assert_eq!(
             repository.get_note(&global_note.id).unwrap().title,
             "Global markdown"
+        );
+        let global_summary = repository
+            .list_notes(None)
+            .unwrap()
+            .into_iter()
+            .find(|summary| summary.id == global_note.id)
+            .unwrap();
+        assert_eq!(
+            global_summary.content_bytes,
+            "# 全局\n\n独立笔记".as_bytes().len()
         );
 
         assert!(repository.delete_annotation(&annotation.id).unwrap());

@@ -47,9 +47,10 @@ export function noteStats(content: string) {
   return { characters, words, readingMinutes };
 }
 
-export function formatNoteSize(characters: number) {
-  if (characters >= 10_000) return `${(characters / 10_000).toFixed(1)} 万字`;
-  return `${characters} 字`;
+export function formatNoteSize(bytes: number) {
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${bytes} B`;
 }
 
 export const NOTE_TIME_FORMATTER = new Intl.DateTimeFormat("zh-CN", {

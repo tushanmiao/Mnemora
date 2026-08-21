@@ -121,6 +121,7 @@ export function projectDeepNoteTaskRun(
     canRetry: status === "failed",
     canRestart: status === "failed" || status === "stopped",
     canStop: !TERMINAL_STATUSES.has(status),
+    canAbandon: status !== "completed" && status !== "abandoned",
   };
 }
 
@@ -146,6 +147,11 @@ export function projectChatTaskRun(
       : step.detail,
     content: step.reasoning ?? step.tool?.preview,
     status: chatStepStatus(step.status, step.tool?.status === "awaitingApproval"),
+    sequence: step.sequence,
+    createdAt: step.createdAt,
+    reasoningLabel: step.reasoningLabel,
+    skill: step.skill,
+    tool: step.tool,
   }));
   const current = currentTaskStep(steps);
   const completedCount = steps.filter((step) => step.status === "completed").length;
@@ -177,6 +183,7 @@ export function projectChatTaskRun(
     canRetry: false,
     canRestart: false,
     canStop: status === "running",
+    canAbandon: false,
   };
 }
 

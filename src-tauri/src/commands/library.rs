@@ -11,8 +11,8 @@ use crate::{
         LibraryAnnotation, LibraryAnnotationCreate, LibraryAnnotationUpdate, LibraryCollection,
         LibraryImportResult, LibraryItem, LibraryItemUpdate, LibraryListPage, LibraryListRequest,
         LibraryNote, LibraryNoteCreate, LibraryNoteGroup, LibraryNoteImportResult,
-        LibraryNoteSummary, LibraryNoteUpdate, LibraryReadingState, LibraryReadingStateUpdate,
-        NoteSource, NoteSourceCreate,
+        LibraryNoteRename, LibraryNoteSummary, LibraryNoteUpdate, LibraryReadingState,
+        LibraryReadingStateUpdate, NoteSource, NoteSourceCreate,
     },
     state::AppState,
 };
@@ -316,6 +316,18 @@ pub async fn library_update_note(
     let _write_guard = state.library_operations.lock().await;
     let repository = state.library_repository.clone();
     tauri::async_runtime::spawn_blocking(move || repository.update_note(update))
+        .await
+        .map_err(join_error)?
+}
+
+#[tauri::command]
+pub async fn library_rename_note(
+    state: State<'_, AppState>,
+    rename: LibraryNoteRename,
+) -> Result<LibraryNote, String> {
+    let _write_guard = state.library_operations.lock().await;
+    let repository = state.library_repository.clone();
+    tauri::async_runtime::spawn_blocking(move || repository.rename_note(rename))
         .await
         .map_err(join_error)?
 }

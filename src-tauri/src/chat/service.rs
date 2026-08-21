@@ -804,6 +804,19 @@ async fn run_agent_stream(
     let mut tool_call_total = 0usize;
     let mut force_final_answer = false;
 
+    // 手动选择或 Slash 触发的 Skill 正文已经在 `prepare_call` 中由 Rust 成功读取并注入。
+    // 只有走到这里才向前端报告真实激活，避免请求准备失败时界面提前显示“已使用 Skill”。
+    for skill_id in &tool_context.manual_skill_ids {
+        emit_skill_activated(
+            state,
+            on_event,
+            run_id,
+            conversation_id,
+            message_id,
+            skill_id,
+        )?;
+    }
+
     for call_index in 0..=max_agent_rounds {
         let round_index = u32::from(call_index);
         let final_call = force_final_answer || is_final_agent_call(call_index, max_agent_rounds);

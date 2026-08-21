@@ -72,11 +72,15 @@ export function WorkSidebarNavigation({
   const [collectionName, setCollectionName] = useState("");
   const [renamingCollectionId, setRenamingCollectionId] = useState<string | null>(null);
   const [collectionMenuId, setCollectionMenuId] = useState<string | null>(null);
+  const [collapsedPicker, setCollapsedPicker] = useState<"library" | "collections" | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     function closeMenu(event: MouseEvent) {
-      if (!menuRef.current?.contains(event.target as Node)) setCollectionMenuId(null);
+      if (!menuRef.current?.contains(event.target as Node)) {
+        setCollectionMenuId(null);
+        setCollapsedPicker(null);
+      }
     }
     document.addEventListener("mousedown", closeMenu);
     return () => document.removeEventListener("mousedown", closeMenu);
@@ -87,7 +91,16 @@ export function WorkSidebarNavigation({
     setCreatingCollection(false);
     setRenamingCollectionId(null);
     setCollectionMenuId(null);
+    setCollapsedPicker(null);
   }, [collapsed]);
+
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setCollapsedPicker(null);
+    };
+    document.addEventListener("keydown", closeOnEscape);
+    return () => document.removeEventListener("keydown", closeOnEscape);
+  }, []);
 
   const submitCollection = async () => {
     const name = collectionName.trim();
@@ -156,12 +169,33 @@ export function WorkSidebarNavigation({
         />
       </label>
 
+      {collapsed && collapsedPicker === "library" ? (
+        <div className="work-sidebar-collapsed-popover" role="dialog" aria-label={t("work.myLibrary")}>
+          <header><strong>{t("work.myLibrary")}</strong><button type="button" aria-label={t("common.close")} onClick={() => setCollapsedPicker(null)}><X size={14} /></button></header>
+          <label className="work-collapsed-picker-search"><Search size={14} /><input autoFocus value={searchQuery} placeholder={t("work.searchPlaceholder")} onChange={(event) => onSearchQueryChange(event.target.value)} /></label>
+          {primaryViews.map(({ id, label, icon: Icon }) => (
+            <button key={id} type="button" className={activeView === id && selectedCollectionId === null ? "is-active" : ""} onClick={() => { onViewChange(id); setCollapsedPicker(null); }}><Icon size={15} /><span>{label}</span></button>
+          ))}
+        </div>
+      ) : null}
+      {collapsed && collapsedPicker === "collections" ? (
+        <div className="work-sidebar-collapsed-popover work-sidebar-collections-popover" role="dialog" aria-label={t("work.collectionSection")}>
+          <header><strong>{t("work.collectionSection")}</strong><button type="button" aria-label={t("common.close")} onClick={() => setCollapsedPicker(null)}><X size={14} /></button></header>
+          <label className="work-collapsed-picker-search"><Search size={14} /><input autoFocus value={searchQuery} placeholder={t("work.searchPlaceholder")} onChange={(event) => onSearchQueryChange(event.target.value)} /></label>
+          {collections.filter((collection) => !searchQuery.trim() || collection.name.toLocaleLowerCase().includes(searchQuery.trim().toLocaleLowerCase())).map((collection) => (
+            <button key={collection.id} type="button" className={selectedCollectionId === collection.id ? "is-active" : ""} onClick={() => { onCollectionSelect(collection.id); setCollapsedPicker(null); }}><Folder size={15} /><span>{collection.name}</span><small>{collection.itemCount}</small></button>
+          ))}
+          {collections.length === 0 ? <p>{t("work.noCollections")}</p> : null}
+          <button type="button" className="work-sidebar-popover-create" disabled={busy || !runtimeAvailable} onClick={() => { setCollapsedPicker(null); setCreatingCollection(true); setCollectionsOpen(true); }}><FolderPlus size={15} /><span>{t("work.newCollection")}</span></button>
+        </div>
+      ) : null}
+
       <div className="work-library-tree">
         <section className="work-tree-group" aria-label={t("work.myLibrary")}>
-          <div className="work-tree-heading">
+          <button className="work-tree-heading work-tree-heading-button work-library-heading" type="button" onClick={() => collapsed && setCollapsedPicker((current) => current === "library" ? null : "library")} aria-expanded={collapsed ? collapsedPicker === "library" : undefined}>
             <BookOpenText size={15} />
             <strong>{t("work.myLibrary")}</strong>
-          </div>
+          </button>
           <nav className="work-tree-items">
             {primaryViews.map(({ id, label, icon: Icon }) => {
               const active = activeView === id && selectedCollectionId === null;
@@ -187,7 +221,7 @@ export function WorkSidebarNavigation({
             className="work-tree-heading work-tree-heading-button"
             type="button"
             aria-expanded={collectionsOpen}
-            onClick={() => setCollectionsOpen((open) => !open)}
+            onClick={() => collapsed ? setCollapsedPicker((current) => current === "collections" ? null : "collections") : setCollectionsOpen((open) => !open)}
           >
             {collectionsOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
             <FolderTree size={15} />

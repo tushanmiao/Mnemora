@@ -653,6 +653,9 @@ export function GeneralSettingsPanel({
               ))}
             </select>
           </SettingRow>
+          <SettingRow label={t("general.showChatTaskProgress")} description={t("general.showChatTaskProgressDescription")}>
+            <Toggle checked={draft.showChatTaskProgress} onChange={(value) => updateDraft("showChatTaskProgress", value)} />
+          </SettingRow>
           <SettingRow label={t("general.launchStartup")}>
             <Toggle checked={draft.launchAtStartup} onChange={(value) => updateDraft("launchAtStartup", value)} />
           </SettingRow>

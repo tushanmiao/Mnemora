@@ -15,6 +15,7 @@ import type {
   LibraryNoteImportResult,
   LibraryNoteCreate,
   LibraryNoteSummary,
+  LibraryNoteRename,
   LibraryNoteUpdate,
   NoteSource,
   NoteSourceCreate,
@@ -165,6 +166,10 @@ export function importLibraryMarkdownNotes(paths: string[]) {
 
 export function updateLibraryNote(update: LibraryNoteUpdate) {
   return invoke<LibraryNote>("library_update_note", { update });
+}
+
+export function renameLibraryNote(rename: LibraryNoteRename) {
+  return invoke<LibraryNote>("library_rename_note", { rename });
 }
 
 export function deleteLibraryNote(noteId: string) {

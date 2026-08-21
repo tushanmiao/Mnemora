@@ -18,6 +18,7 @@ import {
   isLibraryRuntime,
   listLibraryNoteGroups,
   listLibraryNotes,
+  renameLibraryNote,
   setLibraryNoteGroup,
   updateLibraryNote,
 } from "../../library/api/library";
@@ -27,7 +28,7 @@ import {
   extractMarkdownOutline,
   type MarkdownOutlineItem,
 } from "../../chat/markdown/utils/outline";
-import { NotesBrowser, type GroupFilter } from "./NotesBrowser";
+import { NotesBrowser, type GroupFilter, type NoteSort } from "./NotesBrowser";
 import { NoteEditor, type NoteSelectionMenu } from "./NoteEditor";
 import {
   lineAtOffset,
@@ -44,6 +45,7 @@ const MAX_SELECTION_CHARACTERS = 16_000;
 /** v4 之前分组存放在 localStorage；首次进入时一次性迁入 SQLite 后移除。 */
 const LEGACY_NOTE_GROUPS_STORAGE_KEY = "mnemora.notes.groups.v1";
 const LEGACY_CUSTOM_GROUPS_STORAGE_KEY = "mnemora.notes.custom-groups.v1";
+const NOTE_SORT_STORAGE_KEY = "mnemora.notes.sort.v1";
 /**
  * 会话内记住最后打开的笔记。组件可能被 Suspense 或路由切换卸载重挂，
  * 重挂后凭此恢复编辑现场；用户主动返回列表时会同步清空，不会误恢复。
@@ -112,7 +114,6 @@ async function migrateLegacyGroups() {
 export default function NotesWorkspace({
   chatOpen,
   chatBusy,
-  userDisplayName,
   onToggleChat,
   onAskSelection,
   onEditSelection,
@@ -135,6 +136,7 @@ export default function NotesWorkspace({
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
   const [query, setQuery] = useState("");
+  const [sort, setSortState] = useState<NoteSort>(loadNoteSort);
   const [mode, setMode] = useState<"source" | "preview">("source");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -172,8 +174,6 @@ export default function NotesWorkspace({
     lastOpenNoteId = activeNote?.id ?? null;
   }, [activeNote?.id]);
 
-  const creatorName = userDisplayName.trim() || "Mnemora 用户";
-
   const clearSaveTimer = useCallback(() => {
     if (saveTimerRef.current === null) return;
     window.clearTimeout(saveTimerRef.current);
@@ -203,8 +203,9 @@ export default function NotesWorkspace({
           title: updated.title,
           contentPreview: updated.content.slice(0, 600),
           contentChars: Array.from(updated.content).length,
+          contentBytes: new TextEncoder().encode(updated.content).byteLength,
           updatedAt: updated.updatedAt,
-        } : item).sort((a, b) => b.updatedAt - a.updatedAt));
+        } : item));
 
         // 只规范化当前仍未继续编辑的标题，避免旧请求覆盖保存期间的新输入。
         if (titleRef.current === nextTitle) setTitle(updated.title);
@@ -403,6 +404,32 @@ export default function NotesWorkspace({
     }
   };
 
+  const renameNoteFromList = async (note: LibraryNoteSummary, nextTitle: string) => {
+    setRowMenu(null);
+    setError("");
+    try {
+      const updated = await renameLibraryNote({ noteId: note.id, title: nextTitle });
+      setNotes((current) => current.map((item) => item.id === updated.id ? {
+        ...item,
+        title: updated.title,
+        updatedAt: updated.updatedAt,
+      } : item));
+      if (activeNoteRef.current?.id === updated.id) {
+        setActiveNote(updated);
+        setTitle(updated.title);
+      }
+      return true;
+    } catch (renameError) {
+      setError(renameError instanceof Error ? renameError.message : String(renameError));
+      return false;
+    }
+  };
+
+  const setSort = (next: NoteSort) => {
+    setSortState(next);
+    try { window.localStorage.setItem(NOTE_SORT_STORAGE_KEY, next); } catch { /* 本次会话仍然生效 */ }
+  };
+
   const createGroup = async () => {
     const name = window.prompt("请输入分组名称")?.trim();
     if (!name) return;
@@ -442,14 +469,15 @@ export default function NotesWorkspace({
 
   const filteredNotes = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase();
-    return notes.filter((note) => {
+    const filtered = notes.filter((note) => {
       if (groupFilter === "unfiled" && note.groupName) return false;
       if (typeof groupFilter === "object" && note.groupName !== groupFilter.group) return false;
       if (!normalized) return true;
       return [note.title, note.contentPreview]
         .some((value) => value.toLocaleLowerCase().includes(normalized));
     });
-  }, [notes, query, groupFilter]);
+    return filtered.sort((left, right) => compareNotes(left, right, sort));
+  }, [notes, query, groupFilter, sort]);
   const unfiledCount = useMemo(
     () => notes.filter((note) => !note.groupName).length,
     [notes],
@@ -560,7 +588,8 @@ export default function NotesWorkspace({
         unfiledCount={unfiledCount}
         query={query}
         setQuery={setQuery}
-        creatorName={creatorName}
+        sort={sort}
+        setSort={setSort}
         rowMenu={rowMenu}
         setRowMenu={setRowMenu}
         loading={loading}
@@ -572,6 +601,7 @@ export default function NotesWorkspace({
         onRemoveGroup={(name) => void removeGroup(name)}
         onOpenNote={(noteId) => void openNote(noteId)}
         onAssignGroup={(noteId, groupName) => void assignGroup(noteId, groupName)}
+        onRenameNote={renameNoteFromList}
         onRemoveNote={(note) => void removeNoteFromList(note)}
       />
     );
@@ -614,4 +644,28 @@ export default function NotesWorkspace({
       onOpenSourceConversation={onOpenSourceConversation}
     />
   );
+}
+
+function loadNoteSort(): NoteSort {
+  try {
+    const value = window.localStorage.getItem(NOTE_SORT_STORAGE_KEY);
+    if (["updatedDesc", "updatedAsc", "createdDesc", "createdAsc", "titleAsc", "titleDesc", "sizeDesc", "sizeAsc"].includes(value ?? "")) {
+      return value as NoteSort;
+    }
+  } catch { /* 使用默认顺序 */ }
+  return "updatedDesc";
+}
+
+function compareNotes(left: LibraryNoteSummary, right: LibraryNoteSummary, sort: NoteSort) {
+  const titleOrder = left.title.localeCompare(right.title, "zh-CN", { numeric: true, sensitivity: "base" });
+  let primary = 0;
+  if (sort === "updatedDesc") primary = right.updatedAt - left.updatedAt;
+  else if (sort === "updatedAsc") primary = left.updatedAt - right.updatedAt;
+  else if (sort === "createdDesc") primary = right.createdAt - left.createdAt;
+  else if (sort === "createdAsc") primary = left.createdAt - right.createdAt;
+  else if (sort === "titleAsc") primary = titleOrder;
+  else if (sort === "titleDesc") primary = -titleOrder;
+  else if (sort === "sizeDesc") primary = right.contentBytes - left.contentBytes;
+  else primary = left.contentBytes - right.contentBytes;
+  return primary || titleOrder || left.id.localeCompare(right.id);
 }
