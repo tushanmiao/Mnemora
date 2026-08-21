@@ -67,6 +67,18 @@ function formatTime(value: number | undefined): string {
   }).format(new Date(value));
 }
 
+function capabilityLabel(value: boolean | null | undefined): string {
+  if (value === true) return "支持";
+  if (value === false) return "不支持";
+  return "未识别";
+}
+
+function capabilityState(value: boolean | null | undefined): "on" | "off" | "unknown" {
+  if (value === true) return "on";
+  if (value === false) return "off";
+  return "unknown";
+}
+
 function SectionItem({ section, selected, disabled, onChange }: {
   section: DeepNoteSection;
   selected: boolean;
@@ -174,6 +186,26 @@ export default function DeepNoteView() {
   const runProviderId = runtime.detail?.preflight?.model.providerId ?? runtime.detail?.run.providerId ?? null;
   const runModelId = runtime.detail?.preflight?.model.modelId ?? runtime.detail?.run.modelId ?? null;
   const runApiModel = runtime.detail?.preflight?.model.apiModel ?? null;
+  const preflight = runtime.detail?.preflight;
+  const modelCapabilities = preflight?.model.capabilities;
+  const skillProfiles = runtime.detail?.skillProfiles;
+  const plannerSkills = skillProfiles?.planner ?? [];
+  const writerSkills = skillProfiles?.writer ?? [];
+  const reviewerSkills = skillProfiles?.reviewer ?? [];
+  const skillCount = plannerSkills.length + writerSkills.length + reviewerSkills.length;
+  const skillTitle = [
+    plannerSkills.length > 0 ? `Planner：${plannerSkills.map((skill) => skill.name).join("、")}` : "",
+    writerSkills.length > 0 ? `Writer：${writerSkills.map((skill) => skill.name).join("、")}` : "",
+    reviewerSkills.length > 0 ? `Reviewer：${reviewerSkills.map((skill) => skill.name).join("、")}` : "",
+  ].filter(Boolean).join("\n");
+  const localReaderFormats = preflight?.localReaders
+    ? [
+        preflight.localReaders.text ? "TXT" : "",
+        preflight.localReaders.pdf ? "PDF" : "",
+        preflight.localReaders.docx ? "DOCX" : "",
+        preflight.localReaders.xlsx ? "XLSX" : "",
+      ].filter(Boolean)
+    : [];
   const modelOption = runProviderId && runModelId
     ? runtime.modelOptions.find((option) => option.providerId === runProviderId && option.modelId === runModelId)
     : null;
@@ -444,9 +476,26 @@ export default function DeepNoteView() {
           <div><dt>服务商</dt><dd title={modelOption?.providerName ?? runProviderId ?? undefined}>{modelOption?.providerName ?? runProviderId ?? "-"}</dd></div>
           <div><dt>模型</dt><dd title={modelOption?.displayName ?? runModelId ?? undefined}>{modelOption?.displayName ?? runModelId ?? "-"}</dd></div>
           <div><dt>API 标识</dt><dd className="deep-note-model-api" title={runApiModel ?? modelOption?.apiModel ?? undefined}>{runApiModel ?? modelOption?.apiModel ?? "-"}</dd></div>
-          <div><dt>Tool</dt><dd>{runtime.detail?.preflight?.model.capabilities.tools ? "可用" : "未启用"}</dd></div>
+          <div>
+            <dt>模型 Tool</dt>
+            <dd className="deep-note-capability-value" data-state={capabilityState(modelCapabilities?.tools)}>{capabilityLabel(modelCapabilities?.tools)}</dd>
+          </div>
+          <div>
+            <dt>模型视觉</dt>
+            <dd className="deep-note-capability-value" data-state={capabilityState(modelCapabilities?.vision)}>
+              {capabilityLabel(modelCapabilities?.vision)}{preflight?.requiresVision ? " · 本次需要" : ""}
+            </dd>
+          </div>
+          <div>
+            <dt>推理能力</dt>
+            <dd className="deep-note-capability-value" data-state={capabilityState(modelCapabilities?.reasoning)}>{capabilityLabel(modelCapabilities?.reasoning)}</dd>
+          </div>
+          <div><dt>本地 Reader</dt><dd title={localReaderFormats.join("、") || undefined}>{localReaderFormats.length > 0 ? localReaderFormats.join(" · ") : "未加载"}</dd></div>
+          <div><dt>Skill</dt><dd title={skillTitle || undefined}>{skillCount > 0 ? `已冻结 ${skillCount} 项` : "未加载"}</dd></div>
         </dl>
-        {runtime.detail?.preflight?.warnings.map((warning) => <p className="deep-note-inline-warning" key={warning}><AlertTriangle size={13} />{warning}</p>)}
+        {skillCount > 0 ? <p className="deep-note-skill-summary" title={skillTitle}>Planner {plannerSkills.length} · Writer {writerSkills.length} · Reviewer {reviewerSkills.length}</p> : null}
+        {preflight?.requiresLocalReaders ? <p className="deep-note-pane-note">文档由 Mnemora 本地 Reader 读取，不依赖模型 Tool。</p> : null}
+        {preflight?.warnings.map((warning) => <p className="deep-note-inline-warning" key={warning}><AlertTriangle size={13} />{warning}</p>)}
 
         {failed ? (
           <section className="deep-note-model-recovery" aria-label="切换备用模型">
@@ -486,9 +535,10 @@ export default function DeepNoteView() {
         <div className="deep-note-budget-meter"><span style={{ width: `${budgetProgress}%` }} /></div>
         <p>{budget?.semanticCallsUsed ?? 0} / {budget?.semanticCallLimit ?? 0} 次语义调用</p>
         <dl className="deep-note-stat-list">
-          <div><dt>请求重试上限</dt><dd>{runtime.detail?.run.retryAttempts ?? 5}</dd></div>
+          <div><dt>请求重试上限</dt><dd>{runtime.detail?.run.retryAttempts ?? 5} 次（最多 {(runtime.detail?.run.retryAttempts ?? 5) + 1} 次请求）</dd></div>
           <div><dt>节点尝试上限</dt><dd>{budget?.nodeAttemptLimit ?? 5}</dd></div>
           <div><dt>章节修订上限</dt><dd>{budget?.sectionRevisionLimit ?? 5}</dd></div>
+          <div><dt>提纲调整</dt><dd>{budget?.replansUsed ?? 0}/{budget?.replanLimit ?? 4}</dd></div>
           <div><dt>章节执行</dt><dd>按章节计划</dd></div>
         </dl>
 

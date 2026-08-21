@@ -47,10 +47,25 @@ export interface NotePipelineRun {
 }
 
 export interface DeepNoteCapabilities {
-  tools: boolean;
+  tools: boolean | null;
   vision: boolean | null;
   reasoning: boolean | null;
   structuredOutputs: boolean;
+}
+
+export interface DeepNoteSkillSnapshot {
+  profile: "planner" | "writer" | "reviewer";
+  skillId: string;
+  name: string;
+  version: string;
+  contentHash: string;
+  renderedPrompt: string;
+}
+
+export interface DeepNoteSkillProfiles {
+  planner: DeepNoteSkillSnapshot[];
+  writer: DeepNoteSkillSnapshot[];
+  reviewer: DeepNoteSkillSnapshot[];
 }
 
 export interface DeepNotePreflight {
@@ -174,7 +189,7 @@ export interface DeepNoteRunDetail {
   sourceChunks: DeepNoteSourceChunk[];
   evidence: DeepNoteEvidenceArtifact[];
   ledger: Record<string, unknown>;
-  skillProfiles?: Record<string, unknown>;
+  skillProfiles?: DeepNoteSkillProfiles;
   events: NotePipelineEventRecord[];
   markdownPreview: string;
   sidecarJson: string;

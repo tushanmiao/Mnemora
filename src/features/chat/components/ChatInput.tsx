@@ -45,7 +45,7 @@ import { useI18n } from "../../../i18n/I18nProvider";
 import { formatChatQuotes, MAX_CHAT_QUOTES } from "../utils/quotes";
 import "../styles/chat-input.css";
 
-const MAX_ATTACHMENTS = 8;
+const MAX_ATTACHMENTS = 10;
 
 const REASONING_EFFORT_LABEL_KEYS = {
   low: "chat.reasoningEffort.low",

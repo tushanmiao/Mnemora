@@ -80,6 +80,10 @@
 .deep-note-stat-list dt { color: var(--color-muted); }
 .deep-note-stat-list dd { overflow: hidden; min-width: 0; margin: 0; font-variant-numeric: tabular-nums; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
 .deep-note-stat-list dd.deep-note-model-api { max-width: 190px; color: var(--color-text-secondary); font-family: var(--ui-font-family); font-size: 12px; }
+.deep-note-capability-value[data-state="on"] { color: var(--color-success); }
+.deep-note-capability-value[data-state="off"] { color: var(--color-danger); }
+.deep-note-capability-value[data-state="unknown"] { color: var(--color-muted); }
+.deep-note-skill-summary { overflow: hidden; margin: 8px 0 0; color: var(--color-text-secondary); font-size: 12px; line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }
 .deep-note-check-list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; font-size: 12px; }
 .deep-note-check-list li { display: flex; align-items: center; gap: 7px; color: var(--color-success); }
 .deep-note-check-list .is-muted { color: var(--color-muted); }

@@ -52,8 +52,6 @@ use super::{
     },
 };
 
-const NODE_ATTEMPT_LIMIT: u8 = 5;
-const SECTION_REVISION_LIMIT: u8 = 5;
 // Direct mode is only safe when the same raw input can also be reused by a
 // section writer. Larger inputs first build a traceable ledger so drafting
 // never reaches an outline with no bounded source context.
@@ -82,10 +80,10 @@ const PIPELINE_STOP_WAIT_INTERVAL: Duration = Duration::from_millis(25);
 fn budget_for_drafting(previous: &DeepNoteBudget, section_count: usize) -> DeepNoteBudget {
     let mut budget = DeepNoteBudget::for_section_count(section_count);
     budget.semantic_calls_used = previous.semantic_calls_used;
-    let revision_calls = section_count as u32 * (1 + u32::from(SECTION_REVISION_LIMIT));
-    budget.semantic_call_limit = budget
-        .semantic_call_limit
-        .max(previous.semantic_calls_used.saturating_add(revision_calls));
+    budget.replans_used = previous.replans_used;
+    let section_calls = section_count as u32
+        * (u32::from(budget.node_attempt_limit) + u32::from(budget.section_revision_limit));
+    budget.reserve_semantic_calls(section_calls);
     budget
 }
 
@@ -623,14 +621,23 @@ fn split_text_by_token_budget(value: &str, target_tokens: u64) -> Vec<String> {
     chunks
 }
 
+fn source_chunk_limit_error() -> String {
+    format!(
+        "当前来源需要超过单次深度笔记允许的 {MAX_ANALYSIS_CHUNKS} 个分块。请缩小会话或附件范围后重试；系统不会静默丢弃内容。"
+    )
+}
+
 fn push_conversation_chunk(
     chunks: &mut Vec<ConversationChunk>,
     conversation_id: &str,
     excerpt: String,
     mut message_ids: Vec<String>,
-) {
+) -> Result<(), String> {
     if excerpt.trim().is_empty() {
-        return;
+        return Ok(());
+    }
+    if chunks.len() >= MAX_ANALYSIS_CHUNKS {
+        return Err(source_chunk_limit_error());
     }
     message_ids.sort();
     message_ids.dedup();
@@ -656,12 +663,13 @@ fn push_conversation_chunk(
         },
         message_ids,
     });
+    Ok(())
 }
 
 fn conversation_chunks(
     conversation: &StoredConversation,
     target_tokens: u64,
-) -> Vec<ConversationChunk> {
+) -> Result<Vec<ConversationChunk>, String> {
     let mut chunks = Vec::new();
     let mut current = String::new();
     let mut current_ids = Vec::new();
@@ -688,7 +696,7 @@ fn conversation_chunks(
                     &conversation.id,
                     std::mem::take(&mut current),
                     std::mem::take(&mut current_ids),
-                );
+                )?;
                 current_tokens = 0;
             }
             if !current.is_empty() {
@@ -700,8 +708,8 @@ fn conversation_chunks(
             current_ids.push(message.id.clone());
         }
     }
-    push_conversation_chunk(&mut chunks, &conversation.id, current, current_ids);
-    chunks
+    push_conversation_chunk(&mut chunks, &conversation.id, current, current_ids)?;
+    Ok(chunks)
 }
 
 const SOURCE_TEXT_WINDOW_LINES: usize = 100;
@@ -838,19 +846,23 @@ fn ledger_has_real_output(ledger: &DeepNoteLedger, coverage_complete: bool) -> b
 
 fn push_attachment_source_chunks(
     chunks: &mut Vec<ConversationChunk>,
+    max_chunks: usize,
     attachment: &crate::chat::conversation_types::StoredChatAttachment,
     message_id: &str,
     source_kind: DeepNoteSourceKind,
     location: &str,
     content: String,
     target_tokens: u64,
-) {
+) -> Result<(), String> {
     for (segment_index, excerpt) in split_text_by_token_budget(&content, target_tokens)
         .into_iter()
         .enumerate()
     {
         if excerpt.trim().is_empty() {
             continue;
+        }
+        if chunks.len() >= max_chunks {
+            return Err(source_chunk_limit_error());
         }
         let content_hash = stable_hash(&excerpt);
         let chunk_id = format!(
@@ -877,6 +889,7 @@ fn push_attachment_source_chunks(
             message_ids: vec![message_id.to_string()],
         });
     }
+    Ok(())
 }
 
 async fn execute_source_reader(
@@ -982,6 +995,7 @@ async fn attachment_source_chunks(
     runtime: &mut DeepNoteRuntimeState,
     conversation: &StoredConversation,
     target_tokens: u64,
+    max_chunks: usize,
     cancellation: &CancellationToken,
 ) -> Result<Vec<ConversationChunk>, String> {
     let attachments = noteworthy_messages(conversation)
@@ -994,6 +1008,9 @@ async fn attachment_source_chunks(
         for attachment in &message.attachments {
             if cancellation.is_cancelled() {
                 return Err("操作已取消。".to_string());
+            }
+            if chunks.len() >= max_chunks {
+                return Err(source_chunk_limit_error());
             }
             if attachment.kind == "image" {
                 consume_semantic_call(state, &run.id, runtime)?;
@@ -1031,18 +1048,22 @@ async fn attachment_source_chunks(
                 }
                 push_attachment_source_chunks(
                     &mut chunks,
+                    max_chunks,
                     attachment,
                     &message.id,
                     DeepNoteSourceKind::Image,
                     &format!("图片 {}", attachment.name),
                     text,
                     target_tokens,
-                );
+                )?;
                 continue;
             }
             if is_text_source_attachment(attachment) {
                 let mut start = 1usize;
                 loop {
+                    if chunks.len() >= max_chunks {
+                        return Err(source_chunk_limit_error());
+                    }
                     if calls >= SOURCE_READER_CALL_LIMIT {
                         return Err("来源 Reader 调用达到安全上限，附件覆盖尚未完成。".to_string());
                     }
@@ -1065,25 +1086,27 @@ async fn attachment_source_chunks(
                         if start == 1 {
                             push_attachment_source_chunks(
                                 &mut chunks,
+                                max_chunks,
                                 attachment,
                                 &message.id,
                                 DeepNoteSourceKind::Text,
                                 &format!("附件 {}", attachment.name),
                                 "[该附件没有可提取的非空 UTF-8 文本。]".to_string(),
                                 target_tokens,
-                            );
+                            )?;
                         }
                         break;
                     }
                     push_attachment_source_chunks(
                         &mut chunks,
+                        max_chunks,
                         attachment,
                         &message.id,
                         DeepNoteSourceKind::Text,
                         &format!("附件 {} 第 {start}-{end} 行", attachment.name),
                         result.content,
                         target_tokens,
-                    );
+                    )?;
                     start = end + 1;
                 }
             } else if is_pdf_source_attachment(attachment) {
@@ -1098,6 +1121,9 @@ async fn attachment_source_chunks(
                 .await
                 .map_err(|error| format!("PDF 页数检查任务失败：{error}"))??;
                 for start in (1..=page_count.max(1)).step_by(SOURCE_PDF_PAGES_PER_CALL) {
+                    if chunks.len() >= max_chunks {
+                        return Err(source_chunk_limit_error());
+                    }
                     if calls >= SOURCE_READER_CALL_LIMIT {
                         return Err("来源 Reader 调用达到安全上限，PDF 覆盖尚未完成。".to_string());
                     }
@@ -1114,17 +1140,21 @@ async fn attachment_source_chunks(
                         execute_source_reader(state, run, call, &attachments, cancellation).await?;
                     push_attachment_source_chunks(
                         &mut chunks,
+                        max_chunks,
                         attachment,
                         &message.id,
                         DeepNoteSourceKind::Pdf,
                         &format!("PDF {} 第 {start}-{end} 页", attachment.name),
                         result.content,
                         target_tokens,
-                    );
+                    )?;
                 }
             } else if is_docx_source_attachment(attachment) {
                 let mut start = 1usize;
                 loop {
+                    if chunks.len() >= max_chunks {
+                        return Err(source_chunk_limit_error());
+                    }
                     if calls >= SOURCE_READER_CALL_LIMIT {
                         return Err("来源 Reader 调用达到安全上限，DOCX 覆盖尚未完成。".to_string());
                     }
@@ -1147,13 +1177,14 @@ async fn attachment_source_chunks(
                     }
                     push_attachment_source_chunks(
                         &mut chunks,
+                        max_chunks,
                         attachment,
                         &message.id,
                         DeepNoteSourceKind::Docx,
                         &format!("DOCX {} 第 {start}-{end} 块", attachment.name),
                         result.content,
                         target_tokens,
-                    );
+                    )?;
                     start = end + 1;
                 }
             } else if is_xlsx_source_attachment(attachment) {
@@ -1181,6 +1212,9 @@ async fn attachment_source_chunks(
                 for (sheet_index, sheet) in sheets.iter().enumerate() {
                     let mut start = 1usize;
                     loop {
+                        if chunks.len() >= max_chunks {
+                            return Err(source_chunk_limit_error());
+                        }
                         if calls >= SOURCE_READER_CALL_LIMIT {
                             return Err(
                                 "来源 Reader 调用达到安全上限，XLSX 覆盖尚未完成。".to_string()
@@ -1210,13 +1244,14 @@ async fn attachment_source_chunks(
                         }
                         push_attachment_source_chunks(
                             &mut chunks,
+                            max_chunks,
                             attachment,
                             &message.id,
                             DeepNoteSourceKind::Xlsx,
                             &format!("XLSX {} / {} 第 {start}-{end} 行", attachment.name, sheet),
                             result.content,
                             target_tokens,
-                        );
+                        )?;
                         start = end + 1;
                     }
                 }
@@ -1239,7 +1274,15 @@ async fn all_source_chunks(
     target_tokens: u64,
     cancellation: &CancellationToken,
 ) -> Result<Vec<ConversationChunk>, String> {
-    let mut chunks = conversation_chunks(conversation, target_tokens);
+    let mut chunks = conversation_chunks(conversation, target_tokens)?;
+    let remaining_chunks = MAX_ANALYSIS_CHUNKS.saturating_sub(chunks.len());
+    let visual_source_calls = noteworthy_messages(conversation)
+        .into_iter()
+        .flat_map(|message| message.attachments.iter())
+        .filter(|attachment| attachment.kind == "image")
+        .count() as u32;
+    runtime.budget.reserve_semantic_calls(visual_source_calls);
+    save_runtime_state(state, &run.id, runtime)?;
     chunks.extend(
         attachment_source_chunks(
             state,
@@ -1247,6 +1290,7 @@ async fn all_source_chunks(
             runtime,
             conversation,
             target_tokens,
+            remaining_chunks,
             cancellation,
         )
         .await?,
@@ -1389,8 +1433,7 @@ fn resolve_note_model_snapshot(
     let tools = model
         .capabilities
         .and_then(|capabilities| capabilities.function_calling)
-        .or_else(|| crate::ai::model::database_supports_function_calling(&model.api_model))
-        .unwrap_or(false);
+        .or_else(|| crate::ai::model::database_supports_function_calling(&model.api_model));
     let vision = model
         .capabilities
         .and_then(|capabilities| capabilities.vision)
@@ -1453,7 +1496,7 @@ fn preflight(
         ));
     }
     let mut warnings = Vec::new();
-    if requires_local_readers && !model.capabilities.tools {
+    if requires_local_readers && model.capabilities.tools != Some(true) {
         warnings.push(
             "文档附件将由 Mnemora 本地只读 Reader 解析；不依赖当前模型的 Tool 能力。".to_string(),
         );
@@ -1663,13 +1706,7 @@ async fn create_input_snapshot(
 }
 
 fn extend_manual_recovery_budget(runtime: &mut DeepNoteRuntimeState) {
-    runtime.budget.semantic_call_limit = runtime.budget.semantic_call_limit.max(
-        runtime
-            .budget
-            .semantic_calls_used
-            .saturating_add(12)
-            .min(200),
-    );
+    runtime.budget.reserve_semantic_calls(12);
 }
 
 fn reset_failed_runtime_nodes(runtime: &mut DeepNoteRuntimeState) {
@@ -2460,10 +2497,14 @@ async fn build_chunked_ledger(
     runtime.context_budget.chunk_count = chunks.len();
     runtime.context_budget.coverage_complete = false;
     runtime.context_budget.omitted_message_ids.clear();
-    runtime.budget.semantic_call_limit = runtime
-        .budget
-        .semantic_call_limit
-        .max(((chunks.len() as u32).saturating_mul(2) + 2).min(200));
+    let remaining_chunk_count = chunks
+        .len()
+        .saturating_sub(runtime.context_budget.processed_chunk_count);
+    runtime.budget.reserve_semantic_calls(
+        (remaining_chunk_count as u32)
+            .saturating_mul(2)
+            .saturating_add(2),
+    );
 
     let mut processed_ids = chunks
         .iter()
@@ -3453,7 +3494,9 @@ async fn execute_dag_section(
     };
     let mut attempts = persisted.map(|value| value.attempt_count).unwrap_or(0);
     let mut revisions = persisted.map(|value| value.revision_count).unwrap_or(0);
-    'attempts: while attempts < NODE_ATTEMPT_LIMIT {
+    let node_attempt_limit = runtime.budget.node_attempt_limit.max(1);
+    let section_revision_limit = runtime.budget.section_revision_limit;
+    'attempts: while attempts < node_attempt_limit {
         if cancellation.is_cancelled() {
             break;
         }
@@ -3483,7 +3526,7 @@ async fn execute_dag_section(
             Ok(value) if !value.trim().is_empty() => {
                 let mut candidate = value.trim().to_string();
                 validation = validate_section_markdown(section, &candidate, evidence_ids);
-                while !validation.passed && revisions < SECTION_REVISION_LIMIT {
+                while !validation.passed && revisions < section_revision_limit {
                     revisions += 1;
                     consume_semantic_call(state, &run.id, runtime)?;
                     let revision_prompt = format!(
@@ -4152,7 +4195,9 @@ async fn run_drafting_task_legacy<R: Runtime>(
                 .get(&section.id)
                 .map(|existing| existing.revision_count)
                 .unwrap_or(0);
-            'attempts: while attempts < NODE_ATTEMPT_LIMIT {
+            let node_attempt_limit = runtime.budget.node_attempt_limit.max(1);
+            let section_revision_limit = runtime.budget.section_revision_limit;
+            'attempts: while attempts < node_attempt_limit {
                 if cancellation.is_cancelled() {
                     break;
                 }
@@ -4175,7 +4220,7 @@ async fn run_drafting_task_legacy<R: Runtime>(
                     Ok(value) if !value.trim().is_empty() => {
                         let mut candidate = value.trim().to_string();
                         validation = validate_section_markdown(section, &candidate, &[]);
-                        while !validation.passed && revisions < SECTION_REVISION_LIMIT {
+                        while !validation.passed && revisions < section_revision_limit {
                             revisions += 1;
                             consume_semantic_call(&state, &run_id, &mut runtime)?;
                             let revision_prompt = format!(
@@ -4742,8 +4787,28 @@ pub async fn adjust<R: Runtime>(
     if run.phase != NotePipelinePhase::AwaitingOutline {
         return Err("当前任务不能调整提纲。".to_string());
     }
+    let mut runtime = runtime_state(&run)?;
+    if runtime.budget.replans_used >= runtime.budget.replan_limit {
+        return Err(format!(
+            "提纲调整已达到 {} 次上限；请确认当前计划，或重新生成深度笔记。",
+            runtime.budget.replan_limit
+        ));
+    }
+    runtime.budget.replans_used = runtime.budget.replans_used.saturating_add(1);
+    runtime.budget.reserve_semantic_calls(2);
     let run = {
         let _guard = state.library_operations.lock().await;
+        save_runtime_state(&state, &run.id, &runtime)?;
+        state.library_repository.append_note_pipeline_event(
+            &run.id,
+            "outlineAdjustmentRequested",
+            None,
+            &serde_json::json!({
+                "replansUsed": runtime.budget.replans_used,
+                "replanLimit": runtime.budget.replan_limit,
+            })
+            .to_string(),
+        )?;
         state.library_repository.update_note_pipeline_phase(
             &run.id,
             NotePipelinePhase::Analyzing,
@@ -5658,7 +5723,7 @@ mod tests {
             api_model: "test-model".to_string(),
             context_window_tokens,
             capabilities: DeepNoteCapabilities {
-                tools: true,
+                tools: Some(true),
                 vision: Some(true),
                 reasoning: Some(true),
                 structured_outputs: false,
@@ -5912,7 +5977,7 @@ mod tests {
             message("message-1", ModelRole::User, "x".repeat(700)),
             message("message-2", ModelRole::Assistant, "界".repeat(200)),
         ]);
-        let chunks = conversation_chunks(&conversation, 64);
+        let chunks = conversation_chunks(&conversation, 64).unwrap();
         assert!(chunks.len() > 2);
         assert!(chunks.iter().all(|chunk| chunk.estimated_tokens <= 64));
         let covered = chunks

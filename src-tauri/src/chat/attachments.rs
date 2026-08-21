@@ -24,8 +24,8 @@ use super::{
     storage::ConversationRepository,
 };
 
-pub const MAX_ATTACHMENTS_PER_MESSAGE: usize = 8;
-pub const MAX_VISUAL_IMAGES_PER_MESSAGE: usize = 4;
+pub const MAX_ATTACHMENTS_PER_MESSAGE: usize = 10;
+pub const MAX_VISUAL_IMAGES_PER_MESSAGE: usize = 10;
 pub const MAX_IMAGE_BYTES: u64 = 10 * 1024 * 1024;
 pub const MAX_FILE_BYTES: u64 = 25 * 1024 * 1024;
 pub const MAX_TOTAL_ATTACHMENT_BYTES: u64 = 25 * 1024 * 1024;
@@ -701,6 +701,27 @@ mod tests {
             inspect_attachment_paths(vec![path.to_string_lossy().into_owned()]).unwrap();
         assert_eq!(attachments[0].kind, "image");
         assert_eq!(attachments[0].mime_type, "image/png");
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn accepts_ten_small_visual_images_in_one_message() {
+        let directory =
+            std::env::temp_dir().join(format!("mnemora-attachment-test-{}", Uuid::new_v4()));
+        fs::create_dir_all(&directory).unwrap();
+        let paths = (0..10)
+            .map(|index| {
+                let path = directory.join(format!("capture-{index}.png"));
+                write_test_png(&path);
+                path.to_string_lossy().into_owned()
+            })
+            .collect::<Vec<_>>();
+
+        let attachments = inspect_attachment_paths(paths).unwrap();
+        assert_eq!(attachments.len(), 10);
+        assert!(attachments
+            .iter()
+            .all(|attachment| attachment.kind == "image"));
         let _ = fs::remove_dir_all(directory);
     }
 

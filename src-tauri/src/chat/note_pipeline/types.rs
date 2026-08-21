@@ -7,6 +7,8 @@ use crate::library::types::{
     NoteEditProposal, NotePipelinePhase, NotePipelineRun, NotePipelineSectionStatus,
 };
 
+pub const MAX_DEEP_NOTE_SEMANTIC_CALLS: u32 = 640;
+
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum DeepNoteSectionKind {
@@ -226,7 +228,8 @@ fn stable_hash(value: impl AsRef<[u8]>) -> String {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct DeepNoteCapabilities {
-    pub tools: bool,
+    #[serde(default)]
+    pub tools: Option<bool>,
     pub vision: Option<bool>,
     pub reasoning: Option<bool>,
     pub structured_outputs: bool,
@@ -615,15 +618,55 @@ pub struct DeepNoteBudget {
 
 impl DeepNoteBudget {
     pub fn for_section_count(section_count: usize) -> Self {
+        let node_attempt_limit = 5;
+        let section_revision_limit = 5;
+        let per_section_calls = u32::from(node_attempt_limit) + u32::from(section_revision_limit);
         Self {
-            semantic_call_limit: (2 + section_count as u32 * 3).min(80),
+            // Four calls cover visual-source/planner setup and fallback paths. Each
+            // selected section then receives enough budget for every bounded fresh
+            // draft attempt plus every bounded semantic revision.
+            semantic_call_limit: (4 + section_count as u32 * per_section_calls)
+                .min(MAX_DEEP_NOTE_SEMANTIC_CALLS),
             semantic_calls_used: 0,
-            node_attempt_limit: 5,
-            section_revision_limit: 5,
+            node_attempt_limit,
+            section_revision_limit,
             replan_limit: 4,
             replans_used: 0,
             max_parallel_nodes: 2,
         }
+    }
+
+    pub fn reserve_semantic_calls(&mut self, additional_calls: u32) {
+        self.semantic_call_limit = self.semantic_call_limit.max(
+            self.semantic_calls_used
+                .saturating_add(additional_calls)
+                .min(MAX_DEEP_NOTE_SEMANTIC_CALLS),
+        );
+    }
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::{DeepNoteBudget, MAX_DEEP_NOTE_SEMANTIC_CALLS};
+
+    #[test]
+    fn drafting_budget_covers_every_bounded_attempt_and_revision() {
+        let budget = DeepNoteBudget::for_section_count(8);
+        let required = 4 + 8
+            * (u32::from(budget.node_attempt_limit) + u32::from(budget.section_revision_limit));
+        assert!(budget.semantic_call_limit >= required);
+    }
+
+    #[test]
+    fn semantic_reservation_is_relative_to_calls_already_used() {
+        let mut budget = DeepNoteBudget::for_section_count(1);
+        budget.semantic_calls_used = 50;
+        budget.reserve_semantic_calls(24);
+        assert_eq!(budget.semantic_call_limit, 74);
+
+        budget.semantic_calls_used = MAX_DEEP_NOTE_SEMANTIC_CALLS - 2;
+        budget.reserve_semantic_calls(24);
+        assert_eq!(budget.semantic_call_limit, MAX_DEEP_NOTE_SEMANTIC_CALLS);
     }
 }
 

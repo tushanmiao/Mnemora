@@ -107,7 +107,7 @@ export function DeepNoteOutlineDialog({
         </label>
 
         <footer className="deep-note-dialog-footer">
-          <span>预计模型调用：分析师 1 次 + 扩写 {selected.size} 次</span>
+          <span>调用预算会计入来源分块、视觉分析、章节生成与语义修订；网络重试单独统计。</span>
           <div>
             <button className="settings-button settings-button-secondary" type="button" disabled={busy || !requirement.trim()} onClick={() => onAdjust(requirement)}>
               调整提纲

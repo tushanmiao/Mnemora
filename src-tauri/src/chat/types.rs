@@ -22,8 +22,8 @@ const MAX_MESSAGE_BYTES: usize = 1024 * 1024;
 const MAX_CONTEXT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_SYSTEM_PROMPT_BYTES: usize = 256 * 1024;
 const MAX_OUTPUT_TOKENS: u32 = 131_072;
-const MAX_ATTACHMENTS_PER_MESSAGE: usize = 8;
-const MAX_MODEL_IMAGES: usize = 4;
+const MAX_ATTACHMENTS_PER_MESSAGE: usize = 10;
+const MAX_MODEL_IMAGES: usize = 10;
 const MAX_MODEL_IMAGE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_ACTIVATED_SKILLS: usize = 12;
 
@@ -641,6 +641,48 @@ mod tests {
             .attachments
             .push(image_attachment("attachment-1", "attachment-1_capture.png"));
         request.validate().unwrap();
+    }
+
+    #[test]
+    fn accepts_ten_images_for_one_model_request() {
+        let root = std::env::temp_dir().join(format!("mnemora-chat-images-{}", Uuid::new_v4()));
+        let repository = ConversationRepository::new(root.clone());
+        let directory = repository.attachments_directory("conversation-1").unwrap();
+        fs::create_dir_all(&directory).unwrap();
+        let image = image::RgbImage::from_pixel(8, 6, image::Rgb([12, 34, 56]));
+        let attachments = (0..10)
+            .map(|index| {
+                let path = format!("{index:08}-1111-4111-8111-111111111111_shot.png");
+                image.save(directory.join(&path)).unwrap();
+                image_attachment(&format!("attachment-{index}"), &path)
+            })
+            .collect::<Vec<_>>();
+
+        let mut value = request("分析这些图片");
+        value.conversation_id = Some("conversation-1".to_string());
+        value.messages[0].attachments = attachments;
+        value.validate().unwrap();
+        let model_request = value
+            .into_model_request(
+                "vision-model".to_string(),
+                &repository,
+                &crate::skills::SkillRepository::new(root.join("builtin"), root.join("skills")),
+            )
+            .unwrap();
+        assert_eq!(model_request.messages[0].images.len(), 10);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rejects_more_than_ten_attachments() {
+        let mut value = request("附件过多");
+        value.messages[0].attachments = (0..11)
+            .map(|index| image_attachment(&format!("attachment-{index}"), "unused.png"))
+            .collect();
+        assert_eq!(
+            value.validate().unwrap_err().kind,
+            ModelErrorKind::InvalidConfiguration
+        );
     }
 
     #[test]

@@ -3899,7 +3899,7 @@ mod tests {
                 api_model: "model-1".to_string(),
                 context_window_tokens: Some(128_000),
                 capabilities: DeepNoteCapabilities {
-                    tools: true,
+                    tools: Some(true),
                     vision: Some(true),
                     reasoning: Some(true),
                     structured_outputs: true,
