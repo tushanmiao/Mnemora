@@ -3,6 +3,7 @@ import type { TranslationKey } from "./translations";
 // Loaded only when English is selected, keeping the default Chinese startup lean.
 export const enTranslations: Record<TranslationKey, string> = {
   "view.deepNote": "Deep note",
+  "settings.pet": "Pet",
   "chat.toolsUnsupported": "This model does not support tool calls, so Skills and document attachments are unavailable. Plain Chat remains available.",
   "chat.noteActions": "Notes and export",
   "chat.reasoningSettings": "Reasoning settings",

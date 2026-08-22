@@ -274,6 +274,7 @@ export const zhTranslations = {
   "settings.back": "返回工作区",
   "settings.categories": "设置分类",
   "settings.general": "基础",
+  "settings.pet": "宠物",
   "settings.notes": "笔记",
   "settings.models": "模型服务",
   "settings.skills": "技能",

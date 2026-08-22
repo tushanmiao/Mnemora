@@ -256,11 +256,96 @@ pub struct DeepNoteInputSnapshot {
     pub message_content_hashes: Vec<String>,
     pub attachment_ids: Vec<String>,
     pub attachment_content_hashes: Vec<String>,
+    #[serde(default)]
+    pub attachment_message_ids: Vec<String>,
     pub selected_literature_ids: Vec<String>,
     pub selected_note_ids: Vec<String>,
     pub model: DeepNoteModelSnapshot,
     pub permission_mode: String,
     pub created_at: u64,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum DeepNoteSourceUnitKind {
+    Body,
+    Attachment,
+    LiteratureSelection,
+    NoteSelection,
+}
+
+impl DeepNoteSourceUnitKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Body => "body",
+            Self::Attachment => "attachment",
+            Self::LiteratureSelection => "literatureSelection",
+            Self::NoteSelection => "noteSelection",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "body" => Ok(Self::Body),
+            "attachment" => Ok(Self::Attachment),
+            "literatureSelection" | "literature_selection" => Ok(Self::LiteratureSelection),
+            "noteSelection" | "note_selection" => Ok(Self::NoteSelection),
+            _ => Err(format!("未知的深度笔记来源单元类型：{value}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum DeepNoteSourceUnitStatus {
+    Pending,
+    Extracted,
+    Covered,
+    Failed,
+    Unsupported,
+}
+
+impl DeepNoteSourceUnitStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Extracted => "extracted",
+            Self::Covered => "covered",
+            Self::Failed => "failed",
+            Self::Unsupported => "unsupported",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "pending" => Ok(Self::Pending),
+            "extracted" => Ok(Self::Extracted),
+            "covered" => Ok(Self::Covered),
+            "failed" => Ok(Self::Failed),
+            "unsupported" => Ok(Self::Unsupported),
+            _ => Err(format!("未知的深度笔记来源单元状态：{value}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeepNoteSourceUnit {
+    pub unit_id: String,
+    pub note_id: String,
+    pub conversation_id: String,
+    pub message_id: String,
+    pub kind: DeepNoteSourceUnitKind,
+    pub attachment_id: Option<String>,
+    pub content_hash: String,
+    pub parser_id: String,
+    pub parser_version: String,
+    pub status: DeepNoteSourceUnitStatus,
+    pub chunk_ids: Vec<String>,
+    pub evidence_ids: Vec<String>,
+    pub error_message: Option<String>,
+    pub created_at: u64,
+    pub updated_at: u64,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
@@ -1045,6 +1130,8 @@ pub struct NoteEditPrepareRequest {
     pub section_heading: String,
     #[serde(default)]
     pub requirement: String,
+    #[serde(default)]
+    pub operation_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -1100,4 +1187,8 @@ pub struct NotePatchSet {
 pub struct NoteEditPrepareResult {
     pub proposal: NoteEditProposal,
     pub warnings: Vec<String>,
+    pub source_units: Vec<DeepNoteSourceUnit>,
+    pub attachment_count: usize,
+    pub requires_global_review: bool,
+    pub global_review_passed: bool,
 }

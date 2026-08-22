@@ -30,6 +30,19 @@ pub const NOTE_EDIT_PLAN_PROMPT: &str = r#"你是笔记增量合并分析师。�
  只输出严格 JSON：{"title":"可选的新标题","operations":[{"action":"addSection|appendToSection|replaceSection","targetHeading":"已有 ## 标题；新增时可空","heading":"结果章节标题","brief":"修改内容和依据"}]}
  修正错误时才 replaceSection；补充内容优先 appendToSection；新主题才 addSection。不要删除与新对话无关的原内容。涉及公式时统一使用 KaTeX 兼容的 $...$ 或 $$...$$，不要使用 ```math、```latex 或 ```tex 代码围栏。"#;
 
+pub const NOTE_ATTACHMENT_EDIT_PLAN_PROMPT: &str = r#"你是深度笔记附件增量合并分析师。输入包含目标 Markdown 笔记、新增消息正文和已经由本地 Reader/Vision 实际读取的新增附件来源账本。
+只设计必要修改，不写正文。只能使用输入中的新消息 ID、附件 ID、Source Chunk 和账本；不得把文件名或未读取内容当事实。
+只输出严格 JSON：{"title":"可选的新标题","operations":[{"action":"addSection|appendToSection|replaceSection","targetHeading":"已有 ## 标题；新增时可空","heading":"结果章节标题","brief":"修改内容、来源和影响"}]}
+新附件改变已有定义、数字、时间线或结论时可以 replaceSection；局部补充优先 appendToSection；新主题才 addSection。不要删除无关内容。"#;
+
 pub const NOTE_EDIT_PATCH_PROMPT: &str = r#"你是笔记补丁撰写者。按合并计划输出可由程序应用的严格 JSON，不输出解释或代码围栏。
 契约：{"title":"可选的新标题","patches":[{"action":"addSection|appendToSection|replaceSection","targetHeading":"已有 ## 标题；新增时可空","heading":"章节标题","markdown":"以 ## 标题开头的完整 Markdown 片段","needsSupplement":false,"sourceMessageIds":["消息 ID"]}]}
  不得输出整篇笔记；每个 patch 只包含一个章节。markdown 字段是直接渲染的正文，不能再包一层 ```markdown / ```md；真实 Mermaid 必须是该字段中的顶层 ```mermaid 代码块。AI 补充必须在 markdown 中标注“AI 补充背景”。涉及公式时统一使用 KaTeX 兼容的 $...$ 或 $$...$$，不要使用 ```math、```latex 或 ```tex 代码围栏。"#;
+
+pub const NOTE_ATTACHMENT_EDIT_PATCH_PROMPT: &str = r#"你是深度笔记附件增量补丁撰写者。按合并计划输出可由程序应用的严格 JSON，不输出解释或代码围栏。
+契约：{"title":"可选的新标题","patches":[{"action":"addSection|appendToSection|replaceSection","targetHeading":"已有 ## 标题；新增时可空","heading":"章节标题","markdown":"以 ## 标题开头的完整 Markdown 片段","needsSupplement":false,"sourceMessageIds":["消息 ID"]}]}
+每个 patch 只包含一个章节；只使用实际读取的新消息和附件来源。材料事实、合理推断和未知必须分开。需要图形时使用正文顶层 Mermaid 围栏；公式使用行内或独立 KaTeX 格式。不得伪造页码、行号、附件内容或 Source ID。"#;
+
+pub const NOTE_ATTACHMENT_REVIEW_PROMPT: &str = r#"你是深度笔记附件增量的全局审查者。比较旧笔记、更新后笔记和已验证的新增附件账本。
+检查新增附件是否被实际覆盖、补丁是否遗漏冲突、是否把推断写成事实、是否错误改动无关章节，以及核心定义、数字、时间线或结论是否需要完整重建。
+只输出严格 JSON：{"passed":true,"requiresFullRebuild":false,"warnings":[]}。warnings 必须具体、可供用户检查；不得补充输入以外的事实。"#;

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, FilePenLine, GitCompareArrows, X } from "lucide-react";
+import { AlertTriangle, FilePenLine, GitCompareArrows, Paperclip, ShieldCheck, X } from "lucide-react";
 import type {
   NoteEditDialogRequest,
   NoteEditPrepareResult,
@@ -68,6 +68,28 @@ export function NoteEditDialog({
               <div className="deep-note-weak-points">
                 <AlertTriangle size={16} />
                 <span>{result.warnings.join("；")}</span>
+              </div>
+            ) : null}
+            {result.attachmentCount > 0 ? (
+              <div className="note-edit-source-units">
+                <div>
+                  <Paperclip size={15} />
+                  <strong>{result.attachmentCount} 个新增附件</strong>
+                  <span>{result.sourceUnits.length} 个 Source Unit 已完成读取</span>
+                </div>
+                <div className="note-edit-source-unit-list">
+                  {result.sourceUnits.filter((unit) => unit.kind === "attachment").map((unit) => (
+                    <span key={unit.unitId} data-status={unit.status}>
+                      <ShieldCheck size={13} />
+                      {unit.parserId} · {unit.chunkIds.length} chunks
+                    </span>
+                  ))}
+                </div>
+                {result.globalReviewPassed ? (
+                  <small>全局复核已通过；覆盖快照仍只会在确认后推进。</small>
+                ) : result.requiresGlobalReview ? (
+                  <small>附件可能影响已有结论；请在应用前检查完整 Diff。覆盖快照只会在确认后推进。</small>
+                ) : null}
               </div>
             ) : null}
             <pre className="note-edit-diff" aria-label="Markdown 修改差异">{result.proposal.diff}</pre>

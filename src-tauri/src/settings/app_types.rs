@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::memory::MemorySettings;
 
-pub const CURRENT_APP_SETTINGS_VERSION: u32 = 13;
+pub const CURRENT_APP_SETTINGS_VERSION: u32 = 14;
 pub const DEFAULT_GLOBAL_SYSTEM_PROMPT: &str = concat!(
     "你是 Mnemora 的学习与研究助手。\n",
     "优先直接回答问题，并根据复杂度使用清晰的标题、列表、表格或代码块。\n",
@@ -103,6 +103,51 @@ pub struct ThemeBackgroundSettings {
     pub css: String,
     #[serde(default = "default_surface_opacity")]
     pub surface_opacity: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PetSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub show_on_startup: bool,
+    #[serde(default = "default_true")]
+    pub always_on_top: bool,
+    #[serde(default)]
+    pub click_through: bool,
+    #[serde(default = "default_pet_size")]
+    pub size: u16,
+    #[serde(default = "default_pet_opacity")]
+    pub opacity: u8,
+    #[serde(default = "default_true")]
+    pub speech_bubbles: bool,
+    #[serde(default)]
+    pub reduced_motion: bool,
+    #[serde(default = "default_true")]
+    pub task_events: bool,
+    #[serde(default)]
+    pub position_x: Option<f64>,
+    #[serde(default)]
+    pub position_y: Option<f64>,
+}
+
+impl Default for PetSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            show_on_startup: false,
+            always_on_top: true,
+            click_through: false,
+            size: default_pet_size(),
+            opacity: default_pet_opacity(),
+            speech_bubbles: true,
+            reduced_motion: false,
+            task_events: true,
+            position_x: None,
+            position_y: None,
+        }
+    }
 }
 
 impl Default for ThemeBackgroundSettings {
@@ -242,6 +287,8 @@ pub struct AppSettings {
     #[serde(default = "default_true")]
     pub show_chat_task_progress: bool,
     #[serde(default)]
+    pub pet: PetSettings,
+    #[serde(default)]
     pub update_proxy: UpdateProxySettings,
     #[serde(default)]
     pub memory: MemorySettings,
@@ -277,6 +324,14 @@ fn default_note_line_height() -> f32 {
 
 fn default_surface_opacity() -> u8 {
     92
+}
+
+fn default_pet_size() -> u16 {
+    176
+}
+
+fn default_pet_opacity() -> u8 {
+    96
 }
 
 fn default_max_output_tokens() -> u32 {
@@ -316,6 +371,7 @@ impl Default for AppSettings {
             system_prompt: DEFAULT_GLOBAL_SYSTEM_PROMPT.to_string(),
             request_debug_enabled: false,
             show_chat_task_progress: true,
+            pet: PetSettings::default(),
             update_proxy: UpdateProxySettings::default(),
             memory: MemorySettings::default(),
         }
@@ -345,6 +401,9 @@ impl AppSettings {
         self.system_prompt = self.system_prompt.trim().to_string();
         self.theme_background.css = self.theme_background.css.trim().to_string();
         self.update_proxy.url = self.update_proxy.url.trim().to_string();
+        if source_version < 14 {
+            self.pet = PetSettings::default();
+        }
 
         if self.user_display_name.chars().count() > 100 {
             return Err("User display name is too long".to_string());
@@ -409,6 +468,23 @@ impl AppSettings {
         }
         if self.system_prompt.len() > 256 * 1024 {
             return Err("System Prompt is too long".to_string());
+        }
+        if !(120..=280).contains(&self.pet.size) {
+            return Err("Pet size must be between 120 and 280".to_string());
+        }
+        if !(40..=100).contains(&self.pet.opacity) {
+            return Err("Pet opacity must be between 40 and 100".to_string());
+        }
+        if self
+            .pet
+            .position_x
+            .is_some_and(|value| !value.is_finite() || value.abs() > 100_000.0)
+            || self
+                .pet
+                .position_y
+                .is_some_and(|value| !value.is_finite() || value.abs() > 100_000.0)
+        {
+            return Err("Pet window position is invalid".to_string());
         }
         if !self.update_proxy.url.is_empty() {
             self.update_proxy.url = self.update_proxy.manual_url()?.to_string();
@@ -527,6 +603,9 @@ mod tests {
         assert!(settings.stream_enabled);
         assert!(!settings.request_debug_enabled);
         assert!(settings.show_chat_task_progress);
+        assert!(!settings.pet.enabled);
+        assert!(settings.pet.always_on_top);
+        assert_eq!(settings.pet.size, 176);
         assert_eq!(settings.retry_attempts, 5);
         assert_eq!(settings.agent_max_rounds, 20);
         assert_eq!(settings.font_size, 14);
@@ -703,6 +782,51 @@ mod tests {
 
         assert_eq!(settings.version, CURRENT_APP_SETTINGS_VERSION);
         assert!(settings.show_chat_task_progress);
+    }
+
+    #[test]
+    fn version_thirteen_settings_receive_safe_pet_defaults() {
+        let value = serde_json::json!({
+            "version": 13,
+            "interfaceLanguage": "zh",
+            "theme": "system",
+            "themePreset": "mnemora",
+            "themeColor": "neutral",
+            "fontSize": 14,
+            "noteFontSize": 16,
+            "noteLineHeight": 1.85,
+            "retryEnabled": true,
+            "retryAttempts": 5,
+            "maxOutputTokens": 32768
+        });
+        let settings: AppSettings = serde_json::from_value(value).unwrap();
+        let settings = settings.normalize_and_validate().unwrap();
+
+        assert_eq!(settings.version, CURRENT_APP_SETTINGS_VERSION);
+        assert!(!settings.pet.enabled);
+        assert!(!settings.pet.show_on_startup);
+        assert!(settings.pet.task_events);
+    }
+
+    #[test]
+    fn rejects_invalid_pet_window_settings() {
+        let invalid_size = AppSettings {
+            pet: super::PetSettings {
+                size: 80,
+                ..super::PetSettings::default()
+            },
+            ..AppSettings::default()
+        };
+        assert!(invalid_size.normalize_and_validate().is_err());
+
+        let invalid_position = AppSettings {
+            pet: super::PetSettings {
+                position_x: Some(f64::NAN),
+                ..super::PetSettings::default()
+            },
+            ..AppSettings::default()
+        };
+        assert!(invalid_position.normalize_and_validate().is_err());
     }
 
     #[test]

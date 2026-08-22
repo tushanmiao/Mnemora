@@ -15,7 +15,8 @@ use uuid::Uuid;
 
 use crate::chat::note_pipeline::types::{
     DeepNoteEvidenceArtifact, DeepNoteEvidenceStatus, DeepNoteInputSnapshot, DeepNoteLedger,
-    DeepNoteSourceChunk, DeepNoteSourceKind, DeepNoteSupportLevel,
+    DeepNoteSourceChunk, DeepNoteSourceKind, DeepNoteSourceUnit, DeepNoteSourceUnitKind,
+    DeepNoteSourceUnitStatus, DeepNoteSupportLevel,
 };
 
 use super::{
@@ -36,7 +37,7 @@ use super::{
     },
 };
 
-const LIBRARY_SCHEMA_VERSION: i64 = 8;
+const LIBRARY_SCHEMA_VERSION: i64 = 9;
 const LIBRARY_DIRECTORY_NAME: &str = "library";
 const LIBRARY_DATABASE_NAME: &str = "library.sqlite3";
 const LIBRARY_FILES_DIRECTORY_NAME: &str = "files";
@@ -779,6 +780,8 @@ impl LibraryRepository {
             &snapshot_json,
             now,
         )?;
+        let units = source_units_from_snapshot(&id, &conversation_id, snapshot, i64_to_u64(now));
+        insert_deep_note_source_units(&transaction, &id, &conversation_id, &units)?;
         transaction
             .commit()
             .map_err(|error| format!("提交深度笔记失败：{error}"))?;
@@ -835,6 +838,8 @@ impl LibraryRepository {
             &snapshot_json,
             now,
         )?;
+        let units = source_units_from_snapshot(&id, &conversation_id, snapshot, i64_to_u64(now));
+        insert_deep_note_source_units(&transaction, &id, &conversation_id, &units)?;
         transaction
             .commit()
             .map_err(|error| format!("提交重建深度笔记失败：{error}"))?;
@@ -865,6 +870,69 @@ impl LibraryRepository {
                     .map_err(|error| format!("解析深度笔记覆盖快照失败：{error}"))
             })
             .transpose()
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn list_deep_note_source_units(
+        &self,
+        note_id: &str,
+        conversation_id: &str,
+    ) -> Result<Vec<DeepNoteSourceUnit>, String> {
+        let note_id = normalize_identifier("笔记 ID", note_id)?;
+        let conversation_id = normalize_identifier("会话 ID", conversation_id)?;
+        let connection = self.open_connection()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT unit_id, message_id, kind, attachment_id, content_hash, parser_id,
+                        parser_version, status, chunk_ids_json, evidence_ids_json,
+                        error_message, created_at, updated_at
+                 FROM deep_note_source_units
+                 WHERE note_id = ? AND conversation_id = ?
+                 ORDER BY created_at ASC, unit_id ASC",
+            )
+            .map_err(|error| format!("准备深度笔记来源单元查询失败：{error}"))?;
+        let rows = statement
+            .query_map(params![note_id, conversation_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, String>(9)?,
+                    row.get::<_, Option<String>>(10)?,
+                    row.get::<_, i64>(11)?,
+                    row.get::<_, i64>(12)?,
+                ))
+            })
+            .map_err(|error| format!("查询深度笔记来源单元失败：{error}"))?;
+        rows.map(|row| {
+            let raw = row.map_err(|error| format!("读取深度笔记来源单元失败：{error}"))?;
+            Ok(DeepNoteSourceUnit {
+                unit_id: raw.0,
+                note_id: note_id.clone(),
+                conversation_id: conversation_id.clone(),
+                message_id: raw.1,
+                kind: DeepNoteSourceUnitKind::parse(&raw.2)?,
+                attachment_id: raw.3,
+                content_hash: raw.4,
+                parser_id: raw.5,
+                parser_version: raw.6,
+                status: DeepNoteSourceUnitStatus::parse(&raw.7)?,
+                chunk_ids: serde_json::from_str(&raw.8)
+                    .map_err(|error| format!("解析来源单元 Chunk 引用失败：{error}"))?,
+                evidence_ids: serde_json::from_str(&raw.9)
+                    .map_err(|error| format!("解析来源单元 Evidence 引用失败：{error}"))?,
+                error_message: raw.10,
+                created_at: i64_to_u64(raw.11),
+                updated_at: i64_to_u64(raw.12),
+            })
+        })
+        .collect()
     }
 
     pub fn list_note_sources(&self, note_id: &str) -> Result<Vec<NoteSource>, String> {
@@ -2029,7 +2097,7 @@ impl LibraryRepository {
             .map_err(|error| format!("序列化修改来源失败：{error}"))?;
         let coverage_snapshot_json =
             normalize_coverage_snapshot_json(&create.coverage_snapshot_json)?;
-        let connection = self.open_connection()?;
+        let mut connection = self.open_connection()?;
         let note = self
             .get_note_with_connection(&connection, &note_id)?
             .ok_or_else(|| "目标笔记不存在。".to_string())?;
@@ -2037,7 +2105,10 @@ impl LibraryRepository {
             return Err("目标笔记已发生变化，请重新生成修改提案。".to_string());
         }
         let now = now_millis_i64();
-        connection
+        let transaction = connection
+            .transaction()
+            .map_err(|error| format!("开始保存笔记修改提案失败：{error}"))?;
+        transaction
             .execute(
                 "INSERT INTO note_edit_proposals (
                     id, note_id, conversation_id, source_message_id, expected_note_updated_at,
@@ -2062,6 +2133,20 @@ impl LibraryRepository {
                 ],
             )
             .map_err(|error| format!("保存笔记修改提案失败：{error}"))?;
+        for unit in &create.source_units {
+            let unit_json = serde_json::to_string(unit)
+                .map_err(|error| format!("序列化笔记增量来源单元失败：{error}"))?;
+            transaction
+                .execute(
+                    "INSERT INTO note_edit_source_units (proposal_id, unit_json, created_at)
+                     VALUES (?, ?, ?)",
+                    params![id, unit_json, now],
+                )
+                .map_err(|error| format!("保存笔记增量来源单元失败：{error}"))?;
+        }
+        transaction
+            .commit()
+            .map_err(|error| format!("提交笔记修改提案失败：{error}"))?;
         get_note_edit_proposal_with_connection(&connection, &id)?
             .ok_or_else(|| "创建后的笔记修改提案不存在。".to_string())
     }
@@ -2131,6 +2216,12 @@ impl LibraryRepository {
                 )
                 .map_err(|error| format!("拒绝笔记修改提案失败：{error}"))?;
             transaction
+                .execute(
+                    "DELETE FROM note_edit_source_units WHERE proposal_id = ?",
+                    params![proposal_id],
+                )
+                .map_err(|error| format!("清理已拒绝的附件增量来源失败：{error}"))?;
+            transaction
                 .commit()
                 .map_err(|error| format!("提交拒绝结果失败：{error}"))?;
             return Ok(None);
@@ -2159,6 +2250,31 @@ impl LibraryRepository {
         let sources = serde_json::from_str::<Vec<NoteSourceCreate>>(&raw.6)
             .map_err(|error| format!("读取修改来源失败：{error}"))?;
         insert_note_sources(&transaction, &raw.0, sources, updated_at)?;
+        let source_units = pending_note_edit_source_units(&transaction, &proposal_id)?;
+        if !source_units.is_empty() {
+            let current_units = load_deep_note_source_units(&transaction, &raw.0, &raw.9)?;
+            let mut merged = current_units
+                .into_iter()
+                .map(|unit| (unit.unit_id.clone(), unit))
+                .collect::<std::collections::BTreeMap<_, _>>();
+            for unit in source_units {
+                if unit.note_id == raw.0 && unit.conversation_id == raw.9 {
+                    merged.insert(unit.unit_id.clone(), unit);
+                }
+            }
+            transaction
+                .execute(
+                    "DELETE FROM deep_note_source_units WHERE note_id = ? AND conversation_id = ?",
+                    params![raw.0, raw.9],
+                )
+                .map_err(|error| format!("替换深度笔记来源单元失败：{error}"))?;
+            insert_deep_note_source_units(
+                &transaction,
+                &raw.0,
+                &raw.9,
+                &merged.into_values().collect::<Vec<_>>(),
+            )?;
+        }
         if !raw.7.is_empty() {
             let coverage_snapshot_json = normalize_coverage_snapshot_json(&raw.7)?;
             upsert_deep_note_coverage_snapshot(
@@ -2175,6 +2291,12 @@ impl LibraryRepository {
                 params![updated_at, proposal_id],
             )
             .map_err(|error| format!("完成笔记修改提案失败：{error}"))?;
+        transaction
+            .execute(
+                "DELETE FROM note_edit_source_units WHERE proposal_id = ?",
+                params![proposal_id],
+            )
+            .map_err(|error| format!("清理已应用的附件增量来源失败：{error}"))?;
         transaction
             .commit()
             .map_err(|error| format!("提交笔记修改失败：{error}"))?;
@@ -3289,6 +3411,48 @@ fn migrate(connection: &Connection) -> Result<(), String> {
             )
             .map_err(|error| format!("升级深度笔记覆盖快照结构失败：{error}"))?;
     }
+    // v9：附件级增量更新的 Source Unit 与提案暂存。
+    if version <= 8 {
+        connection
+            .execute_batch(
+                "BEGIN IMMEDIATE;
+                 CREATE TABLE IF NOT EXISTS deep_note_source_units (
+                    unit_id TEXT PRIMARY KEY,
+                    note_id TEXT NOT NULL REFERENCES library_notes(id) ON DELETE CASCADE,
+                    conversation_id TEXT NOT NULL,
+                    message_id TEXT NOT NULL,
+                    kind TEXT NOT NULL CHECK (kind IN (
+                        'body', 'attachment', 'literatureSelection', 'noteSelection'
+                    )),
+                    attachment_id TEXT,
+                    content_hash TEXT NOT NULL,
+                    parser_id TEXT NOT NULL,
+                    parser_version TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK (status IN (
+                        'pending', 'extracted', 'covered', 'failed', 'unsupported'
+                    )),
+                    chunk_ids_json TEXT NOT NULL DEFAULT '[]',
+                    evidence_ids_json TEXT NOT NULL DEFAULT '[]',
+                    error_message TEXT,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL
+                 );
+                 CREATE INDEX IF NOT EXISTS deep_note_source_units_note
+                    ON deep_note_source_units(note_id, conversation_id);
+                 CREATE UNIQUE INDEX IF NOT EXISTS deep_note_source_units_attachment
+                    ON deep_note_source_units(note_id, conversation_id, attachment_id)
+                    WHERE attachment_id IS NOT NULL;
+                 CREATE TABLE IF NOT EXISTS note_edit_source_units (
+                    proposal_id TEXT NOT NULL REFERENCES note_edit_proposals(id) ON DELETE CASCADE,
+                    unit_json TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    PRIMARY KEY (proposal_id, unit_json)
+                 );
+                 PRAGMA user_version = 9;
+                 COMMIT;",
+            )
+            .map_err(|error| format!("升级深度笔记附件增量结构失败：{error}"))?;
+    }
     Ok(())
 }
 
@@ -3663,6 +3827,180 @@ fn insert_note_sources(
     Ok(())
 }
 
+fn insert_deep_note_source_units(
+    connection: &Connection,
+    note_id: &str,
+    conversation_id: &str,
+    units: &[DeepNoteSourceUnit],
+) -> Result<(), String> {
+    for unit in units {
+        connection
+            .execute(
+                "INSERT INTO deep_note_source_units (
+                    unit_id, note_id, conversation_id, message_id, kind, attachment_id,
+                    content_hash, parser_id, parser_version, status, chunk_ids_json,
+                    evidence_ids_json, error_message, created_at, updated_at
+                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                params![
+                    unit.unit_id,
+                    note_id,
+                    conversation_id,
+                    unit.message_id,
+                    unit.kind.as_str(),
+                    unit.attachment_id,
+                    unit.content_hash,
+                    unit.parser_id,
+                    unit.parser_version,
+                    unit.status.as_str(),
+                    serde_json::to_string(&unit.chunk_ids)
+                        .map_err(|error| format!("序列化来源单元 Chunk 引用失败：{error}"))?,
+                    serde_json::to_string(&unit.evidence_ids)
+                        .map_err(|error| format!("序列化来源单元 Evidence 引用失败：{error}"))?,
+                    unit.error_message,
+                    i64::try_from(unit.created_at).unwrap_or(i64::MAX),
+                    i64::try_from(unit.updated_at).unwrap_or(i64::MAX),
+                ],
+            )
+            .map_err(|error| format!("写入深度笔记来源单元失败：{error}"))?;
+    }
+    Ok(())
+}
+
+fn source_units_from_snapshot(
+    note_id: &str,
+    conversation_id: &str,
+    snapshot: &DeepNoteInputSnapshot,
+    created_at: u64,
+) -> Vec<DeepNoteSourceUnit> {
+    let mut units = Vec::new();
+    for (index, message_id) in snapshot.message_ids.iter().enumerate() {
+        if let Some(content_hash) = snapshot.message_content_hashes.get(index) {
+            units.push(DeepNoteSourceUnit {
+                unit_id: format!("{}:body:{message_id}", note_id),
+                note_id: note_id.to_string(),
+                conversation_id: conversation_id.to_string(),
+                message_id: message_id.clone(),
+                kind: DeepNoteSourceUnitKind::Body,
+                attachment_id: None,
+                content_hash: content_hash.clone(),
+                parser_id: "conversation-body".to_string(),
+                parser_version: "1".to_string(),
+                status: DeepNoteSourceUnitStatus::Covered,
+                chunk_ids: Vec::new(),
+                evidence_ids: Vec::new(),
+                error_message: None,
+                created_at,
+                updated_at: created_at,
+            });
+        }
+    }
+    for (index, attachment_id) in snapshot.attachment_ids.iter().enumerate() {
+        if let Some(content_hash) = snapshot.attachment_content_hashes.get(index) {
+            units.push(DeepNoteSourceUnit {
+                unit_id: format!("{}:attachment:{attachment_id}", note_id),
+                note_id: note_id.to_string(),
+                conversation_id: conversation_id.to_string(),
+                message_id: snapshot
+                    .attachment_message_ids
+                    .get(index)
+                    .cloned()
+                    .or_else(|| snapshot.message_ids.last().cloned())
+                    .unwrap_or_default(),
+                kind: DeepNoteSourceUnitKind::Attachment,
+                attachment_id: Some(attachment_id.clone()),
+                content_hash: content_hash.clone(),
+                parser_id: "deep-note-reader".to_string(),
+                parser_version: "1".to_string(),
+                status: DeepNoteSourceUnitStatus::Covered,
+                chunk_ids: Vec::new(),
+                evidence_ids: Vec::new(),
+                error_message: None,
+                created_at,
+                updated_at: created_at,
+            });
+        }
+    }
+    units
+}
+
+fn load_deep_note_source_units(
+    connection: &Connection,
+    note_id: &str,
+    conversation_id: &str,
+) -> Result<Vec<DeepNoteSourceUnit>, String> {
+    let mut statement = connection
+        .prepare(
+            "SELECT unit_id, message_id, kind, attachment_id, content_hash, parser_id,
+                    parser_version, status, chunk_ids_json, evidence_ids_json,
+                    error_message, created_at, updated_at
+             FROM deep_note_source_units
+             WHERE note_id = ? AND conversation_id = ?",
+        )
+        .map_err(|error| format!("准备深度笔记来源单元读取失败：{error}"))?;
+    let rows = statement
+        .query_map(params![note_id, conversation_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+                row.get::<_, String>(7)?,
+                row.get::<_, String>(8)?,
+                row.get::<_, String>(9)?,
+                row.get::<_, Option<String>>(10)?,
+                row.get::<_, i64>(11)?,
+                row.get::<_, i64>(12)?,
+            ))
+        })
+        .map_err(|error| format!("读取深度笔记来源单元失败：{error}"))?;
+    rows.map(|row| {
+        let raw = row.map_err(|error| format!("读取深度笔记来源单元失败：{error}"))?;
+        Ok(DeepNoteSourceUnit {
+            unit_id: raw.0,
+            note_id: note_id.to_string(),
+            conversation_id: conversation_id.to_string(),
+            message_id: raw.1,
+            kind: DeepNoteSourceUnitKind::parse(&raw.2)?,
+            attachment_id: raw.3,
+            content_hash: raw.4,
+            parser_id: raw.5,
+            parser_version: raw.6,
+            status: DeepNoteSourceUnitStatus::parse(&raw.7)?,
+            chunk_ids: serde_json::from_str(&raw.8)
+                .map_err(|error| format!("解析来源单元 Chunk 引用失败：{error}"))?,
+            evidence_ids: serde_json::from_str(&raw.9)
+                .map_err(|error| format!("解析来源单元 Evidence 引用失败：{error}"))?,
+            error_message: raw.10,
+            created_at: i64_to_u64(raw.11),
+            updated_at: i64_to_u64(raw.12),
+        })
+    })
+    .collect()
+}
+
+fn pending_note_edit_source_units(
+    connection: &Connection,
+    proposal_id: &str,
+) -> Result<Vec<DeepNoteSourceUnit>, String> {
+    let mut statement = connection
+        .prepare(
+            "SELECT unit_json FROM note_edit_source_units
+             WHERE proposal_id = ? ORDER BY created_at ASC",
+        )
+        .map_err(|error| format!("准备笔记增量来源单元查询失败：{error}"))?;
+    let rows = statement
+        .query_map(params![proposal_id], |row| row.get::<_, String>(0))
+        .map_err(|error| format!("查询笔记增量来源单元失败：{error}"))?;
+    rows.map(|row| {
+        let value = row.map_err(|error| format!("读取笔记增量来源单元失败：{error}"))?;
+        serde_json::from_str(&value).map_err(|error| format!("解析笔记增量来源单元失败：{error}"))
+    })
+    .collect()
+}
+
 fn build_item_filters(request: &LibraryListRequest) -> (String, Vec<Value>) {
     let mut clauses = Vec::new();
     let mut values = Vec::new();
@@ -3912,7 +4250,8 @@ mod tests {
 
     use super::LibraryRepository;
     use crate::chat::note_pipeline::types::{
-        DeepNoteCapabilities, DeepNoteInputSnapshot, DeepNoteModelSnapshot,
+        DeepNoteCapabilities, DeepNoteInputSnapshot, DeepNoteModelSnapshot, DeepNoteSourceUnit,
+        DeepNoteSourceUnitKind, DeepNoteSourceUnitStatus,
     };
     use crate::library::types::{
         LibraryAnnotationColor, LibraryAnnotationCreate, LibraryAnnotationKind,
@@ -3947,6 +4286,7 @@ mod tests {
                 .collect(),
             attachment_ids: Vec::new(),
             attachment_content_hashes: Vec::new(),
+            attachment_message_ids: Vec::new(),
             selected_literature_ids: Vec::new(),
             selected_note_ids: Vec::new(),
             model: DeepNoteModelSnapshot {
@@ -4297,7 +4637,7 @@ mod tests {
         let version: i64 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 8);
+        assert_eq!(version, 9);
         let tables: i64 = connection
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master
@@ -4937,6 +5277,7 @@ mod tests {
                     summarized_until_message_id: Some("message-c".to_string()),
                 }],
                 coverage_snapshot_json: serde_json::to_string(&updated_snapshot).unwrap(),
+                source_units: Vec::new(),
             })
             .unwrap();
 
@@ -5025,6 +5366,106 @@ mod tests {
     }
 
     #[test]
+    fn attachment_source_units_advance_only_after_the_update_is_applied() {
+        let directory = test_directory("deep-note-source-units");
+        let repository = LibraryRepository::new(directory.clone());
+        let initial_snapshot = coverage_snapshot(&["message-a"]);
+        let note = repository
+            .create_note_with_sources_and_coverage(
+                LibraryNoteCreate {
+                    item_id: None,
+                    title: "Deep note".to_string(),
+                    content: "# Deep note\n\nInitial".to_string(),
+                    group_name: None,
+                },
+                vec![NoteSourceCreate {
+                    section_id: "sec-1".to_string(),
+                    origin: NoteSourceOrigin::Conversation,
+                    conversation_id: Some("conversation-1".to_string()),
+                    message_id: Some("message-a".to_string()),
+                    summarized_until_message_id: Some("message-a".to_string()),
+                }],
+                "conversation-1",
+                &initial_snapshot,
+            )
+            .unwrap();
+        let existing = repository
+            .list_deep_note_source_units(&note.id, "conversation-1")
+            .unwrap();
+        assert_eq!(existing.len(), 1);
+
+        let mut updated_snapshot = coverage_snapshot(&["message-a", "message-b"]);
+        updated_snapshot.attachment_ids = vec!["attachment-b".to_string()];
+        updated_snapshot.attachment_content_hashes = vec!["hash-attachment-b".to_string()];
+        let attachment_unit = DeepNoteSourceUnit {
+            unit_id: format!("{}:attachment:attachment-b", note.id),
+            note_id: note.id.clone(),
+            conversation_id: "conversation-1".to_string(),
+            message_id: "message-b".to_string(),
+            kind: DeepNoteSourceUnitKind::Attachment,
+            attachment_id: Some("attachment-b".to_string()),
+            content_hash: "hash-attachment-b".to_string(),
+            parser_id: "read_attachment_text".to_string(),
+            parser_version: "1".to_string(),
+            status: DeepNoteSourceUnitStatus::Covered,
+            chunk_ids: vec!["chunk-b".to_string()],
+            evidence_ids: Vec::new(),
+            error_message: None,
+            created_at: 2,
+            updated_at: 2,
+        };
+        let proposal = repository
+            .create_note_edit_proposal(NoteEditProposalCreate {
+                id: "proposal-source-unit".to_string(),
+                note_id: note.id.clone(),
+                conversation_id: "conversation-1".to_string(),
+                source_message_id: Some("message-b".to_string()),
+                expected_note_updated_at: note.updated_at,
+                old_title: note.title.clone(),
+                new_title: note.title.clone(),
+                old_content: note.content.clone(),
+                new_content: "# Deep note\n\nUpdated".to_string(),
+                diff: "attachment update".to_string(),
+                sources: vec![NoteSourceCreate {
+                    section_id: "source-unit".to_string(),
+                    origin: NoteSourceOrigin::Conversation,
+                    conversation_id: Some("conversation-1".to_string()),
+                    message_id: Some("message-b".to_string()),
+                    summarized_until_message_id: Some("message-b".to_string()),
+                }],
+                coverage_snapshot_json: serde_json::to_string(&updated_snapshot).unwrap(),
+                source_units: vec![attachment_unit],
+            })
+            .unwrap();
+
+        assert_eq!(
+            repository
+                .list_deep_note_source_units(&note.id, "conversation-1")
+                .unwrap()
+                .len(),
+            1
+        );
+        repository
+            .resolve_note_edit_proposal(&proposal.id, true)
+            .unwrap();
+        let applied = repository
+            .list_deep_note_source_units(&note.id, "conversation-1")
+            .unwrap();
+        assert_eq!(applied.len(), 2);
+        assert!(applied.iter().any(|unit| {
+            unit.attachment_id.as_deref() == Some("attachment-b")
+                && unit.status == DeepNoteSourceUnitStatus::Covered
+        }));
+        assert_eq!(
+            repository
+                .deep_note_coverage_snapshot(&note.id, "conversation-1")
+                .unwrap(),
+            Some(updated_snapshot)
+        );
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
     fn note_edit_requires_confirmation_backs_up_and_rejects_stale_edits() {
         let directory = test_directory("note-edit");
         let repository = LibraryRepository::new(directory.clone());
@@ -5057,6 +5498,7 @@ mod tests {
                 diff: "--- old\n+++ new".to_string(),
                 sources: vec![source.clone()],
                 coverage_snapshot_json: String::new(),
+                source_units: Vec::new(),
             };
 
         repository

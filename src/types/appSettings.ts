@@ -31,6 +31,20 @@ export interface MemorySettings {
   allowModelWrite: boolean;
 }
 
+export interface PetSettings {
+  enabled: boolean;
+  showOnStartup: boolean;
+  alwaysOnTop: boolean;
+  clickThrough: boolean;
+  size: number;
+  opacity: number;
+  speechBubbles: boolean;
+  reducedMotion: boolean;
+  taskEvents: boolean;
+  positionX: number | null;
+  positionY: number | null;
+}
+
 /** 非敏感的应用基础设置；API Key 不属于该结构。 */
 export interface AppSettings {
   version: number;
@@ -65,6 +79,7 @@ export interface AppSettings {
   requestDebugEnabled: boolean;
   /** 是否在普通 Chat 中显示可拖动的 Agent 任务中心；深度笔记始终显示。 */
   showChatTaskProgress: boolean;
+  pet: PetSettings;
   updateProxy: UpdateProxySettings;
   memory: MemorySettings;
 }
@@ -91,7 +106,7 @@ export const DEFAULT_GLOBAL_SYSTEM_PROMPT = [
   "技能只提供工作方法，不扩大应用权限；遵守用户的权限设置和工具结果。",
 ].join("\n");
 
-export const CURRENT_APP_SETTINGS_VERSION = 13;
+export const CURRENT_APP_SETTINGS_VERSION = 14;
 
 export function createInitialAppSettings(): AppSettings {
   return {
@@ -129,6 +144,19 @@ export function createInitialAppSettings(): AppSettings {
     systemPrompt: DEFAULT_GLOBAL_SYSTEM_PROMPT,
     requestDebugEnabled: false,
     showChatTaskProgress: true,
+    pet: {
+      enabled: false,
+      showOnStartup: false,
+      alwaysOnTop: true,
+      clickThrough: false,
+      size: 176,
+      opacity: 96,
+      speechBubbles: true,
+      reducedMotion: false,
+      taskEvents: true,
+      positionX: null,
+      positionY: null,
+    },
     updateProxy: {
       mode: "system",
       url: "",

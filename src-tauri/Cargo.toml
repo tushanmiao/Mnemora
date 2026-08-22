@@ -1,9 +1,10 @@
 [package]
 name = "mnemora"
-version = "0.1.16"
+version = "0.1.17"
 description = "Mnemora desktop application"
 authors = ["tushanmiao"]
 edition = "2021"
+default-run = "mnemora"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

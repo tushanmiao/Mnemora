@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useState } from "react";
-import { ArrowLeft, BarChart3, Bot, Brain, Bug, Cloud, Database, Info, NotebookPen, SlidersHorizontal, Sparkles } from "lucide-react";
+import { ArrowLeft, BarChart3, Bot, Brain, Bug, Cloud, Database, Info, NotebookPen, PawPrint, SlidersHorizontal, Sparkles } from "lucide-react";
 import { RootErrorBoundary } from "../../../bootstrap/RootErrorBoundary";
 import type { AppSettings, SettingsBundle } from "../../../types/appSettings";
 import type { ModelSettings, ProviderApiKeyUpdate } from "../../../types/modelSettings";
@@ -8,6 +8,7 @@ import { useI18n } from "../../../i18n/I18nProvider";
 import "../styles/settings-page.css";
 
 const GeneralSettingsPanel = lazy(() => import("./GeneralSettingsPanel").then((module) => ({ default: module.GeneralSettingsPanel })));
+const PetSettingsPanel = lazy(() => import("./PetSettingsPanel").then((module) => ({ default: module.PetSettingsPanel })));
 const NoteSettingsPanel = lazy(() => import("./NoteSettingsPanel").then((module) => ({ default: module.NoteSettingsPanel })));
 const ModelSettingsPanel = lazy(() => import("./ModelSettingsPanel").then((module) => ({ default: module.ModelSettingsPanel })));
 const SkillSettingsPanel = lazy(() => import("./SkillSettingsPanel").then((module) => ({
@@ -24,10 +25,11 @@ const StorageSettingsPanel = lazy(() => import("./StorageSettingsPanel").then((m
 const RequestDebugSettingsPanel = lazy(() => import("./RequestDebugSettingsPanel").then((module) => ({ default: module.RequestDebugSettingsPanel })));
 const AboutSettingsPanel = lazy(() => import("./AboutSettingsPanel").then((module) => ({ default: module.AboutSettingsPanel })));
 
-export type SettingsCategory = "general" | "notes" | "models" | "skills" | "memory" | "storage" | "sync" | "usage" | "debug" | "about";
+export type SettingsCategory = "general" | "pet" | "notes" | "models" | "skills" | "memory" | "storage" | "sync" | "usage" | "debug" | "about";
 
-const CATEGORY_KEYS: Record<SettingsCategory, "settings.general" | "settings.notes" | "settings.models" | "settings.skills" | "settings.memory" | "settings.storage" | "settings.sync" | "settings.usage" | "settings.debug" | "settings.about"> = {
+const CATEGORY_KEYS: Record<SettingsCategory, "settings.general" | "settings.pet" | "settings.notes" | "settings.models" | "settings.skills" | "settings.memory" | "settings.storage" | "settings.sync" | "settings.usage" | "settings.debug" | "settings.about"> = {
   general: "settings.general",
+  pet: "settings.pet",
   notes: "settings.notes",
   models: "settings.models",
   skills: "settings.skills",
@@ -87,6 +89,7 @@ export function SettingsPage(props: SettingsPageProps) {
 
   const categories = [
     { id: "general", label: t("settings.general"), icon: SlidersHorizontal },
+    { id: "pet", label: t("settings.pet"), icon: PawPrint },
     { id: "notes", label: t("settings.notes"), icon: NotebookPen },
     { id: "models", label: t("settings.models"), icon: Bot },
     { id: "skills", label: t("settings.skills"), icon: Sparkles },
@@ -138,6 +141,12 @@ export function SettingsPage(props: SettingsPageProps) {
                 onImported={props.onSettingsImported}
                 onDefaultModelChange={props.onDefaultModelChange}
                 onNoteModelChange={props.onNoteModelChange}
+              />
+            ) : activeCategory === "pet" ? (
+              <PetSettingsPanel
+                settings={props.appSettings}
+                initialError={props.appSettingsError}
+                onSave={props.onSaveAppSettings}
               />
             ) : activeCategory === "notes" ? (
               <NoteSettingsPanel

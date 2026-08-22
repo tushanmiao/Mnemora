@@ -91,6 +91,13 @@ pub fn run() {
             app.manage(app_state);
             app.manage(html_preview::HtmlPreviewState::default());
             window_lifecycle::setup_tray(app.handle()).map_err(std::io::Error::other)?;
+            let pet_settings = app
+                .state::<state::AppState>()
+                .app_settings
+                .read()
+                .map_err(|_| std::io::Error::other("App settings lock is unavailable"))?
+                .pet
+                .clone();
 
             // 仅普通交互式启动创建主窗口；开机自启只保留 Rust 后端和托盘，避免启动 WebView2 进程组。
             if !launched_from_autostart {
@@ -101,6 +108,10 @@ pub fn run() {
                         eprintln!("Failed to open Mnemora on launch: {error}");
                     }
                 });
+            }
+            if pet_settings.enabled && (!launched_from_autostart || pet_settings.show_on_startup) {
+                window_lifecycle::sync_pet_window(app.handle(), &pet_settings)
+                    .map_err(std::io::Error::other)?;
             }
             Ok(())
         });
@@ -223,6 +234,9 @@ pub fn run() {
             commands::note_pipeline::note_pipeline_get_detail,
             commands::note_pipeline::note_edit_prepare,
             commands::note_pipeline::note_edit_resolve,
+            commands::pet::pet_set_enabled,
+            commands::pet::pet_update_position,
+            commands::pet::pet_open_main,
             commands::providers::fetch_provider_models,
             commands::providers::test_provider_connection,
             commands::settings::load_model_settings,

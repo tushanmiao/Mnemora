@@ -6,12 +6,14 @@
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Manager, WebviewWindow, WebviewWindowBuilder,
+    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, WebviewUrl, WebviewWindow,
+    WebviewWindowBuilder,
 };
 
-use crate::state::AppState;
+use crate::{settings::app_types::PetSettings, state::AppState};
 
 const MAIN_WINDOW_LABEL: &str = "main";
+pub const PET_WINDOW_LABEL: &str = "pet";
 const TRAY_ID: &str = "main-tray";
 const MENU_OPEN_ID: &str = "open-main-window";
 const MENU_QUIT_ID: &str = "quit-application";
@@ -41,10 +43,105 @@ pub fn open_main_window(app: &AppHandle) -> Result<(), String> {
         .map_err(|error| format!("Failed to show the main window: {error}"))?;
     window
         .set_focus()
-        .map_err(|error| format!("Failed to focus the main window: {error}"))
+        .map_err(|error| format!("Failed to focus the main window: {error}"))?;
+    let pet_settings = app
+        .state::<AppState>()
+        .app_settings
+        .read()
+        .map_err(|_| "App settings lock is unavailable".to_string())?
+        .pet
+        .clone();
+    if pet_settings.enabled {
+        sync_pet_window(app, &pet_settings)?;
+    }
+    Ok(())
+}
+
+pub fn sync_pet_window(app: &AppHandle, settings: &PetSettings) -> Result<(), String> {
+    if !settings.enabled {
+        return destroy_pet_window(app);
+    }
+
+    let window = if let Some(window) = app.get_webview_window(PET_WINDOW_LABEL) {
+        window
+    } else {
+        let logical_size = f64::from(settings.size);
+        let mut builder = WebviewWindowBuilder::new(
+            app,
+            PET_WINDOW_LABEL,
+            WebviewUrl::App("index.html#pet".into()),
+        )
+        .title("Mnemora Pet")
+        .inner_size(logical_size + 96.0, logical_size + 72.0)
+        .resizable(false)
+        .decorations(false)
+        .transparent(true)
+        .shadow(false)
+        .always_on_top(settings.always_on_top)
+        .skip_taskbar(true)
+        .focused(false)
+        .visible(false);
+        if let (Some(x), Some(y)) = (settings.position_x, settings.position_y) {
+            builder = builder.position(x, y);
+        } else {
+            builder = builder.center();
+        }
+        builder
+            .build()
+            .map_err(|error| format!("Failed to create the desktop pet window: {error}"))?
+    };
+
+    let logical_size = f64::from(settings.size);
+    window
+        .set_size(LogicalSize::new(logical_size + 96.0, logical_size + 72.0))
+        .map_err(|error| format!("Failed to resize the desktop pet window: {error}"))?;
+    window
+        .set_always_on_top(settings.always_on_top)
+        .map_err(|error| format!("Failed to update desktop pet stacking: {error}"))?;
+    window
+        .set_ignore_cursor_events(settings.click_through)
+        .map_err(|error| format!("Failed to update desktop pet click-through: {error}"))?;
+    if let (Some(x), Some(y)) = (settings.position_x, settings.position_y) {
+        let _ = window.set_position(LogicalPosition::new(x, y));
+    }
+    window
+        .show()
+        .map_err(|error| format!("Failed to show the desktop pet window: {error}"))?;
+    let _ = app.emit_to(PET_WINDOW_LABEL, "mnemora://pet-settings", settings);
+    Ok(())
+}
+
+pub fn update_pet_window_runtime(app: &AppHandle, settings: &PetSettings) -> Result<(), String> {
+    let Some(window) = app.get_webview_window(PET_WINDOW_LABEL) else {
+        return Ok(());
+    };
+    let logical_size = f64::from(settings.size);
+    window
+        .set_size(LogicalSize::new(logical_size + 96.0, logical_size + 72.0))
+        .map_err(|error| format!("Failed to resize the desktop pet window: {error}"))?;
+    window
+        .set_always_on_top(settings.always_on_top)
+        .map_err(|error| format!("Failed to update desktop pet stacking: {error}"))?;
+    window
+        .set_ignore_cursor_events(settings.click_through)
+        .map_err(|error| format!("Failed to update desktop pet click-through: {error}"))?;
+    let _ = app.emit_to(PET_WINDOW_LABEL, "mnemora://pet-settings", settings);
+    Ok(())
+}
+
+pub fn destroy_pet_window(app: &AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window(PET_WINDOW_LABEL) {
+        window
+            .destroy()
+            .map_err(|error| format!("Failed to destroy the desktop pet window: {error}"))?;
+    }
+    Ok(())
 }
 
 pub fn cleanup_before_main_window_close(app: &AppHandle) {
+    if let Err(error) = destroy_pet_window(app) {
+        eprintln!("{error}");
+    }
     let state = app.state::<AppState>();
     let cancelled_chat_runs = tauri::async_runtime::block_on(state.cancel_all_chat_runs());
     let cancelled_approvals = tauri::async_runtime::block_on(state.cancel_all_tool_approvals());

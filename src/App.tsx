@@ -5,6 +5,8 @@ import {
   useRef,
   useState,
 } from "react";
+import { isTauri } from "@tauri-apps/api/core";
+import { emitTo, listen } from "@tauri-apps/api/event";
 import { LoaderCircle } from "lucide-react";
 import "./styles/tokens.css";
 import "./styles/app.css";
@@ -50,6 +52,7 @@ import { TaskCenter } from "./features/tasks/components/TaskCenter";
 import { clearAttachmentPreviewCache } from "./features/chat/api/attachments";
 import { releaseBackgroundResources } from "./runtime/resources/ResourceRegistry";
 import { initializeWorkspaceLifecycle, subscribeWorkspaceLifecycle } from "./runtime/resources/WorkspaceLifecycle";
+import { projectPetState } from "./features/pet/petState";
 function App() {
   const appShellRef = useRef<HTMLElement>(null);
   const navigation = useWorkspaceNavigation();
@@ -147,6 +150,47 @@ function App() {
       .reverse()
       .find((message) => message.role === "assistant") ?? null
   ), [conversations.currentConversation?.messages]);
+  const [petClock, setPetClock] = useState(Date.now());
+
+  useEffect(() => {
+    if (!settings.appSettings.pet.enabled || !settings.appSettings.pet.taskEvents) return undefined;
+    const timer = window.setInterval(() => setPetClock(Date.now()), 2_000);
+    return () => window.clearInterval(timer);
+  }, [settings.appSettings.pet.enabled, settings.appSettings.pet.taskEvents]);
+
+  const petState = useMemo(() => (
+    settings.appSettings.pet.taskEvents
+      ? projectPetState(
+          latestAssistantMessage,
+          noteActions.deepNoteDetail,
+          noteActions.deepNoteProgress,
+          petClock,
+        )
+      : {
+          state: "idle" as const,
+          label: "陪你学习",
+          detail: "任务状态跟随已关闭",
+          updatedAt: petClock,
+        }
+  ), [
+    latestAssistantMessage,
+    noteActions.deepNoteDetail,
+    noteActions.deepNoteProgress,
+    petClock,
+    settings.appSettings.pet.taskEvents,
+  ]);
+
+  useEffect(() => {
+    if (!isTauri() || !settings.appSettings.pet.enabled) return undefined;
+    const sendState = () => {
+      void emitTo("pet", "mnemora://pet-state", petState).catch(() => undefined);
+    };
+    sendState();
+    let unlisten: (() => void) | undefined;
+    void listen("mnemora://pet-ready", sendState, { target: { kind: "WebviewWindow", label: "main" } })
+      .then((dispose) => { unlisten = dispose; });
+    return () => unlisten?.();
+  }, [petState, settings.appSettings.pet.enabled]);
 
   useEffect(() => {
     if (noteActions.deepNoteActive || noteActions.deepNoteReview) {

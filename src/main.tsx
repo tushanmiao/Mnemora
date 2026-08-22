@@ -26,6 +26,13 @@ async function renderWindow() {
     setStartupStage("ready");
     return;
   }
+  if (window.location.hash === "#pet") {
+    const { default: PetWindow } = await import("./features/pet/PetWindow");
+    setStartupStage("render-window");
+    root.render(<RootErrorBoundary title="桌面宠物启动失败"><PetWindow /></RootErrorBoundary>);
+    setStartupStage("ready");
+    return;
+  }
 
   const { default: App } = await import("./App");
   setStartupStage("render-window");

@@ -552,14 +552,34 @@ export function useNoteActions({
       }
     }
     if (inspection.status === "updateAvailable" && inspection.noteId) {
-      if (inspection.requiresFullRebuild) {
-        forceRebuild = window.confirm(
-          `${inspection.message}\n\n是否基于当前全部消息和附件重新生成一份深度笔记？原笔记会保留。`,
+      if (inspection.requiresFullRebuild || inspection.newAttachmentCount > 0) {
+        const shouldUpdate = window.confirm(
+          inspection.message + "\n\n现在可以只读取新增附件并生成增量更新提案。是否继续？",
         );
-        if (!forceRebuild) {
-          showFeedback("success", "已保留现有笔记，没有启动完整来源重建。");
+        if (!shouldUpdate) {
+          showFeedback("success", "已保留现有笔记，没有读取新增附件。");
           return;
         }
+        setNoteEditBusy(true);
+        showFeedback("progress", "正在读取新增附件并生成增量更新提案…");
+        try {
+          const result = await prepareNoteEdit({
+            noteId: inspection.noteId,
+            conversationId,
+            selectedText: "",
+            sectionHeading: "",
+            requirement: "只合入覆盖锚点之后的新消息和新增附件；必须使用本地 Reader/Vision 的真实 Source Chunk，保留原笔记无关内容。",
+            operationId: crypto.randomUUID(),
+          });
+          setNoteEditRequest(null);
+          setNoteEditResult(result);
+          setFeedback(null);
+        } catch (error) {
+          showFeedback("error", "生成附件增量更新提案失败：" + noteErrorText(error));
+        } finally {
+          setNoteEditBusy(false);
+        }
+        return;
       } else {
         const shouldUpdate = window.confirm(
           `${inspection.message}\n\n已有笔记「${inspection.noteTitle ?? "未命名"}」。是否只合入新增消息并更新这份笔记？`,
@@ -577,6 +597,7 @@ export function useNoteActions({
             selectedText: "",
             sectionHeading: "",
             requirement: "只使用已有深度笔记覆盖锚点之后新增的对话消息，保留原有内容；生成增量合并提案，不要引入新增消息之外的来源。",
+            operationId: crypto.randomUUID(),
           });
           setNoteEditRequest(null);
           setNoteEditResult(result);
@@ -1081,6 +1102,7 @@ export function useNoteActions({
         selectedText: noteEditRequest.selectedText,
         sectionHeading: noteEditRequest.sectionHeading,
         requirement: requirement.trim(),
+        operationId: crypto.randomUUID(),
       });
       setNoteEditRequest(null);
       setNoteEditResult(result);
@@ -1106,6 +1128,12 @@ export function useNoteActions({
 
   const applyNoteEdit = useCallback(async () => {
     if (!noteEditResult || noteEditBusy) return;
+    if (noteEditResult.requiresGlobalReview && !noteEditResult.globalReviewPassed) {
+      const confirmed = window.confirm(
+        "新增附件的全局复核未通过或提示可能影响核心结论。\n\n仍然应用这份增量提案吗？应用后会推进覆盖快照，建议先检查完整 Diff。",
+      );
+      if (!confirmed) return;
+    }
     setNoteEditBusy(true);
     try {
       const updated = await resolveNoteEdit(noteEditResult.proposal.id, true);

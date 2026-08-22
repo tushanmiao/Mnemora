@@ -208,6 +208,24 @@ export interface DeepNoteSourceChunk {
   ocrConfidence: number | null;
 }
 
+export interface DeepNoteSourceUnit {
+  unitId: string;
+  noteId: string;
+  conversationId: string;
+  messageId: string;
+  kind: "body" | "attachment" | "literatureSelection" | "noteSelection";
+  attachmentId: string | null;
+  contentHash: string;
+  parserId: string;
+  parserVersion: string;
+  status: "pending" | "extracted" | "covered" | "failed" | "unsupported";
+  chunkIds: string[];
+  evidenceIds: string[];
+  errorMessage: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface DeepNoteEvidenceArtifact {
   evidenceId: string;
   sectionId: string;
@@ -270,11 +288,16 @@ export interface NoteEditPrepareRequest {
   selectedText?: string;
   sectionHeading?: string;
   requirement?: string;
+  operationId?: string;
 }
 
 export interface NoteEditPrepareResult {
   proposal: NoteEditProposal;
   warnings: string[];
+  sourceUnits: DeepNoteSourceUnit[];
+  attachmentCount: number;
+  requiresGlobalReview: boolean;
+  globalReviewPassed: boolean;
 }
 
 export interface NoteEditDialogRequest {

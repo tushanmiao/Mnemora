@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import type { AppSettings, SettingsBundle } from "../../../types/appSettings";
 import { createInitialAppSettings } from "../../../types/appSettings";
 import type { ModelSettings, ProviderApiKeyUpdate } from "../../../types/modelSettings";
@@ -53,6 +54,18 @@ export function useAppSettings() {
     return () => {
       cancelled = true;
     };
+  }, []);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return undefined;
+    let unlisten: (() => void) | undefined;
+    void listen<AppSettings>("mnemora://app-settings-updated", (event) => {
+      setAppSettings(event.payload);
+      setAppSettingsError(null);
+    }, { target: { kind: "WebviewWindow", label: "main" } }).then((dispose) => {
+      unlisten = dispose;
+    });
+    return () => unlisten?.();
   }, []);
 
   const saveModelSettings = useCallback(async (

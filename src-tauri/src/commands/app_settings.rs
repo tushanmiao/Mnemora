@@ -99,13 +99,21 @@ pub async fn save_application_settings(
     state: State<'_, AppState>,
     settings: AppSettings,
 ) -> Result<AppSettings, String> {
-    let settings = settings.normalize_and_validate()?;
-    let launch_at_startup_changed = state
+    let mut settings = settings.normalize_and_validate()?;
+    let previous = state
         .app_settings
         .read()
         .map_err(|_| "App settings lock is unavailable".to_string())?
-        .launch_at_startup
-        != settings.launch_at_startup;
+        .clone();
+    let launch_at_startup_changed = previous.launch_at_startup != settings.launch_at_startup;
+    let previous_pet_enabled = previous.pet.enabled;
+    if settings.pet.position_x.is_none() || settings.pet.position_y.is_none() {
+        settings.pet.position_x = None;
+        settings.pet.position_y = None;
+    } else {
+        settings.pet.position_x = previous.pet.position_x;
+        settings.pet.position_y = previous.pet.position_y;
+    }
     if launch_at_startup_changed {
         apply_autostart(&app, settings.launch_at_startup)?;
     }
@@ -118,6 +126,19 @@ pub async fn save_application_settings(
         .app_settings
         .write()
         .map_err(|_| "App settings lock is unavailable".to_string())? = settings.clone();
+    if settings.pet.enabled {
+        if previous_pet_enabled {
+            crate::window_lifecycle::update_pet_window_runtime(&app, &settings.pet)?;
+        } else {
+            crate::window_lifecycle::sync_pet_window(&app, &settings.pet)?;
+        }
+    } else if previous_pet_enabled {
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+            let _ = crate::window_lifecycle::destroy_pet_window(&app);
+        });
+    }
     Ok(settings)
 }
 
@@ -207,11 +228,11 @@ pub async fn import_settings_bundle(
     include_memory: bool,
 ) -> Result<SettingsBundle, String> {
     let path = validate_user_path(path)?;
-    let previous_launch_at_startup = state
+    let previous_app_settings = state
         .app_settings
         .read()
         .map_err(|_| "App settings lock is unavailable".to_string())?
-        .launch_at_startup;
+        .clone();
     let app_repository = state.app_settings_repository.clone();
     let model_repository = state.model_settings_repository.clone();
     let memory_repository = state.memory_repository.clone();
@@ -275,7 +296,7 @@ pub async fn import_settings_bundle(
     .await
     .map_err(join_error)??;
 
-    if previous_launch_at_startup != bundle.app_settings.launch_at_startup {
+    if previous_app_settings.launch_at_startup != bundle.app_settings.launch_at_startup {
         apply_autostart(&app, bundle.app_settings.launch_at_startup)?;
     }
     *state
@@ -287,6 +308,19 @@ pub async fn import_settings_bundle(
         .write()
         .map_err(|_| "Model settings lock is unavailable".to_string())? =
         bundle.model_settings.clone();
+    if bundle.app_settings.pet.enabled {
+        if previous_app_settings.pet.enabled {
+            crate::window_lifecycle::update_pet_window_runtime(&app, &bundle.app_settings.pet)?;
+        } else {
+            crate::window_lifecycle::sync_pet_window(&app, &bundle.app_settings.pet)?;
+        }
+    } else if previous_app_settings.pet.enabled {
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+            let _ = crate::window_lifecycle::destroy_pet_window(&app);
+        });
+    }
     Ok(bundle)
 }
 

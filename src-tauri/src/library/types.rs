@@ -678,6 +678,7 @@ pub struct NoteEditProposalCreate {
     pub diff: String,
     pub sources: Vec<NoteSourceCreate>,
     pub coverage_snapshot_json: String,
+    pub source_units: Vec<crate::chat::note_pipeline::types::DeepNoteSourceUnit>,
 }
 
 impl NoteSourceCreate {
