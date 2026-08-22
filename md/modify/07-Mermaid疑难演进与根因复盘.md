@@ -285,3 +285,22 @@ Mermaid 修复只有同时满足以下条件才算完成：
 7. 安全 fixture 被清洗；
 8. 失败时可查看源码和重试；
 9. 全量测试、构建和真实截图通过。
+
+## 7. 本轮修复落地（2026-08-22）
+
+本轮把取证中确认的两个根因落实为代码修复，并针对“又瘦又长、文字被遮挡”补齐生成约束：
+
+1. **HTML Label 与 XML 清洗合同修复**：新增 `normalizeMermaidSvgForXml`，在安全清洗和 Shadow DOM 解析前把 Mermaid `htmlLabels` 输出的裸 `<br>` 规范化为 XML 合法的 `<br/>`，保留中文换行能力，不关闭 `htmlLabels`。
+2. **预览与 Viewer 都改为有界 viewBox**：普通消息中的大图预览和全屏查看器都不再创建 intrinsic 数万像素的宿主，也不再用 `transform + will-change` 扩大合成层；通过固定画布和动态 `viewBox` 实现首屏可读预览，以及 fit、width、100%、拖动、方向键平移和滚轮缩放。导航更新只改现有 SVG 的 `viewBox`，不会重复克隆整棵 SVG 树。
+3. **生成结果资源预算**：记录 SVG 字节数、元素数、`foreignObject` 数和 intrinsic 尺寸；超过 600KB、12,000 元素、800 个 `foreignObject` 或任一 50,000px 尺寸时，不创建第二份交互查看器，保留有界预览、源码复制和拆图提示。
+4. **长图与文字可读性**：移除 intrinsic `max-width` 对窄图的限制，让图使用可用阅读宽度；提高 flowchart wrapping width、间距，并为 ER 图设置更宽实体、内边距、LR 布局和更大的节点/层级间距；Shadow CSS 放宽 `foreignObject` 的可见性，降低标签裁切概率。
+5. **生成侧约束**：diagram Skill 与深度笔记 Writer Prompt 规定线性链超过 6 个节点优先 `LR`，单图 12–18 个核心节点，巨型 ER 按领域拆分，换行只使用 `<br/>`，禁止把几十个节点塞进单张纵向图。
+
+### 7.1 新增验证
+
+- `mermaidSecurity.test.ts`：裸 `<br>` 规范化、真实输出合同、viewer 预算超限。
+- `mermaidLayout.test.ts`：44,000px 高图的有界 viewBox、顶部起始和边界钳制。
+- `mermaidShadow.test.ts`：viewer viewBox 初始化与只更新 viewBox 的导航路径。
+- 验证结果：前端 49 个测试文件、197 项通过；`npm run build`、`cargo test --lib`（318 项）、`cargo check --lib`、`cargo fmt --check`、`git diff --check` 通过。
+
+取证报告 `md/test/02-Mermaid有效SVG与超长大图查看器取证.md` 记录的是修复前基线；它指出的“未生成有效 SVG”与大图空白/卡死风险已分别由 XML 规范化和有界 viewBox/资源预算处理。真实 Chrome/WebView2 的视觉回归仍应在发布包中按视觉矩阵逐项执行。

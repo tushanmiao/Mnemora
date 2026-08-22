@@ -8,6 +8,7 @@ Mnemora 的内置 Skill 是经过适配的工作说明，不代表上游项目�
 
 | Mnemora Skill | 上游项目 | 固定 Commit | 许可证 |
 |---|---|---|---|
+| security-threat-model | `openai/skills` | `49f948faa9258a0c61caceaf225e179651397431` | Apache-2.0 (Mnemora adapter) |
 | PDF 阅读 | `openai/skills` | `33a75a7b572867072dc0674bee8e63e06c19e67b` | Apache-2.0 |
 | 论文研究 | `xwmxcz/papers-skill` | `a64c2eda2c9fc182c96e1409cde267b262dbebde` | MIT |
 | 科学证据分析 | `K-Dense-AI/scientific-agent-skills` | `831d49eb77eed3c792be2970921b46764012ef00` | MIT |

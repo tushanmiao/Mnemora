@@ -34,6 +34,7 @@ import {
 import "../styles/general-settings.css";
 import { FONT_PRESET_VALUES } from "../utils/fontSettings";
 import { useI18n } from "../../../i18n/I18nProvider";
+import { EditableRangeControl } from "./EditableRangeControl";
 
 type Feedback = { kind: "success" | "error"; message: string } | null;
 
@@ -347,34 +348,28 @@ export function GeneralSettingsPanel({
                 </div>
               </SettingRow>
               <SettingRow label={t("general.surfaceOpacity")}>
-                <div className="font-size-control theme-opacity-control">
-                  <input
-                    type="range"
-                    min={MIN_SURFACE_OPACITY}
-                    max={MAX_SURFACE_OPACITY}
-                    step={1}
-                    value={draft.themeBackground.surfaceOpacity}
-                    aria-label={t("general.surfaceOpacity")}
-                    onChange={(event) => updateThemeBackground({ surfaceOpacity: Number(event.target.value) })}
-                  />
-                  <output>{draft.themeBackground.surfaceOpacity}%</output>
-                </div>
+                <EditableRangeControl
+                  value={draft.themeBackground.surfaceOpacity}
+                  min={MIN_SURFACE_OPACITY}
+                  max={MAX_SURFACE_OPACITY}
+                  step={1}
+                  suffix="%"
+                  ariaLabel={t("general.surfaceOpacity")}
+                  onChange={(surfaceOpacity) => updateThemeBackground({ surfaceOpacity })}
+                />
               </SettingRow>
             </>
           ) : null}
           <SettingRow label={t("general.fontSize")} description={t("general.fontSizeDescription")}>
-            <div className="font-size-control">
-              <input
-                type="range"
-                min={12}
-                max={28}
-                step={1}
-                value={draft.fontSize}
-                aria-label={t("general.fontSize")}
-                onChange={(event) => updateDraft("fontSize", Number(event.target.value))}
-              />
-              <output>{draft.fontSize} px</output>
-            </div>
+            <EditableRangeControl
+              value={draft.fontSize}
+              min={12}
+              max={28}
+              step={1}
+              suffix="px"
+              ariaLabel={t("general.fontSize")}
+              onChange={(value) => updateDraft("fontSize", value)}
+            />
           </SettingRow>
           <SettingRow label={t("general.fontPreset")} description={t("general.fontPresetDescription")}>
             <SegmentedControl
@@ -400,18 +395,16 @@ export function GeneralSettingsPanel({
             />
           </SettingRow>
           <SettingRow label={t("general.letterSpacing")} description={t("general.letterSpacingDescription")}>
-            <div className="font-size-control">
-              <input
-                type="range"
-                min={0}
-                max={1.5}
-                step={0.1}
-                value={draft.letterSpacing}
-                aria-label={t("general.letterSpacing")}
-                onChange={(event) => updateDraft("letterSpacing", Number(event.target.value))}
-              />
-              <output>{draft.letterSpacing.toFixed(1)} px</output>
-            </div>
+            <EditableRangeControl
+              value={draft.letterSpacing}
+              min={0}
+              max={1.5}
+              step={0.1}
+              suffix="px"
+              fractionDigits={1}
+              ariaLabel={t("general.letterSpacing")}
+              onChange={(value) => updateDraft("letterSpacing", value)}
+            />
           </SettingRow>
           {draft.fontPreset === "custom" ? (
             <>

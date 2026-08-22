@@ -4,6 +4,8 @@ import type {
   NoteEditDialogRequest,
   NoteEditPrepareResult,
 } from "../api/notePipeline";
+import { createPatch } from "diff";
+import { applySelectedNoteHunks, buildNoteDiff, type NoteDiffHunk } from "./noteDiff";
 import "./deep-note.css";
 
 export function NoteEditDialog({
@@ -19,15 +21,27 @@ export function NoteEditDialog({
   busy: boolean;
   onClose: () => void;
   onPrepare: (noteId: string, requirement: string) => void;
-  onApply: () => void;
+  onApply: (selection?: { hunkIds: number[]; titleAccepted: boolean; content: string; diff: string }) => void;
 }) {
   const [noteId, setNoteId] = useState("");
   const [requirement, setRequirement] = useState("");
+  const [selectedHunks, setSelectedHunks] = useState<Set<number>>(new Set());
+  const [titleAccepted, setTitleAccepted] = useState(true);
 
   useEffect(() => {
     setNoteId(request?.noteId ?? request?.notes[0]?.id ?? "");
     setRequirement("");
   }, [request]);
+
+  const diff = useMemo(
+    () => result ? buildNoteDiff(result.proposal.oldContent, result.proposal.newContent) : null,
+    [result],
+  );
+
+  useEffect(() => {
+    setSelectedHunks(new Set(diff?.hunks.map((hunk) => hunk.id) ?? []));
+    setTitleAccepted(Boolean(result && result.proposal.newTitle !== result.proposal.oldTitle));
+  }, [diff, result]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -92,15 +106,60 @@ export function NoteEditDialog({
                 ) : null}
               </div>
             ) : null}
-            <pre className="note-edit-diff" aria-label="Markdown 修改差异">{result.proposal.diff}</pre>
+            <div className="note-edit-diff-toolbar">
+              <strong>逐段确认变更</strong>
+              <span>{selectedHunks.size}/{diff?.hunks.length ?? 0} 段已选择</span>
+              <button type="button" onClick={() => setSelectedHunks(new Set(diff?.hunks.map((hunk) => hunk.id) ?? []))}>全部接受</button>
+              <button type="button" onClick={() => setSelectedHunks(new Set())}>全部拒绝</button>
+            </div>
+            {result.proposal.newTitle !== result.proposal.oldTitle ? (
+              <label className={`note-edit-title-hunk${titleAccepted ? " is-selected" : ""}`}>
+                <input type="checkbox" checked={titleAccepted} onChange={(event) => setTitleAccepted(event.target.checked)} />
+                <span><strong>标题</strong><small>{result.proposal.oldTitle} → {result.proposal.newTitle}</small></span>
+              </label>
+            ) : null}
+            <div className="note-edit-hunk-list" aria-label="逐段 Markdown 差异">
+              {(diff?.hunks ?? []).map((hunk) => (
+                <DiffHunkRow
+                  key={hunk.id}
+                  hunk={hunk}
+                  selected={selectedHunks.has(hunk.id)}
+                  onChange={(selected) => setSelectedHunks((current) => {
+                    const next = new Set(current);
+                    if (selected) next.add(hunk.id); else next.delete(hunk.id);
+                    return next;
+                  })}
+                />
+              ))}
+            </div>
             <footer className="deep-note-dialog-footer">
               <span>应用时会先备份当前版本；笔记已被其他编辑修改时会拒绝覆盖。</span>
               <div>
                 <button className="settings-button settings-button-secondary" type="button" disabled={busy} onClick={onClose}>
                   放弃
                 </button>
-                <button className="settings-button settings-button-primary" type="button" disabled={busy} onClick={onApply}>
-                  应用修改
+                <button
+                  className="settings-button settings-button-primary"
+                  type="button"
+                  disabled={busy || (!titleAccepted && selectedHunks.size === 0)}
+                  onClick={() => {
+                    const ids = Array.from(selectedHunks).sort((a, b) => a - b);
+                    const content = diff
+                      ? applySelectedNoteHunks(result.proposal.oldContent, result.proposal.newContent, selectedHunks)
+                      : result.proposal.newContent;
+                    onApply({
+                      hunkIds: ids,
+                      titleAccepted,
+                      content,
+                      diff: createPatch(
+                        result.proposal.oldTitle || "note.md",
+                        result.proposal.oldContent,
+                        content,
+                      ),
+                    });
+                  }}
+                >
+                  应用选中修改
                 </button>
               </div>
             </footer>
@@ -172,5 +231,29 @@ export function NoteEditDialog({
         ) : null}
       </section>
     </div>
+  );
+}
+
+function DiffHunkRow({
+  hunk,
+  selected,
+  onChange,
+}: {
+  hunk: NoteDiffHunk;
+  selected: boolean;
+  onChange: (selected: boolean) => void;
+}) {
+  return (
+    <label className={`note-edit-hunk${selected ? " is-selected" : ""}`}>
+      <div className="note-edit-hunk-heading">
+        <input type="checkbox" checked={selected} onChange={(event) => onChange(event.target.checked)} />
+        <strong>第 {hunk.id + 1} 段</strong>
+        <span>−{hunk.oldLines} / +{hunk.newLines} 行</span>
+      </div>
+      <div className="note-edit-hunk-columns">
+        <pre className="note-edit-hunk-old">{hunk.oldText || "（无原文）"}</pre>
+        <pre className="note-edit-hunk-new">{hunk.newText || "（删除该段）"}</pre>
+      </div>
+    </label>
   );
 }

@@ -142,3 +142,14 @@ pub async fn note_edit_resolve(
 ) -> Result<Option<LibraryNote>, String> {
     note_pipeline::resolve_note_edit(&state, &proposal_id, accepted).await
 }
+
+#[tauri::command]
+pub async fn note_edit_resolve_content(
+    state: State<'_, AppState>,
+    proposal_id: String,
+    title: String,
+    content: String,
+    diff: String,
+) -> Result<Option<LibraryNote>, String> {
+    note_pipeline::resolve_note_edit_with_content(&state, &proposal_id, title, content, diff).await
+}

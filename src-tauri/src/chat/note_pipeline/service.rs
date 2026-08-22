@@ -6447,6 +6447,35 @@ pub async fn resolve_note_edit(
         .resolve_note_edit_proposal(proposal_id, accepted)
 }
 
+pub async fn resolve_note_edit_with_content(
+    state: &AppState,
+    proposal_id: &str,
+    title: String,
+    content: String,
+    diff: String,
+) -> Result<Option<crate::library::types::LibraryNote>, String> {
+    let (conversation_id, snapshot_json) = state
+        .library_repository
+        .pending_note_edit_coverage_snapshot(proposal_id)?
+        .ok_or_else(|| "修改提案不存在或已经处理。".to_string())?;
+    if !snapshot_json.trim().is_empty() {
+        let snapshot = serde_json::from_str::<DeepNoteInputSnapshot>(&snapshot_json)
+            .map_err(|error| format!("读取修改提案覆盖快照失败：{error}"))?;
+        let conversation = state.conversation_repository.load(&conversation_id)?;
+        validate_recovery_snapshot_from_storage(
+            &state.conversation_repository,
+            &conversation,
+            &snapshot,
+        )
+        .await
+        .map_err(|error| format!("对话在提案生成后发生变化，不能应用部分修改：{error}"))?;
+    }
+    let _guard = state.library_operations.lock().await;
+    state
+        .library_repository
+        .resolve_note_edit_proposal_with_content(proposal_id, true, Some((title, content, diff)))
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;

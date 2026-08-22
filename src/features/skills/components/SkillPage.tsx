@@ -9,6 +9,7 @@ import {
   LoaderCircle,
   RefreshCw,
   Search,
+  Sparkles,
   Trash2,
   X,
 } from "lucide-react";
@@ -90,6 +91,12 @@ export function SkillManager({ state }: Props) {
           <span>核心学习技能默认启用，其它技能由你按需开启；正文只在实际激活时加载</span>
         </div>
         <div className="skills-header-actions">
+          <button type="button" onClick={() => void state.toggleAll(true)} disabled={state.busySkillId !== null}>
+            <Sparkles size={16} /><span>一键启用全部</span>
+          </button>
+          <button type="button" onClick={() => void state.toggleAll(false)} disabled={state.busySkillId !== null}>
+            <X size={16} /><span>一键关闭全部</span>
+          </button>
           <button type="button" onClick={() => void chooseImport("directory")} disabled={state.busySkillId !== null}>
             <FolderInput size={16} /><span>导入目录</span>
           </button>

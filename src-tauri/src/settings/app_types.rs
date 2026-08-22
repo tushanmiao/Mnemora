@@ -17,7 +17,7 @@ pub const DEFAULT_GLOBAL_SYSTEM_PROMPT: &str = concat!(
     "技能只提供工作方法，不扩大应用权限；遵守用户的权限设置和工具结果。"
 );
 const MAX_AVATAR_DATA_URL_BYTES: usize = 3 * 1024 * 1024;
-const MAX_THEME_BACKGROUND_CSS_BYTES: usize = 2_048;
+const MAX_THEME_BACKGROUND_CSS_BYTES: usize = 1_500_000;
 const MIN_SURFACE_OPACITY: u8 = 72;
 const MAX_SURFACE_OPACITY: u8 = 100;
 
@@ -528,7 +528,21 @@ fn validate_theme_background_css(value: &str) -> Result<(), String> {
             || character.is_ascii_whitespace()
             || matches!(
                 character,
-                '#' | '(' | ')' | ',' | '.' | '%' | '+' | '-' | '/'
+                '#' | '('
+                    | ')'
+                    | ','
+                    | '.'
+                    | '%'
+                    | '+'
+                    | '-'
+                    | '/'
+                    | ':'
+                    | '_'
+                    | '\''
+                    | '"'
+                    | '?'
+                    | '&'
+                    | '='
             ))
     }) {
         return Err("Theme background CSS contains unsupported characters".to_string());
@@ -536,18 +550,11 @@ fn validate_theme_background_css(value: &str) -> Result<(), String> {
 
     let lower = value.to_ascii_lowercase();
     for blocked in [
-        "url(",
-        "image-set(",
-        "cross-fade(",
         "paint(",
         "element(",
         "expression(",
         "@import",
         "javascript",
-        "data:",
-        "http:",
-        "https:",
-        "file:",
         "/*",
         "*/",
     ] {
@@ -602,9 +609,54 @@ fn validate_theme_background_css(value: &str) -> Result<(), String> {
             .next()
             .unwrap_or_default()
             .to_ascii_lowercase();
-        if !allowed_functions.contains(&name.as_str()) {
+        if !allowed_functions.contains(&name.as_str())
+            && !matches!(name.as_str(), "url" | "image-set" | "cross-fade")
+        {
             return Err(format!("Unsupported theme background function: {name}"));
         }
+    }
+    validate_theme_background_urls(value)?;
+    Ok(())
+}
+
+fn validate_theme_background_urls(value: &str) -> Result<(), String> {
+    let lower = value.to_ascii_lowercase();
+    let mut cursor = 0usize;
+    while let Some(relative_start) = lower[cursor..].find("url(") {
+        let start = cursor + relative_start + 4;
+        let Some(relative_end) = lower[start..].find(')') else {
+            return Err("Theme background URL has unbalanced parentheses".to_string());
+        };
+        let end = start + relative_end;
+        let raw = value[start..end].trim().trim_matches(['\'', '"']);
+        if raw.is_empty() {
+            return Err("Theme background URL cannot be empty".to_string());
+        }
+        if raw.len() > 1_500_000 {
+            return Err("Embedded theme background image is too large".to_string());
+        }
+        if raw.to_ascii_lowercase().starts_with("data:") {
+            let data = raw.to_ascii_lowercase();
+            if !data.starts_with("data:image/") || !data.contains(";base64,") {
+                return Err("Theme background data URLs must be base64 images".to_string());
+            }
+        } else {
+            let url = reqwest::Url::parse(raw)
+                .map_err(|_| "Theme background URL must be absolute".to_string())?;
+            if !matches!(url.scheme(), "http" | "https" | "asset" | "blob") {
+                return Err("Theme background URL scheme is not allowed".to_string());
+            }
+            if !matches!(url.scheme(), "asset" | "blob") && url.host_str().is_none() {
+                return Err("Theme background URL must include a host".to_string());
+            }
+            if !url.username().is_empty() || url.password().is_some() {
+                return Err("Theme background URL cannot contain credentials".to_string());
+            }
+        }
+        cursor = end + 1;
+    }
+    if lower.contains("javascript:") || lower.contains("file:") {
+        return Err("Theme background cannot execute scripts or read file URLs".to_string());
     }
     Ok(())
 }
@@ -705,6 +757,10 @@ mod tests {
         assert_eq!(settings.theme_background.surface_opacity, 88);
 
         settings.theme_background.css = "url(https://example.com/bg.png)".to_string();
+        assert!(settings.clone().normalize_and_validate().is_ok());
+        settings.theme_background.css = "url(javascript:alert(1))".to_string();
+        assert!(settings.clone().normalize_and_validate().is_err());
+        settings.theme_background.css = "url(file:///C:/secret.png)".to_string();
         assert!(settings.normalize_and_validate().is_err());
     }
 

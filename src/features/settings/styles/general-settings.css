@@ -312,6 +312,36 @@
   gap: 12px;
 }
 
+.editable-range-control output {
+  min-width: 68px;
+  cursor: text;
+  text-align: right;
+}
+
+.editable-range-value {
+  display: flex;
+  min-width: 88px;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+}
+
+.editable-range-value input {
+  width: 64px;
+  height: 30px;
+  padding: 0 6px;
+  border: 1px solid var(--color-accent);
+  border-radius: 5px;
+  outline: 0;
+  color: var(--color-text);
+  background: var(--color-surface-raised);
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
 .font-size-control input {
   width: 100%;
   accent-color: var(--color-accent);

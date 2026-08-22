@@ -33,6 +33,11 @@ export function setSkillEnabled(skillId: string, enabled: boolean): Promise<Skil
   return invoke<SkillSummary>("skills_set_enabled", { skillId, enabled });
 }
 
+export function setAllSkillsEnabled(enabled: boolean): Promise<SkillListResult> {
+  if (!isTauri()) return Promise.reject(new Error("技能批量状态需要在 Tauri 应用中保存。"));
+  return invoke<SkillListResult>("skills_set_all_enabled", { enabled });
+}
+
 export function uninstallSkill(skillId: string): Promise<void> {
   if (!isTauri()) return Promise.reject(new Error("技能删除需要在 Tauri 应用中执行。"));
   return invoke<void>("skills_uninstall", { skillId });
@@ -42,4 +47,3 @@ export function restoreBuiltinSkill(skillId: string): Promise<SkillSummary> {
   if (!isTauri()) return Promise.reject(new Error("技能恢复需要在 Tauri 应用中执行。"));
   return invoke<SkillSummary>("skills_restore_builtin", { skillId });
 }
-

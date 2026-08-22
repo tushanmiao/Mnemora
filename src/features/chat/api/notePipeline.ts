@@ -437,3 +437,18 @@ export function resolveNoteEdit(proposalId: string, accepted: boolean) {
   requireTauri();
   return invoke<LibraryNote | null>("note_edit_resolve", { proposalId, accepted });
 }
+
+export function resolveNoteEditContent(
+  proposalId: string,
+  title: string,
+  content: string,
+  diff: string,
+) {
+  requireTauri();
+  return invoke<LibraryNote | null>("note_edit_resolve_content", {
+    proposalId,
+    title,
+    content,
+    diff,
+  });
+}

@@ -5,6 +5,7 @@ import {
   listSkills,
   restoreBuiltinSkill,
   setSkillEnabled,
+  setAllSkillsEnabled,
   uninstallSkill,
 } from "../api/skills";
 import { slashCommandConflicts } from "../../chat/commands/slashCommands";
@@ -42,6 +43,20 @@ export function useSkills() {
       setSkills((current) => current.map((skill) => skill.id === skillId ? updated : skill));
     } catch (reason) {
       setError(errorMessage(reason, "保存技能状态失败。"));
+    } finally {
+      setBusySkillId(null);
+    }
+  }, []);
+
+  const toggleAll = useCallback(async (enabled: boolean) => {
+    setBusySkillId("__all__");
+    setError("");
+    try {
+      const result = await setAllSkillsEnabled(enabled);
+      setSkills(result.skills);
+      setWarnings([...result.warnings, ...slashCommandConflicts(result.skills)]);
+    } catch (reason) {
+      setError(errorMessage(reason, "批量保存技能状态失败。"));
     } finally {
       setBusySkillId(null);
     }
@@ -100,6 +115,7 @@ export function useSkills() {
     busySkillId,
     refresh,
     toggle,
+    toggleAll,
     install,
     uninstall,
     restore,

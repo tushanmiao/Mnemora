@@ -4,7 +4,8 @@
 }
 
 .usage-settings-scroll {
-  width: min(1120px, 100%);
+  width: 100%;
+  max-width: none;
   min-height: 0;
   flex: 1;
   overflow-y: auto;

@@ -25,6 +25,7 @@ import {
   pauseNotePipeline,
   prepareNoteEdit,
   resolveNoteEdit,
+  resolveNoteEditContent,
   restartNotePipeline,
   resumeNotePipeline,
   retryNotePipeline,
@@ -1147,7 +1148,7 @@ export function useNoteActions({
     }
   }, [noteEditResult, showFeedback]);
 
-  const applyNoteEdit = useCallback(async () => {
+  const applyNoteEdit = useCallback(async (selection?: { hunkIds: number[]; titleAccepted: boolean; content: string; diff: string }) => {
     if (!noteEditResult || noteEditBusy) return;
     if (noteEditResult.requiresGlobalReview && !noteEditResult.globalReviewPassed) {
       const confirmed = window.confirm(
@@ -1157,7 +1158,20 @@ export function useNoteActions({
     }
     setNoteEditBusy(true);
     try {
-      const updated = await resolveNoteEdit(noteEditResult.proposal.id, true);
+      const selectedTitle = selection?.titleAccepted
+        ? noteEditResult.proposal.newTitle
+        : noteEditResult.proposal.oldTitle;
+      const acceptsCompleteProposal = selection
+        && selectedTitle === noteEditResult.proposal.newTitle
+        && selection.content === noteEditResult.proposal.newContent;
+      const updated = !selection || acceptsCompleteProposal
+        ? await resolveNoteEdit(noteEditResult.proposal.id, true)
+        : await resolveNoteEditContent(
+          noteEditResult.proposal.id,
+          selectedTitle,
+          selection.content,
+          selection.diff,
+        );
       if (!updated) throw new Error("修改提案已失效。");
       setNoteEditResult(null);
       setNoteEditRefresh((current) => ({

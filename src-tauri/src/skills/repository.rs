@@ -182,6 +182,18 @@ impl SkillRepository {
         Ok(record.summary)
     }
 
+    pub fn set_all_enabled(&self, enabled: bool) -> Result<SkillListResult, String> {
+        let current = self.list()?;
+        let mut state = self.read_state()?;
+        for skill in &current.skills {
+            state
+                .skills
+                .insert(skill.id.clone(), SkillStateEntry { enabled });
+        }
+        self.write_state(&state)?;
+        self.list()
+    }
+
     pub fn restore_builtin(&self, skill_id: &str) -> Result<SkillSummary, String> {
         let record = self.load_record(skill_id)?;
         if record.summary.source != SkillSource::Builtin {

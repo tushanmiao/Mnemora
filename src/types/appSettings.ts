@@ -17,7 +17,7 @@ export interface UpdateProxySettings {
   url: string;
 }
 
-/** 受限的背景 CSS 值；只允许颜色和渐变，不允许完整 CSS 样式表。 */
+/** 受限的 background 属性值；允许颜色、渐变和安全图片 URL，不允许完整样式表。 */
 export interface ThemeBackgroundSettings {
   enabled: boolean;
   css: string;

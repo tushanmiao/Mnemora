@@ -85,7 +85,10 @@ impl AppState {
     ) -> Result<Self, String> {
         let http = Client::builder()
             .connect_timeout(Duration::from_secs(30))
-            .timeout(Duration::from_secs(600))
+            // 中转站可能在长时间无首字节时仍保持连接；普通 Chat 的单次
+            // HTTP 请求上限从 600 秒提高到 900 秒。深度笔记各阶段仍使用
+            // 自己更细的 attempt timeout，不共享这个全局上限。
+            .timeout(Duration::from_secs(900))
             .user_agent(concat!("Mnemora/", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|error| format!("Failed to create HTTP client: {error}"))?;

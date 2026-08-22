@@ -2174,6 +2174,15 @@ impl LibraryRepository {
         proposal_id: &str,
         accepted: bool,
     ) -> Result<Option<LibraryNote>, String> {
+        self.resolve_note_edit_proposal_with_content(proposal_id, accepted, None)
+    }
+
+    pub fn resolve_note_edit_proposal_with_content(
+        &self,
+        proposal_id: &str,
+        accepted: bool,
+        replacement: Option<(String, String, String)>,
+    ) -> Result<Option<LibraryNote>, String> {
         let proposal_id = normalize_identifier("修改提案 ID", proposal_id)?;
         let mut connection = self.open_connection()?;
         let transaction = connection
@@ -2226,6 +2235,22 @@ impl LibraryRepository {
                 .map_err(|error| format!("提交拒绝结果失败：{error}"))?;
             return Ok(None);
         }
+        let partial_replacement = replacement.is_some();
+        let (new_title, new_content, applied_diff) =
+            if let Some((title, content, diff)) = replacement {
+                let normalized = LibraryNoteUpdate {
+                    note_id: raw.0.clone(),
+                    title,
+                    content,
+                }
+                .normalize_and_validate()?;
+                if diff.is_empty() || diff.len() > MAX_NOTE_PIPELINE_JSON_BYTES {
+                    return Err("部分修改提案 diff 为空或过长。".to_string());
+                }
+                (normalized.title, normalized.content, diff)
+            } else {
+                (raw.3.clone(), raw.5.clone(), String::new())
+            };
         let current = self
             .get_note_with_connection(&transaction, &raw.0)?
             .ok_or_else(|| "目标笔记不存在。".to_string())?;
@@ -2244,11 +2269,21 @@ impl LibraryRepository {
         transaction
             .execute(
                 "UPDATE library_notes SET title = ?, content = ?, updated_at = ? WHERE id = ?",
-                params![raw.3, raw.5, updated_at, raw.0],
+                params![new_title, new_content, updated_at, raw.0],
             )
             .map_err(|error| format!("应用笔记修改失败：{error}"))?;
-        let sources = serde_json::from_str::<Vec<NoteSourceCreate>>(&raw.6)
-            .map_err(|error| format!("读取修改来源失败：{error}"))?;
+        let sources = if partial_replacement {
+            vec![NoteSourceCreate {
+                section_id: "partial-edit".to_string(),
+                origin: NoteSourceOrigin::Conversation,
+                conversation_id: Some(raw.9.clone()),
+                message_id: None,
+                summarized_until_message_id: None,
+            }]
+        } else {
+            serde_json::from_str::<Vec<NoteSourceCreate>>(&raw.6)
+                .map_err(|error| format!("读取修改来源失败：{error}"))?
+        };
         insert_note_sources(&transaction, &raw.0, sources, updated_at)?;
         let source_units = pending_note_edit_source_units(&transaction, &proposal_id)?;
         if !source_units.is_empty() {
@@ -2287,8 +2322,12 @@ impl LibraryRepository {
         }
         transaction
             .execute(
-                "UPDATE note_edit_proposals SET status = 'applied', updated_at = ? WHERE id = ?",
-                params![updated_at, proposal_id],
+                "UPDATE note_edit_proposals
+                 SET status = 'applied',
+                     diff_text = CASE WHEN ? = '' THEN diff_text ELSE ? END,
+                     updated_at = ?
+                 WHERE id = ?",
+                params![applied_diff, applied_diff, updated_at, proposal_id],
             )
             .map_err(|error| format!("完成笔记修改提案失败：{error}"))?;
         transaction
@@ -5533,8 +5572,34 @@ mod tests {
         assert_eq!(version.2, "noteEdit");
         drop(connection);
 
+        let partial = repository
+            .create_note_edit_proposal(proposal("proposal-partial", &updated))
+            .unwrap();
+        let partially_updated = repository
+            .resolve_note_edit_proposal_with_content(
+                &partial.id,
+                true,
+                Some((
+                    updated.title.clone(),
+                    "# New title\n\nPartially accepted body".to_string(),
+                    "--- selected\n+++ selected".to_string(),
+                )),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(partially_updated.title, "New title");
+        assert_eq!(
+            partially_updated.content,
+            "# New title\n\nPartially accepted body"
+        );
+        assert!(repository
+            .list_note_sources(&note.id)
+            .unwrap()
+            .iter()
+            .any(|source| source.section_id == "partial-edit"));
+
         repository
-            .create_note_edit_proposal(proposal("proposal-stale", &updated))
+            .create_note_edit_proposal(proposal("proposal-stale", &partially_updated))
             .unwrap();
         repository
             .update_note(LibraryNoteUpdate {
@@ -5555,7 +5620,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(versions, 1);
+        assert_eq!(versions, 2);
         let _ = fs::remove_dir_all(directory);
     }
 }

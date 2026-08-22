@@ -1,6 +1,12 @@
 /** 学习内容渲染的统一资源上限，避免模型输出异常内容拖慢 WebView。 */
 export const MARKDOWN_RENDER_LIMITS = {
   maxMermaidChars: 24_000,
+  // A second, interactive Mermaid viewer duplicates the SVG tree. Keep that
+  // copy bounded even when the source itself is within the parser limit.
+  maxMermaidViewerSvgChars: 600_000,
+  maxMermaidViewerElements: 12_000,
+  maxMermaidViewerForeignObjects: 800,
+  maxMermaidViewerIntrinsicDimension: 50_000,
   maxMermaidBlocksPerMessage: 10,
   maxHighlightedCodeChars: 32_000,
   maxDecodedImagePixels: 25_000_000,
@@ -10,4 +16,3 @@ export const MARKDOWN_RENDER_LIMITS = {
 } as const;
 
 export type MarkdownRenderLimits = typeof MARKDOWN_RENDER_LIMITS;
-

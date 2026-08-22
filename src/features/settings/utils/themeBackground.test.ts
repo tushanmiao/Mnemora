@@ -12,8 +12,8 @@ describe("theme background validation", () => {
   });
 
   it("拒绝外部资源和完整样式表", () => {
-    expect(validateThemeBackgroundCss("url(https://example.com/bg.png)")).toContain("不允许");
-    expect(validateThemeBackgroundCss("body { color: red; }")).toContain("只能包含");
+    expect(validateThemeBackgroundCss("url(https://example.com/bg.png)")).toBeNull();
+    expect(validateThemeBackgroundCss("body { color: red; }")).toContain("完整样式表");
     expect(validateThemeBackgroundCss("filter(blur(4px))")).toContain("不支持");
   });
 
@@ -21,5 +21,12 @@ describe("theme background validation", () => {
     expect(resolveThemeBackgroundCss({ enabled: false, css: "red", surfaceOpacity: 92 })).toBeNull();
     expect(resolveThemeBackgroundCss({ enabled: true, css: "red", surfaceOpacity: 92 })).toBe("red");
     expect(resolveThemeBackgroundCss({ enabled: true, css: "url(x)", surfaceOpacity: 92 })).toBeNull();
+    expect(resolveThemeBackgroundCss({
+      enabled: true,
+      css: "center / cover no-repeat url('https://images.example.com/background.webp')",
+      surfaceOpacity: 92,
+    })).toContain("https://images.example.com/background.webp");
+    expect(resolveThemeBackgroundCss({ enabled: true, css: "url(javascript:alert(1))", surfaceOpacity: 92 })).toBeNull();
+    expect(resolveThemeBackgroundCss({ enabled: true, css: "url(file:///C:/secret.png)", surfaceOpacity: 92 })).toBeNull();
   });
 });

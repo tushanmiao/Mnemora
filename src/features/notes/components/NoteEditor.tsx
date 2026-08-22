@@ -29,8 +29,12 @@ import {
   type NotesLayout,
 } from "../utils/notesWorkspace";
 import { NoteSourcesBar } from "./NoteSourcesBar";
+import type { MarkdownSourceEditorHandle } from "./MarkdownSourceEditor";
 
 const MarkdownNotePreview = lazy(() => import("./MarkdownNotePreview"));
+const MarkdownSourceEditor = lazy(() => import("./MarkdownSourceEditor").then((module) => ({
+  default: module.MarkdownSourceEditor,
+})));
 
 export type NoteSelectionMenu = {
   left: number;
@@ -56,7 +60,7 @@ type NoteEditorProps = {
   stats: { words: number; characters: number; readingMinutes: number };
   selectionMenu: NoteSelectionMenu | null;
   workspaceRef: RefObject<HTMLElement | null>;
-  editorRef: RefObject<HTMLTextAreaElement | null>;
+  editorRef: RefObject<MarkdownSourceEditorHandle | null>;
   previewRef: RefObject<HTMLDivElement | null>;
   onTitleChange: (title: string) => void;
   onContentChange: (content: string) => void;
@@ -68,7 +72,7 @@ type NoteEditorProps = {
   onOutlineJump: (item: MarkdownOutlineItem) => void;
   onOutlineWidthPreview: (width: number) => void;
   onOutlineWidthCommit: (width: number) => void;
-  onSourceSelection: (event: ReactMouseEvent<HTMLTextAreaElement>) => void;
+  onSourceSelection: (event: ReactMouseEvent<HTMLElement>) => void;
   onPreviewSelection: (event: ReactMouseEvent<HTMLDivElement>) => void;
   onSelectionClear: () => void;
   onAskSelection: () => void;
@@ -192,16 +196,16 @@ export function NoteEditor({
         ) : (
           <div className="notes-document-host">
             {mode === "source" ? (
-              <textarea
-                ref={editorRef}
-                className="notes-source-editor"
-                value={content}
-                spellCheck={false}
-                aria-label="Markdown 源码编辑器"
-                onChange={(event) => onContentChange(event.target.value)}
-                onMouseUp={onSourceSelection}
-                onKeyUp={onSelectionClear}
-              />
+              <Suspense fallback={<div className="notes-empty"><LoaderCircle className="is-spinning" size={20} />正在加载编辑器</div>}>
+                <MarkdownSourceEditor
+                  ref={editorRef}
+                  value={content}
+                  ariaLabel="Markdown 源码编辑器"
+                  onChange={onContentChange}
+                  onSelectionChange={onSelectionClear}
+                  onMouseUp={onSourceSelection}
+                />
+              </Suspense>
             ) : (
               <div ref={previewRef} className="notes-preview-host" onMouseUp={onPreviewSelection}>
                 <Suspense fallback={<div className="notes-empty"><LoaderCircle className="is-spinning" size={20} />正在加载预览</div>}>

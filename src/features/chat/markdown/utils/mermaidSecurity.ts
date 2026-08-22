@@ -1,4 +1,7 @@
+import { MARKDOWN_RENDER_LIMITS } from "./renderLimits";
+
 const DANGEROUS_SVG_TAGS = new Set(["script", "iframe", "object", "embed", "image"]);
+const XML_VOID_TAGS = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"]);
 
 // Kept as a compatibility export for callers that previously imported the
 // large-diagram predicate from the security module. Layout policy now lives in
@@ -9,6 +12,10 @@ export type MermaidSvgMetrics = {
   width: number;
   height: number;
   aspectRatio: number;
+  svgChars?: number;
+  elementCount?: number;
+  foreignObjectCount?: number;
+  viewerSafe?: boolean;
 };
 
 export type SanitizedMermaidSvg = {
@@ -16,12 +23,26 @@ export type SanitizedMermaidSvg = {
   metrics: MermaidSvgMetrics;
 };
 
+/**
+ * Mermaid's htmlLabels renderer emits HTML void elements (most notably
+ * `<br>`) inside SVG foreignObject nodes. That is valid HTML, but the SVG is
+ * subsequently parsed as XML by the sanitizer and Shadow DOM renderer. Make
+ * the contract explicit at that boundary instead of disabling htmlLabels.
+ */
+export function normalizeMermaidSvgForXml(svg: string) {
+  return svg.replace(/<([a-z][\w:.-]*)(\s[^<>]*?)?\s*\/?\s*>/gi, (tag, name: string, attributes = "") => {
+    if (!XML_VOID_TAGS.has(name.toLowerCase()) || /\/\s*>$/.test(tag)) return tag;
+    return `<${name}${attributes.trimEnd()} />`;
+  });
+}
+
 /** Mermaid 输出由受信任的渲染器生成，但仍移除脚本、外链和事件属性。 */
 export function sanitizeMermaidSvg(svg: string): SanitizedMermaidSvg {
+  const normalizedSvg = normalizeMermaidSvgForXml(svg);
   if (typeof DOMParser === "undefined" || typeof document === "undefined") {
-    return { svg, metrics: extractMermaidSvgMetrics(svg) };
+    return { svg: normalizedSvg, metrics: measureMermaidViewerBudget(normalizedSvg) };
   }
-  const parsed = new DOMParser().parseFromString(svg, "image/svg+xml");
+  const parsed = new DOMParser().parseFromString(normalizedSvg, "image/svg+xml");
   const root = parsed.documentElement;
   const parserError = parsed.querySelector("parsererror");
   if (parserError || !root || root.tagName.toLowerCase() !== "svg") {
@@ -38,7 +59,7 @@ export function sanitizeMermaidSvg(svg: string): SanitizedMermaidSvg {
       const value = attribute.value.trim().toLowerCase();
       if (name.startsWith("on") || name === "srcdoc") {
         element.removeAttribute(attribute.name);
-      } else if ((name === "href" || name === "xlink:href") && !value.startsWith("#")) {
+      } else if ((name === "href" || name === "xlink:href" || name === "src") && !value.startsWith("#")) {
         element.removeAttribute(attribute.name);
       } else if (name === "style" && containsExternalCssUrl(value)) {
         element.removeAttribute(attribute.name);
@@ -50,19 +71,22 @@ export function sanitizeMermaidSvg(svg: string): SanitizedMermaidSvg {
   }
 
   ensureMermaidViewBox(root);
-  const metrics = extractMermaidSvgMetrics(root.outerHTML);
+  const dimensions = extractMermaidSvgMetrics(root.outerHTML);
   root.setAttribute("role", "img");
   root.setAttribute("width", "100%");
   root.removeAttribute("height");
   root.setAttribute("preserveAspectRatio", "xMidYMin meet");
-  root.style.setProperty("max-width", `${metrics.width}px`);
+  // Let narrow diagrams use the available reading width. Capping max-width at
+  // the intrinsic width made tall charts render as an unreadable hairline.
+  root.style.setProperty("max-width", "100%");
   root.style.setProperty("width", "100%");
   root.style.removeProperty("height");
   root.style.removeProperty("background");
   root.style.removeProperty("background-color");
   root.setAttribute("data-mnemora-mermaid", "shadow");
   root.removeAttribute("aria-roledescription");
-  return { svg: new XMLSerializer().serializeToString(root), metrics };
+  const serialized = new XMLSerializer().serializeToString(root);
+  return { svg: serialized, metrics: withMermaidViewerBudget(serialized, dimensions) };
 }
 
 function ensureMermaidViewBox(root: Element) {
@@ -82,6 +106,22 @@ export function extractMermaidSvgMetrics(svg: string): MermaidSvgMetrics {
   if (!Number.isFinite(width) || width <= 0) width = 640;
   if (!Number.isFinite(height) || height <= 0) height = 360;
   return { width, height, aspectRatio: width / height };
+}
+
+export function measureMermaidViewerBudget(svg: string) {
+  return withMermaidViewerBudget(svg, extractMermaidSvgMetrics(svg));
+}
+
+function withMermaidViewerBudget(svg: string, dimensions: Pick<MermaidSvgMetrics, "width" | "height" | "aspectRatio">): MermaidSvgMetrics {
+  const elementCount = (svg.match(/<([a-z][\w:.-]*)(?:\s|\/?>)/gi) ?? []).length;
+  const foreignObjectCount = (svg.match(/<foreignObject(?:\s|\/?>)/gi) ?? []).length;
+  const svgChars = svg.length;
+  const viewerSafe = svgChars <= MARKDOWN_RENDER_LIMITS.maxMermaidViewerSvgChars
+    && elementCount <= MARKDOWN_RENDER_LIMITS.maxMermaidViewerElements
+    && foreignObjectCount <= MARKDOWN_RENDER_LIMITS.maxMermaidViewerForeignObjects
+    && dimensions.width <= MARKDOWN_RENDER_LIMITS.maxMermaidViewerIntrinsicDimension
+    && dimensions.height <= MARKDOWN_RENDER_LIMITS.maxMermaidViewerIntrinsicDimension;
+  return { ...dimensions, svgChars, elementCount, foreignObjectCount, viewerSafe };
 }
 
 function parseSvgDimension(svg: string, attribute: "width" | "height") {
@@ -127,9 +167,9 @@ export function mermaidThemeConfig(host: HTMLElement) {
     flowchart: {
       useMaxWidth: true,
       diagramPadding: 10,
-      nodeSpacing: 28,
-      rankSpacing: 38,
-      wrappingWidth: 190,
+      nodeSpacing: 34,
+      rankSpacing: 46,
+      wrappingWidth: 250,
       curve: "basis" as const,
     },
     sequence: {
@@ -146,8 +186,18 @@ export function mermaidThemeConfig(host: HTMLElement) {
     },
     class: { useMaxWidth: true, diagramPadding: 10, nodeSpacing: 28, rankSpacing: 38 },
     state: { useMaxWidth: true, nodeSpacing: 28, rankSpacing: 38, fontSize: 13 },
-    er: { useMaxWidth: true, diagramPadding: 10 },
-    mindmap: { useMaxWidth: true, padding: 10, maxNodeWidth: 190 },
+    er: {
+      useMaxWidth: true,
+      diagramPadding: 18,
+      layoutDirection: "LR" as const,
+      minEntityWidth: 220,
+      minEntityHeight: 72,
+      entityPadding: 18,
+      nodeSpacing: 54,
+      rankSpacing: 72,
+      fontSize: 13,
+    },
+    mindmap: { useMaxWidth: true, padding: 14, maxNodeWidth: 240 },
     themeVariables: {
       background: "transparent",
       fontSize: "13px",

@@ -886,7 +886,7 @@ function App() {
           busy={noteActions.noteEditBusy}
           onClose={() => void noteActions.closeNoteEdit()}
           onPrepare={(noteId, requirement) => void noteActions.prepareExistingNoteEdit(noteId, requirement)}
-          onApply={() => void noteActions.applyNoteEdit()}
+          onApply={(selection) => void noteActions.applyNoteEdit(selection)}
         />
       ) : null}
 

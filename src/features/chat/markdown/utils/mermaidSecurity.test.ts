@@ -1,12 +1,58 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   extractMermaidSvgMetrics,
+  measureMermaidViewerBudget,
+  normalizeMermaidSvgForXml,
   sanitizeMermaidSvg,
 } from "./mermaidSecurity";
 
 describe("mermaidSecurity", () => {
+  it("normalizes Mermaid html labels before XML parsing", () => {
+    const source = '<svg><foreignObject><div xmlns="http://www.w3.org/1999/xhtml"><p>第一行<br>第二行<br class="gap">第三行<br/></p><hr><img src="#asset"></div></foreignObject></svg>';
+
+    expect(normalizeMermaidSvgForXml(source)).toBe(
+      '<svg><foreignObject><div xmlns="http://www.w3.org/1999/xhtml"><p>第一行<br />第二行<br class="gap" />第三行<br/></p><hr /><img src="#asset" /></div></foreignObject></svg>',
+    );
+  });
+
+  it("passes normalized HTML labels to the strict XML sanitizer", () => {
+    const previousDomParser = globalThis.DOMParser;
+    const previousDocument = globalThis.document;
+    const previousSerializer = globalThis.XMLSerializer;
+    let parsedInput = "";
+    const root = {
+      tagName: "svg",
+      outerHTML: '<svg viewBox="0 0 320 180"></svg>',
+      getAttribute: (name: string) => name === "viewBox" ? "0 0 320 180" : null,
+      querySelectorAll: () => [],
+      setAttribute: vi.fn(),
+      removeAttribute: vi.fn(),
+      style: { removeProperty: vi.fn(), setProperty: vi.fn() },
+    };
+
+    try {
+      globalThis.DOMParser = class {
+        parseFromString(input: string) {
+          parsedInput = input;
+          return { documentElement: root, querySelector: () => null };
+        }
+      } as unknown as typeof DOMParser;
+      globalThis.document = {} as Document;
+      globalThis.XMLSerializer = class { serializeToString() { return root.outerHTML; } } as unknown as typeof XMLSerializer;
+
+      sanitizeMermaidSvg('<svg><foreignObject><p>一<br>二</p></foreignObject></svg>');
+
+      expect(parsedInput).toContain("<br />");
+      expect(parsedInput).not.toContain("<br>");
+    } finally {
+      globalThis.DOMParser = previousDomParser;
+      globalThis.document = previousDocument;
+      globalThis.XMLSerializer = previousSerializer;
+    }
+  });
+
   it("reads real diagram dimensions from a whitespace-separated viewBox", () => {
-    expect(extractMermaidSvgMetrics('<svg viewBox="0\n0\n1920\n640"></svg>')).toEqual({
+    expect(extractMermaidSvgMetrics('<svg viewBox="0\n0\n1920\n640"></svg>')).toMatchObject({
       width: 1920,
       height: 640,
       aspectRatio: 3,
@@ -14,7 +60,7 @@ describe("mermaidSecurity", () => {
   });
 
   it("falls back to explicit width and height attributes", () => {
-    expect(extractMermaidSvgMetrics('<svg width="800px" height="600px"></svg>')).toEqual({
+    expect(extractMermaidSvgMetrics('<svg width="800px" height="600px"></svg>')).toMatchObject({
       width: 800,
       height: 600,
       aspectRatio: 800 / 600,
@@ -95,7 +141,7 @@ describe("mermaidSecurity", () => {
       const result = sanitizeMermaidSvg('<svg viewBox="0 0 617 1162"></svg>');
 
       expect(result.svg).toContain('width="100%"');
-      expect(result.svg).toContain('max-width="617px"');
+      expect(result.svg).toContain('max-width="100%"');
     } finally {
       globalThis.DOMParser = previousDomParser;
       globalThis.document = previousDocument;
@@ -138,7 +184,7 @@ describe("mermaidSecurity", () => {
 
       expect(result.svg).toContain('viewBox="0 0 800 600"');
       expect(result.svg).toContain('preserveAspectRatio="xMidYMin meet"');
-      expect(result.metrics).toEqual({ width: 800, height: 600, aspectRatio: 800 / 600 });
+      expect(result.metrics).toMatchObject({ width: 800, height: 600, aspectRatio: 800 / 600 });
     } finally {
       globalThis.DOMParser = previousDomParser;
       globalThis.document = previousDocument;
@@ -151,6 +197,14 @@ describe("mermaidSecurity", () => {
     const result = sanitizeMermaidSvg(source);
 
     expect(result.svg).toBe(source);
-    expect(result.metrics).toEqual({ width: 720, height: 360, aspectRatio: 2 });
+    expect(result.metrics).toMatchObject({ width: 720, height: 360, aspectRatio: 2, viewerSafe: true });
+  });
+
+  it("marks oversized interactive viewer payloads as unsafe", () => {
+    const oversized = `<svg viewBox="0 0 142 44138">${"<foreignObject></foreignObject>".repeat(801)}</svg>`;
+    const metrics = measureMermaidViewerBudget(oversized);
+
+    expect(metrics.foreignObjectCount).toBe(801);
+    expect(metrics.viewerSafe).toBe(false);
   });
 });

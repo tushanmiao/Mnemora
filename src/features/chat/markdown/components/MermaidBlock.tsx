@@ -11,13 +11,18 @@ import { useElementVisibility } from "../hooks/useElementVisibility";
 import {
   getDefaultMermaidViewMode,
   getMermaidViewerScale,
+  getMermaidViewerViewport,
   isLargeMermaidDiagram,
   type MermaidViewMode,
 } from "../utils/mermaidLayout";
 import { renderMermaid } from "../utils/mermaidRuntime";
 import { sanitizeMermaidSvg, mermaidThemeConfig, type MermaidSvgMetrics } from "../utils/mermaidSecurity";
 import { MARKDOWN_RENDER_LIMITS } from "../utils/renderLimits";
-import { renderMermaidSvgInShadowHost } from "../utils/mermaidShadow";
+import {
+  renderMermaidSvgInShadowHost,
+  updateMermaidSvgViewport,
+  type MermaidShadowViewport,
+} from "../utils/mermaidShadow";
 import "../styles/enhanced-markdown.css";
 
 type MermaidBlockProps = {
@@ -34,12 +39,15 @@ function MermaidSvgHost({
   svg,
   className,
   style,
+  viewport,
 }: {
   svg: string;
   className: string;
   style?: CSSProperties;
+  viewport?: MermaidShadowViewport;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
+  const hasViewport = viewport !== undefined;
   useEffect(() => {
     const host = hostRef.current;
     if (!host || !svg) return;
@@ -48,12 +56,27 @@ function MermaidSvgHost({
     } else {
       host.removeAttribute("data-mermaid-viewer");
     }
+    if (viewport) {
+      host.setAttribute("data-mermaid-viewport", "true");
+    } else {
+      host.removeAttribute("data-mermaid-viewport");
+    }
     try {
-      renderMermaidSvgInShadowHost(svg, host);
+      renderMermaidSvgInShadowHost(svg, host, viewport);
     } catch (reason) {
       console.error("Mermaid SVG 挂载失败", reason);
     }
-  }, [svg]);
+  }, [svg, hasViewport]);
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host) return;
+    if (viewport) {
+      host.setAttribute("data-mermaid-viewport", "true");
+      updateMermaidSvgViewport(host, viewport);
+    } else {
+      host.removeAttribute("data-mermaid-viewport");
+    }
+  }, [viewport?.x, viewport?.y, viewport?.width, viewport?.height]);
   return <div ref={hostRef} className={className} style={style} data-testid="mermaid-shadow-host" />;
 }
 
@@ -220,13 +243,24 @@ export function MermaidBlock({ code, streaming = false }: MermaidBlockProps) {
   };
 
   const isLarge = metrics ? isLargeMermaidDiagram(metrics, previewWidth) : code.length > 8_000 || code.split(/\r?\n/).length > 64;
+  const previewHeight = Math.round(Math.min(560, Math.max(280, previewWidth * 0.58)));
+  const previewViewport = metrics && isLarge
+    ? getMermaidViewerViewport(metrics, { width: previewWidth, height: previewHeight }, getDefaultMermaidViewMode(metrics))
+    : undefined;
+  const previewStyle = isLarge ? { height: `${previewHeight}px` } : undefined;
   const baseScale = metrics ? getMermaidViewerScale(metrics, canvasSize, viewMode) : 1;
-  const renderedScale = Math.min(8, Math.max(0.05, baseScale * zoom));
-  const viewerStyle = metrics ? ({
-    width: `${metrics.width}px`,
-    height: `${metrics.height}px`,
-    transform: `translate(${pan.x}px, ${pan.y}px) scale(${renderedScale})`,
-  } as CSSProperties) : undefined;
+  const viewerViewport = metrics ? getMermaidViewerViewport(metrics, canvasSize, viewMode, zoom, pan) : undefined;
+  const renderedScale = viewerViewport?.scale ?? baseScale;
+  const viewerStyle = { width: "100%", height: "100%" };
+  const viewerSafe = metrics?.viewerSafe === true;
+
+  useEffect(() => {
+    if (expanded && metrics?.viewerSafe !== true) {
+      setExpanded(false);
+      setZoom(1);
+      setPan({ x: 0, y: 0 });
+    }
+  }, [expanded, metrics?.viewerSafe]);
 
   const copySource = async () => {
     try {
@@ -289,7 +323,7 @@ export function MermaidBlock({ code, streaming = false }: MermaidBlockProps) {
           <button type="button" className="markdown-enhanced-action" title={copied ? "已复制" : "复制 Mermaid 源代码"} aria-label={copied ? "已复制" : "复制 Mermaid 源代码"} onClick={() => void copySource()}>
             {copied ? <Check size={14} /> : <Copy size={14} />}
           </button>
-          {status === "ready" && isLarge ? (
+          {status === "ready" && isLarge && viewerSafe ? (
             <button type="button" className="markdown-enhanced-action" title="在大图查看器中打开" aria-label="在大图查看器中打开" onClick={openViewer}>
               <Maximize2 size={14} />
             </button>
@@ -312,12 +346,15 @@ export function MermaidBlock({ code, streaming = false }: MermaidBlockProps) {
         <>
           <MermaidSvgHost
             className={`markdown-mermaid-svg${isLarge ? " markdown-mermaid-viewport" : ""}`}
+            style={previewStyle}
+            viewport={previewViewport}
             svg={svg}
           />
-          {isLarge ? <button type="button" className="markdown-code-expand" onClick={openViewer}>在大图查看器中打开</button> : null}
+          {isLarge && viewerSafe ? <button type="button" className="markdown-code-expand" onClick={openViewer}>在大图查看器中打开</button> : null}
+          {isLarge && !viewerSafe ? <div className="markdown-mermaid-budget-warning" role="status">图表过于复杂，已保留有界预览；为避免页面卡死，交互查看器未创建。建议复制源代码后按主题拆分图表。</div> : null}
         </>
       ) : null}
-      {expanded && status === "ready" ? (
+      {expanded && status === "ready" && viewerSafe ? (
         <div ref={lightboxRef} className="markdown-mermaid-lightbox" role="dialog" aria-modal="true" aria-label="Mermaid 图表查看器">
           <div className="markdown-mermaid-lightbox-toolbar">
             <span className="markdown-mermaid-lightbox-title">Mermaid 图表{metrics ? ` · ${Math.round(metrics.width)}×${Math.round(metrics.height)}` : ""}</span>
@@ -349,7 +386,7 @@ export function MermaidBlock({ code, streaming = false }: MermaidBlockProps) {
             onPointerCancel={endPan}
             onKeyDown={handleCanvasKeyDown}
           >
-            <MermaidSvgHost className="markdown-mermaid-lightbox-svg" style={viewerStyle} svg={svg} />
+            <MermaidSvgHost className="markdown-mermaid-lightbox-svg" style={viewerStyle} viewport={viewerViewport} svg={svg} />
           </div>
         </div>
       ) : null}

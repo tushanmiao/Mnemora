@@ -88,6 +88,52 @@
 .note-edit-selection strong { color: var(--color-text); }
 .note-edit-requirement { padding-top: 16px; }
 .note-edit-diff { max-height: min(560px, calc(100vh - 260px)); overflow: auto; margin: 0; padding: 18px 22px; background: var(--color-surface-soft); color: var(--color-text); font: 12px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.note-edit-diff-toolbar {
+  display: flex;
+  min-height: 42px;
+  padding: 10px 22px;
+  align-items: center;
+  gap: 10px;
+  border-top: 1px solid var(--color-border-soft);
+  border-bottom: 1px solid var(--color-border-soft);
+  color: var(--color-muted);
+  font-size: 11px;
+}
+.note-edit-diff-toolbar strong { color: var(--color-text); }
+.note-edit-diff-toolbar span { margin-right: auto; }
+.note-edit-diff-toolbar button {
+  padding: 4px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 5px;
+  color: var(--color-text-secondary);
+  background: var(--color-surface-raised);
+  cursor: pointer;
+  font-size: 10px;
+}
+.note-edit-diff-toolbar button:hover { color: var(--color-accent); border-color: var(--color-accent); }
+.note-edit-title-hunk {
+  display: flex;
+  margin: 12px 22px 0;
+  padding: 10px 12px;
+  align-items: center;
+  gap: 9px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface-soft);
+  cursor: pointer;
+}
+.note-edit-title-hunk.is-selected { border-color: var(--color-accent); background: var(--color-accent-soft); }
+.note-edit-title-hunk span { display: grid; gap: 3px; min-width: 0; }
+.note-edit-title-hunk small { overflow-wrap: anywhere; color: var(--color-muted); }
+.note-edit-hunk-list { display: grid; gap: 10px; max-height: min(520px, calc(100vh - 360px)); overflow: auto; padding: 14px 22px; }
+.note-edit-hunk { display: grid; gap: 8px; padding: 10px; border: 1px solid var(--color-border-soft); border-radius: 8px; background: var(--color-surface-soft); cursor: pointer; }
+.note-edit-hunk.is-selected { border-color: var(--color-accent); }
+.note-edit-hunk-heading { display: flex; align-items: center; gap: 8px; color: var(--color-text-secondary); font-size: 11px; }
+.note-edit-hunk-heading span { margin-left: auto; color: var(--color-muted); font-variant-numeric: tabular-nums; }
+.note-edit-hunk-columns { display: grid; min-width: 0; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.note-edit-hunk-columns pre { min-width: 0; max-height: 180px; overflow: auto; margin: 0; padding: 9px; white-space: pre-wrap; overflow-wrap: anywhere; font: 11px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; }
+.note-edit-hunk-old { outline: 1px solid color-mix(in srgb, var(--color-danger) 35%, transparent); background: var(--color-danger-soft); }
+.note-edit-hunk-new { outline: 1px solid color-mix(in srgb, var(--color-success) 35%, transparent); background: var(--color-success-soft); }
 .note-edit-source-units { display: grid; gap: 10px; margin: 16px 22px 0; padding: 12px 14px; border: 1px solid var(--color-border); border-radius: 10px; background: var(--color-accent-soft); }
 .note-edit-source-units > div:first-child { display: flex; align-items: center; gap: 8px; font-size: 12px; }
 .note-edit-source-units > div:first-child svg { color: var(--color-accent); }

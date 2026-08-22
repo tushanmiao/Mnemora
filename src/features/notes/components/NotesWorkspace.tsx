@@ -31,6 +31,7 @@ import {
 import { NotesBrowser, type GroupFilter, type NoteSort } from "./NotesBrowser";
 import { chooseLocalNoteSourceFiles } from "../api/localNoteSource";
 import { NoteEditor, type NoteSelectionMenu } from "./NoteEditor";
+import type { MarkdownSourceEditorHandle } from "./MarkdownSourceEditor";
 import {
   lineAtOffset,
   loadNotesLayout,
@@ -123,7 +124,7 @@ export default function NotesWorkspace({
   onOpenSourceConversation,
   onGenerateFromLocalFiles,
 }: NotesWorkspaceProps) {
-  const editorRef = useRef<HTMLTextAreaElement>(null);
+  const editorRef = useRef<MarkdownSourceEditorHandle>(null);
   const previewRef = useRef<HTMLDivElement>(null);
   const saveTimerRef = useRef<number | null>(null);
   const savedTimerRef = useRef<number | null>(null);
@@ -516,29 +517,28 @@ export default function NotesWorkspace({
     }
     const editor = editorRef.current;
     if (!editor) return;
-    const style = window.getComputedStyle(editor);
-    const lineHeight = Number.parseFloat(style.lineHeight) || 24;
-    const paddingTop = Number.parseFloat(style.paddingTop) || 0;
     const line = lineAtOffset(content, item.offset);
-    editor.focus({ preventScroll: true });
-    editor.setSelectionRange(item.offset, item.offset);
-    editor.scrollTop = Math.max(0, (line - 1) * lineHeight + paddingTop - 16);
+    editor.focus();
+    editor.setSelection(item.offset, item.offset);
+    editor.scrollToLine(line);
   };
 
-  const showSourceSelection = (event: ReactMouseEvent<HTMLTextAreaElement>) => {
-    const editor = event.currentTarget;
-    const selectedText = editor.value.slice(editor.selectionStart, editor.selectionEnd).trim();
+  const showSourceSelection = (event: ReactMouseEvent<HTMLElement>) => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const selected = editor.getSelection();
+    const selectedText = selected.text.trim();
     if (!selectedText) {
       setSelectionMenu(null);
       return;
     }
-    const rect = editor.getBoundingClientRect();
+    const rect = event.currentTarget.getBoundingClientRect();
     setSelectionMenu({
       left: Math.min(rect.width - 170, Math.max(12, event.clientX - rect.left)),
       top: Math.min(rect.height - 42, Math.max(12, event.clientY - rect.top + 10)),
       text: selectedText.slice(0, MAX_SELECTION_CHARACTERS),
-      startLine: lineAtOffset(editor.value, editor.selectionStart),
-      endLine: lineAtOffset(editor.value, editor.selectionEnd),
+      startLine: lineAtOffset(content, selected.from),
+      endLine: lineAtOffset(content, selected.to),
     });
   };
 

@@ -55,6 +55,18 @@ pub async fn skills_set_enabled(
 }
 
 #[tauri::command]
+pub async fn skills_set_all_enabled(
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> Result<SkillListResult, String> {
+    let _guard = state.skill_operations.lock().await;
+    let repository = state.skill_repository.clone();
+    async_runtime::spawn_blocking(move || repository.set_all_enabled(enabled))
+        .await
+        .map_err(|error| format!("批量更新技能状态后端任务失败：{error}"))?
+}
+
+#[tauri::command]
 pub async fn skills_uninstall(state: State<'_, AppState>, skill_id: String) -> Result<(), String> {
     let _guard = state.skill_operations.lock().await;
     let repository = state.skill_repository.clone();

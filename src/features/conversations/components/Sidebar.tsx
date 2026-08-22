@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import {
-  Bot,
   BookOpenText,
   Boxes,
   Check,
@@ -115,7 +114,6 @@ export function Sidebar({
 }: SidebarProps) {
   const { t } = useI18n();
   const extensionItems = [
-    { id: "assistants", label: t("sidebar.assistants"), icon: Bot },
     { id: "skills", label: t("sidebar.skills"), icon: Sparkles },
     { id: "knowledge", label: t("sidebar.knowledge"), icon: BookOpenText },
     { id: "plugins", label: t("sidebar.plugins"), icon: Plug },
@@ -663,7 +661,7 @@ export function Sidebar({
 type ExtensionPickerItem = {
   id: string;
   label: string;
-  icon: typeof Bot;
+  icon: typeof Sparkles;
 };
 
 function ExtensionPicker({

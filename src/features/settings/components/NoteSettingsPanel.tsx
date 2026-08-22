@@ -10,6 +10,7 @@ import { useI18n } from "../../../i18n/I18nProvider";
 import { NOTE_FONT_PRESET_VALUES } from "../utils/fontSettings";
 import "../styles/general-settings.css";
 import "../styles/note-settings.css";
+import { EditableRangeControl } from "./EditableRangeControl";
 
 type NoteSettingsPanelProps = {
   settings: AppSettings;
@@ -94,32 +95,26 @@ export function NoteSettingsPanel({
         <section className="general-settings-section">
           <h3>{t("notesSettings.typography")}</h3>
           <SettingRow label={t("notesSettings.fontSize")} description={t("notesSettings.fontSizeDescription")}>
-            <div className="font-size-control">
-              <input
-                type="range"
-                min={12}
-                max={32}
-                step={1}
-                value={draft.noteFontSize}
-                aria-label={t("notesSettings.fontSize")}
-                onChange={(event) => update("noteFontSize", Number(event.target.value))}
-              />
-              <output>{draft.noteFontSize} px</output>
-            </div>
+            <EditableRangeControl
+              value={draft.noteFontSize}
+              min={12}
+              max={32}
+              step={1}
+              suffix="px"
+              ariaLabel={t("notesSettings.fontSize")}
+              onChange={(value) => update("noteFontSize", value)}
+            />
           </SettingRow>
           <SettingRow label={t("notesSettings.lineHeight")} description={t("notesSettings.lineHeightDescription")}>
-            <div className="font-size-control">
-              <input
-                type="range"
-                min={1.3}
-                max={2.4}
-                step={0.05}
-                value={draft.noteLineHeight}
-                aria-label={t("notesSettings.lineHeight")}
-                onChange={(event) => update("noteLineHeight", Number(event.target.value))}
-              />
-              <output>{draft.noteLineHeight.toFixed(2)}</output>
-            </div>
+            <EditableRangeControl
+              value={draft.noteLineHeight}
+              min={1.3}
+              max={2.4}
+              step={0.05}
+              fractionDigits={2}
+              ariaLabel={t("notesSettings.lineHeight")}
+              onChange={(value) => update("noteLineHeight", value)}
+            />
           </SettingRow>
           <SettingRow label={t("notesSettings.fontPreset")} description={t("notesSettings.fontPresetDescription")}>
             <div className="settings-segmented" role="group" aria-label={t("notesSettings.fontPreset")}>
