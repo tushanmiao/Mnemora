@@ -6,7 +6,10 @@ use std::{
     sync::{Arc, Mutex as StdMutex, RwLock},
     time::Duration,
 };
-use tokio::sync::{oneshot, Mutex, Semaphore};
+use tokio::{
+    sync::{oneshot, Mutex, Semaphore},
+    task::AbortHandle,
+};
 use tokio_util::sync::CancellationToken;
 
 use crate::chat::storage::ConversationRepository;
@@ -24,6 +27,7 @@ use crate::storage::StorageManager;
 use crate::sync::{
     mapping::SyncMappingRepository, SyncSecretStore, SyncSettings, SyncSettingsRepository,
 };
+use crate::task_diagnostics::TaskDiagnosticLog;
 
 /** Tauri 全局共享状态。HTTP Client、设置快照和仓库在整个应用生命周期内复用。 */
 pub struct AppState {
@@ -34,9 +38,10 @@ pub struct AppState {
     pub model_settings_repository: ModelSettingsRepository,
     pub secrets: SecretStore,
     pub active_chat_runs: Mutex<HashMap<String, CancellationToken>>,
-    pub active_note_pipeline_runs: Mutex<HashMap<String, CancellationToken>>,
+    pub active_note_pipeline_runs: Mutex<HashMap<String, ActiveNotePipelineRun>>,
     pub pending_tool_approvals: Mutex<HashMap<String, oneshot::Sender<bool>>>,
     pub active_attachment_tasks: StdMutex<HashMap<String, CancellationToken>>,
+    pub detached_note_pipeline_instances: StdMutex<HashSet<String>>,
     pub attachment_preview_gate: Semaphore,
     pub staged_attachment_paths: StdMutex<HashSet<PathBuf>>,
     pub conversation_repository: ConversationRepository,
@@ -64,8 +69,26 @@ pub struct AppState {
     pub usage_operations: Mutex<()>,
     pub request_debug_records: StdMutex<VecDeque<RequestDebugRecord>>,
     pub startup_error_log: StartupErrorLog,
+    pub task_diagnostic_log: TaskDiagnosticLog,
     pub storage: StorageManager,
     pub storage_operations: Mutex<()>,
+}
+
+pub struct ActiveNotePipelineRun {
+    instance_id: String,
+    cancellation: CancellationToken,
+    abort_handle: Option<AbortHandle>,
+    task_kind: String,
+    started_at_ms: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct NotePipelineTaskSnapshot {
+    pub instance_id: String,
+    pub task_kind: String,
+    pub started_at_ms: u64,
+    pub cancellation_requested: bool,
+    pub abortable: bool,
 }
 
 fn cancel_chat_run_tokens(runs: &HashMap<String, CancellationToken>) -> usize {
@@ -117,6 +140,9 @@ impl AppState {
             SkillRepository::new(resource_dir.join("skills"), app_data_dir.join("skills"));
         let memory_repository = MemoryRepository::new(app_data_dir.clone());
         let library_repository = LibraryRepository::new(app_data_dir.clone());
+        if let Err(error) = library_repository.recover_stale_cancelling_runs() {
+            eprintln!("Failed to recover stale cancelling note tasks: {error}");
+        }
         let conversation_repository = ConversationRepository::new(app_data_dir.clone());
         let english_learning_repository = EnglishLearningRepository::new(app_data_dir.clone());
         let english_repository = EnglishRepository::new(app_data_dir, resource_dir.clone());
@@ -151,6 +177,7 @@ impl AppState {
             active_note_pipeline_runs: Mutex::new(HashMap::new()),
             pending_tool_approvals: Mutex::new(HashMap::new()),
             active_attachment_tasks: StdMutex::new(HashMap::new()),
+            detached_note_pipeline_instances: StdMutex::new(HashSet::new()),
             attachment_preview_gate: Semaphore::new(2),
             staged_attachment_paths: StdMutex::new(HashSet::new()),
             conversation_repository,
@@ -177,7 +204,8 @@ impl AppState {
             usage_dir,
             usage_operations: Mutex::new(()),
             request_debug_records: StdMutex::new(crate::request_debug::empty_store()),
-            startup_error_log: StartupErrorLog::new(log_dir),
+            startup_error_log: StartupErrorLog::new(log_dir.clone()),
+            task_diagnostic_log: TaskDiagnosticLog::new(log_dir),
             storage,
             storage_operations: Mutex::new(()),
         })
@@ -193,6 +221,8 @@ impl AppState {
         &self,
         run_id: String,
         cancellation: CancellationToken,
+        task_kind: impl Into<String>,
+        instance_id: String,
     ) -> bool {
         let mut runs = self.active_note_pipeline_runs.lock().await;
         if !runs.is_empty() && !runs.contains_key(&run_id) {
@@ -201,21 +231,105 @@ impl AppState {
         if runs.contains_key(&run_id) {
             return false;
         }
-        runs.insert(run_id, cancellation);
+        runs.insert(
+            run_id,
+            ActiveNotePipelineRun {
+                instance_id,
+                cancellation,
+                abort_handle: None,
+                task_kind: task_kind.into(),
+                started_at_ms: crate::usage::now_ms(),
+            },
+        );
         true
     }
 
-    pub async fn finish_note_pipeline_run(&self, run_id: &str) {
-        self.active_note_pipeline_runs.lock().await.remove(run_id);
+    pub async fn attach_note_pipeline_abort_handle(
+        &self,
+        run_id: &str,
+        instance_id: &str,
+        abort_handle: AbortHandle,
+    ) -> bool {
+        let mut runs = self.active_note_pipeline_runs.lock().await;
+        let Some(run) = runs
+            .get_mut(run_id)
+            .filter(|run| run.instance_id == instance_id)
+        else {
+            return false;
+        };
+        run.abort_handle = Some(abort_handle);
+        true
+    }
+
+    pub async fn finish_note_pipeline_run(&self, run_id: &str, instance_id: &str) -> bool {
+        let mut runs = self.active_note_pipeline_runs.lock().await;
+        if runs
+            .get(run_id)
+            .is_some_and(|run| run.instance_id == instance_id)
+        {
+            runs.remove(run_id);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn detach_note_pipeline_instance(&self, instance_id: &str) {
+        if let Ok(mut instances) = self.detached_note_pipeline_instances.lock() {
+            instances.insert(instance_id.to_string());
+        }
+    }
+
+    pub fn is_note_pipeline_instance_detached(&self, instance_id: &str) -> bool {
+        self.detached_note_pipeline_instances
+            .lock()
+            .map(|instances| instances.contains(instance_id))
+            .unwrap_or(true)
+    }
+
+    pub fn clear_detached_note_pipeline_instance(&self, instance_id: &str) {
+        if let Ok(mut instances) = self.detached_note_pipeline_instances.lock() {
+            instances.remove(instance_id);
+        }
     }
 
     pub async fn cancel_note_pipeline_run(&self, run_id: &str) -> bool {
         let runs = self.active_note_pipeline_runs.lock().await;
-        let Some(token) = runs.get(run_id) else {
+        let Some(run) = runs.get(run_id) else {
             return false;
         };
-        token.cancel();
+        run.cancellation.cancel();
         true
+    }
+
+    pub async fn abort_note_pipeline_run(&self, run_id: &str) -> bool {
+        let runs = self.active_note_pipeline_runs.lock().await;
+        let Some(run) = runs.get(run_id) else {
+            return false;
+        };
+        run.cancellation.cancel();
+        let Some(abort_handle) = run.abort_handle.as_ref() else {
+            return false;
+        };
+        abort_handle.abort();
+        true
+    }
+
+    pub async fn note_pipeline_task_snapshot(
+        &self,
+        run_id: &str,
+    ) -> Option<NotePipelineTaskSnapshot> {
+        self.active_note_pipeline_runs
+            .lock()
+            .await
+            .get(run_id)
+            .map(|run| NotePipelineTaskSnapshot {
+                instance_id: run.instance_id.clone(),
+                task_kind: run.task_kind.clone(),
+                started_at_ms: run.started_at_ms,
+                cancellation_requested: run.cancellation.is_cancelled(),
+                abortable: run.abort_handle.is_some(),
+            })
     }
 
     pub async fn is_note_pipeline_run_active(&self, run_id: &str) -> bool {
@@ -227,7 +341,13 @@ impl AppState {
 
     pub async fn cancel_all_note_pipeline_runs(&self) -> usize {
         let runs = self.active_note_pipeline_runs.lock().await;
-        cancel_chat_run_tokens(&runs)
+        for run in runs.values() {
+            run.cancellation.cancel();
+            if let Some(abort_handle) = run.abort_handle.as_ref() {
+                abort_handle.abort();
+            }
+        }
+        runs.len()
     }
 
     /** 丢弃所有一次性审批发送端，等待中的 Agent 会收到通道关闭并按拒绝处理。 */

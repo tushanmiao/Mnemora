@@ -91,6 +91,13 @@ function recoverableRunProgress(run: NotePipelineRun): Omit<DeepNoteProgress, "u
       terminal: false, degraded: false, activity: null,
     };
   }
+  if (run.phase === "cancelling") {
+    return {
+      runId: run.id, phase: run.phase, current: completed, total,
+      message: "停止请求已发送；若后台任务未及时退出，系统会自动强制终止。",
+      terminal: false, degraded: false, activity: null,
+    };
+  }
   if (run.phase === "cancelled") {
     return {
       runId: run.id, phase: run.phase, current: completed, total,
@@ -147,6 +154,7 @@ export function useNoteActions({
   // 取消/遗弃后，通道仍可能把已经排队的终态事件送到前端。记录这些 run id，
   // 防止旧事件把已经关闭的任务重新渲染出来。
   const ignoredDeepNoteRunIdsRef = useRef<Set<string>>(new Set());
+  const cancellingDeepNoteRunIdsRef = useRef<Set<string>>(new Set());
   const [noteEditRequest, setNoteEditRequest] = useState<NoteEditDialogRequest | null>(null);
   const [noteEditResult, setNoteEditResult] = useState<NoteEditPrepareResult | null>(null);
   const [noteEditBusy, setNoteEditBusy] = useState(false);
@@ -191,6 +199,7 @@ export function useNoteActions({
   }, []);
 
   const finishDeepNoteRun = useCallback(() => {
+    cancellingDeepNoteRunIdsRef.current.clear();
     deepNoteRunRef.current = null;
     deepNotePausedRunIdRef.current = null;
     setDeepNoteActive(false);
@@ -205,6 +214,10 @@ export function useNoteActions({
       : event.run.id;
     if (ignoredDeepNoteRunIdsRef.current.has(eventRunId)) return;
     if (latestDeepNoteRunIdRef.current && latestDeepNoteRunIdRef.current !== eventRunId) return;
+    if (
+      cancellingDeepNoteRunIdsRef.current.has(eventRunId)
+      && (event.type === "progress" || event.type === "outlineReady" || event.type === "paused")
+    ) return;
     latestDeepNoteRunIdRef.current = eventRunId;
     if (event.type === "progress") {
       if (deepNotePausedRunIdRef.current === event.runId) return;
@@ -277,6 +290,8 @@ export function useNoteActions({
       return;
     }
     if (event.type === "done") {
+      if (cancellingDeepNoteRunIdsRef.current.has(event.run.id)) return;
+      cancellingDeepNoteRunIdsRef.current.delete(event.run.id);
       setProgress({
         runId: event.run.id,
         phase: event.run.phase,
@@ -296,6 +311,7 @@ export function useNoteActions({
       return;
     }
     if (event.type === "cancelled") {
+      cancellingDeepNoteRunIdsRef.current.delete(event.run.id);
       deepNotePausedRunIdRef.current = null;
       const existing = deepNoteRunRef.current;
       deepNoteRunRef.current = {
@@ -321,6 +337,7 @@ export function useNoteActions({
       );
       return;
     }
+    cancellingDeepNoteRunIdsRef.current.delete(event.runId);
     setProgress({
       runId: event.runId,
       phase: "error",
@@ -960,33 +977,47 @@ export function useNoteActions({
 
   const cancelDeepNote = useCallback(async () => {
     const run = deepNoteRunRef.current;
-    if (!run || deepNoteControlBusy) return;
+    const alreadyStopping = deepNoteProgress?.phase === "cancelling";
+    if (!run || (deepNoteControlBusy && !alreadyStopping)) return;
     setDeepNoteControlBusy(true);
     if (!run.runId) {
       run.cancelRequested = true;
       showFeedback("progress", "正在等待任务启动后取消…");
+      setDeepNoteControlBusy(false);
       return;
     }
     const runId = run.runId;
+    cancellingDeepNoteRunIdsRef.current.add(runId);
     deepNotePausedRunIdRef.current = null;
     setDeepNoteProgress((current) => ({
       runId,
-      phase: current?.phase ?? "drafting",
       current: current?.current ?? null,
       total: current?.total ?? null,
-      message: "正在停止任务；当前网络请求会立即中断，已完成内容将被保留…",
+      phase: "cancelling",
+      message: alreadyStopping
+        ? "正在再次确认后台停止状态；必要时将强制终止…"
+        : "停止请求已发送；正在等待后台任务释放资源，必要时会自动强制终止…",
       updatedAt: Date.now(),
       terminal: false,
       degraded: false,
       activity: null,
     }));
     try {
-      await cancelNotePipeline(runId);
-      const current = await getNotePipeline(runId);
+      const result = await cancelNotePipeline(runId);
+      const current = result.run;
       refreshDeepNoteDetail(runId, true);
       if (current.phase === "cancelled") {
         handleNotePipelineEvent({ type: "cancelled", run: current });
+        if (result.forced) {
+          showFeedback(
+            "success",
+            result.diagnosticPath
+              ? `任务未及时退出，已强制停止。诊断日志：${result.diagnosticPath}`
+              : "任务未及时退出，已强制停止并保留检查点。",
+          );
+        }
       } else if (current.phase === "done") {
+        cancellingDeepNoteRunIdsRef.current.delete(runId);
         handleNotePipelineEvent({ type: "done", run: current, degraded: false });
       } else if (current.phase === "error") {
         handleNotePipelineEvent({
@@ -995,14 +1026,23 @@ export function useNoteActions({
           message: current.errorMessage ?? "后台深度笔记任务失败。",
         });
       } else {
-        showFeedback("progress", "正在停止；当前请求结束后会保存已完成章节为草稿…");
+        setDeepNoteProgress((progress) => progress ? {
+          ...progress,
+          phase: "cancelling",
+          message: "后台仍在结束处理中；控制按钮已恢复，可以再次停止或遗弃任务。",
+          updatedAt: Date.now(),
+        } : progress);
+        showFeedback("progress", "后台仍在结束处理中；可以再次停止或遗弃任务。");
       }
     } catch (error) {
-      setDeepNoteControlBusy(false);
+      cancellingDeepNoteRunIdsRef.current.delete(runId);
       showFeedback("error", `取消深度笔记失败：${noteErrorText(error)}`);
+    } finally {
+      setDeepNoteControlBusy(false);
     }
   }, [
     deepNoteControlBusy,
+    deepNoteProgress?.phase,
     handleNotePipelineEvent,
     refreshDeepNoteDetail,
     showFeedback,
@@ -1040,13 +1080,14 @@ export function useNoteActions({
 
   const abandonDeepNote = useCallback(async () => {
     const runId = deepNoteRunRef.current?.runId ?? deepNoteDetail?.run.id ?? deepNoteProgress?.runId;
-    if (!runId || deepNoteControlBusy) return;
+    if (!runId || (deepNoteControlBusy && deepNoteProgress?.phase !== "cancelling")) return;
     ignoredDeepNoteRunIdsRef.current.add(runId);
     setDeepNoteControlBusy(true);
     showFeedback("progress", "正在停止后台请求并永久遗弃任务…");
     try {
       await abandonNotePipeline(runId);
       latestDeepNoteRunIdRef.current = null;
+      cancellingDeepNoteRunIdsRef.current.delete(runId);
       detailRequestSequenceRef.current += 1;
       if (detailRefreshTimerRef.current !== null) {
         window.clearTimeout(detailRefreshTimerRef.current);
@@ -1061,7 +1102,7 @@ export function useNoteActions({
       setDeepNoteControlBusy(false);
       showFeedback("error", `遗弃深度笔记任务失败：${noteErrorText(error)}`);
     }
-  }, [deepNoteControlBusy, deepNoteDetail?.run.id, deepNoteProgress?.runId, finishDeepNoteRun, showFeedback]);
+  }, [deepNoteControlBusy, deepNoteDetail?.run.id, deepNoteProgress?.phase, deepNoteProgress?.runId, finishDeepNoteRun, showFeedback]);
 
   const openConversationNoteEdit = useCallback(async (conversationId: string) => {
     if (noteEditBusy) return;

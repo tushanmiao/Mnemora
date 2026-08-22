@@ -4,6 +4,7 @@ export type TaskRunKind = "chatAgent" | "deepNote";
 
 export type TaskRunStatus =
   | "running"
+  | "stopping"
   | "waiting"
   | "paused"
   | "completed"

@@ -405,6 +405,7 @@ async fn wait_for_phase<R: tauri::Runtime>(
             NotePipelinePhase::Error
                 | NotePipelinePhase::Blocked
                 | NotePipelinePhase::Cancelled
+                | NotePipelinePhase::Cancelling
                 | NotePipelinePhase::Paused
         ) {
             return Err(format!(

@@ -53,6 +53,26 @@ describe("deep note diagnostics", () => {
     expect(diagnosis.timeoutSeconds).toBe(232);
   });
 
+  it("explains the bounded stopping state and forced-stop fallback", () => {
+    const diagnosis = diagnoseDeepNoteRuntime("cancelling", null, 10_000, 16_000);
+    expect(diagnosis.title).toBe("停止请求已发送");
+    expect(diagnosis.detail).toContain("强制终止");
+
+    const event = describeNotePipelineEvent({
+      sequence: 8,
+      eventType: "runCancelled",
+      nodeId: null,
+      payloadJson: JSON.stringify({
+        forced: true,
+        reason: "forced-after-cancellation-timeout",
+        diagnosticPath: "C:/logs/task-diagnostics.jsonl",
+      }),
+      createdAt: 26_000,
+    });
+    expect(event.label).toBe("任务已强制停止");
+    expect(event.detail).toContain("task-diagnostics.jsonl");
+  });
+
   it("turns persisted model completion data into a readable log entry", () => {
     const event = describeNotePipelineEvent({
       sequence: 3,

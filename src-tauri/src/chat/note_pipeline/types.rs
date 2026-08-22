@@ -1119,6 +1119,14 @@ pub enum NotePipelineProgress {
     },
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotePipelineCancelResult {
+    pub run: NotePipelineRun,
+    pub forced: bool,
+    pub diagnostic_path: Option<String>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NoteEditPrepareRequest {

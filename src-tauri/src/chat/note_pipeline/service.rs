@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     fs::File,
+    future::Future,
     io::Read,
     time::Duration,
 };
@@ -29,6 +30,7 @@ use crate::{
     },
     settings::types::ModelSettings,
     state::AppState,
+    task_diagnostics::{current_task_instance_id, scope_task_diagnostics, TaskDiagnosticContext},
 };
 
 use super::{
@@ -50,8 +52,8 @@ use super::{
         DeepNoteSourceUnit, DeepNoteSourceUnitKind, DeepNoteSourceUnitStatus,
         DeepNoteStartInspection, DeepNoteSupportLevel, DeepNoteValidationReport,
         NoteEditPrepareRequest, NoteEditPrepareResult, NoteMergePlan, NotePatchSet,
-        NotePipelineActivity, NotePipelineAdjustRequest, NotePipelineConfirmRequest,
-        NotePipelineProgress, NotePipelineStartRequest,
+        NotePipelineActivity, NotePipelineAdjustRequest, NotePipelineCancelResult,
+        NotePipelineConfirmRequest, NotePipelineProgress, NotePipelineStartRequest,
     },
 };
 
@@ -78,8 +80,9 @@ const UNKNOWN_CONTEXT_CHUNK_TOKENS: u64 = 8_000;
 const PLANNER_PROMPT_OVERHEAD_TOKENS: u64 = 4_096;
 const MAX_ANALYSIS_CHUNKS: usize = 96;
 const MAX_INCREMENTAL_ATTACHMENT_CHUNKS: usize = 24;
-const PIPELINE_STOP_WAIT_ATTEMPTS: usize = 100;
-const PIPELINE_STOP_WAIT_INTERVAL: Duration = Duration::from_millis(25);
+const PIPELINE_STOP_WAIT_ATTEMPTS: usize = 80;
+const PIPELINE_STOP_WAIT_INTERVAL: Duration = Duration::from_millis(50);
+const PIPELINE_ABORT_WAIT_ATTEMPTS: usize = 20;
 
 fn budget_for_drafting(previous: &DeepNoteBudget, section_count: usize) -> DeepNoteBudget {
     let mut budget = DeepNoteBudget::for_section_count(section_count);
@@ -143,6 +146,22 @@ fn send(channel: &Channel<NotePipelineProgress>, event: NotePipelineProgress) {
     let _ = channel.send(event);
 }
 
+fn pipeline_progress_suppressed(state: &AppState, run_id: &str) -> bool {
+    state
+        .library_repository
+        .get_note_pipeline_run(run_id)
+        .is_ok_and(|run| {
+            matches!(
+                run.phase,
+                NotePipelinePhase::Cancelling
+                    | NotePipelinePhase::Cancelled
+                    | NotePipelinePhase::Paused
+                    | NotePipelinePhase::Done
+                    | NotePipelinePhase::Error
+            )
+        })
+}
+
 fn send_paused_if_requested(
     state: &AppState,
     run_id: &str,
@@ -198,6 +217,29 @@ async fn wait_for_pipeline_task_to_stop(state: &AppState, run_id: &str) -> bool 
     !state.is_note_pipeline_run_active(run_id).await
 }
 
+async fn wait_for_pipeline_task_abort(state: &AppState, run_id: &str) -> bool {
+    for _ in 0..PIPELINE_ABORT_WAIT_ATTEMPTS {
+        if !state.is_note_pipeline_run_active(run_id).await {
+            return true;
+        }
+        tokio::time::sleep(PIPELINE_STOP_WAIT_INTERVAL).await;
+    }
+    !state.is_note_pipeline_run_active(run_id).await
+}
+
+async fn await_note_pipeline_cancellable<T, F>(
+    cancellation: &CancellationToken,
+    future: F,
+) -> Result<T, String>
+where
+    F: Future<Output = Result<T, String>>,
+{
+    tokio::select! {
+        _ = cancellation.cancelled() => Err("操作已取消。".to_string()),
+        result = future => result,
+    }
+}
+
 fn can_pause_phase(phase: NotePipelinePhase) -> bool {
     matches!(
         phase,
@@ -210,6 +252,21 @@ fn can_pause_phase(phase: NotePipelinePhase) -> bool {
     )
 }
 
+fn phase_expects_background_worker(phase: NotePipelinePhase) -> bool {
+    matches!(
+        phase,
+        NotePipelinePhase::Preflight
+            | NotePipelinePhase::Analyzing
+            | NotePipelinePhase::Compiling
+            | NotePipelinePhase::Queued
+            | NotePipelinePhase::Drafting
+            | NotePipelinePhase::Validating
+            | NotePipelinePhase::Replanning
+            | NotePipelinePhase::Assembling
+            | NotePipelinePhase::Persisting
+    )
+}
+
 fn progress(
     state: &AppState,
     channel: &Channel<NotePipelineProgress>,
@@ -219,6 +276,9 @@ fn progress(
     total: Option<usize>,
     message: impl Into<String>,
 ) {
+    if pipeline_progress_suppressed(state, run_id) {
+        return;
+    }
     let message = message.into();
     let _ = state.library_repository.append_note_pipeline_event(
         run_id,
@@ -253,6 +313,9 @@ fn progress_activity(
     message: impl Into<String>,
     activity: NotePipelineActivity,
 ) {
+    if pipeline_progress_suppressed(state, run_id) {
+        return;
+    }
     let message = message.into();
     let event_type = if activity.kind == "retryWait" {
         "modelRetryScheduled"
@@ -290,6 +353,11 @@ fn append_pipeline_event_if_available(
     node_id: Option<&str>,
     payload_json: &str,
 ) -> Result<(), String> {
+    if let Some(instance_id) = current_task_instance_id() {
+        if state.is_note_pipeline_instance_detached(&instance_id) {
+            return Ok(());
+        }
+    }
     match state.library_repository.append_note_pipeline_event(
         run_id,
         event_type,
@@ -1461,45 +1529,51 @@ async fn digest_incremental_chunks(
     for chunk in chunks {
         consume_semantic_call(state, &run.id, runtime)?;
         let prompt = chunk_analysis_prompt(chunk);
-        let raw = model_call_with_runtime(
-            state,
-            run,
-            "deepNoteChunk",
-            NotePipelinePhase::Analyzing,
-            system_prompt_with_skill_profile(
+        let raw = await_note_pipeline_cancellable(cancellation, async {
+            model_call_with_runtime(
                 state,
-                &run.id,
-                runtime,
-                DeepNoteSkillProfileKind::Planner,
-                Some("incremental-recon"),
-                CHUNK_ANALYST_SYSTEM_PROMPT,
-            ),
-            prompt.clone(),
-            run.max_output_tokens.min(CHUNK_OUTPUT_TOKEN_LIMIT),
-            run.retry_attempts,
-            cancellation,
-            None,
-        )
-        .await
-        .map_err(|error| error.message)?;
+                run,
+                "deepNoteChunk",
+                NotePipelinePhase::Analyzing,
+                system_prompt_with_skill_profile(
+                    state,
+                    &run.id,
+                    runtime,
+                    DeepNoteSkillProfileKind::Planner,
+                    Some("incremental-recon"),
+                    CHUNK_ANALYST_SYSTEM_PROMPT,
+                ),
+                prompt.clone(),
+                run.max_output_tokens.min(CHUNK_OUTPUT_TOKEN_LIMIT),
+                run.retry_attempts,
+                cancellation,
+                None,
+            )
+            .await
+            .map_err(|error| error.message)
+        })
+        .await?;
         let digest = match parse_json_object::<ChunkDigest>(&raw).and_then(ChunkDigest::validate) {
             Ok(digest) => digest,
             Err(_) => {
                 consume_semantic_call(state, &run.id, runtime)?;
-                let repaired = model_call_with_runtime(
-                    state,
-                    run,
-                    "deepNoteChunkRepair",
-                    NotePipelinePhase::Analyzing,
-                    format!("{CHUNK_ANALYST_SYSTEM_PROMPT}\n\n{STRICT_JSON_SUFFIX}"),
-                    prompt,
-                    run.max_output_tokens.min(CHUNK_OUTPUT_TOKEN_LIMIT),
-                    run.retry_attempts,
-                    cancellation,
-                    None,
-                )
-                .await
-                .map_err(|error| error.message)?;
+                let repaired = await_note_pipeline_cancellable(cancellation, async {
+                    model_call_with_runtime(
+                        state,
+                        run,
+                        "deepNoteChunkRepair",
+                        NotePipelinePhase::Analyzing,
+                        format!("{CHUNK_ANALYST_SYSTEM_PROMPT}\n\n{STRICT_JSON_SUFFIX}"),
+                        prompt,
+                        run.max_output_tokens.min(CHUNK_OUTPUT_TOKEN_LIMIT),
+                        run.retry_attempts,
+                        cancellation,
+                        None,
+                    )
+                    .await
+                    .map_err(|error| error.message)
+                })
+                .await?;
                 parse_json_object::<ChunkDigest>(&repaired).and_then(ChunkDigest::validate)?
             }
         };
@@ -2133,6 +2207,11 @@ fn save_runtime_state(
     run_id: &str,
     runtime: &DeepNoteRuntimeState,
 ) -> Result<(), String> {
+    if let Some(instance_id) = current_task_instance_id() {
+        if state.is_note_pipeline_instance_detached(&instance_id) {
+            return Ok(());
+        }
+    }
     let runtime_json = serde_json::to_string(runtime)
         .map_err(|error| format!("序列化深度笔记运行状态失败：{error}"))?;
     let budget_json = serde_json::to_string(&runtime.budget)
@@ -2827,52 +2906,58 @@ async fn build_chunked_ledger(
         );
         let prompt = chunk_analysis_prompt(chunk);
         consume_semantic_call(state, &run.id, runtime)?;
-        let raw = model_call_with_runtime(
-            state,
-            run,
-            "deepNoteChunk",
-            NotePipelinePhase::Analyzing,
-            system_prompt_with_skill_profile(
+        let raw = await_note_pipeline_cancellable(cancellation, async {
+            model_call_with_runtime(
                 state,
-                &run.id,
-                runtime,
-                DeepNoteSkillProfileKind::Planner,
-                Some("recon-source"),
-                CHUNK_ANALYST_SYSTEM_PROMPT,
-            ),
-            prompt.clone(),
-            run.max_output_tokens.min(CHUNK_OUTPUT_TOKEN_LIMIT),
-            run.retry_attempts,
-            cancellation,
-            Some(channel),
-        )
-        .await
-        .map_err(|error| error.message)?;
+                run,
+                "deepNoteChunk",
+                NotePipelinePhase::Analyzing,
+                system_prompt_with_skill_profile(
+                    state,
+                    &run.id,
+                    runtime,
+                    DeepNoteSkillProfileKind::Planner,
+                    Some("recon-source"),
+                    CHUNK_ANALYST_SYSTEM_PROMPT,
+                ),
+                prompt.clone(),
+                run.max_output_tokens.min(CHUNK_OUTPUT_TOKEN_LIMIT),
+                run.retry_attempts,
+                cancellation,
+                Some(channel),
+            )
+            .await
+            .map_err(|error| error.message)
+        })
+        .await?;
         let digest = match parse_json_object::<ChunkDigest>(&raw).and_then(ChunkDigest::validate) {
             Ok(digest) => digest,
             Err(_) => {
                 consume_semantic_call(state, &run.id, runtime)?;
-                let repaired = model_call_with_runtime(
-                    state,
-                    run,
-                    "deepNoteChunkRepair",
-                    NotePipelinePhase::Analyzing,
-                    system_prompt_with_skill_profile(
+                let repaired = await_note_pipeline_cancellable(cancellation, async {
+                    model_call_with_runtime(
                         state,
-                        &run.id,
-                        runtime,
-                        DeepNoteSkillProfileKind::Planner,
-                        Some("recon-source"),
-                        &format!("{CHUNK_ANALYST_SYSTEM_PROMPT}\n\n{STRICT_JSON_SUFFIX}"),
-                    ),
-                    prompt,
-                    run.max_output_tokens.min(CHUNK_OUTPUT_TOKEN_LIMIT),
-                    run.retry_attempts,
-                    cancellation,
-                    Some(channel),
-                )
-                .await
-                .map_err(|error| error.message)?;
+                        run,
+                        "deepNoteChunkRepair",
+                        NotePipelinePhase::Analyzing,
+                        system_prompt_with_skill_profile(
+                            state,
+                            &run.id,
+                            runtime,
+                            DeepNoteSkillProfileKind::Planner,
+                            Some("recon-source"),
+                            &format!("{CHUNK_ANALYST_SYSTEM_PROMPT}\n\n{STRICT_JSON_SUFFIX}"),
+                        ),
+                        prompt,
+                        run.max_output_tokens.min(CHUNK_OUTPUT_TOKEN_LIMIT),
+                        run.retry_attempts,
+                        cancellation,
+                        Some(channel),
+                    )
+                    .await
+                    .map_err(|error| error.message)
+                })
+                .await?;
                 parse_json_object::<ChunkDigest>(&repaired).and_then(ChunkDigest::validate)?
             }
         };
@@ -3475,7 +3560,22 @@ async fn persist_error(
     let run = {
         let _guard = state.library_operations.lock().await;
         match state.library_repository.get_note_pipeline_run(run_id) {
-            Ok(current) if current.phase == NotePipelinePhase::Paused => Ok(current),
+            Ok(current)
+                if matches!(
+                    current.phase,
+                    NotePipelinePhase::Paused | NotePipelinePhase::Cancelled
+                ) =>
+            {
+                Ok(current)
+            }
+            Ok(current) if current.phase == NotePipelinePhase::Cancelling => state
+                .library_repository
+                .finalize_note_pipeline_cancellation(
+                    run_id,
+                    false,
+                    "cancelled-during-error-recovery",
+                    None,
+                ),
             Ok(_) => state.library_repository.update_note_pipeline_phase(
                 run_id,
                 NotePipelinePhase::Error,
@@ -3489,6 +3589,13 @@ async fn persist_error(
     if let Ok(run) = &run {
         if run.phase == NotePipelinePhase::Paused {
             send(channel, NotePipelineProgress::Paused { run: run.clone() });
+            return;
+        }
+        if run.phase == NotePipelinePhase::Cancelled {
+            send(
+                channel,
+                NotePipelineProgress::Cancelled { run: run.clone() },
+            );
             return;
         }
     }
@@ -3924,7 +4031,6 @@ async fn run_analysis_task<R: Runtime>(
     if let Err(error) = result {
         persist_error(&state, &run_id, &channel, error).await;
     }
-    state.finish_note_pipeline_run(&run_id).await;
 }
 
 async fn execute_dag_section(
@@ -4579,7 +4685,6 @@ async fn run_drafting_task<R: Runtime>(
     if let Err(error) = result {
         persist_error(&state, &run_id, &channel, error).await;
     }
-    state.finish_note_pipeline_run(&run_id).await;
 }
 
 #[allow(dead_code)]
@@ -4973,7 +5078,181 @@ async fn run_drafting_task_legacy<R: Runtime>(
     if let Err(error) = result {
         persist_error(&state, &run_id, &channel, error).await;
     }
-    state.finish_note_pipeline_run(&run_id).await;
+}
+
+fn note_pipeline_event_tail(state: &AppState, run_id: &str) -> serde_json::Value {
+    let events = state
+        .library_repository
+        .list_note_pipeline_events(run_id, 12)
+        .unwrap_or_default()
+        .into_iter()
+        .map(
+            |(sequence, event_type, node_id, payload_json, created_at)| {
+                serde_json::json!({
+                    "sequence": sequence,
+                    "eventType": event_type,
+                    "nodeId": node_id,
+                    "payload": serde_json::from_str::<serde_json::Value>(&payload_json)
+                        .unwrap_or_else(|_| serde_json::json!({ "invalidPayload": true })),
+                    "createdAt": created_at,
+                })
+            },
+        )
+        .collect::<Vec<_>>();
+    serde_json::Value::Array(events)
+}
+
+async fn supervise_note_pipeline_task<R: Runtime>(
+    app: AppHandle<R>,
+    run_id: String,
+    instance_id: String,
+    task_kind: String,
+    channel: Channel<NotePipelineProgress>,
+    join: tauri::async_runtime::JoinHandle<()>,
+) {
+    let joined = join.await;
+    let state = app.state::<AppState>();
+    if state
+        .note_pipeline_task_snapshot(&run_id)
+        .await
+        .map_or(true, |snapshot| snapshot.instance_id != instance_id)
+    {
+        state.clear_detached_note_pipeline_instance(&instance_id);
+        return;
+    }
+    match joined {
+        Ok(()) => {
+            if let Ok(current) = state.library_repository.get_note_pipeline_run(&run_id) {
+                if current.phase == NotePipelinePhase::Cancelling {
+                    if let Ok(cancelled) = state
+                        .library_repository
+                        .finalize_note_pipeline_cancellation(
+                            &run_id,
+                            false,
+                            "cooperative-task-exit",
+                            None,
+                        )
+                    {
+                        send(&channel, NotePipelineProgress::Cancelled { run: cancelled });
+                    }
+                } else if !matches!(
+                    current.phase,
+                    NotePipelinePhase::Done
+                        | NotePipelinePhase::Cancelled
+                        | NotePipelinePhase::Paused
+                        | NotePipelinePhase::AwaitingOutline
+                        | NotePipelinePhase::Error
+                ) {
+                    let diagnostic_path = state
+                        .task_diagnostic_log
+                        .record_note_pipeline(
+                            "workerExitedWithoutTerminalState",
+                            &task_kind,
+                            &run_id,
+                            "后台任务正常返回，但没有写入可恢复或终态阶段。",
+                            serde_json::json!({
+                                "phase": current.phase.as_str(),
+                                "eventTail": note_pipeline_event_tail(&state, &run_id),
+                            }),
+                        )
+                        .ok();
+                    let message = diagnostic_path.as_deref().map_or_else(
+                        || "深度笔记后台任务未写入终态。".to_string(),
+                        |path| format!("深度笔记后台任务未写入终态。诊断日志：{path}"),
+                    );
+                    if let Some(path) = diagnostic_path.as_deref() {
+                        let _ = state
+                            .library_repository
+                            .fail_note_pipeline_task(&run_id, &message, path);
+                    }
+                    send(
+                        &channel,
+                        NotePipelineProgress::Error {
+                            run_id: run_id.clone(),
+                            message,
+                        },
+                    );
+                }
+            }
+        }
+        Err(error) => {
+            let (panicked, aborted, join_message) = match &error {
+                tauri::Error::JoinError(join_error) => (
+                    join_error.is_panic(),
+                    join_error.is_cancelled(),
+                    join_error.to_string(),
+                ),
+                _ => (false, false, error.to_string()),
+            };
+            let snapshot = state.note_pipeline_task_snapshot(&run_id).await;
+            let diagnostic_path = state
+                .task_diagnostic_log
+                .record_note_pipeline(
+                    if panicked {
+                        "panic"
+                    } else if aborted {
+                        "aborted"
+                    } else {
+                        "joinFailure"
+                    },
+                    &task_kind,
+                    &run_id,
+                    &join_message,
+                    serde_json::json!({
+                        "task": snapshot.map(|value| serde_json::json!({
+                            "instanceId": value.instance_id,
+                            "kind": value.task_kind,
+                            "startedAt": value.started_at_ms,
+                            "cancellationRequested": value.cancellation_requested,
+                            "abortable": value.abortable,
+                        })),
+                        "eventTail": note_pipeline_event_tail(&state, &run_id),
+                    }),
+                )
+                .ok();
+            let current = state.library_repository.get_note_pipeline_run(&run_id).ok();
+            if current
+                .as_ref()
+                .is_some_and(|run| run.phase == NotePipelinePhase::Cancelling)
+                || aborted
+            {
+                if let Ok(cancelled) = state
+                    .library_repository
+                    .finalize_note_pipeline_cancellation(
+                        &run_id,
+                        aborted,
+                        if panicked {
+                            "task-panicked-while-cancelling"
+                        } else {
+                            "task-aborted"
+                        },
+                        diagnostic_path.as_deref(),
+                    )
+                {
+                    send(&channel, NotePipelineProgress::Cancelled { run: cancelled });
+                }
+            } else {
+                let message = diagnostic_path.as_deref().map_or_else(
+                    || format!("深度笔记后台任务异常终止：{join_message}。"),
+                    |path| format!("深度笔记后台任务异常终止：{join_message}。诊断日志：{path}"),
+                );
+                if let Some(path) = diagnostic_path.as_deref() {
+                    let _ = state
+                        .library_repository
+                        .fail_note_pipeline_task(&run_id, &message, path);
+                }
+                send(
+                    &channel,
+                    NotePipelineProgress::Error {
+                        run_id: run_id.clone(),
+                        message,
+                    },
+                );
+            }
+        }
+    }
+    state.clear_detached_note_pipeline_instance(&instance_id);
+    state.finish_note_pipeline_run(&run_id, &instance_id).await;
 }
 
 async fn spawn_analysis<R: Runtime>(
@@ -4983,20 +5262,52 @@ async fn spawn_analysis<R: Runtime>(
     channel: Channel<NotePipelineProgress>,
 ) -> Result<(), String> {
     let cancellation = CancellationToken::new();
+    let instance_id = Uuid::new_v4().to_string();
     let state = app.state::<AppState>();
     if !state
-        .register_note_pipeline_run(run_id.clone(), cancellation.clone())
+        .register_note_pipeline_run(
+            run_id.clone(),
+            cancellation.clone(),
+            "deep-note-analysis",
+            instance_id.clone(),
+        )
         .await
     {
         return Err("深度笔记任务已经在运行。".to_string());
     }
-    let app = app.clone();
-    tauri::async_runtime::spawn(run_analysis_task(
-        app,
+    let worker_app = app.clone();
+    let worker_channel = channel.clone();
+    let worker_run_id = run_id.clone();
+    let join = tauri::async_runtime::spawn(scope_task_diagnostics(
+        TaskDiagnosticContext::note_pipeline(
+            "deep-note-analysis",
+            worker_run_id.clone(),
+            instance_id.clone(),
+        ),
+        run_analysis_task(
+            worker_app,
+            worker_run_id,
+            adjustment,
+            worker_channel,
+            cancellation,
+        ),
+    ));
+    let abort_handle = join.inner().abort_handle();
+    if !state
+        .attach_note_pipeline_abort_handle(&run_id, &instance_id, abort_handle)
+        .await
+    {
+        join.abort();
+        state.finish_note_pipeline_run(&run_id, &instance_id).await;
+        return Err("深度笔记分析任务注册在启动期间失效。".to_string());
+    }
+    tauri::async_runtime::spawn(supervise_note_pipeline_task(
+        app.clone(),
         run_id,
-        adjustment,
+        instance_id,
+        "deep-note-analysis".to_string(),
         channel,
-        cancellation,
+        join,
     ));
     Ok(())
 }
@@ -5007,15 +5318,47 @@ async fn spawn_drafting<R: Runtime>(
     channel: Channel<NotePipelineProgress>,
 ) -> Result<(), String> {
     let cancellation = CancellationToken::new();
+    let instance_id = Uuid::new_v4().to_string();
     let state = app.state::<AppState>();
     if !state
-        .register_note_pipeline_run(run_id.clone(), cancellation.clone())
+        .register_note_pipeline_run(
+            run_id.clone(),
+            cancellation.clone(),
+            "deep-note-drafting",
+            instance_id.clone(),
+        )
         .await
     {
         return Err("深度笔记任务已经在运行。".to_string());
     }
-    let app = app.clone();
-    tauri::async_runtime::spawn(run_drafting_task(app, run_id, channel, cancellation));
+    let worker_app = app.clone();
+    let worker_channel = channel.clone();
+    let worker_run_id = run_id.clone();
+    let join = tauri::async_runtime::spawn(scope_task_diagnostics(
+        TaskDiagnosticContext::note_pipeline(
+            "deep-note-drafting",
+            worker_run_id.clone(),
+            instance_id.clone(),
+        ),
+        run_drafting_task(worker_app, worker_run_id, worker_channel, cancellation),
+    ));
+    let abort_handle = join.inner().abort_handle();
+    if !state
+        .attach_note_pipeline_abort_handle(&run_id, &instance_id, abort_handle)
+        .await
+    {
+        join.abort();
+        state.finish_note_pipeline_run(&run_id, &instance_id).await;
+        return Err("深度笔记章节任务注册在启动期间失效。".to_string());
+    }
+    tauri::async_runtime::spawn(supervise_note_pipeline_task(
+        app.clone(),
+        run_id,
+        instance_id,
+        "deep-note-drafting".to_string(),
+        channel,
+        join,
+    ));
     Ok(())
 }
 
@@ -5540,6 +5883,7 @@ async fn dispatch_checkpoint<R: Runtime>(
         | NotePipelinePhase::Replanning
         | NotePipelinePhase::Assembling
         | NotePipelinePhase::Persisting
+        | NotePipelinePhase::Cancelling
         | NotePipelinePhase::Paused
         | NotePipelinePhase::Blocked
         | NotePipelinePhase::Cancelled
@@ -5661,6 +6005,9 @@ pub async fn resume<R: Runtime>(
         NotePipelinePhase::Cancelled => {
             prepare_manual_recovery(app, &run, false, "runContinued").await?
         }
+        NotePipelinePhase::Cancelling => {
+            return Err("深度笔记任务仍在停止处理中，请等待终态或再次停止。".to_string())
+        }
         NotePipelinePhase::Preflight
         | NotePipelinePhase::Analyzing
         | NotePipelinePhase::AwaitingOutline
@@ -5760,30 +6107,129 @@ pub async fn restart<R: Runtime>(
     }
 }
 
-pub async fn cancel<R: Runtime>(app: &AppHandle<R>, run_id: &str) -> Result<bool, String> {
+pub async fn cancel<R: Runtime>(
+    app: &AppHandle<R>,
+    run_id: &str,
+) -> Result<NotePipelineCancelResult, String> {
     let state = app.state::<AppState>();
-    if state.cancel_note_pipeline_run(run_id).await {
-        return Ok(true);
-    }
-    let run = state.library_repository.get_note_pipeline_run(run_id)?;
-    if run.abandoned {
-        return Ok(false);
-    }
+    let initial = state.library_repository.get_note_pipeline_run(run_id)?;
+    let force_immediately = initial.phase == NotePipelinePhase::Cancelling;
+    let cancellation_signalled = state.cancel_note_pipeline_run(run_id).await;
+    let requested = state
+        .library_repository
+        .request_note_pipeline_cancellation(run_id)?;
     if matches!(
-        run.phase,
+        requested.phase,
         NotePipelinePhase::Done | NotePipelinePhase::Cancelled
     ) {
-        return Ok(false);
+        return Ok(NotePipelineCancelResult {
+            run: requested,
+            forced: false,
+            diagnostic_path: None,
+        });
     }
-    let _guard = state.library_operations.lock().await;
-    state.library_repository.update_note_pipeline_phase(
-        run_id,
-        NotePipelinePhase::Cancelled,
-        None,
-        &run.warnings,
-        None,
-    )?;
-    Ok(true)
+    if !cancellation_signalled {
+        let diagnostic_path = phase_expects_background_worker(initial.phase)
+            .then(|| {
+                state.task_diagnostic_log.record_note_pipeline(
+                    "orphanedTaskRegistration",
+                    "deep-note-unknown",
+                    run_id,
+                    "数据库显示任务仍在运行，但活动任务注册中没有对应 worker。",
+                    serde_json::json!({
+                        "phase": initial.phase.as_str(),
+                        "eventTail": note_pipeline_event_tail(&state, run_id),
+                    }),
+                )
+            })
+            .transpose()
+            .ok()
+            .flatten();
+        let run = state
+            .library_repository
+            .finalize_note_pipeline_cancellation(
+                run_id,
+                diagnostic_path.is_some(),
+                "orphaned-task-registration",
+                diagnostic_path.as_deref(),
+            )?;
+        return Ok(NotePipelineCancelResult {
+            run,
+            forced: diagnostic_path.is_some(),
+            diagnostic_path,
+        });
+    }
+    if !force_immediately && wait_for_pipeline_task_to_stop(&state, run_id).await {
+        let current = state.library_repository.get_note_pipeline_run(run_id)?;
+        let run = if current.phase == NotePipelinePhase::Cancelling {
+            state
+                .library_repository
+                .finalize_note_pipeline_cancellation(
+                    run_id,
+                    false,
+                    "cooperative-cancellation",
+                    None,
+                )?
+        } else {
+            current
+        };
+        return Ok(NotePipelineCancelResult {
+            run,
+            forced: false,
+            diagnostic_path: None,
+        });
+    }
+
+    let snapshot = state.note_pipeline_task_snapshot(run_id).await;
+    let diagnostic_path = state
+        .task_diagnostic_log
+        .record_note_pipeline(
+            "forcedAbort",
+            snapshot
+                .as_ref()
+                .map(|value| value.task_kind.as_str())
+                .unwrap_or("deep-note-unknown"),
+            run_id,
+            "任务收到取消信号后 4 秒仍未退出，正在强制终止。",
+            serde_json::json!({
+                "task": snapshot.clone().map(|value| serde_json::json!({
+                    "instanceId": value.instance_id,
+                    "kind": value.task_kind,
+                    "startedAt": value.started_at_ms,
+                    "ageMs": crate::usage::now_ms().saturating_sub(value.started_at_ms),
+                    "cancellationRequested": value.cancellation_requested,
+                    "abortable": value.abortable,
+                })),
+                "eventTail": note_pipeline_event_tail(&state, run_id),
+            }),
+        )
+        .ok();
+    let _ = state.abort_note_pipeline_run(run_id).await;
+    if !wait_for_pipeline_task_abort(&state, run_id).await {
+        // Tokio cannot preempt a thread while it is inside a synchronous call.
+        // Keep the registration as a tombstone until the supervisor observes
+        // the real JoinHandle exit; this prevents a second worker from using
+        // the same run while the old one is still unwinding.
+    }
+    if let Some(snapshot) = state.note_pipeline_task_snapshot(run_id).await {
+        state.detach_note_pipeline_instance(&snapshot.instance_id);
+        let _ = state
+            .finish_note_pipeline_run(run_id, &snapshot.instance_id)
+            .await;
+    }
+    let run = state
+        .library_repository
+        .finalize_note_pipeline_cancellation(
+            run_id,
+            true,
+            "forced-after-cancellation-timeout",
+            diagnostic_path.as_deref(),
+        )?;
+    Ok(NotePipelineCancelResult {
+        run,
+        forced: true,
+        diagnostic_path,
+    })
 }
 
 /// 用户明确删除来源会话时调用。先停止后台请求，再将任务永久标记为已遗弃；
@@ -5793,11 +6239,7 @@ pub async fn abandon<R: Runtime>(
     run_id: &str,
 ) -> Result<NotePipelineRun, String> {
     let state = app.state::<AppState>();
-    let _ = state.cancel_note_pipeline_run(run_id).await;
-    if !wait_for_pipeline_task_to_stop(&state, run_id).await {
-        return Err("深度笔记后台任务仍在结束处理中，请稍后再试。".to_string());
-    }
-    let _guard = state.library_operations.lock().await;
+    let _ = cancel(app, run_id).await?;
     state.library_repository.abandon_note_pipeline_run(run_id)
 }
 
@@ -6478,7 +6920,9 @@ pub async fn resolve_note_edit_with_content(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
+    use std::{collections::HashSet, time::Duration};
+
+    use tokio_util::sync::CancellationToken;
 
     use crate::{
         ai::{
@@ -6493,10 +6937,11 @@ mod tests {
     };
 
     use super::{
-        analyze_markdown_fences, can_pause_phase, compact_ledger_for_planner, context_budget,
-        conversation_chunks, evidence_for_plan, input_snapshot, ledger_has_real_output,
-        merge_chunk_digest, normalize_generated_markdown, normalize_math_fences,
-        reset_failed_nodes, should_fallback_to_chunked_planner, should_retry_note_model_call,
+        analyze_markdown_fences, await_note_pipeline_cancellable, can_pause_phase,
+        compact_ledger_for_planner, context_budget, conversation_chunks, evidence_for_plan,
+        input_snapshot, ledger_has_real_output, merge_chunk_digest, normalize_generated_markdown,
+        normalize_math_fences, phase_expects_background_worker, reset_failed_nodes,
+        should_fallback_to_chunked_planner, should_retry_note_model_call,
         snapshot_conversation_after_validation, validate_recovery_snapshot,
         validate_section_markdown, ChunkDigest, ConversationChunk,
     };
@@ -7075,5 +7520,32 @@ mod tests {
         assert!(!can_pause_phase(NotePipelinePhase::Persisting));
         assert!(!can_pause_phase(NotePipelinePhase::Done));
         assert!(!can_pause_phase(NotePipelinePhase::Cancelled));
+    }
+
+    #[test]
+    fn worker_expectation_distinguishes_active_and_user_waiting_phases() {
+        assert!(phase_expects_background_worker(
+            NotePipelinePhase::Analyzing
+        ));
+        assert!(phase_expects_background_worker(NotePipelinePhase::Drafting));
+        assert!(!phase_expects_background_worker(
+            NotePipelinePhase::AwaitingOutline
+        ));
+        assert!(!phase_expects_background_worker(NotePipelinePhase::Paused));
+        assert!(!phase_expects_background_worker(
+            NotePipelinePhase::Cancelled
+        ));
+    }
+
+    #[tokio::test]
+    async fn cancellable_pipeline_wrapper_drops_a_pending_step_immediately() {
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let result = await_note_pipeline_cancellable(&cancellation, async {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            Ok::<_, String>(())
+        })
+        .await;
+        assert_eq!(result.unwrap_err(), "操作已取消。");
     }
 }

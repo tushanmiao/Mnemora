@@ -450,6 +450,7 @@ pub enum NotePipelinePhase {
     Replanning,
     Assembling,
     Persisting,
+    Cancelling,
     Paused,
     Blocked,
     Done,
@@ -470,6 +471,7 @@ impl NotePipelinePhase {
             Self::Replanning => "replanning",
             Self::Assembling => "assembling",
             Self::Persisting => "persisting",
+            Self::Cancelling => "cancelling",
             Self::Paused => "paused",
             Self::Blocked => "blocked",
             Self::Done => "done",
@@ -490,6 +492,7 @@ impl NotePipelinePhase {
             "replanning" => Ok(Self::Replanning),
             "assembling" => Ok(Self::Assembling),
             "persisting" => Ok(Self::Persisting),
+            "cancelling" => Ok(Self::Cancelling),
             "paused" => Ok(Self::Paused),
             "blocked" => Ok(Self::Blocked),
             "done" => Ok(Self::Done),
@@ -512,6 +515,7 @@ impl NotePipelinePhase {
                 | Self::Replanning
                 | Self::Assembling
                 | Self::Persisting
+                | Self::Cancelling
                 | Self::Paused
                 | Self::Blocked
                 | Self::Cancelled

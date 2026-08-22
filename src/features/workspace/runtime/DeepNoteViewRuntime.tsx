@@ -20,6 +20,7 @@ export type DeepNoteViewRuntime = {
   onRetry: () => void;
   onRestart: () => void;
   onCancel: () => void;
+  onAbandon: () => void;
   onSwitchModel: (providerId: string, modelId: string) => Promise<void>;
   onOpenNote: () => void;
   onReturn: () => void;

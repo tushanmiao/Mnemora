@@ -29,6 +29,7 @@ type DeepNoteTaskSource = {
 const deepNoteStatusLabels: Record<Language, Record<TaskRunStatus, string>> = {
   zh: {
     running: "运行中",
+    stopping: "正在停止",
     waiting: "等待确认",
     paused: "已暂停",
     completed: "已完成",
@@ -38,6 +39,7 @@ const deepNoteStatusLabels: Record<Language, Record<TaskRunStatus, string>> = {
   },
   en: {
     running: "Running",
+    stopping: "Stopping",
     waiting: "Waiting",
     paused: "Paused",
     completed: "Completed",
@@ -50,6 +52,7 @@ const deepNoteStatusLabels: Record<Language, Record<TaskRunStatus, string>> = {
 const chatStatusLabels: Record<Language, Record<TaskRunStatus, string>> = {
   zh: {
     running: "Agent 运行中",
+    stopping: "Agent 正在停止",
     waiting: "需要处理",
     paused: "已暂停",
     completed: "处理完成",
@@ -59,6 +62,7 @@ const chatStatusLabels: Record<Language, Record<TaskRunStatus, string>> = {
   },
   en: {
     running: "Agent running",
+    stopping: "Agent stopping",
     waiting: "Action required",
     paused: "Paused",
     completed: "Completed",
@@ -115,7 +119,7 @@ export function projectDeepNoteTaskRun(
     totalCount: steps.length,
     steps,
     metrics: {},
-    needsAttention: status === "waiting" || status === "paused" || status === "failed",
+    needsAttention: status === "waiting" || status === "paused" || status === "stopping" || status === "failed",
     canPause: status === "running" && pauseableDeepNotePhase(phase),
     canResume: status === "paused" || status === "stopped",
     canRetry: status === "failed",
@@ -195,10 +199,11 @@ export function sortTaskRuns(tasks: readonly TaskRunProjection[]): TaskRunProjec
     waiting: 0,
     failed: 1,
     paused: 2,
-    running: 3,
-    stopped: 4,
-    abandoned: 4,
-    completed: 5,
+    stopping: 3,
+    running: 4,
+    stopped: 5,
+    abandoned: 5,
+    completed: 6,
   };
   return [...tasks].sort((left, right) => (
     rank[left.status] - rank[right.status]
@@ -221,6 +226,7 @@ function currentTaskStep(steps: readonly TaskRunStepProjection[]) {
 
 function deepNoteRunStatus(phase: NotePipelinePhase): TaskRunStatus {
   if (phase === "awaitingOutline" || phase === "blocked") return "waiting";
+  if (phase === "cancelling") return "stopping";
   if (phase === "paused") return "paused";
   if (phase === "done") return "completed";
   if (phase === "cancelled") return "stopped";

@@ -247,6 +247,22 @@ describe("taskRunProjection", () => {
     });
   });
 
+  it("停止中的任务保持逃生入口但不能继续或重新生成", () => {
+    const detail = deepNoteDetail();
+    detail.run.phase = "cancelling";
+    const task = projectDeepNoteTaskRun({ detail, progress: null }, "zh", 2_000);
+
+    expect(task).toMatchObject({
+      status: "stopping",
+      statusLabel: "正在停止",
+      canStop: true,
+      canAbandon: true,
+      canResume: false,
+      canRestart: false,
+      needsAttention: true,
+    });
+  });
+
   it("已遗弃的任务不允许任何恢复或再次遗弃操作", () => {
     const detail = deepNoteDetail();
     detail.run.abandoned = true;

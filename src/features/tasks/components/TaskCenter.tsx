@@ -83,6 +83,7 @@ const copy = {
     retry: "重试失败步骤",
     restart: "重新生成",
     stop: "停止",
+    forceStop: "再次停止",
     abandon: "遗弃任务",
     abandonConfirm: "永久遗弃这个深度笔记任务吗？\n\n后台请求会停止，任务将从进度面板中关闭，并且不能继续、重试或重新生成。已保存的笔记不会删除。",
     details: "完整详情",
@@ -106,6 +107,7 @@ const copy = {
     retry: "Retry failed step",
     restart: "Regenerate",
     stop: "Stop",
+    forceStop: "Stop now",
     abandon: "Discard task",
     abandonConfirm: "Permanently discard this deep-note task?\n\nBackground work will stop, the task will close, and it cannot be resumed, retried, or regenerated. Saved notes will not be deleted.",
     details: "Full details",
@@ -468,17 +470,17 @@ export function TaskCenter({
               <button
                 className="task-center-stop"
                 type="button"
-                disabled={selectedTask.kind === "deepNote" ? deepNoteControlBusy : false}
+                disabled={selectedTask.kind === "deepNote" ? deepNoteControlBusy && selectedTask.status !== "stopping" : false}
                 onClick={selectedTask.kind === "deepNote" ? onStopDeepNoteTask : onStopChatTask}
               >
-                <Square size={13} />{text.stop}
+                <Square size={13} />{selectedTask.status === "stopping" ? text.forceStop : text.stop}
               </button>
             ) : null}
             {selectedTask.kind === "deepNote" && selectedTask.canAbandon ? (
               <button
                 className="task-center-abandon"
                 type="button"
-                disabled={deepNoteControlBusy}
+                disabled={deepNoteControlBusy && selectedTask.status !== "stopping"}
                 onClick={() => {
                   if (!window.confirm(text.abandonConfirm)) return;
                   setOpen(false);
@@ -569,6 +571,7 @@ function TaskStatusIcon({ status, hasIssues = false }: { status: TaskRunStatus; 
   if (status === "failed") return <XCircle size={15} />;
   if (status === "stopped") return <CircleStop size={15} />;
   if (status === "abandoned") return <CircleStop size={15} />;
+  if (status === "stopping") return <LoaderCircle className="task-center-spin" size={15} />;
   if (status === "paused") return <Pause size={15} />;
   if (status === "waiting") return <AlertTriangle size={15} />;
   return <LoaderCircle className="task-center-spin" size={15} />;

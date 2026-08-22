@@ -857,6 +857,7 @@ function App() {
                     void noteActions.restartDeepNote();
                   },
                   onCancel: noteActions.cancelDeepNote,
+                  onAbandon: noteActions.abandonDeepNote,
                   onSwitchModel: handleDeepNoteModelSwitch,
                   onOpenNote: () => changeWorkspaceMode("notes"),
                   onReturn: () => changeWorkspaceMode("chat"),

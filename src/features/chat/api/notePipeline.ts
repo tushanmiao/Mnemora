@@ -12,6 +12,7 @@ export type NotePipelinePhase =
   | "replanning"
   | "assembling"
   | "persisting"
+  | "cancelling"
   | "paused"
   | "blocked"
   | "done"
@@ -44,6 +45,12 @@ export interface NotePipelineRun {
   abandoned?: boolean;
   createdAt: number;
   updatedAt: number;
+}
+
+export interface NotePipelineCancelResult {
+  run: NotePipelineRun;
+  forced: boolean;
+  diagnosticPath: string | null;
 }
 
 export interface DeepNoteCapabilities {
@@ -394,8 +401,13 @@ export function restartNotePipeline(
 }
 
 export function cancelNotePipeline(runId: string) {
-  if (!isTauri()) return Promise.resolve(false);
-  return invoke<boolean>("note_pipeline_cancel", { runId });
+  if (!isTauri()) return Promise.reject(new Error("深度笔记停止仅在桌面应用中可用。"));
+  return invoke<NotePipelineCancelResult>("note_pipeline_cancel", { runId });
+}
+
+export function getNotePipelineDiagnosticPath() {
+  requireTauri();
+  return invoke<string>("note_pipeline_diagnostic_path");
 }
 
 export function abandonNotePipeline(runId: string) {

@@ -15,6 +15,7 @@ mod startup_log;
 mod state;
 mod storage;
 mod sync;
+mod task_diagnostics;
 mod usage;
 mod window_lifecycle;
 
@@ -69,6 +70,7 @@ pub fn run() {
                 storage_manager,
             )
             .map_err(std::io::Error::other)?;
+            app_state.task_diagnostic_log.install_panic_hook();
             if app_state.storage.is_available() {
                 let scope = app.asset_protocol_scope();
                 scope
@@ -228,6 +230,7 @@ pub fn run() {
             commands::note_pipeline::note_pipeline_retry,
             commands::note_pipeline::note_pipeline_restart,
             commands::note_pipeline::note_pipeline_cancel,
+            commands::note_pipeline::note_pipeline_diagnostic_path,
             commands::note_pipeline::note_pipeline_abandon,
             commands::note_pipeline::note_pipeline_abandon_for_conversation,
             commands::note_pipeline::note_pipeline_pause,

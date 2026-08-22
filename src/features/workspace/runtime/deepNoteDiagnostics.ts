@@ -49,6 +49,7 @@ const SAVING_PHASES = new Set<NotePipelinePhase>(["assembling", "persisting"]);
 function terminalStatus(phase: NotePipelinePhase): DeepNoteWorkflowStatus | null {
   if (phase === "error") return "failed";
   if (phase === "cancelled") return "stopped";
+  if (phase === "cancelling") return "stopped";
   return null;
 }
 
@@ -170,6 +171,15 @@ export function diagnoseDeepNoteRuntime(
   }
   if (phase === "cancelled") {
     return { tone: "warning", title: "运行已停止", detail: "已经完成的检查点会保留。", elapsedSeconds: null, timeoutSeconds: null };
+  }
+  if (phase === "cancelling") {
+    return {
+      tone: "warning",
+      title: "停止请求已发送",
+      detail: "正在等待后台任务释放资源；超过安全期限后会自动强制终止，并保留诊断记录。",
+      elapsedSeconds: updatedAt ? Math.max(0, Math.floor((now - updatedAt) / 1_000)) : 0,
+      timeoutSeconds: null,
+    };
   }
   if (phase === "paused") {
     return { tone: "warning", title: "运行已暂停", detail: "继续后将从已保存的检查点恢复。", elapsedSeconds: null, timeoutSeconds: null };
@@ -328,6 +338,21 @@ export function describeNotePipelineEvent(record: NotePipelineEventRecord): { la
       return { label: `${text(data.heading) ?? "章节"}生成失败`, detail: text(data.message) ?? "未通过验证" };
     case "runPaused":
       return { label: "任务暂停", detail: "当前请求已中断，检查点已保留" };
+    case "runCancellationRequested":
+      return { label: "已请求停止任务", detail: "正在等待后台任务协作退出" };
+    case "runCancelled":
+      return {
+        label: data.forced ? "任务已强制停止" : "任务已停止",
+        detail: [
+          text(data.reason) ?? "检查点已保留",
+          text(data.diagnosticPath) ? `诊断日志：${text(data.diagnosticPath)}` : null,
+        ].filter(Boolean).join(" · "),
+      };
+    case "runPanicked":
+      return {
+        label: "后台任务发生 panic",
+        detail: [text(data.message) ?? "任务异常终止", text(data.diagnosticPath)].filter(Boolean).join(" · "),
+      };
     case "runResumed":
       return { label: "任务继续", detail: "从最近检查点恢复" };
     case "runContinued":

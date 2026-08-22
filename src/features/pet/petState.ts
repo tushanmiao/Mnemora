@@ -34,6 +34,7 @@ export function projectPetState(
   if (phase) {
     const updatedAt = deepNoteProgress?.updatedAt ?? deepNoteDetail?.run.updatedAt ?? now;
     if (phase === "awaitingOutline") return payload("waiting", "等你确认", "提纲已经准备好", updatedAt);
+    if (phase === "cancelling") return payload("waiting", "正在停止任务", "正在释放后台资源", updatedAt);
     if (phase === "paused" || phase === "cancelled") return payload("waiting", "任务已停靠", "可以从检查点继续", updatedAt);
     if (phase === "error" || phase === "blocked") return payload("error", "遇到阻碍", "打开任务进度查看原因", updatedAt);
     if (phase === "done") {

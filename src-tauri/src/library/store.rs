@@ -37,7 +37,7 @@ use super::{
     },
 };
 
-const LIBRARY_SCHEMA_VERSION: i64 = 9;
+const LIBRARY_SCHEMA_VERSION: i64 = 10;
 const LIBRARY_DIRECTORY_NAME: &str = "library";
 const LIBRARY_DATABASE_NAME: &str = "library.sqlite3";
 const LIBRARY_FILES_DIRECTORY_NAME: &str = "files";
@@ -1050,6 +1050,170 @@ impl LibraryRepository {
             .ok_or_else(|| "深度笔记任务不存在。".to_string())
     }
 
+    pub fn request_note_pipeline_cancellation(
+        &self,
+        run_id: &str,
+    ) -> Result<NotePipelineRun, String> {
+        let run_id = normalize_identifier("任务 ID", run_id)?;
+        let mut connection = self.open_connection()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| format!("开始记录深度笔记停止请求失败：{error}"))?;
+        let phase: String = transaction
+            .query_row(
+                "SELECT phase FROM note_pipeline_runs WHERE id = ?",
+                params![run_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| format!("读取深度笔记停止状态失败：{error}"))?
+            .ok_or_else(|| "深度笔记任务不存在。".to_string())?;
+        if !matches!(phase.as_str(), "done" | "cancelled" | "cancelling") {
+            let now = now_millis_i64();
+            transaction
+                .execute(
+                    "UPDATE note_pipeline_runs
+                     SET phase = 'cancelling', error_message = NULL, updated_at = ? WHERE id = ?",
+                    params![now, run_id],
+                )
+                .map_err(|error| format!("记录深度笔记停止状态失败：{error}"))?;
+            let sequence: i64 = transaction
+                .query_row(
+                    "SELECT COALESCE(MAX(sequence), 0) + 1 FROM note_pipeline_events WHERE run_id = ?",
+                    params![run_id],
+                    |row| row.get(0),
+                )
+                .map_err(|error| format!("读取深度笔记停止事件序号失败：{error}"))?;
+            transaction
+                .execute(
+                    "INSERT INTO note_pipeline_events (
+                        run_id, sequence, event_type, node_id, payload_json, created_at
+                     ) VALUES (?, ?, 'runCancellationRequested', NULL, '{}', ?)",
+                    params![run_id, sequence, now],
+                )
+                .map_err(|error| format!("保存深度笔记停止事件失败：{error}"))?;
+        }
+        transaction
+            .commit()
+            .map_err(|error| format!("提交深度笔记停止请求失败：{error}"))?;
+        self.get_note_pipeline_run(&run_id)
+    }
+
+    pub fn finalize_note_pipeline_cancellation(
+        &self,
+        run_id: &str,
+        forced: bool,
+        reason: &str,
+        diagnostic_path: Option<&str>,
+    ) -> Result<NotePipelineRun, String> {
+        let run_id = normalize_identifier("任务 ID", run_id)?;
+        let mut connection = self.open_connection()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| format!("开始完成深度笔记停止状态失败：{error}"))?;
+        let phase: String = transaction
+            .query_row(
+                "SELECT phase FROM note_pipeline_runs WHERE id = ?",
+                params![run_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| format!("读取深度笔记最终停止状态失败：{error}"))?
+            .ok_or_else(|| "深度笔记任务不存在。".to_string())?;
+        if phase != "done" && phase != "cancelled" {
+            let now = now_millis_i64();
+            transaction
+                .execute(
+                    "UPDATE note_pipeline_runs
+                     SET phase = 'cancelled', error_message = NULL, updated_at = ? WHERE id = ?",
+                    params![now, run_id],
+                )
+                .map_err(|error| format!("完成深度笔记停止状态失败：{error}"))?;
+            let sequence: i64 = transaction
+                .query_row(
+                    "SELECT COALESCE(MAX(sequence), 0) + 1 FROM note_pipeline_events WHERE run_id = ?",
+                    params![run_id],
+                    |row| row.get(0),
+                )
+                .map_err(|error| format!("读取深度笔记最终停止事件序号失败：{error}"))?;
+            let payload = serde_json::json!({
+                "forced": forced,
+                "reason": reason,
+                "diagnosticPath": diagnostic_path,
+            })
+            .to_string();
+            transaction
+                .execute(
+                    "INSERT INTO note_pipeline_events (
+                        run_id, sequence, event_type, node_id, payload_json, created_at
+                     ) VALUES (?, ?, 'runCancelled', NULL, ?, ?)",
+                    params![run_id, sequence, payload, now],
+                )
+                .map_err(|error| format!("保存深度笔记最终停止事件失败：{error}"))?;
+        }
+        transaction
+            .commit()
+            .map_err(|error| format!("提交深度笔记最终停止状态失败：{error}"))?;
+        self.get_note_pipeline_run(&run_id)
+    }
+
+    pub fn fail_note_pipeline_task(
+        &self,
+        run_id: &str,
+        message: &str,
+        diagnostic_path: &str,
+    ) -> Result<NotePipelineRun, String> {
+        let run_id = normalize_identifier("任务 ID", run_id)?;
+        let current = self.get_note_pipeline_run(&run_id)?;
+        if matches!(
+            current.phase,
+            NotePipelinePhase::Done | NotePipelinePhase::Cancelled
+        ) {
+            return Ok(current);
+        }
+        let failed = self.update_note_pipeline_phase(
+            &run_id,
+            NotePipelinePhase::Error,
+            None,
+            &current.warnings,
+            Some(message),
+        )?;
+        self.append_note_pipeline_event(
+            &run_id,
+            "runPanicked",
+            None,
+            &serde_json::json!({
+                "message": message,
+                "diagnosticPath": diagnostic_path,
+            })
+            .to_string(),
+        )?;
+        Ok(failed)
+    }
+
+    pub fn recover_stale_cancelling_runs(&self) -> Result<usize, String> {
+        let connection = self.open_connection()?;
+        let mut statement = connection
+            .prepare("SELECT id FROM note_pipeline_runs WHERE phase = 'cancelling'")
+            .map_err(|error| format!("准备恢复停止中任务失败：{error}"))?;
+        let ids = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|error| format!("查询停止中任务失败：{error}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("读取停止中任务失败：{error}"))?;
+        drop(statement);
+        drop(connection);
+        for id in &ids {
+            self.finalize_note_pipeline_cancellation(
+                id,
+                true,
+                "application-restart-recovery",
+                None,
+            )?;
+        }
+        Ok(ids.len())
+    }
+
     /// 将任务标记为不可恢复的“已遗弃”。保留事件与诊断记录，但后续恢复扫描、
     /// 重试和重新生成都不会再把它视为当前任务。
     pub fn abandon_note_pipeline_run(&self, run_id: &str) -> Result<NotePipelineRun, String> {
@@ -1212,7 +1376,7 @@ impl LibraryRepository {
             .execute(
                 "UPDATE note_pipeline_runs
                  SET phase = 'awaiting_outline', outline_json = ?, error_message = NULL, updated_at = ?
-                 WHERE id = ?",
+                 WHERE id = ? AND phase NOT IN ('cancelling', 'cancelled')",
                 params![outline_json, now, run_id],
             )
             .map_err(|error| format!("保存深度笔记提纲失败：{error}"))?;
@@ -1749,15 +1913,17 @@ impl LibraryRepository {
         let transaction = connection
             .transaction()
             .map_err(|error| format!("开始准备深度笔记恢复失败：{error}"))?;
-        let (phase, execution_version): (String, i64) = transaction
-            .query_row(
-                "SELECT phase, execution_version FROM note_pipeline_runs WHERE id = ?",
-                params![run_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()
-            .map_err(|error| format!("读取深度笔记恢复状态失败：{error}"))?
-            .ok_or_else(|| "深度笔记任务不存在。".to_string())?;
+        let (phase, execution_version, outline_json, selected_json): (String, i64, String, String) =
+            transaction
+                .query_row(
+                    "SELECT phase, execution_version, outline_json, selected_section_ids_json
+                 FROM note_pipeline_runs WHERE id = ?",
+                    params![run_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .optional()
+                .map_err(|error| format!("读取深度笔记恢复状态失败：{error}"))?
+                .ok_or_else(|| "深度笔记任务不存在。".to_string())?;
         if !matches!(phase.as_str(), "error" | "blocked" | "cancelled") {
             return Err("当前深度笔记任务不需要人工恢复。".to_string());
         }
@@ -1765,12 +1931,22 @@ impl LibraryRepository {
             return Err("该深度笔记任务已达到 5 次人工恢复上限，请重新生成。".to_string());
         }
         let now = now_millis_i64();
+        let selected_ids: Vec<String> = serde_json::from_str(&selected_json)
+            .map_err(|error| format!("解析恢复章节选择失败：{error}"))?;
+        let resume_phase = if outline_json.trim().is_empty() {
+            NotePipelinePhase::Analyzing
+        } else if selected_ids.is_empty() {
+            NotePipelinePhase::AwaitingOutline
+        } else {
+            NotePipelinePhase::Drafting
+        };
         transaction
             .execute(
                 "UPDATE note_pipeline_runs
-                 SET execution_version = execution_version + 1, error_message = NULL, updated_at = ?
+                 SET phase = ?, execution_version = execution_version + 1,
+                     error_message = NULL, updated_at = ?
                  WHERE id = ?",
-                params![now, run_id],
+                params![resume_phase.as_str(), now, run_id],
             )
             .map_err(|error| format!("更新深度笔记恢复版本失败：{error}"))?;
         if reset_failed_sections {
@@ -1839,7 +2015,7 @@ impl LibraryRepository {
             .execute(
                 "UPDATE note_pipeline_runs
                  SET phase = 'compiling', selected_section_ids_json = ?, error_message = NULL, updated_at = ?
-                 WHERE id = ?",
+                 WHERE id = ? AND phase NOT IN ('cancelling', 'cancelled')",
                 params![selected_json, now_millis_i64(), run_id],
             )
             .map_err(|error| format!("保存章节选择失败：{error}"))?;
@@ -1970,23 +2146,39 @@ impl LibraryRepository {
         let warnings_json = serde_json::to_string(warnings)
             .map_err(|error| format!("序列化深度笔记检查提示失败：{error}"))?;
         let connection = self.open_connection()?;
+        let target_phase = phase.as_str();
         let changed = connection
             .execute(
                 "UPDATE note_pipeline_runs
                  SET phase = ?, note_id = COALESCE(?, note_id), warnings_json = ?,
-                     error_message = ?, updated_at = ?
-                 WHERE id = ?",
+                      error_message = ?, updated_at = ?
+                 WHERE id = ?
+                   AND (
+                     phase NOT IN ('cancelling', 'cancelled')
+                     OR ? IN ('cancelling', 'cancelled')
+                   )",
                 params![
-                    phase.as_str(),
+                    target_phase,
                     note_id,
                     warnings_json,
                     error_message,
                     now_millis_i64(),
-                    run_id
+                    run_id,
+                    target_phase,
                 ],
             )
             .map_err(|error| format!("更新深度笔记任务状态失败：{error}"))?;
         if changed == 0 {
+            let current = self.get_note_pipeline_run(&run_id)?;
+            if matches!(
+                current.phase,
+                NotePipelinePhase::Cancelling | NotePipelinePhase::Cancelled
+            ) && !matches!(
+                phase,
+                NotePipelinePhase::Cancelling | NotePipelinePhase::Cancelled
+            ) {
+                return Err("深度笔记任务已经进入停止状态，拒绝继续推进阶段。".to_string());
+            }
             return Err("深度笔记任务不存在。".to_string());
         }
         self.get_note_pipeline_run(&run_id)
@@ -3492,6 +3684,75 @@ fn migrate(connection: &Connection) -> Result<(), String> {
             )
             .map_err(|error| format!("升级深度笔记附件增量结构失败：{error}"))?;
     }
+    // v10：增加可观测的 cancelling 阶段。取消命令先持久化该阶段，再等待
+    // 后台任务协作退出；超时后由任务监督器强制终止并收敛到 cancelled。
+    if version <= 9 {
+        connection
+            .execute_batch(
+                "PRAGMA foreign_keys = OFF;
+                 PRAGMA legacy_alter_table = ON;
+                 BEGIN IMMEDIATE;
+                 CREATE TABLE note_pipeline_runs_v10 (
+                    id TEXT PRIMARY KEY,
+                    conversation_id TEXT NOT NULL,
+                    note_id TEXT REFERENCES library_notes(id) ON DELETE SET NULL,
+                    phase TEXT NOT NULL CHECK (phase IN (
+                        'preflight', 'analyzing', 'awaiting_outline', 'compiling', 'queued',
+                        'drafting', 'validating', 'replanning', 'assembling', 'persisting',
+                        'cancelling', 'paused', 'blocked', 'done', 'cancelled', 'error'
+                    )),
+                    outline_json TEXT NOT NULL DEFAULT '',
+                    selected_section_ids_json TEXT NOT NULL DEFAULT '[]',
+                    provider_id TEXT NOT NULL,
+                    model_id TEXT NOT NULL,
+                    max_output_tokens INTEGER NOT NULL,
+                    thinking_enabled INTEGER NOT NULL DEFAULT 0 CHECK (thinking_enabled IN (0, 1)),
+                    retry_attempts INTEGER NOT NULL DEFAULT 1,
+                    input_snapshot_hash TEXT NOT NULL DEFAULT '',
+                    current_plan_version INTEGER NOT NULL DEFAULT 0,
+                    execution_version INTEGER NOT NULL DEFAULT 1,
+                    budget_json TEXT NOT NULL DEFAULT '{}',
+                    preflight_json TEXT NOT NULL DEFAULT '{}',
+                    sidecar_json TEXT NOT NULL DEFAULT '',
+                    idempotency_key TEXT NOT NULL DEFAULT '',
+                    warnings_json TEXT NOT NULL DEFAULT '[]',
+                    error_message TEXT,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL
+                 );
+                 INSERT INTO note_pipeline_runs_v10 (
+                    id, conversation_id, note_id, phase, outline_json, selected_section_ids_json,
+                    provider_id, model_id, max_output_tokens, thinking_enabled, retry_attempts,
+                    input_snapshot_hash, current_plan_version, execution_version, budget_json,
+                    preflight_json, sidecar_json, idempotency_key, warnings_json, error_message,
+                    created_at, updated_at
+                 ) SELECT
+                    id, conversation_id, note_id, phase, outline_json, selected_section_ids_json,
+                    provider_id, model_id, max_output_tokens, thinking_enabled, retry_attempts,
+                    input_snapshot_hash, current_plan_version, execution_version, budget_json,
+                    preflight_json, sidecar_json, idempotency_key, warnings_json, error_message,
+                    created_at, updated_at
+                 FROM note_pipeline_runs;
+                 DROP TABLE note_pipeline_runs;
+                 ALTER TABLE note_pipeline_runs_v10 RENAME TO note_pipeline_runs;
+                 CREATE UNIQUE INDEX note_pipeline_active_conversation
+                    ON note_pipeline_runs(conversation_id)
+                    WHERE phase IN (
+                        'preflight', 'analyzing', 'awaiting_outline', 'compiling', 'queued',
+                        'drafting', 'validating', 'replanning', 'assembling', 'persisting',
+                        'cancelling', 'paused', 'blocked', 'error'
+                    );
+                 CREATE UNIQUE INDEX note_pipeline_output_idempotency
+                    ON note_pipeline_runs(idempotency_key) WHERE idempotency_key <> '';
+                 CREATE INDEX note_pipeline_runs_updated
+                    ON note_pipeline_runs(updated_at DESC);
+                 PRAGMA user_version = 10;
+                 COMMIT;
+                 PRAGMA legacy_alter_table = OFF;
+                 PRAGMA foreign_keys = ON;",
+            )
+            .map_err(|error| format!("升级深度笔记取消状态结构失败：{error}"))?;
+    }
     Ok(())
 }
 
@@ -4676,7 +4937,19 @@ mod tests {
         let version: i64 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 9);
+        assert_eq!(version, 10);
+        let event_parent: String = connection
+            .query_row("PRAGMA foreign_key_list(note_pipeline_events)", [], |row| {
+                row.get(2)
+            })
+            .unwrap();
+        assert_eq!(event_parent, "note_pipeline_runs");
+        let foreign_key_violations: i64 = connection
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(foreign_key_violations, 0);
         let tables: i64 = connection
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master
@@ -4857,6 +5130,48 @@ mod tests {
             .unwrap();
 
         assert_eq!(run.retry_attempts, 0);
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn cancellation_state_rejects_stale_progress_and_recovers_after_restart() {
+        let directory = test_directory("note-pipeline-cancelling");
+        let repository = LibraryRepository::new(directory.clone());
+        let run = repository
+            .create_note_pipeline_run(NotePipelineRunCreate {
+                id: "cancelling-run".to_string(),
+                conversation_id: "conversation-cancelling".to_string(),
+                provider_id: "provider-1".to_string(),
+                model_id: "model-1".to_string(),
+                max_output_tokens: 4_096,
+                thinking_enabled: false,
+                retry_attempts: 1,
+                input_snapshot_hash: "snapshot-cancelling".to_string(),
+                budget_json: "{}".to_string(),
+                preflight_json: "{}".to_string(),
+                idempotency_key: "output-cancelling".to_string(),
+            })
+            .unwrap();
+
+        let stopping = repository
+            .request_note_pipeline_cancellation(&run.id)
+            .unwrap();
+        assert_eq!(stopping.phase, NotePipelinePhase::Cancelling);
+        assert!(repository
+            .update_note_pipeline_phase(&run.id, NotePipelinePhase::Analyzing, None, &[], None,)
+            .is_err());
+
+        let recovered = LibraryRepository::new(directory.clone());
+        assert_eq!(recovered.recover_stale_cancelling_runs().unwrap(), 1);
+        assert_eq!(
+            recovered.get_note_pipeline_run(&run.id).unwrap().phase,
+            NotePipelinePhase::Cancelled
+        );
+        let events = recovered.list_note_pipeline_events(&run.id, 10).unwrap();
+        assert!(events
+            .iter()
+            .any(|event| event.1 == "runCancellationRequested"));
+        assert!(events.iter().any(|event| event.1 == "runCancelled"));
         let _ = fs::remove_dir_all(directory);
     }
 
@@ -5247,6 +5562,15 @@ mod tests {
 
         for _ in 0..4 {
             repository
+                .update_note_pipeline_phase(
+                    &run.id,
+                    NotePipelinePhase::Error,
+                    None,
+                    &[],
+                    Some("retry test"),
+                )
+                .unwrap();
+            repository
                 .prepare_note_pipeline_retry(&run.id, false)
                 .unwrap();
         }
@@ -5257,6 +5581,15 @@ mod tests {
                 .execution_version,
             6
         );
+        repository
+            .update_note_pipeline_phase(
+                &run.id,
+                NotePipelinePhase::Error,
+                None,
+                &[],
+                Some("retry test"),
+            )
+            .unwrap();
         assert!(repository
             .prepare_note_pipeline_retry(&run.id, false)
             .unwrap_err()

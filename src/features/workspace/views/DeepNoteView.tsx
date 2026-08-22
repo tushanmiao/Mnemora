@@ -3,7 +3,7 @@ import {
   AlertTriangle, ArrowLeft, BookOpen, BrainCircuit, Check, CheckCircle2,
   ChevronDown, CircleDot, Clock3, Copy, Database, Gauge, ListTree,
   LoaderCircle, Network, Pause, PauseCircle, Play, RotateCcw, ShieldCheck,
-  Square, XCircle,
+  Square, Trash2, XCircle,
 } from "lucide-react";
 import type {
   DeepNoteSectionProgress, DeepNoteSectionStatus, NotePipelinePhase,
@@ -20,7 +20,7 @@ const PHASE_LABELS: Record<NotePipelinePhase, string> = {
   preflight: "检查输入", analyzing: "生成知识结构", awaitingOutline: "等待计划确认",
   compiling: "编译执行计划", queued: "等待执行", drafting: "生成章节",
   validating: "验证章节", replanning: "调整计划", assembling: "组装笔记",
-  persisting: "保存笔记", paused: "已暂停", blocked: "等待处理",
+  persisting: "保存笔记", cancelling: "正在停止", paused: "已暂停", blocked: "等待处理",
   done: "已完成", cancelled: "已停止", error: "生成失败",
 };
 
@@ -38,7 +38,7 @@ const PAUSABLE_PHASES = new Set<NotePipelinePhase>([
 function phaseTone(phase: NotePipelinePhase): "active" | "success" | "warning" | "danger" | "muted" {
   if (phase === "done") return "success";
   if (phase === "error") return "danger";
-  if (phase === "cancelled" || phase === "paused" || phase === "blocked") return "warning";
+  if (phase === "cancelling" || phase === "cancelled" || phase === "paused" || phase === "blocked") return "warning";
   if (phase === "awaitingOutline") return "muted";
   return "active";
 }
@@ -46,7 +46,7 @@ function phaseTone(phase: NotePipelinePhase): "active" | "success" | "warning" |
 function statusIcon(phase: NotePipelinePhase): ReactNode {
   if (phase === "done") return <CheckCircle2 size={18} />;
   if (phase === "error") return <XCircle size={18} />;
-  if (phase === "cancelled" || phase === "paused") return <PauseCircle size={18} />;
+  if (phase === "cancelling" || phase === "cancelled" || phase === "paused") return <PauseCircle size={18} />;
   if (phase === "blocked") return <AlertTriangle size={18} />;
   if (phase === "awaitingOutline") return <Clock3 size={18} />;
   return <LoaderCircle size={18} className="deep-note-progress-spinner" />;
@@ -152,6 +152,7 @@ export default function DeepNoteView() {
   const abandoned = Boolean(runtime.detail?.run.abandoned);
   const failed = phase === "error" || phase === "blocked";
   const stopped = phase === "cancelled";
+  const cancelling = phase === "cancelling";
   const canPause = Boolean(runtime.progress?.runId ?? runtime.detail?.run.id) && PAUSABLE_PHASES.has(phase);
   const sections = runtime.detail?.sections ?? [];
   const completedSections = sections.filter((section) => section.status === "completed").length;
@@ -299,9 +300,20 @@ export default function DeepNoteView() {
                 <Pause size={14} />暂停
               </button>
             ) : null}
-            <button className="settings-button settings-button-secondary deep-note-stop-button" type="button" disabled={runtime.controlBusy} onClick={runtime.onCancel}>
-              <Square size={14} />停止
+            <button className="settings-button settings-button-secondary deep-note-stop-button" type="button" disabled={runtime.controlBusy && !cancelling} onClick={runtime.onCancel}>
+              <Square size={14} />{cancelling ? "再次停止" : "停止"}
             </button>
+            {cancelling ? (
+              <button
+                className="settings-button settings-button-secondary deep-note-stop-button"
+                type="button"
+                onClick={() => {
+                  if (window.confirm("永久遗弃这个任务吗？后台任务会被强制停止，且之后不能继续或重试。")) runtime.onAbandon();
+                }}
+              >
+                <Trash2 size={14} />遗弃任务
+              </button>
+            ) : null}
           </div>
         ) : runtime.detail?.run.noteId ? (
           <button className="settings-button settings-button-primary" type="button" onClick={runtime.onOpenNote}>
