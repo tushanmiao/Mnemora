@@ -17,6 +17,7 @@ use crate::{
         types::{ModelOptions, ModelRole, ModelToolCall},
     },
     chat::{
+        attachment_formats::{self, AttachmentReadKind},
         conversation_types::{MessageStatus, StoredChatMessage, StoredConversation},
         service as chat_service,
         types::{ChatCompletionRequest, ChatModelMessage, ChatWorkspaceMode},
@@ -357,90 +358,10 @@ fn attachment_content_hashes(
         .collect()
 }
 
-fn attachment_extension(name: &str) -> String {
-    std::path::Path::new(name)
-        .extension()
-        .and_then(|value| value.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase()
-}
-
-fn is_text_source_attachment(
-    attachment: &crate::chat::conversation_types::StoredChatAttachment,
-) -> bool {
-    attachment.mime_type.starts_with("text/")
-        || matches!(
-            attachment.mime_type.as_str(),
-            "application/json"
-                | "application/xml"
-                | "application/javascript"
-                | "application/x-javascript"
-        )
-        || matches!(
-            attachment_extension(&attachment.name).as_str(),
-            "txt"
-                | "md"
-                | "markdown"
-                | "csv"
-                | "json"
-                | "xml"
-                | "html"
-                | "css"
-                | "js"
-                | "jsx"
-                | "ts"
-                | "tsx"
-                | "rs"
-                | "py"
-                | "java"
-                | "c"
-                | "cc"
-                | "cpp"
-                | "h"
-                | "hpp"
-                | "go"
-                | "rb"
-                | "php"
-                | "swift"
-                | "kt"
-                | "kts"
-                | "toml"
-                | "yaml"
-                | "yml"
-                | "sql"
-                | "sh"
-                | "ps1"
-        )
-}
-
-fn is_pdf_source_attachment(
-    attachment: &crate::chat::conversation_types::StoredChatAttachment,
-) -> bool {
-    attachment.mime_type == "application/pdf" || attachment_extension(&attachment.name) == "pdf"
-}
-
-fn is_docx_source_attachment(
-    attachment: &crate::chat::conversation_types::StoredChatAttachment,
-) -> bool {
-    attachment.mime_type
-        == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        || attachment_extension(&attachment.name) == "docx"
-}
-
-fn is_xlsx_source_attachment(
-    attachment: &crate::chat::conversation_types::StoredChatAttachment,
-) -> bool {
-    attachment.mime_type == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        || attachment_extension(&attachment.name) == "xlsx"
-}
-
 fn is_supported_source_attachment(
     attachment: &crate::chat::conversation_types::StoredChatAttachment,
 ) -> bool {
-    is_text_source_attachment(attachment)
-        || is_pdf_source_attachment(attachment)
-        || is_docx_source_attachment(attachment)
-        || is_xlsx_source_attachment(attachment)
+    attachment_formats::is_supported_deep_note_attachment(attachment)
 }
 
 fn message_text(message: &StoredChatMessage, include_reasoning: bool) -> String {
@@ -1012,7 +933,8 @@ async fn attachment_source_chunks(
             if chunks.len() >= max_chunks {
                 return Err(source_chunk_limit_error());
             }
-            if attachment.kind == "image" {
+            let read_kind = attachment_formats::deep_note_read_kind(attachment);
+            if read_kind == AttachmentReadKind::Image {
                 consume_semantic_call(state, &run.id, runtime)?;
                 let prompt = format!(
                     "图片附件 ID：{}\n文件名：{}\n请生成可追溯的视觉 Source Chunk。",
@@ -1058,7 +980,13 @@ async fn attachment_source_chunks(
                 )?;
                 continue;
             }
-            if is_text_source_attachment(attachment) {
+            if read_kind == AttachmentReadKind::Text {
+                let code_language = attachment_formats::code_language(&attachment.name);
+                let source_kind = if code_language.is_some() {
+                    DeepNoteSourceKind::Code
+                } else {
+                    DeepNoteSourceKind::Text
+                };
                 let mut start = 1usize;
                 loop {
                     if chunks.len() >= max_chunks {
@@ -1067,21 +995,69 @@ async fn attachment_source_chunks(
                     if calls >= SOURCE_READER_CALL_LIMIT {
                         return Err("来源 Reader 调用达到安全上限，附件覆盖尚未完成。".to_string());
                     }
-                    let end = start + SOURCE_TEXT_WINDOW_LINES - 1;
+                    let requested_end = start + SOURCE_TEXT_WINDOW_LINES - 1;
                     calls = calls.saturating_add(1);
-                    let call = ModelToolCall {
-                        id: Uuid::new_v4().to_string(),
-                        name: "read_attachment_text".to_string(),
-                        arguments: serde_json::json!({
-                            "attachmentId": attachment.id,
-                            "startLine": start,
-                            "endLine": end,
-                            "maxBytes": 32_000,
-                        }),
-                        provider_signature: None,
+                    let call_id = Uuid::new_v4().to_string();
+                    state.library_repository.append_note_pipeline_event(
+                        &run.id,
+                        "toolStarted",
+                        Some("recon-source"),
+                        &serde_json::json!({
+                            "callId": call_id,
+                            "toolName": "read_attachment_text",
+                            "arguments": {
+                                "attachmentId": attachment.id,
+                                "startLine": start,
+                                "requestedEndLine": requested_end,
+                                "maxBytes": 32_000,
+                            },
+                            "readOnly": true,
+                        })
+                        .to_string(),
+                    )?;
+                    let started_at = crate::usage::now_ms();
+                    let (result, end) = match crate::chat::agent::execute_bounded_text_window(
+                        &run.conversation_id,
+                        attachment,
+                        &state.conversation_repository,
+                        start,
+                        requested_end,
+                        32_000,
+                        cancellation,
+                    )
+                    .await
+                    {
+                        Ok(result) => result,
+                        Err(error) => {
+                            state.library_repository.append_note_pipeline_event(
+                                &run.id,
+                                "toolFailed",
+                                Some("recon-source"),
+                                &serde_json::json!({
+                                    "callId": call_id,
+                                    "toolName": "read_attachment_text",
+                                    "message": error.message,
+                                })
+                                .to_string(),
+                            )?;
+                            return Err(error.message);
+                        }
                     };
-                    let result =
-                        execute_source_reader(state, run, call, &attachments, cancellation).await?;
+                    state.library_repository.append_note_pipeline_event(
+                        &run.id,
+                        "toolCompleted",
+                        Some("recon-source"),
+                        &serde_json::json!({
+                            "callId": call_id,
+                            "toolName": "read_attachment_text",
+                            "durationMs": crate::usage::now_ms().saturating_sub(started_at),
+                            "outputChars": result.output_chars,
+                            "outputTruncated": false,
+                            "actualEndLine": end,
+                            "preview": result.preview,
+                        })
+                        .to_string(),
+                    )?;
                     if result.content.trim().is_empty() {
                         if start == 1 {
                             push_attachment_source_chunks(
@@ -1089,7 +1065,7 @@ async fn attachment_source_chunks(
                                 max_chunks,
                                 attachment,
                                 &message.id,
-                                DeepNoteSourceKind::Text,
+                                source_kind,
                                 &format!("附件 {}", attachment.name),
                                 "[该附件没有可提取的非空 UTF-8 文本。]".to_string(),
                                 target_tokens,
@@ -1102,14 +1078,26 @@ async fn attachment_source_chunks(
                         max_chunks,
                         attachment,
                         &message.id,
-                        DeepNoteSourceKind::Text,
-                        &format!("附件 {} 第 {start}-{end} 行", attachment.name),
-                        result.content,
+                        source_kind,
+                        &match code_language {
+                            Some(language) => format!(
+                                "代码附件 {} · {} · 第 {start}-{end} 行",
+                                attachment.name, language
+                            ),
+                            None => format!("文本附件 {} 第 {start}-{end} 行", attachment.name),
+                        },
+                        match code_language {
+                            Some(language) => format!(
+                                "[代码来源；语言={language}；文件={}；仅做静态文本读取，未执行代码]\n{}",
+                                attachment.name, result.content
+                            ),
+                            None => result.content,
+                        },
                         target_tokens,
                     )?;
                     start = end + 1;
                 }
-            } else if is_pdf_source_attachment(attachment) {
+            } else if read_kind == AttachmentReadKind::Pdf {
                 let path = state
                     .conversation_repository
                     .resolve_attachment_path(&conversation.id, &attachment.path)?;
@@ -1149,7 +1137,7 @@ async fn attachment_source_chunks(
                         target_tokens,
                     )?;
                 }
-            } else if is_docx_source_attachment(attachment) {
+            } else if read_kind == AttachmentReadKind::Docx {
                 let mut start = 1usize;
                 loop {
                     if chunks.len() >= max_chunks {
@@ -1187,7 +1175,7 @@ async fn attachment_source_chunks(
                     )?;
                     start = end + 1;
                 }
-            } else if is_xlsx_source_attachment(attachment) {
+            } else if read_kind == AttachmentReadKind::Xlsx {
                 calls = calls.saturating_add(1);
                 let first_call = ModelToolCall {
                     id: Uuid::new_v4().to_string(),
@@ -1487,7 +1475,13 @@ fn preflight(
     let unsupported = file_attachments
         .iter()
         .filter(|attachment| !is_supported_source_attachment(attachment))
-        .map(|attachment| attachment.name.clone())
+        .map(|attachment| {
+            if attachment_formats::is_sensitive_text_name(&attachment.name) {
+                format!("{}（敏感配置，禁止自动送入深度笔记）", attachment.name)
+            } else {
+                attachment.name.clone()
+            }
+        })
         .collect::<Vec<_>>();
     if !unsupported.is_empty() {
         missing_capabilities.push(format!(
@@ -1496,6 +1490,19 @@ fn preflight(
         ));
     }
     let mut warnings = Vec::new();
+    let code_files = file_attachments
+        .iter()
+        .filter_map(|attachment| {
+            attachment_formats::code_language(&attachment.name)
+                .map(|language| format!("{} ({language})", attachment.name))
+        })
+        .collect::<Vec<_>>();
+    if !code_files.is_empty() {
+        warnings.push(format!(
+            "代码附件将按带行号的只读文本处理，不执行代码，也不声称具备 AST、调用图或多文件仓库语义：{}",
+            code_files.join("、")
+        ));
+    }
     if requires_local_readers && model.capabilities.tools != Some(true) {
         warnings.push(
             "文档附件将由 Mnemora 本地只读 Reader 解析；不依赖当前模型的 Tool 能力。".to_string(),
@@ -2774,7 +2781,11 @@ fn assemble(
         .filter(|value| !value.is_empty())
         .collect::<Vec<_>>()
         .join("；");
-        body.push(format!("{}\n\n> 来源：{}", markdown.trim(), sources));
+        body.push(format!(
+            "{}\n\n> 来源：{}",
+            normalize_generated_markdown(markdown),
+            sources
+        ));
     }
     let content = [
         format!("# {title}"),
@@ -2802,6 +2813,176 @@ fn assemble(
         ));
     }
     (title, content, warnings)
+}
+
+/// Convert legacy fenced math (`math`, `latex`, or `tex`) into the canonical
+/// Markdown math form consumed by remark-math/KaTeX. Unclosed fences are left
+/// untouched so validation can report the original malformed output.
+fn normalize_math_fences(markdown: &str) -> String {
+    let mut output = String::with_capacity(markdown.len());
+    let mut pending: Option<Vec<String>> = None;
+
+    for raw_line in markdown.split_inclusive('\n') {
+        let (line, ending) = if let Some(line) = raw_line.strip_suffix("\r\n") {
+            (line, "\r\n")
+        } else if let Some(line) = raw_line.strip_suffix('\n') {
+            (line, "\n")
+        } else {
+            (raw_line, "")
+        };
+
+        if let Some(lines) = pending.as_mut() {
+            if line.trim() == "```" {
+                let inner_ending = if ending.is_empty() {
+                    if lines.iter().skip(1).any(|value| value.ends_with("\r\n")) {
+                        "\r\n"
+                    } else if lines.iter().skip(1).any(|value| value.ends_with('\n')) {
+                        "\n"
+                    } else {
+                        ""
+                    }
+                } else {
+                    ending
+                };
+                output.push_str("$$");
+                output.push_str(inner_ending);
+                for inner in lines.iter().skip(1) {
+                    output.push_str(inner);
+                }
+                if !output.ends_with('\n') {
+                    output.push('\n');
+                }
+                output.push_str("$$");
+                output.push_str(ending);
+                pending = None;
+            } else {
+                lines.push(raw_line.to_string());
+            }
+            continue;
+        }
+
+        let trimmed = line.trim();
+        let is_math_open = trimmed
+            .strip_prefix("```")
+            .map(|language| {
+                matches!(
+                    language.trim().to_ascii_lowercase().as_str(),
+                    "math" | "latex" | "tex"
+                )
+            })
+            .unwrap_or(false);
+        if is_math_open {
+            pending = Some(vec![raw_line.to_string()]);
+        } else {
+            output.push_str(raw_line);
+        }
+    }
+
+    if let Some(lines) = pending {
+        for line in lines {
+            output.push_str(&line);
+        }
+    }
+    output
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct MarkdownFenceAnalysis {
+    top_level_mermaid_blocks: usize,
+    nested_mermaid_markers: usize,
+    unclosed_fence: bool,
+}
+
+fn parse_fence_line(line: &str) -> Option<(char, usize, &str)> {
+    let trimmed = line.trim_start_matches([' ', '\t']);
+    if line.len().saturating_sub(trimmed.len()) > 3 {
+        return None;
+    }
+    let marker = trimmed.chars().next()?;
+    if !matches!(marker, '`' | '~') {
+        return None;
+    }
+    let length = trimmed
+        .chars()
+        .take_while(|character| *character == marker)
+        .count();
+    if length < 3 {
+        return None;
+    }
+    Some((marker, length, &trimmed[length..]))
+}
+
+fn fence_language(info: &str) -> String {
+    info.trim()
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+}
+
+fn is_markdown_source_language(language: &str) -> bool {
+    matches!(
+        language,
+        "markdown" | "md" | "mdown" | "mkdown" | "text" | "plaintext" | "txt"
+    )
+}
+
+fn line_starts_mermaid_fence(line: &str) -> bool {
+    parse_fence_line(line).is_some_and(|(_, _, info)| fence_language(info) == "mermaid")
+}
+
+fn analyze_markdown_fences(markdown: &str) -> MarkdownFenceAnalysis {
+    let mut analysis = MarkdownFenceAnalysis::default();
+    let mut active: Option<(char, usize, String)> = None;
+    for line in markdown.lines() {
+        if let Some((marker, length, info)) = active.as_ref() {
+            if line_starts_mermaid_fence(line) && is_markdown_source_language(info) {
+                analysis.nested_mermaid_markers += 1;
+            }
+            if parse_fence_line(line).is_some_and(|(candidate, candidate_length, suffix)| {
+                candidate == *marker && candidate_length >= *length && suffix.trim().is_empty()
+            }) {
+                active = None;
+            }
+            continue;
+        }
+        let Some((marker, length, info)) = parse_fence_line(line) else {
+            continue;
+        };
+        let language = fence_language(info);
+        if language == "mermaid" {
+            analysis.top_level_mermaid_blocks += 1;
+        }
+        active = Some((marker, length, language));
+    }
+    analysis.unclosed_fence = active.is_some();
+    analysis
+}
+
+fn strip_outer_markdown_fence(markdown: &str) -> Option<String> {
+    let lines = markdown.lines().collect::<Vec<_>>();
+    let first = lines.iter().position(|line| !line.trim().is_empty())?;
+    let last = lines.iter().rposition(|line| !line.trim().is_empty())?;
+    let (marker, length, info) = parse_fence_line(lines[first])?;
+    if !is_markdown_source_language(&fence_language(info)) {
+        return None;
+    }
+    if !parse_fence_line(lines[last]).is_some_and(|(candidate, candidate_length, suffix)| {
+        candidate == marker && candidate_length >= length && suffix.trim().is_empty()
+    }) {
+        return None;
+    }
+    let inner = lines[first + 1..last].join("\n");
+    let inner_trimmed = inner.trim();
+    if !inner_trimmed.starts_with('#') {
+        return None;
+    }
+    Some(inner_trimmed.to_string())
+}
+
+fn normalize_generated_markdown(markdown: &str) -> String {
+    let normalized = normalize_math_fences(markdown.trim());
+    strip_outer_markdown_fence(&normalized).unwrap_or(normalized)
 }
 
 fn validate_section_markdown(
@@ -2862,10 +3043,16 @@ fn validate_section_markdown(
             )
         })
         .collect::<Vec<_>>();
-    let mermaid_blocks = normalized.matches("```mermaid").count();
-    let closing_fences = normalized.matches("```").count();
-    if mermaid_blocks > 0 && closing_fences < mermaid_blocks.saturating_mul(2) {
-        errors.push("Mermaid 代码块没有正确闭合。".to_string());
+    let fences = analyze_markdown_fences(normalized);
+    let mermaid_blocks = fences.top_level_mermaid_blocks;
+    if fences.unclosed_fence {
+        errors.push("Markdown 代码块没有正确闭合。".to_string());
+    }
+    if fences.nested_mermaid_markers > 0 {
+        errors.push(
+            "Mermaid 被包在 Markdown/文本源码代码块中，前端只会显示源码；请移除外层源码围栏，让 ```mermaid 位于正文顶层。"
+                .to_string(),
+        );
     }
     for forbidden in ["click ", "javascript:", "<iframe", "<script", "<img"] {
         if normalized.to_ascii_lowercase().contains(forbidden) {
@@ -3524,7 +3711,7 @@ async fn execute_dag_section(
         .await
         {
             Ok(value) if !value.trim().is_empty() => {
-                let mut candidate = value.trim().to_string();
+                let mut candidate = normalize_generated_markdown(value.trim());
                 validation = validate_section_markdown(section, &candidate, evidence_ids);
                 while !validation.passed && revisions < section_revision_limit {
                     revisions += 1;
@@ -3560,10 +3747,9 @@ async fn execute_dag_section(
                         revisions = revisions.saturating_sub(1);
                         break 'attempts;
                     }
-                    candidate = revision_result
-                        .map_err(|error| error.message)?
-                        .trim()
-                        .to_string();
+                    candidate = normalize_generated_markdown(
+                        revision_result.map_err(|error| error.message)?.trim(),
+                    );
                     validation = validate_section_markdown(section, &candidate, evidence_ids);
                 }
                 if validation.passed {
@@ -4025,19 +4211,31 @@ async fn run_drafting_task<R: Runtime>(
                 &serde_json::to_string(&runtime).map_err(|error| error.to_string())?,
                 Some(&sidecar),
             )?;
-            state
-                .library_repository
-                .create_note_with_sources_and_coverage(
-                    LibraryNoteCreate {
-                        item_id: None,
-                        title,
-                        content,
-                        group_name: None,
-                    },
-                    sources,
-                    &conversation.id,
-                    &runtime.input_snapshot,
-                )?
+            let create = LibraryNoteCreate {
+                item_id: None,
+                title,
+                content,
+                group_name: None,
+            };
+            if runtime.force_rebuild {
+                state
+                    .library_repository
+                    .create_rebuilt_note_with_sources_and_coverage(
+                        create,
+                        sources,
+                        &conversation.id,
+                        &runtime.input_snapshot,
+                    )?
+            } else {
+                state
+                    .library_repository
+                    .create_note_with_sources_and_coverage(
+                        create,
+                        sources,
+                        &conversation.id,
+                        &runtime.input_snapshot,
+                    )?
+            }
         };
         if scheduler
             .node("persist-note")
@@ -4218,7 +4416,7 @@ async fn run_drafting_task_legacy<R: Runtime>(
                 .await
                 {
                     Ok(value) if !value.trim().is_empty() => {
-                        let mut candidate = value.trim().to_string();
+                        let mut candidate = normalize_generated_markdown(value.trim());
                         validation = validate_section_markdown(section, &candidate, &[]);
                         while !validation.passed && revisions < section_revision_limit {
                             revisions += 1;
@@ -4248,10 +4446,9 @@ async fn run_drafting_task_legacy<R: Runtime>(
                                 revisions = revisions.saturating_sub(1);
                                 break 'attempts;
                             }
-                            candidate = revision_result
-                                .map_err(|error| error.message)?
-                                .trim()
-                                .to_string();
+                            candidate = normalize_generated_markdown(
+                                revision_result.map_err(|error| error.message)?.trim(),
+                            );
                             validation = validate_section_markdown(section, &candidate, &[]);
                         }
                         if validation.passed {
@@ -4417,19 +4614,31 @@ async fn run_drafting_task_legacy<R: Runtime>(
                 &serde_json::to_string(&runtime).map_err(|error| error.to_string())?,
                 Some(&sidecar),
             )?;
-            state
-                .library_repository
-                .create_note_with_sources_and_coverage(
-                    LibraryNoteCreate {
-                        item_id: None,
-                        title,
-                        content,
-                        group_name: None,
-                    },
-                    sources,
-                    &conversation.id,
-                    &runtime.input_snapshot,
-                )?
+            let create = LibraryNoteCreate {
+                item_id: None,
+                title,
+                content,
+                group_name: None,
+            };
+            if runtime.force_rebuild {
+                state
+                    .library_repository
+                    .create_rebuilt_note_with_sources_and_coverage(
+                        create,
+                        sources,
+                        &conversation.id,
+                        &runtime.input_snapshot,
+                    )?
+            } else {
+                state
+                    .library_repository
+                    .create_note_with_sources_and_coverage(
+                        create,
+                        sources,
+                        &conversation.id,
+                        &runtime.input_snapshot,
+                    )?
+            }
         };
         let phase = NotePipelinePhase::Done;
         let completed = {
@@ -4514,6 +4723,29 @@ async fn spawn_drafting<R: Runtime>(
     Ok(())
 }
 
+fn validate_start_inspection(
+    request: &NotePipelineStartRequest,
+    inspection: &DeepNoteStartInspection,
+) -> Result<(), String> {
+    if !inspection.unsupported_attachment_names.is_empty() {
+        return Err(format!(
+            "当前会话包含深度笔记尚不支持或不允许自动读取的附件：{}。请先转换格式、移除附件或显式清理敏感内容。",
+            inspection.unsupported_attachment_names.join("、")
+        ));
+    }
+    match inspection.status.as_str() {
+        "new" => Ok(()),
+        "invalidated" if request.replace_invalidated || request.force_rebuild => Ok(()),
+        "invalidated" => Err(format!(
+            "{} 如需重新生成，请先明确确认替换失效快照。",
+            inspection.message
+        )),
+        "updateAvailable" | "upToDate" if request.force_rebuild => Ok(()),
+        "updateAvailable" | "upToDate" => Err(inspection.message.clone()),
+        _ => Err("已有深度笔记检查返回了未知状态。".to_string()),
+    }
+}
+
 pub async fn start<R: Runtime>(
     app: &AppHandle<R>,
     request: NotePipelineStartRequest,
@@ -4521,20 +4753,7 @@ pub async fn start<R: Runtime>(
 ) -> Result<NotePipelineRun, String> {
     let state = app.state::<AppState>();
     let inspection = inspect_start(&state, request.conversation_id.trim()).await?;
-    match inspection.status.as_str() {
-        "new" => {}
-        "invalidated" if request.replace_invalidated => {}
-        "invalidated" => {
-            return Err(format!(
-                "{} 如需重新生成，请先明确确认替换失效快照。",
-                inspection.message
-            ));
-        }
-        "updateAvailable" | "upToDate" => {
-            return Err(inspection.message);
-        }
-        _ => return Err("已有深度笔记检查返回了未知状态。".to_string()),
-    }
+    validate_start_inspection(&request, &inspection)?;
     let conversation = state
         .conversation_repository
         .load(request.conversation_id.trim())?;
@@ -4547,6 +4766,11 @@ pub async fn start<R: Runtime>(
         let preflight = preflight(&settings, &conversation, &provider_id, &model_id)?;
         (provider_id, model_id, preflight)
     };
+    if request.force_rebuild {
+        preflight
+            .warnings
+            .push("本次按当前全部消息与附件执行完整来源重建；已有笔记会保留。".to_string());
+    }
     if !preflight.ready {
         return Err(format!(
             "当前模型无法启动深度笔记：{}。请切换模型、移除不支持的附件或返回设置。",
@@ -4590,6 +4814,7 @@ pub async fn start<R: Runtime>(
         ledger: DeepNoteLedger::default(),
         skill_profiles: skill_profiles.clone(),
         context_budget: DeepNoteContextBudget::default(),
+        force_rebuild: request.force_rebuild,
     };
     let runtime_json = serde_json::to_string(&runtime)
         .map_err(|error| format!("序列化深度笔记运行状态失败：{error}"))?;
@@ -4679,6 +4904,33 @@ fn coverage_snapshot_for_note(
     Ok(Some(runtime.input_snapshot))
 }
 
+fn inspect_attachment_delta(messages: &[&StoredChatMessage]) -> (usize, Vec<String>) {
+    let attachments = messages
+        .iter()
+        .flat_map(|message| message.attachments.iter())
+        .collect::<Vec<_>>();
+    let mut unsupported = attachments
+        .iter()
+        .filter(|attachment| {
+            attachment_formats::deep_note_read_kind(attachment) == AttachmentReadKind::Unsupported
+        })
+        .map(|attachment| unsupported_attachment_label(attachment))
+        .collect::<Vec<_>>();
+    unsupported.sort();
+    unsupported.dedup();
+    (attachments.len(), unsupported)
+}
+
+fn unsupported_attachment_label(
+    attachment: &crate::chat::conversation_types::StoredChatAttachment,
+) -> String {
+    if attachment_formats::is_sensitive_text_name(&attachment.name) {
+        format!("{}（敏感配置，禁止自动读取）", attachment.name)
+    } else {
+        attachment.name.clone()
+    }
+}
+
 pub async fn inspect_start(
     state: &AppState,
     conversation_id: &str,
@@ -4688,13 +4940,19 @@ pub async fn inspect_start(
         .library_repository
         .latest_deep_note_for_conversation(&conversation.id)?
     else {
+        let messages = noteworthy_messages(&conversation);
+        let (new_attachment_count, unsupported_attachment_names) =
+            inspect_attachment_delta(&messages);
         return Ok(DeepNoteStartInspection {
             status: "new".to_string(),
             note_id: None,
             note_title: None,
             covered_message_id: None,
             covered_message_count: 0,
-            new_message_count: noteworthy_messages(&conversation).len(),
+            new_message_count: messages.len(),
+            new_attachment_count,
+            requires_full_rebuild: false,
+            unsupported_attachment_names,
             message: "当前会话还没有可增量更新的深度笔记。".to_string(),
         });
     };
@@ -4707,6 +4965,9 @@ pub async fn inspect_start(
             covered_message_id: None,
             covered_message_count: 0,
             new_message_count: messages.len(),
+            new_attachment_count: inspect_attachment_delta(&messages).0,
+            requires_full_rebuild: true,
+            unsupported_attachment_names: inspect_attachment_delta(&messages).1,
             message: "已有笔记缺少可靠的消息锚点，需要重新生成。".to_string(),
         });
     };
@@ -4718,6 +4979,9 @@ pub async fn inspect_start(
             covered_message_id: Some(anchor),
             covered_message_count: 0,
             new_message_count: messages.len(),
+            new_attachment_count: inspect_attachment_delta(&messages).0,
+            requires_full_rebuild: true,
+            unsupported_attachment_names: inspect_attachment_delta(&messages).1,
             message: "已有笔记缺少逐消息与附件内容 Hash，不能安全增量更新；请重新生成。"
                 .to_string(),
         });
@@ -4736,6 +5000,9 @@ pub async fn inspect_start(
             covered_message_id: Some(anchor),
             covered_message_count: 0,
             new_message_count: messages.len(),
+            new_attachment_count: inspect_attachment_delta(&messages).0,
+            requires_full_rebuild: true,
+            unsupported_attachment_names: inspect_attachment_delta(&messages).1,
             message: format!("已有笔记覆盖快照已失效：{error}"),
         });
     }
@@ -4747,12 +5014,33 @@ pub async fn inspect_start(
             covered_message_id: Some(anchor),
             covered_message_count: snapshot.message_ids.len(),
             new_message_count: messages.len().saturating_sub(snapshot.message_ids.len()),
+            new_attachment_count: inspect_attachment_delta(&messages).0,
+            requires_full_rebuild: true,
+            unsupported_attachment_names: inspect_attachment_delta(&messages).1,
             message: "已有笔记的来源锚点与覆盖快照不一致，不能安全增量更新；请重新生成。"
                 .to_string(),
         });
     }
     let anchor_index = snapshot.message_ids.len().saturating_sub(1);
     let new_message_count = messages.len().saturating_sub(anchor_index + 1);
+    let new_messages = &messages[anchor_index.saturating_add(1)..];
+    let (new_attachment_count, unsupported_attachment_names) =
+        inspect_attachment_delta(new_messages);
+    let requires_full_rebuild = new_attachment_count > 0;
+    let message = if new_message_count == 0 {
+        "已有深度笔记已经覆盖当前会话，没有新的消息需要合入。".to_string()
+    } else if !unsupported_attachment_names.is_empty() {
+        format!(
+            "已有深度笔记；检测到 {new_message_count} 条未合入的新消息和 {new_attachment_count} 个附件，其中这些格式暂不支持：{}。完整重建也无法安全读取它们。",
+            unsupported_attachment_names.join("、")
+        )
+    } else if requires_full_rebuild {
+        format!(
+            "已有深度笔记；检测到 {new_message_count} 条未合入的新消息和 {new_attachment_count} 个附件。为避免遗漏附件，需要按当前全部来源完整重建，旧笔记会保留。"
+        )
+    } else {
+        format!("已有深度笔记；检测到 {new_message_count} 条未合入的新消息。")
+    };
     Ok(DeepNoteStartInspection {
         status: if new_message_count == 0 {
             "upToDate".to_string()
@@ -4764,11 +5052,10 @@ pub async fn inspect_start(
         covered_message_id: Some(anchor),
         covered_message_count: anchor_index + 1,
         new_message_count,
-        message: if new_message_count == 0 {
-            "已有深度笔记已经覆盖当前会话，没有新的消息需要合入。".to_string()
-        } else {
-            format!("已有深度笔记；检测到 {new_message_count} 条未合入的新消息。")
-        },
+        new_attachment_count,
+        requires_full_rebuild,
+        unsupported_attachment_names,
+        message,
     })
 }
 
@@ -5147,6 +5434,7 @@ pub async fn restart<R: Runtime>(
         NotePipelineStartRequest {
             conversation_id: previous.conversation_id.clone(),
             replace_invalidated: false,
+            force_rebuild: false,
         },
         channel,
     )
@@ -5522,6 +5810,7 @@ pub async fn prepare_note_edit(
         return Err("模型返回的笔记补丁为空或过长。".to_string());
     }
     for patch in &mut patch_set.patches {
+        patch.markdown = normalize_generated_markdown(patch.markdown.trim());
         patch.source_message_ids.retain(|id| valid_ids.contains(id));
         patch.source_message_ids.sort();
         patch.source_message_ids.dedup();
@@ -5654,16 +5943,18 @@ mod tests {
     };
 
     use super::{
-        can_pause_phase, compact_ledger_for_planner, context_budget, conversation_chunks,
-        evidence_for_plan, input_snapshot, ledger_has_real_output, merge_chunk_digest,
+        analyze_markdown_fences, can_pause_phase, compact_ledger_for_planner, context_budget,
+        conversation_chunks, evidence_for_plan, input_snapshot, ledger_has_real_output,
+        merge_chunk_digest, normalize_generated_markdown, normalize_math_fences,
         reset_failed_nodes, should_fallback_to_chunked_planner, should_retry_note_model_call,
-        snapshot_conversation_after_validation, validate_recovery_snapshot, ChunkDigest,
-        ConversationChunk,
+        snapshot_conversation_after_validation, validate_recovery_snapshot,
+        validate_section_markdown, ChunkDigest, ConversationChunk,
     };
     use crate::chat::note_pipeline::types::{
         DeepNoteCapabilities, DeepNoteDagNode, DeepNoteEvidenceStatus, DeepNoteLedger,
-        DeepNoteModelSnapshot, DeepNoteNodeStatus, DeepNoteNodeType, DeepNoteSourceChunk,
-        DeepNoteSourceKind,
+        DeepNoteModelSnapshot, DeepNoteNodeStatus, DeepNoteNodeType, DeepNoteSection,
+        DeepNoteSectionKind, DeepNoteSourceChunk, DeepNoteSourceKind, DeepNoteStartInspection,
+        NotePipelineStartRequest,
     };
 
     fn message(id: &str, role: ModelRole, content: String) -> StoredChatMessage {
@@ -5689,6 +5980,130 @@ mod tests {
             workflow_summary: None,
             error_message: None,
         }
+    }
+
+    #[test]
+    fn normalizes_legacy_math_fences_without_touching_unclosed_blocks() {
+        let source = "前文\n```math\np = \\frac{1}{1 + e^{-x}}\n```\n\n```latex\nq=x^2\n```";
+        let normalized = normalize_math_fences(source);
+        assert_eq!(
+            normalized,
+            "前文\n$$\np = \\frac{1}{1 + e^{-x}}\n$$\n\n$$\nq=x^2\n$$"
+        );
+
+        let unclosed = "```math\np = x";
+        assert_eq!(normalize_math_fences(unclosed), unclosed);
+    }
+
+    #[test]
+    fn unwraps_a_generated_markdown_shell_so_nested_mermaid_becomes_top_level() {
+        let fence = "````";
+        let source = format!(
+            "{fence}markdown\n## 依赖关系\n\n{}\n\n```mermaid\nflowchart TD\nA[基础] --> B[借用]\nB --> C[生命周期]\n```\n{fence}",
+            "本节解释章节之间的依赖关系、并行条件和失败传播。".repeat(8)
+        );
+        let normalized = normalize_generated_markdown(&source);
+        assert!(normalized.starts_with("## 依赖关系"));
+        assert!(!normalized.starts_with("````markdown"));
+        let fences = analyze_markdown_fences(&normalized);
+        assert_eq!(fences.top_level_mermaid_blocks, 1);
+        assert_eq!(fences.nested_mermaid_markers, 0);
+        assert!(!fences.unclosed_fence);
+
+        let section = DeepNoteSection {
+            id: "sec-dependency".to_string(),
+            heading: "依赖关系".to_string(),
+            kind: DeepNoteSectionKind::Concept,
+            brief: "解释依赖和并行流程".to_string(),
+            purpose: "说明执行顺序".to_string(),
+            depends_on: Vec::new(),
+            evidence_requirements: Vec::new(),
+            success_criteria: vec!["解释依赖关系".to_string()],
+            source_scope: Vec::new(),
+            target_depth: "standard".to_string(),
+            allow_ai_supplement: false,
+            needs_supplement: false,
+            source_message_ids: Vec::new(),
+        };
+        assert!(validate_section_markdown(&section, &normalized, &[]).passed);
+    }
+
+    #[test]
+    fn rejects_mermaid_that_remains_inside_a_markdown_source_example() {
+        let source = format!(
+            "## 依赖关系\n\n{}\n\n````markdown\n### Markdown 示例\n\n```mermaid\nflowchart TD\nA --> B\n```\n````",
+            "本节包含足够长的依赖关系说明，用于验证图表必须进入真实渲染链。".repeat(8)
+        );
+        let fences = analyze_markdown_fences(&source);
+        assert_eq!(fences.top_level_mermaid_blocks, 0);
+        assert_eq!(fences.nested_mermaid_markers, 1);
+        let section = DeepNoteSection {
+            id: "sec-dependency".to_string(),
+            heading: "依赖关系".to_string(),
+            kind: DeepNoteSectionKind::Concept,
+            brief: "解释依赖流程".to_string(),
+            purpose: "说明执行顺序".to_string(),
+            depends_on: Vec::new(),
+            evidence_requirements: Vec::new(),
+            success_criteria: vec!["解释依赖关系".to_string()],
+            source_scope: Vec::new(),
+            target_depth: "standard".to_string(),
+            allow_ai_supplement: false,
+            needs_supplement: false,
+            source_message_ids: Vec::new(),
+        };
+        let report = validate_section_markdown(&section, &source, &[]);
+        assert!(!report.passed);
+        assert!(report.errors.iter().any(|error| error.contains("正文顶层")));
+    }
+
+    #[test]
+    fn force_rebuild_is_the_explicit_escape_from_update_available() {
+        let inspection = DeepNoteStartInspection {
+            status: "updateAvailable".to_string(),
+            note_id: Some("note-1".to_string()),
+            note_title: Some("旧笔记".to_string()),
+            covered_message_id: Some("message-b".to_string()),
+            covered_message_count: 2,
+            new_message_count: 1,
+            new_attachment_count: 1,
+            requires_full_rebuild: true,
+            unsupported_attachment_names: Vec::new(),
+            message: "需要重建".to_string(),
+        };
+        let blocked = NotePipelineStartRequest {
+            conversation_id: "conversation-1".to_string(),
+            replace_invalidated: false,
+            force_rebuild: false,
+        };
+        assert!(super::validate_start_inspection(&blocked, &inspection).is_err());
+        let allowed = NotePipelineStartRequest {
+            force_rebuild: true,
+            ..blocked
+        };
+        assert!(super::validate_start_inspection(&allowed, &inspection).is_ok());
+    }
+
+    #[test]
+    fn force_rebuild_still_rejects_unknown_attachment_formats() {
+        let inspection = DeepNoteStartInspection {
+            status: "updateAvailable".to_string(),
+            note_id: Some("note-1".to_string()),
+            note_title: Some("旧笔记".to_string()),
+            covered_message_id: Some("message-b".to_string()),
+            covered_message_count: 2,
+            new_message_count: 1,
+            new_attachment_count: 1,
+            requires_full_rebuild: true,
+            unsupported_attachment_names: vec!["slides.pptx".to_string()],
+            message: "格式不支持".to_string(),
+        };
+        let request = NotePipelineStartRequest {
+            conversation_id: "conversation-1".to_string(),
+            replace_invalidated: false,
+            force_rebuild: true,
+        };
+        assert!(super::validate_start_inspection(&request, &inspection).is_err());
     }
 
     fn conversation(messages: Vec<StoredChatMessage>) -> StoredConversation {

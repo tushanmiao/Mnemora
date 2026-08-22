@@ -22,8 +22,8 @@ export function renderMermaid(code: string, id: string, config: MermaidConfig, c
       "position:fixed",
       "inset:auto auto 0 -100000px",
       `width:${Math.max(280, Math.round(containerWidth))}px`,
-      "height:1px",
-      "overflow:hidden",
+      "height:auto",
+      "overflow:visible",
       "visibility:hidden",
       "pointer-events:none",
     ].join(";");

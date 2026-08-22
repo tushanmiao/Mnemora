@@ -20,6 +20,7 @@ use uuid::Uuid;
 use crate::ai::types::ModelImage;
 
 use super::{
+    attachment_formats,
     conversation_types::{StoredChatAttachment, StoredConversation},
     storage::ConversationRepository,
 };
@@ -418,7 +419,7 @@ fn inspect_source(path: &Path) -> Result<InspectedAttachment, String> {
         },
         mime_type: image_mime
             .map(str::to_string)
-            .unwrap_or_else(|| mime_type_for_name(&name).to_string()),
+            .unwrap_or_else(|| attachment_formats::mime_type_for_name(&name).to_string()),
         name,
         size_bytes: metadata.len(),
         path: path.to_path_buf(),
@@ -459,27 +460,8 @@ fn image_extension(name: &str) -> Option<&'static str> {
     }
 }
 
-fn mime_type_for_name(name: &str) -> &'static str {
-    match extension(name).as_str() {
-        "pdf" => "application/pdf",
-        "txt" => "text/plain",
-        "md" => "text/markdown",
-        "csv" => "text/csv",
-        "json" => "application/json",
-        "doc" => "application/msword",
-        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        "xls" => "application/vnd.ms-excel",
-        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        _ => "application/octet-stream",
-    }
-}
-
 fn extension(name: &str) -> String {
-    Path::new(name)
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .map(|extension| extension.to_ascii_lowercase())
-        .unwrap_or_default()
+    attachment_formats::extension(name)
 }
 
 fn sanitize_file_name(name: &str) -> String {

@@ -34,6 +34,7 @@
 .task-center-trigger[data-status="waiting"] .task-center-trigger-icon,
 .task-center-trigger[data-status="paused"] .task-center-trigger-icon { color: var(--status-warning); background: var(--status-warning-soft); }
 .task-center-trigger[data-status="completed"] .task-center-trigger-icon { color: var(--status-success); background: var(--status-success-soft); }
+.task-center-trigger[data-status="completed"][data-issues="true"] .task-center-trigger-icon { color: var(--status-warning); background: var(--status-warning-soft); }
 .task-center-trigger[data-status="failed"] .task-center-trigger-icon,
 .task-center-trigger[data-status="stopped"] .task-center-trigger-icon,
 .task-center-trigger[data-status="abandoned"] .task-center-trigger-icon { color: var(--status-danger); background: var(--status-danger-soft); }
@@ -120,6 +121,7 @@
 .task-center-progress { height: 3px; margin: 11px 0 13px; overflow: hidden; border-radius: var(--radius-pill); background: var(--color-border-soft); }
 .task-center-progress > span { display: block; width: 100%; height: 100%; transform-origin: left center; background: var(--workspace-accent); transition: transform 200ms var(--ease-out); }
 .task-center-detail[data-status="completed"] .task-center-progress > span { background: var(--status-success); }
+.task-center-detail[data-status="completed"][data-issues="true"] .task-center-progress > span { background: var(--status-warning); }
 .task-center-detail[data-status="failed"] .task-center-progress > span,
 .task-center-detail[data-status="stopped"] .task-center-progress > span,
 .task-center-detail[data-status="abandoned"] .task-center-progress > span { background: var(--status-danger); }

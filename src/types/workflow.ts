@@ -50,5 +50,11 @@ export interface AgentWorkflowProjection {
   status: AgentRunStatus;
   summary: AgentWorkflowSummary;
   steps: WorkflowStep[];
+  toolOutcomes: {
+    total: number;
+    succeeded: number;
+    failed: number;
+    active: number;
+  };
   needsAttention: boolean;
 }

@@ -115,6 +115,28 @@ describe("taskRunProjection", () => {
     expect(task?.steps[0]).toMatchObject({ kind: "reasoning", content: "分析内容" });
   });
 
+  it("完成后的 Chat 任务在重新进入会话后仍可从最后一条消息恢复", () => {
+    const task = projectChatTaskRun(
+      assistant({
+        reasoning: "已完成的思考摘要",
+        updatedAt: 2_000,
+        workflowSummary: {
+          status: "completed",
+          stepCount: 1,
+          toolCallCount: 0,
+          skillCount: 0,
+          durationMs: 1_000,
+        },
+      }),
+      "已完成的思考摘要",
+      false,
+      "zh",
+      24 * 60 * 60 * 1_000,
+    );
+
+    expect(task).toMatchObject({ status: "completed", sourceId: "assistant-1" });
+  });
+
   it("把等待审批的 Tool 映射为需要处理的任务", () => {
     const task = projectChatTaskRun(assistant({
       status: "streaming",
@@ -128,6 +150,38 @@ describe("taskRunProjection", () => {
     }), "", true, "zh", 2_000);
     expect(task).toMatchObject({ status: "waiting", needsAttention: true });
     expect(task?.steps[0]).toMatchObject({ kind: "tool", status: "waiting" });
+  });
+
+  it("回答完成但工具失败时保留完成事实并明确提示异常", () => {
+    const task = projectChatTaskRun(assistant({
+      toolTraces: [
+        {
+          callId: "call-success",
+          name: "search_skills",
+          status: "completed",
+          risk: "builtinRead",
+          argumentSummary: "{}",
+        },
+        {
+          callId: "call-failed",
+          name: "inspect_skill",
+          status: "failed",
+          risk: "builtinRead",
+          argumentSummary: "{}",
+          preview: "工具不在白名单中",
+        },
+      ],
+    }), "", false, "zh", 2_000);
+
+    expect(task).toMatchObject({
+      status: "completed",
+      statusLabel: "回答完成，但工具有失败",
+      currentStepLabel: "回答完成，但工具有失败",
+      activity: "回答已完成，但 1 个工具调用失败",
+      needsAttention: true,
+      completedCount: 1,
+      totalCount: 2,
+    });
   });
 
   it("深度笔记上下文覆盖完成后准确定位在知识结构阶段", () => {

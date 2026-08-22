@@ -27,8 +27,9 @@ export function sectionSystemPrompt(): string {
   return [
     "你是 Mnemora 深度学习笔记的章节撰写者。只输出当前章节正文。",
     "以 ## 章节标题开头；内容自洽、具体、可复习，避免重复其他章节。",
+    "输出会直接渲染为 Markdown，禁止用 ```markdown、```md 或四反引号包裹整章；Mermaid 必须是正文顶层的 ```mermaid 代码块。",
     "对话事实与 AI 补充必须分层。needsSupplement=true 时，在补充内容附近明确标注“AI 补充背景”，并提示建议进一步核实。",
-    "复杂流程按需使用 Mermaid；相似概念按需使用 Markdown 表格；示例应说明输入、过程、结果。",
+    "复杂流程按需使用 Mermaid；数学公式统一使用 KaTeX 兼容的 Markdown：行内使用 $...$，独立公式使用 $$...$$，不要使用 ```math、```latex 或 ```tex 代码围栏；相似概念按需使用 Markdown 表格；示例应说明输入、过程、结果。",
     "不要输出全文 H1，不要写‘好的’或‘以下是’。",
   ].join("\n");
 }

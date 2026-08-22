@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { MarkdownMessage } from "./MarkdownMessage";
+import { MarkdownMessage, normalizeMathFenceLanguage } from "./MarkdownMessage";
 import { MathMarkdownContent } from "./MathMarkdownContent";
 
 describe("MarkdownMessage safe HTML", () => {
@@ -34,7 +34,7 @@ describe("MarkdownMessage safe HTML", () => {
   it("renders inline and block LaTeX with KaTeX", () => {
     const output = renderToStaticMarkup(
       <MathMarkdownContent
-        content={'行内公式 $E=mc^2$\n\n$$\n\\int_0^1 x^2 dx\n$$'}
+        content={'行内公式 $E=mc^2$\n\n$$\n\\int_0^1 x^2 dx\n$$\n\n```math\np = \\frac{1}{1 + e^{-x}}\n```'}
         components={{}}
       />,
     );
@@ -42,6 +42,26 @@ describe("MarkdownMessage safe HTML", () => {
     expect(output).toContain('class="katex"');
     expect(output).toContain('class="katex-display"');
     expect(output).toContain('<math');
+  });
+
+  it("renders fenced math blocks with KaTeX instead of a code block", () => {
+    const output = renderToStaticMarkup(
+      <MarkdownMessage
+        messageId="math-fenced"
+        content={'#### 记忆保持率\n\n```math\np = \\frac{1}{1 + e^{-x}}\n```'}
+      />,
+    );
+
+    expect(output).toContain("markdown-math-loading");
+    expect(output).not.toContain('class="language-math"');
+    expect(output).not.toContain('markdown-highlighted-code');
+  });
+
+  it("normalizes legacy LaTeX and TeX fence aliases", () => {
+    expect(normalizeMathFenceLanguage("```latex\nx^2\n```"))
+      .toBe("```math\nx^2\n```");
+    expect(normalizeMathFenceLanguage("```tex\ny^2\n```"))
+      .toBe("```math\ny^2\n```");
   });
 
   it("renders Mermaid as an enhanced block with a source fallback", () => {
@@ -55,6 +75,19 @@ describe("MarkdownMessage safe HTML", () => {
     expect(output).toContain("mermaid");
     expect(output).toContain("flowchart TD");
     expect(output).toContain("显示 Mermaid 图表");
+  });
+
+  it("safely previews Mermaid nested in a Markdown source fence and keeps a source toggle", () => {
+    const output = renderToStaticMarkup(
+      <MarkdownMessage
+        messageId="nested-mermaid-source"
+        content={'````markdown\n### 示例\n\n```mermaid\nflowchart TD\nA[开始] --> B[结束]\n```\n````'}
+      />,
+    );
+
+    expect(output).toContain("已按安全预览渲染");
+    expect(output).toContain('aria-label="查看 Markdown 源码"');
+    expect(output).toContain('class="markdown-mermaid-block"');
   });
 
   it("limits Mermaid rendering without leaking the count across renders", () => {

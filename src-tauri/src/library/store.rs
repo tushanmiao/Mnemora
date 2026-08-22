@@ -786,6 +786,62 @@ impl LibraryRepository {
             .ok_or_else(|| "创建后的深度笔记不存在。".to_string())
     }
 
+    /// A full rebuild creates a new immutable note but makes it the latest
+    /// update target for this conversation. Older notes keep their historical
+    /// message-level citations; only the moving summarized-until anchor is
+    /// cleared so future update inspection cannot select the stale generation.
+    pub fn create_rebuilt_note_with_sources_and_coverage(
+        &self,
+        create: LibraryNoteCreate,
+        sources: Vec<NoteSourceCreate>,
+        conversation_id: &str,
+        snapshot: &DeepNoteInputSnapshot,
+    ) -> Result<LibraryNote, String> {
+        let create = create.normalize_and_validate()?;
+        let sources = normalize_note_sources(sources)?;
+        let conversation_id = normalize_identifier("会话 ID", conversation_id)?;
+        let snapshot_json = normalize_coverage_snapshot(snapshot)?;
+        let mut connection = self.open_connection()?;
+        if let Some(item_id) = create.item_id.as_deref() {
+            ensure_active_item_exists(&connection, item_id)?;
+        }
+        let id = Uuid::new_v4().to_string();
+        let now = now_millis_i64();
+        let transaction = connection
+            .transaction()
+            .map_err(|error| format!("开始重建深度笔记失败：{error}"))?;
+        if let Some(group_name) = create.group_name.as_deref() {
+            register_note_group(&transaction, group_name, now)?;
+        }
+        transaction
+            .execute(
+                "UPDATE note_sources SET summarized_until_message_id = NULL
+                 WHERE conversation_id = ? AND summarized_until_message_id IS NOT NULL",
+                params![conversation_id],
+            )
+            .map_err(|error| format!("切换深度笔记更新锚点失败：{error}"))?;
+        transaction
+            .execute(
+                "INSERT INTO library_notes (id, item_id, title, content, group_name, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)",
+                params![id, create.item_id, create.title, create.content, create.group_name, now, now],
+            )
+            .map_err(|error| format!("创建重建深度笔记失败：{error}"))?;
+        insert_note_sources(&transaction, &id, sources, now)?;
+        upsert_deep_note_coverage_snapshot(
+            &transaction,
+            &id,
+            &conversation_id,
+            &snapshot_json,
+            now,
+        )?;
+        transaction
+            .commit()
+            .map_err(|error| format!("提交重建深度笔记失败：{error}"))?;
+        self.get_note_with_connection(&connection, &id)?
+            .ok_or_else(|| "创建后的重建深度笔记不存在。".to_string())
+    }
+
     pub fn deep_note_coverage_snapshot(
         &self,
         note_id: &str,
@@ -4899,6 +4955,72 @@ mod tests {
                 .unwrap(),
             Some(updated_snapshot)
         );
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn rebuilt_note_becomes_the_only_future_update_anchor() {
+        let directory = test_directory("deep-note-rebuild-anchor");
+        let repository = LibraryRepository::new(directory.clone());
+        let initial_snapshot = coverage_snapshot(&["message-a", "message-b"]);
+        let old = repository
+            .create_note_with_sources_and_coverage(
+                LibraryNoteCreate {
+                    item_id: None,
+                    title: "Old deep note".to_string(),
+                    content: "# Old".to_string(),
+                    group_name: None,
+                },
+                vec![NoteSourceCreate {
+                    section_id: "sec-old".to_string(),
+                    origin: NoteSourceOrigin::Conversation,
+                    conversation_id: Some("conversation-1".to_string()),
+                    message_id: Some("message-b".to_string()),
+                    summarized_until_message_id: Some("message-b".to_string()),
+                }],
+                "conversation-1",
+                &initial_snapshot,
+            )
+            .unwrap();
+        let rebuilt_snapshot = coverage_snapshot(&["message-a", "message-b", "message-c"]);
+        let rebuilt = repository
+            .create_rebuilt_note_with_sources_and_coverage(
+                LibraryNoteCreate {
+                    item_id: None,
+                    title: "Rebuilt deep note".to_string(),
+                    content: "# Rebuilt".to_string(),
+                    group_name: None,
+                },
+                vec![NoteSourceCreate {
+                    section_id: "sec-new".to_string(),
+                    origin: NoteSourceOrigin::Conversation,
+                    conversation_id: Some("conversation-1".to_string()),
+                    message_id: Some("message-c".to_string()),
+                    summarized_until_message_id: Some("message-c".to_string()),
+                }],
+                "conversation-1",
+                &rebuilt_snapshot,
+            )
+            .unwrap();
+
+        let latest = repository
+            .latest_deep_note_for_conversation("conversation-1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(latest.0.id, rebuilt.id);
+        assert_eq!(latest.1.as_deref(), Some("message-c"));
+        assert_eq!(
+            repository
+                .deep_note_coverage_snapshot(&rebuilt.id, "conversation-1")
+                .unwrap(),
+            Some(rebuilt_snapshot)
+        );
+        assert!(repository
+            .list_note_sources(&old.id)
+            .unwrap()
+            .iter()
+            .all(|source| source.summarized_until_message_id.is_none()));
+        assert!(repository.get_note(&old.id).is_ok());
         let _ = fs::remove_dir_all(directory);
     }
 

@@ -44,6 +44,7 @@ metadata:
 5. 不使用 `click`、外链图片、HTML 标签或依赖宽松安全级别的语法。
 6. 生成后检查括号、引号、节点 ID、子图结束标记和图型关键字。
 7. 适合独立查看的结果可调用 `present_artifact(kind="mermaid")`；正文仍说明图中最重要的关系。
+8. 写入可直接渲染的 Markdown 正文时，`mermaid` 围栏必须位于正文顶层；不要把它包在 `markdown` / `md` / `text` 源码围栏或四反引号示例中。
 
 ## 完成标准
 

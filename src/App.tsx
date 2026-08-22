@@ -646,6 +646,8 @@ function App() {
       />
       <TaskCenter
         chatMessage={latestAssistantMessage}
+        chatConversationId={conversations.currentConversationId}
+        chatConversationLoaded={conversations.currentConversation !== null && !conversations.currentConversationLoading}
         showChatTask={settings.appSettings.showChatTaskProgress}
         deepNoteDetail={noteActions.deepNoteDetail}
         deepNoteProgress={noteActions.deepNoteProgress}

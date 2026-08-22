@@ -228,6 +228,9 @@ export interface DeepNoteStartInspection {
   coveredMessageId: string | null;
   coveredMessageCount: number;
   newMessageCount: number;
+  newAttachmentCount: number;
+  requiresFullRebuild: boolean;
+  unsupportedAttachmentNames: string[];
   message: string;
 }
 
@@ -296,10 +299,11 @@ export function startNotePipeline(
   conversationId: string,
   onEvent: (event: NotePipelineEvent) => void,
   replaceInvalidated = false,
+  forceRebuild = false,
 ) {
   requireTauri();
   return invoke<NotePipelineRun>("note_pipeline_start", {
-    request: { conversationId, replaceInvalidated },
+    request: { conversationId, replaceInvalidated, forceRebuild },
     onEvent: channel(onEvent),
   });
 }

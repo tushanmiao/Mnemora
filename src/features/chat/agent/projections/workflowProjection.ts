@@ -121,11 +121,21 @@ export function projectAgentWorkflow(
       : skills.length,
     durationMs,
   };
+  const toolSteps = steps.filter((step) => step.kind === "tool");
+  const toolOutcomes = {
+    total: toolSteps.length,
+    succeeded: toolSteps.filter((step) => step.status === "completed").length,
+    failed: toolSteps.filter((step) => (
+      step.status === "failed" || step.status === "rejected" || step.status === "stopped"
+    )).length,
+    active: toolSteps.filter((step) => step.status === "pending" || step.status === "running").length,
+  };
 
   return {
     status,
     summary,
     steps,
+    toolOutcomes,
     needsAttention: status === "waitingApproval"
       || status === "waitingUser"
       || status === "paused"

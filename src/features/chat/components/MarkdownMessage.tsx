@@ -3,6 +3,7 @@ import {
   memo,
   Suspense,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -20,7 +21,7 @@ import {
   splitStreamingMarkdownBlocks,
   type StreamingMarkdownBlock,
 } from "../utils/streamingMarkdown";
-import { extractCodeLanguage, extractCodeText, isMermaidLanguage, normalizeCodeLanguage } from "../markdown/utils/codeBlock";
+import { containsMermaidFence, extractCodeLanguage, extractCodeText, isMermaidLanguage, normalizeCodeLanguage } from "../markdown/utils/codeBlock";
 import { createMarkdownRehypePlugins, createMarkdownRemarkPlugins } from "../markdown/plugins/markdownPlugins";
 import { extractMarkdownOutline } from "../markdown/utils/outline";
 import { MARKDOWN_RENDER_LIMITS } from "../markdown/utils/renderLimits";
@@ -74,6 +75,7 @@ function MarkdownCodeBlock({ children, ...props }: MarkdownPreProps) {
   const [copyState, setCopyState] = useState<CopyState>("idle");
   const [previewState, setPreviewState] = useState<PreviewState>("idle");
   const resetTimerRef = useRef<number | null>(null);
+  const nestedPreviewId = useId().replace(/[^a-zA-Z0-9_-]/g, "-");
   const code = extractCodeText(children).replace(/\n$/, "");
   const language = extractCodeLanguage(children);
   const normalizedLanguage = normalizeCodeLanguage(language);
@@ -110,7 +112,20 @@ function MarkdownCodeBlock({ children, ...props }: MarkdownPreProps) {
 
   if (isMermaidLanguage(language) && props["data-mermaid-disabled"] !== "true") return <MermaidBlock code={code} />;
   if (normalizedLanguage && normalizedLanguage !== "html" && normalizedLanguage !== "htm") {
-    return <HighlightedCodeBlock code={code} language={language} />;
+    const canRenderNestedMarkdown = (normalizedLanguage === "markdown" || normalizedLanguage === "text")
+      && containsMermaidFence(code);
+    return (
+      <HighlightedCodeBlock
+        code={code}
+        language={language}
+        previewContent={canRenderNestedMarkdown ? (
+          <MarkdownMessage content={code} messageId={`nested-markdown-${nestedPreviewId}`} />
+        ) : undefined}
+        previewNotice={canRenderNestedMarkdown
+          ? "这是 Markdown 源码块，内部 Mermaid 只会作为源码保存。可点击眼睛恢复安全预览；若它本应属于笔记正文，请移除外层 markdown 围栏。"
+          : undefined}
+      />
+    );
   }
 
   return (
@@ -207,7 +222,7 @@ function createMarkdownComponents(
 function findAllowedMermaidOffsets(content: string, budget: number) {
   const offsets = new Set<number>();
   if (budget <= 0) return offsets;
-  const fencePattern = /^ {0,3}```+\s*mermaid(?:\s+[^\n]*)?\s*$/gim;
+  const fencePattern = /^ {0,3}(?:`{3,}|~{3,})\s*mermaid(?:\s+[^\n]*)?\s*$/gim;
   for (const match of content.matchAll(fencePattern)) {
     if (offsets.size >= budget) break;
     if (typeof match.index === "number") offsets.add(match.index);
@@ -231,7 +246,18 @@ const streamingComponents: Components = {
 };
 
 function containsMath(content: string) {
-  return /(?:^|[^\\])\$\$[\s\S]+?\$\$|(?:^|[^\\])\$(?!\s)[^\n$]+?\$(?!\$)/m.test(content);
+  return /(?:^|[^\\])```(?:math|latex|tex)(?:\s*\r?\n)[\s\S]+?\r?\n```/im.test(content)
+    || /(?:^|[^\\])\$\$[\s\S]+?\$\$|(?:^|[^\\])\$(?!\s)[^\n$]+?\$(?!\$)/m.test(content);
+}
+
+/** remark-math recognizes fenced formulas as `language-math`; accept common
+ * LaTeX/TeX fence aliases from older notes without sending them to syntax
+ * highlighting. */
+export function normalizeMathFenceLanguage(content: string) {
+  return content.replace(
+    /(^|\n)([ \t]{0,3}```)(?:latex|tex)(?=\s*(?:\r?\n|$))/gi,
+    "$1$2math",
+  );
 }
 
 type MarkdownBlockProps = {
@@ -252,6 +278,7 @@ const MarkdownBlock = memo(function MarkdownBlock({
   onLiteratureReferenceOpen,
 }: MarkdownBlockProps) {
   const content = renderableStreamingBlock(block);
+  const mathContent = normalizeMathFenceLanguage(content);
   const allowedMermaidOffsets = useMemo(
     () => findAllowedMermaidOffsets(content, mermaidBudget),
     [content, mermaidBudget],
@@ -260,7 +287,7 @@ const MarkdownBlock = memo(function MarkdownBlock({
     () => createMarkdownComponents(literatureReferences, onLiteratureReferenceOpen, allowedMermaidOffsets),
     [allowedMermaidOffsets, literatureReferences, onLiteratureReferenceOpen],
   );
-  const mathEnabled = containsMath(content);
+  const mathEnabled = containsMath(mathContent);
   const remarkPlugins = useMemo(
     () => (isStreamingTail ? [] : createMarkdownRemarkPlugins(literatureReferences)),
     [isStreamingTail, literatureReferences],
@@ -273,7 +300,7 @@ const MarkdownBlock = memo(function MarkdownBlock({
     return (
       <Suspense fallback={<span className="markdown-math-loading">{content}</span>}>
         <MathMarkdownContent
-          content={content}
+          content={mathContent}
           components={components}
           messageId={messageId}
           literatureReferences={literatureReferences}

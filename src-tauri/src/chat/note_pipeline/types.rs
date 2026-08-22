@@ -268,6 +268,7 @@ pub struct DeepNoteInputSnapshot {
 pub enum DeepNoteSourceKind {
     Conversation,
     Text,
+    Code,
     Pdf,
     Docx,
     Xlsx,
@@ -281,6 +282,7 @@ impl DeepNoteSourceKind {
         match self {
             Self::Conversation => "conversation",
             Self::Text => "text",
+            Self::Code => "code",
             Self::Pdf => "pdf",
             Self::Docx => "docx",
             Self::Xlsx => "xlsx",
@@ -294,6 +296,7 @@ impl DeepNoteSourceKind {
         match value {
             "conversation" => Ok(Self::Conversation),
             "text" => Ok(Self::Text),
+            "code" => Ok(Self::Code),
             "pdf" => Ok(Self::Pdf),
             "docx" => Ok(Self::Docx),
             "xlsx" => Ok(Self::Xlsx),
@@ -778,6 +781,8 @@ pub struct DeepNoteRuntimeState {
     pub skill_profiles: DeepNoteSkillProfiles,
     #[serde(default)]
     pub context_budget: DeepNoteContextBudget,
+    #[serde(default)]
+    pub force_rebuild: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -789,6 +794,9 @@ pub struct DeepNoteStartInspection {
     pub covered_message_id: Option<String>,
     pub covered_message_count: usize,
     pub new_message_count: usize,
+    pub new_attachment_count: usize,
+    pub requires_full_rebuild: bool,
+    pub unsupported_attachment_names: Vec<String>,
     pub message: String,
 }
 
@@ -974,6 +982,8 @@ pub struct NotePipelineStartRequest {
     pub conversation_id: String,
     #[serde(default)]
     pub replace_invalidated: bool,
+    #[serde(default)]
+    pub force_rebuild: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -41,3 +41,6 @@ export function isMermaidLanguage(language: string | null | undefined) {
   return normalizeCodeLanguage(language) === "mermaid";
 }
 
+export function containsMermaidFence(code: string) {
+  return /^ {0,3}(?:`{3,}|~{3,})\s*mermaid(?:\s+[^\n]*)?\s*$/im.test(code);
+}

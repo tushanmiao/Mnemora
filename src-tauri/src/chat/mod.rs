@@ -4,6 +4,7 @@
 //! `providerId + modelId` 解析配置、从系统凭据读取 Key，再调用 AI dispatcher。
 
 pub mod agent;
+pub mod attachment_formats;
 pub mod attachments;
 pub mod conversation_types;
 pub mod note_pipeline;

@@ -200,7 +200,7 @@ export default function DeepNoteView() {
   ].filter(Boolean).join("\n");
   const localReaderFormats = preflight?.localReaders
     ? [
-        preflight.localReaders.text ? "TXT" : "",
+        preflight.localReaders.text ? "文本 / 代码 / 配置" : "",
         preflight.localReaders.pdf ? "PDF" : "",
         preflight.localReaders.docx ? "DOCX" : "",
         preflight.localReaders.xlsx ? "XLSX" : "",

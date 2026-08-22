@@ -17,6 +17,7 @@ use crate::{
         types::{ModelRequest, ModelTool, ModelToolCall},
     },
     chat::{
+        attachment_formats,
         conversation_types::{AiPermissionMode, StoredChatAttachment},
         storage::ConversationRepository,
         types::{ChatCompletionRequest, ChatWorkspaceMode},
@@ -543,11 +544,17 @@ pub async fn execute_tool(
     let entry = find_tool(&call.name).ok_or_else(|| {
         ModelError::invalid_configuration(format!("模型请求了未注册工具：{}。", call.name))
     })?;
-    if !matches!(entry.namespace, ToolNamespace::Discovery)
-        && !context
-            .available_tool_names
-            .iter()
-            .any(|name| name == entry.name)
+    // Discovery and Skill tools are governed by their own staged state:
+    // model_skills -> inspected -> activated. They may be disclosed before
+    // appearing in the business-tool allowlist, so applying the business
+    // allowlist here would make an advertised inspect_skill impossible to run.
+    if !matches!(
+        entry.namespace,
+        ToolNamespace::Discovery | ToolNamespace::Skill
+    ) && !context
+        .available_tool_names
+        .iter()
+        .any(|name| name == entry.name)
     {
         return Err(ModelError::invalid_configuration(format!(
             "工具 {} 不在本轮运行白名单中。",
@@ -838,6 +845,40 @@ pub async fn execute_bounded_attachment_reader(
         result,
         entry.max_output_chars.max(DEEP_NOTE_READER_OUTPUT_LIMIT),
     ))
+}
+
+pub async fn execute_bounded_text_window(
+    conversation_id: &str,
+    attachment: &StoredChatAttachment,
+    repository: &ConversationRepository,
+    start: usize,
+    requested_end: usize,
+    max_bytes: usize,
+    cancellation: &CancellationToken,
+) -> Result<(ToolExecution, usize), ModelError> {
+    if !is_text_attachment(attachment) {
+        return Err(ModelError::invalid_configuration(
+            "目标附件不是受支持的文本或代码文件。",
+        ));
+    }
+    let path = repository
+        .resolve_attachment_path(conversation_id, &attachment.path)
+        .map_err(ModelError::invalid_configuration)?;
+    if !path.is_file() {
+        return Err(ModelError::invalid_configuration("附件安全副本不存在。"));
+    }
+    let start = start.max(1);
+    let requested_end = requested_end.max(start);
+    if requested_end.saturating_sub(start) >= MAX_TEXT_LINES {
+        return Err(ModelError::invalid_configuration(format!(
+            "单次最多读取 {MAX_TEXT_LINES} 行文本。"
+        )));
+    }
+    let max_bytes = max_bytes.clamp(1, MAX_ATTACHMENT_READ_BYTES);
+    run_blocking_value(cancellation, move || {
+        read_text_window(&path, start, requested_end, max_bytes)
+    })
+    .await
 }
 
 /** 对固定工具支持的 JSON Schema 子集执行严格校验，不引入常驻 Schema 引擎。 */
@@ -1684,6 +1725,23 @@ async fn run_blocking(
     }
 }
 
+async fn run_blocking_value<T: Send + 'static>(
+    cancellation: &CancellationToken,
+    operation: impl FnOnce() -> Result<T, ModelError> + Send + 'static,
+) -> Result<T, ModelError> {
+    tokio::select! {
+        _ = cancellation.cancelled() => Err(ModelError::provider("工具执行已取消。")),
+        result = tokio::time::timeout(
+            std::time::Duration::from_secs(120),
+            tauri::async_runtime::spawn_blocking(operation),
+        ) => match result {
+            Ok(Ok(result)) => result,
+            Ok(Err(error)) => Err(ModelError::provider(format!("工具后台任务失败：{error}"))),
+            Err(_) => Err(ModelError::provider("工具执行超过 120 秒，已停止等待。")),
+        },
+    }
+}
+
 fn resolve_attachment(
     call: &ModelToolCall,
     context: &ToolRuntimeContext,
@@ -1765,6 +1823,130 @@ fn read_text(path: &Path, arguments: &Value) -> Result<ToolExecution, ModelError
     })
 }
 
+fn read_complete_text_content(text: &str, arguments: &Value) -> Result<ToolExecution, ModelError> {
+    let start = optional_u64(arguments, "startLine").unwrap_or(1).max(1) as usize;
+    let end = optional_u64(arguments, "endLine")
+        .unwrap_or_else(|| start.saturating_add(MAX_TEXT_LINES - 1) as u64)
+        .max(start as u64) as usize;
+    if end.saturating_sub(start) >= MAX_TEXT_LINES {
+        return Err(ModelError::invalid_configuration(format!(
+            "单次最多读取 {MAX_TEXT_LINES} 行文本。"
+        )));
+    }
+    let max_bytes = optional_u64(arguments, "maxBytes")
+        .unwrap_or(DEFAULT_ATTACHMENT_READ_BYTES as u64)
+        .clamp(1, MAX_ATTACHMENT_READ_BYTES as u64) as usize;
+    let mut selected = String::new();
+    let mut selected_bytes = 0usize;
+    for (index, line) in text.lines().enumerate() {
+        let line_number = index + 1;
+        if line_number < start {
+            continue;
+        }
+        if line_number > end {
+            break;
+        }
+        let value = format!("{:>6}: {line}", line_number);
+        let separator_bytes = usize::from(!selected.is_empty());
+        if selected_bytes
+            .saturating_add(separator_bytes)
+            .saturating_add(value.len())
+            > max_bytes
+        {
+            if selected.is_empty() {
+                return Err(ModelError::invalid_configuration(format!(
+                    "文本第 {line_number} 行超过单次读取的 {max_bytes} 字节上限；请将压缩 JSON、生成代码或超长行格式化后重试。"
+                )));
+            }
+            return Err(ModelError::invalid_configuration(format!(
+                "文本第 {start}-{end} 行无法在单次 {max_bytes} 字节限制内完整返回；请缩小读取行范围。"
+            )));
+        }
+        if !selected.is_empty() {
+            selected.push('\n');
+            selected_bytes += 1;
+        }
+        selected.push_str(&value);
+        selected_bytes += value.len();
+    }
+    let output_chars = selected.chars().count();
+    Ok(ToolExecution {
+        preview: truncate_chars(&selected, MAX_TOOL_PREVIEW_CHARS),
+        content: selected,
+        is_error: false,
+        activated_skill_id: None,
+        output_chars,
+        output_truncated: false,
+    })
+}
+
+fn fit_text_window_end(
+    text: &str,
+    start: usize,
+    requested_end: usize,
+    max_bytes: usize,
+) -> Result<usize, ModelError> {
+    let mut selected_bytes = 0usize;
+    let mut last = None;
+    for (index, line) in text.lines().enumerate() {
+        let line_number = index + 1;
+        if line_number < start {
+            continue;
+        }
+        if line_number > requested_end {
+            break;
+        }
+        let value_bytes = format!("{:>6}: {line}", line_number).len();
+        let separator_bytes = usize::from(last.is_some());
+        if selected_bytes
+            .saturating_add(separator_bytes)
+            .saturating_add(value_bytes)
+            > max_bytes
+        {
+            if last.is_none() {
+                return Err(ModelError::invalid_configuration(format!(
+                    "文本第 {line_number} 行超过单次读取的 {max_bytes} 字节上限；请将压缩 JSON、生成代码或超长行格式化后重试。"
+                )));
+            }
+            break;
+        }
+        selected_bytes = selected_bytes
+            .saturating_add(separator_bytes)
+            .saturating_add(value_bytes);
+        last = Some(line_number);
+    }
+    Ok(last.unwrap_or(start))
+}
+
+fn read_text_window(
+    path: &Path,
+    start: usize,
+    requested_end: usize,
+    max_bytes: usize,
+) -> Result<(ToolExecution, usize), ModelError> {
+    let metadata = fs::metadata(path)
+        .map_err(|error| ModelError::invalid_configuration(format!("读取附件失败：{error}")))?;
+    if metadata.len() > MAX_TEXT_FILE_BYTES {
+        return Err(ModelError::invalid_configuration(
+            "文本附件超过 2 MB 工具上限。",
+        ));
+    }
+    let raw = fs::read(path)
+        .map_err(|error| ModelError::invalid_configuration(format!("读取附件失败：{error}")))?;
+    let text = String::from_utf8(raw)
+        .map_err(|_| ModelError::invalid_configuration("文本附件不是 UTF-8 编码。"))?;
+    let actual_end = fit_text_window_end(&text, start, requested_end, max_bytes)?;
+    let result = read_complete_text_content(
+        &text,
+        &json!({
+            "startLine": start,
+            "endLine": actual_end,
+            "maxBytes": max_bytes,
+        }),
+    )?;
+    Ok((result, actual_end))
+}
+
 fn read_pdf(
     path: &Path,
     attachment_id: &str,
@@ -1844,62 +2026,7 @@ fn append_system_prompt(request: &mut ModelRequest, section: &str) {
 }
 
 fn is_text_attachment(attachment: &StoredChatAttachment) -> bool {
-    attachment.mime_type.starts_with("text/")
-        || matches!(
-            attachment.mime_type.as_str(),
-            "application/json"
-                | "application/xml"
-                | "application/javascript"
-                | "application/x-javascript"
-        )
-        || matches!(
-            attachment_extension(&attachment.name).as_str(),
-            "txt"
-                | "md"
-                | "markdown"
-                | "csv"
-                | "json"
-                | "rs"
-                | "ts"
-                | "tsx"
-                | "js"
-                | "jsx"
-                | "mjs"
-                | "cjs"
-                | "py"
-                | "java"
-                | "c"
-                | "cc"
-                | "cpp"
-                | "h"
-                | "hpp"
-                | "cs"
-                | "go"
-                | "rb"
-                | "php"
-                | "swift"
-                | "kt"
-                | "kts"
-                | "sql"
-                | "toml"
-                | "yaml"
-                | "yml"
-                | "xml"
-                | "html"
-                | "htm"
-                | "css"
-                | "scss"
-                | "less"
-                | "sh"
-                | "bash"
-                | "ps1"
-                | "bat"
-                | "cmd"
-                | "ini"
-                | "conf"
-                | "env"
-                | "log"
-        )
+    attachment_formats::is_text_attachment(attachment)
 }
 
 fn is_image_attachment(attachment: &StoredChatAttachment) -> bool {
@@ -1907,26 +2034,15 @@ fn is_image_attachment(attachment: &StoredChatAttachment) -> bool {
 }
 
 fn is_pdf_attachment(attachment: &StoredChatAttachment) -> bool {
-    attachment.mime_type == "application/pdf" || attachment_extension(&attachment.name) == "pdf"
+    attachment_formats::is_pdf_attachment(attachment)
 }
 
 fn is_docx_attachment(attachment: &StoredChatAttachment) -> bool {
-    attachment.mime_type
-        == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        || attachment_extension(&attachment.name) == "docx"
+    attachment_formats::is_docx_attachment(attachment)
 }
 
 fn is_xlsx_attachment(attachment: &StoredChatAttachment) -> bool {
-    attachment.mime_type == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        || attachment_extension(&attachment.name) == "xlsx"
-}
-
-fn attachment_extension(name: &str) -> String {
-    Path::new(name)
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .map(str::to_ascii_lowercase)
-        .unwrap_or_default()
+    attachment_formats::is_xlsx_attachment(attachment)
 }
 
 fn ensure_object_keys(value: &Value, allowed: &[&str]) -> Result<(), ModelError> {
@@ -2019,9 +2135,9 @@ mod tests {
     use super::{
         apply_tool_disclosures, configure_model_request, execute_skill, execute_skill_inspect,
         execute_skill_search, execute_tool, execute_tool_inspect, execute_tool_search,
-        parallel_safe, read_pdf, render_skill_arguments, requires_approval, truncate_head_tail,
-        truncate_utf8_bytes, validate_disclosed_tool_calls, validate_tool_arguments, SkillRunCache,
-        ToolRuntimeContext,
+        fit_text_window_end, parallel_safe, read_complete_text_content, read_pdf,
+        render_skill_arguments, requires_approval, truncate_head_tail, truncate_utf8_bytes,
+        validate_disclosed_tool_calls, validate_tool_arguments, SkillRunCache, ToolRuntimeContext,
     };
     use crate::ai::types::{ModelOptions, ModelRequest, ModelToolCall};
     use crate::chat::agent::catalog::find_tool;
@@ -2190,6 +2306,34 @@ mod tests {
         let (tiny, truncated) = truncate_utf8_bytes("中文内容".repeat(20).as_str(), 4);
         assert!(truncated);
         assert!(tiny.len() <= 4);
+    }
+
+    #[test]
+    fn text_reader_never_splits_a_source_line_at_the_byte_limit() {
+        let content = "alpha\nbeta\ngamma";
+        let result = read_complete_text_content(
+            content,
+            &json!({ "startLine": 1, "endLine": 3, "maxBytes": 24 }),
+        )
+        .unwrap_err();
+        assert!(result.message.contains("缩小读取行范围"));
+
+        let long_line = "x".repeat(64);
+        let error = read_complete_text_content(
+            &long_line,
+            &json!({ "startLine": 1, "endLine": 1, "maxBytes": 24 }),
+        )
+        .unwrap_err();
+        assert!(error.message.contains("第 1 行超过"));
+
+        let adaptive_end = fit_text_window_end(content, 1, 3, 24).unwrap();
+        assert_eq!(adaptive_end, 1);
+        let complete = read_complete_text_content(
+            content,
+            &json!({ "startLine": 1, "endLine": adaptive_end, "maxBytes": 24 }),
+        )
+        .unwrap();
+        assert_eq!(complete.content, "     1: alpha");
     }
 
     #[test]
@@ -2382,7 +2526,20 @@ mod tests {
         assert!(before_activation.message.contains("已经激活"));
 
         let inspect = tool_call("inspect_skill", json!({ "id": "resource-demo" }));
-        execute_skill_inspect(&inspect, &context, &repository, &mut cache).unwrap();
+        let inspected = execute_tool(
+            &inspect,
+            &context,
+            &conversation,
+            &repository,
+            &memory,
+            &library,
+            &library_operations,
+            &mut cache,
+            &cancellation,
+        )
+        .await
+        .unwrap();
+        assert!(inspected.preview.contains("Resource demo"));
         let activate = tool_call("activate_skill", json!({ "id": "resource-demo" }));
         execute_skill(&activate, &context, &repository, &mut cache).unwrap();
 

@@ -43,6 +43,8 @@ import "../styles/task-center.css";
 
 type TaskCenterProps = {
   chatMessage: ChatMessage | null;
+  chatConversationId: string | null;
+  chatConversationLoaded: boolean;
   showChatTask?: boolean;
   deepNoteDetail: DeepNoteRunDetail | null;
   deepNoteProgress: DeepNoteProgress | null;
@@ -114,6 +116,8 @@ const copy = {
 
 export function TaskCenter({
   chatMessage,
+  chatConversationId,
+  chatConversationLoaded,
   showChatTask = true,
   deepNoteDetail,
   deepNoteProgress,
@@ -135,6 +139,7 @@ export function TaskCenter({
   const [open, setOpen] = useState(false);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [position, setPosition] = useState<TaskCenterPosition | null>(loadTaskCenterPosition);
+  const cachedChatMessagesRef = useRef(new Map<string, ChatMessage>());
   const [dragging, setDragging] = useState(false);
   const rootRef = useRef<HTMLElement>(null);
   const dragRef = useRef<{
@@ -147,11 +152,25 @@ export function TaskCenter({
   } | null>(null);
   const dragMovedRef = useRef(false);
   const suppressTriggerClickRef = useRef(false);
-  const chatCanStream = Boolean(chatMessage && (
-    chatMessage.status === "pending" || chatMessage.status === "streaming"
+  useEffect(() => {
+    if (!chatConversationId || !chatConversationLoaded) return;
+    if (chatMessage) {
+      cachedChatMessagesRef.current.set(chatConversationId, chatMessage);
+    } else {
+      cachedChatMessagesRef.current.delete(chatConversationId);
+    }
+  }, [chatConversationId, chatConversationLoaded, chatMessage]);
+
+  const taskChatMessage = chatMessage ?? (
+    chatConversationId && (!chatConversationLoaded || cachedChatMessagesRef.current.has(chatConversationId))
+      ? cachedChatMessagesRef.current.get(chatConversationId) ?? null
+      : null
+  );
+  const taskChatCanStream = Boolean(taskChatMessage && (
+    taskChatMessage.status === "pending" || taskChatMessage.status === "streaming"
   ));
-  const streaming = useStreamingMessage(chatMessage?.id ?? "", chatCanStream);
-  const reasoning = streaming?.reasoning ?? chatMessage?.reasoning ?? "";
+  const taskStreaming = useStreamingMessage(taskChatMessage?.id ?? "", taskChatCanStream);
+  const taskReasoning = taskStreaming?.reasoning ?? taskChatMessage?.reasoning ?? "";
 
   const tasks = useMemo(() => sortTaskRuns([
     projectDeepNoteTaskRun({
@@ -159,16 +178,17 @@ export function TaskCenter({
       progress: deepNoteProgress,
       reviewTitle: deepNoteReviewTitle,
     }, language, clock),
-    showChatTask ? projectChatTaskRun(chatMessage, reasoning, chatCanStream || streaming !== null, language, clock) : null,
+    showChatTask ? projectChatTaskRun(taskChatMessage, taskReasoning, taskChatCanStream || taskStreaming !== null, language, clock) : null,
   ].filter((task): task is TaskRunProjection => task !== null)), [
-    chatCanStream,
-    chatMessage,
+    taskChatMessage,
+    taskChatCanStream,
+    taskStreaming,
     clock,
     deepNoteDetail,
     deepNoteProgress,
     deepNoteReviewTitle,
     language,
-    reasoning,
+    taskReasoning,
     showChatTask,
   ]);
 
@@ -178,6 +198,11 @@ export function TaskCenter({
 
   useEffect(() => {
     if (!tasks.length) {
+      // The conversation body is intentionally evicted while another
+      // workspace is visible. Keep the last task trigger alive during that
+      // short loading window instead of treating the missing body as "no
+      // task" and closing the panel.
+      if (chatConversationId && !chatConversationLoaded) return;
       setSelectedTaskId(null);
       setOpen(false);
       return;
@@ -321,6 +346,7 @@ export function TaskCenter({
       <button
         className="task-center-trigger"
         data-status={primaryTask.status}
+        data-issues={primaryTask.status === "completed" && primaryTask.needsAttention ? "true" : "false"}
         type="button"
         title={`${text.open}：${triggerTitle}`}
         aria-label={`${text.open}：${triggerTitle}`}
@@ -339,7 +365,7 @@ export function TaskCenter({
         }}
       >
         <span className="task-center-trigger-icon" aria-hidden="true">
-          <TaskStatusIcon status={primaryTask.status} />
+          <TaskStatusIcon status={primaryTask.status} hasIssues={primaryTask.status === "completed" && primaryTask.needsAttention} />
         </span>
         <span className="task-center-trigger-copy">
           <strong>{triggerTitle}</strong>
@@ -373,18 +399,24 @@ export function TaskCenter({
                   key={task.id}
                   data-active={task.id === selectedTask.id ? "true" : "false"}
                   data-status={task.status}
+                  data-issues={task.status === "completed" && task.needsAttention ? "true" : "false"}
                   type="button"
                   onClick={() => setSelectedTaskId(task.id)}
                 >
                   <span aria-hidden="true"><TaskKindIcon kind={task.kind} /></span>
                   <span><strong>{task.title}</strong><small>{task.currentStepLabel}</small></span>
-                  <TaskStatusIcon status={task.status} />
+                  <TaskStatusIcon status={task.status} hasIssues={task.status === "completed" && task.needsAttention} />
                 </button>
               ))}
             </nav>
           ) : null}
 
-          <div className="task-center-detail" data-kind={selectedTask.kind} data-status={selectedTask.status}>
+          <div
+            className="task-center-detail"
+            data-kind={selectedTask.kind}
+            data-status={selectedTask.status}
+            data-issues={selectedTask.status === "completed" && selectedTask.needsAttention ? "true" : "false"}
+          >
             <div className="task-center-run-heading">
               <span className="task-center-kind-icon" aria-hidden="true"><TaskKindIcon kind={selectedTask.kind} /></span>
               <span>
@@ -531,7 +563,8 @@ function TaskKindIcon({ kind }: { kind: TaskRunKind }) {
   return kind === "deepNote" ? <BrainCircuit size={15} /> : <Bot size={15} />;
 }
 
-function TaskStatusIcon({ status }: { status: TaskRunStatus }) {
+function TaskStatusIcon({ status, hasIssues = false }: { status: TaskRunStatus; hasIssues?: boolean }) {
+  if (status === "completed" && hasIssues) return <AlertTriangle size={15} />;
   if (status === "completed") return <Check size={15} />;
   if (status === "failed") return <XCircle size={15} />;
   if (status === "stopped") return <CircleStop size={15} />;

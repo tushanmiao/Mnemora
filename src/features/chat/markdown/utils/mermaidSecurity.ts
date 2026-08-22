@@ -2,6 +2,11 @@ const DANGEROUS_SVG_TAGS = new Set(["script", "foreignobject", "iframe", "object
 const MERMAID_NODE_SHAPES = "rect, polygon, circle, ellipse, path";
 const MERMAID_PALETTE_SIZE = 6;
 
+// Kept as a compatibility export for callers that previously imported the
+// large-diagram predicate from the security module. Layout policy now lives in
+// mermaidLayout so rendering and viewer sizing share one contract.
+export { isLargeMermaidDiagram } from "./mermaidLayout";
+
 export type MermaidSvgMetrics = {
   width: number;
   height: number;
@@ -39,12 +44,15 @@ export function sanitizeMermaidSvg(svg: string): SanitizedMermaidSvg {
   }
 
   markDefaultFlowchartNodes(root);
+  markFlowchartClusters(root);
   const metrics = extractMermaidSvgMetrics(root.outerHTML);
   root.setAttribute("role", "img");
-  root.setAttribute("width", "100%");
-  root.setAttribute("height", "100%");
+  root.setAttribute("width", String(metrics.width));
+  root.setAttribute("height", String(metrics.height));
   root.setAttribute("preserveAspectRatio", "xMidYMid meet");
   root.style.removeProperty("max-width");
+  root.style.removeProperty("width");
+  root.style.removeProperty("height");
   root.style.removeProperty("background");
   root.style.removeProperty("background-color");
   root.setAttribute("data-mnemora-mermaid", "true");
@@ -59,10 +67,6 @@ export function extractMermaidSvgMetrics(svg: string): MermaidSvgMetrics {
   if (!Number.isFinite(width) || width <= 0) width = 640;
   if (!Number.isFinite(height) || height <= 0) height = 360;
   return { width, height, aspectRatio: width / height };
-}
-
-export function isLargeMermaidDiagram(metrics: MermaidSvgMetrics) {
-  return metrics.width > 1_800 || metrics.height > 1_200 || metrics.aspectRatio > 3.2 || metrics.aspectRatio < 0.38;
 }
 
 function parseSvgDimension(svg: string, attribute: "width" | "height") {
@@ -91,7 +95,7 @@ function markDefaultFlowchartNodes(root: Element) {
       if (shape.closest(".label, marker, defs, clipPath")) return false;
       return shape.getAttribute("fill")?.trim().toLowerCase() !== "none";
     });
-    if (shapes.length === 0 || shapes.some(hasAuthoredPaint)) continue;
+    if (shapes.length === 0 || shapes.some(hasAuthoredNodePaint)) continue;
 
     for (const shape of shapes) {
       shape.setAttribute("data-mnemora-node-tone", String(paletteIndex));
@@ -100,9 +104,66 @@ function markDefaultFlowchartNodes(root: Element) {
   }
 }
 
-function hasAuthoredPaint(element: Element) {
+function hasAuthoredNodePaint(element: Element) {
   const style = element.getAttribute("style")?.toLowerCase() ?? "";
   return /(?:^|;)\s*(?:fill|stroke)\s*:/.test(style);
+}
+
+function hasClusterPaint(element: Element) {
+  return hasAuthoredNodePaint(element) || element.hasAttribute("fill") || element.hasAttribute("stroke");
+}
+
+function markFlowchartClusters(root: Element) {
+  for (const group of Array.from(root.querySelectorAll("g.cluster"))) {
+    const shape = Array.from(group.children).find((element) => element.tagName.toLowerCase() === "rect");
+    if (!shape) continue;
+
+    if (!hasClusterPaint(shape)) {
+      group.setAttribute("data-mnemora-cluster-default", "true");
+      continue;
+    }
+
+    const fill = readInlinePaint(shape, "fill");
+    const tone = fill ? getColorTone(fill) : null;
+    if (tone) group.setAttribute("data-mnemora-cluster-tone", tone);
+  }
+}
+
+function readInlinePaint(element: Element, property: "fill" | "stroke") {
+  const attribute = element.getAttribute(property)?.trim();
+  if (attribute) return attribute;
+  const style = element.getAttribute("style") ?? "";
+  return style.match(new RegExp(`(?:^|;)\\s*${property}\\s*:\\s*([^;!]+)`, "i"))?.[1]?.trim() ?? "";
+}
+
+function getColorTone(color: string): "light" | "dark" | null {
+  const rgb = parseRgbColor(color);
+  if (!rgb) return null;
+  const luminance = rgb
+    .map((channel) => {
+      const value = channel / 255;
+      return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+    })
+    .reduce((sum, value, index) => sum + value * [0.2126, 0.7152, 0.0722][index], 0);
+  return luminance > 0.42 ? "light" : "dark";
+}
+
+function parseRgbColor(color: string): [number, number, number] | null {
+  const normalized = color.trim().toLowerCase();
+  const namedColors: Record<string, [number, number, number]> = {
+    black: [0, 0, 0],
+    white: [255, 255, 255],
+    gray: [128, 128, 128],
+    grey: [128, 128, 128],
+  };
+  if (namedColors[normalized]) return namedColors[normalized];
+  const shortHex = normalized.match(/^#([0-9a-f])([0-9a-f])([0-9a-f])$/i);
+  if (shortHex) return shortHex.slice(1).map((value) => Number.parseInt(value + value, 16)) as [number, number, number];
+  const hex = normalized.match(/^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})(?:[0-9a-f]{2})?$/i);
+  if (hex) return hex.slice(1, 4).map((value) => Number.parseInt(value, 16)) as [number, number, number];
+  const rgb = normalized.match(/^rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)/i);
+  if (!rgb) return null;
+  return rgb.slice(1, 4).map((value) => Math.min(255, Math.max(0, Number(value)))) as [number, number, number];
 }
 
 export function mermaidThemeConfig(host: HTMLElement) {

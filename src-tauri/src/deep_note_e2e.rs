@@ -165,6 +165,7 @@ async fn run(options: Options) -> Result<TestResult, String> {
         NotePipelineStartRequest {
             conversation_id: conversation_id.clone(),
             replace_invalidated: false,
+            force_rebuild: false,
         },
         channel.clone(),
     )

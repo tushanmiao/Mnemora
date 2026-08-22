@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isMermaidLanguage, normalizeCodeLanguage } from "./codeBlock";
+import { containsMermaidFence, isMermaidLanguage, normalizeCodeLanguage } from "./codeBlock";
 
 describe("enhanced code language", () => {
   it("normalizes common aliases without automatic language detection", () => {
@@ -12,5 +12,11 @@ describe("enhanced code language", () => {
     expect(isMermaidLanguage("MerMaid")).toBe(true);
     expect(isMermaidLanguage("markdown")).toBe(false);
   });
-});
 
+  it("detects Mermaid nested inside a Markdown source block", () => {
+    expect(containsMermaidFence("### 示例\n\n```mermaid\nflowchart TD\nA-->B\n```"))
+      .toBe(true);
+    expect(containsMermaidFence("`mermaid` 只是行内文字"))
+      .toBe(false);
+  });
+});

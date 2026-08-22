@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Check, Code2, Copy, Eye } from "lucide-react";
 import { useElementVisibility } from "../hooks/useElementVisibility";
 import { MARKDOWN_RENDER_LIMITS } from "../utils/renderLimits";
@@ -8,6 +8,8 @@ import "../styles/enhanced-markdown.css";
 type HighlightedCodeBlockProps = {
   code: string;
   language: string | null;
+  previewContent?: ReactNode;
+  previewNotice?: string;
 };
 
 const languageLoaders: Record<string, () => Promise<unknown>> = {
@@ -47,13 +49,14 @@ async function highlightCode(code: string, language: string) {
   return core.default.highlight(code, { language, ignoreIllegals: true }).value;
 }
 
-export function HighlightedCodeBlock({ code, language }: HighlightedCodeBlockProps) {
+export function HighlightedCodeBlock({ code, language, previewContent, previewNotice }: HighlightedCodeBlockProps) {
   const normalized = normalizeCodeLanguage(language);
   const { ref, visible } = useElementVisibility<HTMLDivElement>();
   const [html, setHtml] = useState("");
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
   const [source, setSource] = useState(false);
+  const [previewing, setPreviewing] = useState(() => Boolean(previewContent));
   const [expanded, setExpanded] = useState(false);
   const isLong = code.split(/\r?\n/).length > MARKDOWN_RENDER_LIMITS.maxLongCodeLines;
 
@@ -89,13 +92,15 @@ export function HighlightedCodeBlock({ code, language }: HighlightedCodeBlockPro
       <div className="markdown-code-toolbar">
         <span>{language ?? "代码"}</span>
         <div className="markdown-code-actions">
-          {html ? <button type="button" className="markdown-enhanced-action" title={source ? "显示高亮" : "显示源代码"} aria-label={source ? "显示高亮" : "显示源代码"} onClick={() => setSource((current) => !current)}>{source ? <Eye size={14} /> : <Code2 size={14} />}</button> : null}
+          {previewContent ? <button type="button" className="markdown-enhanced-action" title={previewing ? "查看 Markdown 源码" : "渲染内部 Markdown"} aria-label={previewing ? "查看 Markdown 源码" : "渲染内部 Markdown"} onClick={() => setPreviewing((current) => !current)}>{previewing ? <Code2 size={14} /> : <Eye size={14} />}</button> : null}
+          {html && !previewContent ? <button type="button" className="markdown-enhanced-action" title={source ? "显示高亮" : "显示源代码"} aria-label={source ? "显示高亮" : "显示源代码"} onClick={() => setSource((current) => !current)}>{source ? <Eye size={14} /> : <Code2 size={14} />}</button> : null}
           <button type="button" className="markdown-enhanced-action" title={copied ? "已复制" : "复制代码"} aria-label={copied ? "已复制" : "复制代码"} onClick={() => void copy()}>{copied ? <Check size={14} /> : <Copy size={14} />}</button>
         </div>
       </div>
-      {error ? <div className="markdown-enhanced-error">{error}</div> : null}
-      {!html ? <pre className={isLong && !expanded ? "markdown-code-collapsed" : undefined}><code>{code}</code></pre> : source ? <pre className={isLong && !expanded ? "markdown-code-collapsed" : undefined}><code>{code}</code></pre> : <pre className={isLong && !expanded ? "hljs markdown-code-collapsed" : "hljs"} dangerouslySetInnerHTML={{ __html: html }} />}
-      {isLong ? <button type="button" className="markdown-code-expand" onClick={() => setExpanded((value) => !value)}>{expanded ? "收起代码" : "展开完整代码"}</button> : null}
+      {error && !previewing ? <div className="markdown-enhanced-error">{error}</div> : null}
+      {previewNotice ? <div className="markdown-source-nesting-warning">{previewing ? "检测到 Markdown 源码块中的 Mermaid，已按安全预览渲染；点击代码图标可查看原始 Markdown。" : previewNotice}</div> : null}
+      {previewing ? <div className="markdown-source-preview">{previewContent}</div> : !html ? <pre className={isLong && !expanded ? "markdown-code-collapsed" : undefined}><code>{code}</code></pre> : source ? <pre className={isLong && !expanded ? "markdown-code-collapsed" : undefined}><code>{code}</code></pre> : <pre className={isLong && !expanded ? "hljs markdown-code-collapsed" : "hljs"} dangerouslySetInnerHTML={{ __html: html }} />}
+      {isLong && !previewing ? <button type="button" className="markdown-code-expand" onClick={() => setExpanded((value) => !value)}>{expanded ? "收起代码" : "展开完整代码"}</button> : null}
     </div>
   );
 }

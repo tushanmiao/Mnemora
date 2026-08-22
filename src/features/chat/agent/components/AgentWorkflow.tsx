@@ -40,9 +40,17 @@ export function AgentWorkflow({
     language,
   }), [language, message, reasoning, streaming]);
   const { summary } = projection;
+  const hasToolFailures = projection.toolOutcomes.failed > 0;
+  const toolSummary = summary.toolCallCount > 0
+    ? hasToolFailures
+      ? language === "en"
+        ? `Tools: ${projection.toolOutcomes.succeeded} succeeded · ${projection.toolOutcomes.failed} failed`
+        : `工具：${projection.toolOutcomes.succeeded} 成功 · ${projection.toolOutcomes.failed} 失败`
+      : t("chat.workflowTools", { count: summary.toolCallCount })
+    : null;
   const summaryParts = [
     projection.steps.length > 0 ? t("chat.workflowSteps", { count: summary.stepCount }) : null,
-    summary.toolCallCount > 0 ? t("chat.workflowTools", { count: summary.toolCallCount }) : null,
+    toolSummary,
     summary.skillCount > 0 ? t("chat.workflowSkills", { count: summary.skillCount }) : null,
     summary.durationMs !== undefined ? formatDuration(summary.durationMs) : null,
   ].filter((part): part is string => Boolean(part));
@@ -59,7 +67,7 @@ export function AgentWorkflow({
 
   return (
     <section
-      className={`agent-workflow agent-workflow-${projection.status}${open ? " is-open" : ""}`}
+      className={`agent-workflow agent-workflow-${projection.status}${hasToolFailures ? " has-issues" : ""}${open ? " is-open" : ""}`}
       aria-label={t("chat.workflow")}
     >
       <button
@@ -69,7 +77,7 @@ export function AgentWorkflow({
         onClick={() => onOpenChange(!open)}
       >
         <span className="agent-workflow-status-icon" aria-hidden="true">
-          <WorkflowStatusIcon status={projection.status} />
+          <WorkflowStatusIcon status={projection.status} hasIssues={hasToolFailures} />
         </span>
         <span className="agent-workflow-summary-copy">
           <strong>{activityStatusLabel(projection, language)}</strong>
@@ -194,7 +202,8 @@ function ToolStepDetail({ tool, language }: { tool: ToolTrace; language: "zh" | 
   );
 }
 
-function WorkflowStatusIcon({ status }: { status: AgentRunStatus }) {
+function WorkflowStatusIcon({ status, hasIssues = false }: { status: AgentRunStatus; hasIssues?: boolean }) {
+  if (status === "completed" && hasIssues) return <AlertCircle size={16} />;
   if (status === "completed") return <CheckCircle2 size={16} />;
   if (status === "waitingApproval" || status === "waitingUser") return <ShieldAlert size={16} />;
   if (status === "failed" || status === "budgetExhausted") return <AlertCircle size={16} />;
@@ -220,6 +229,11 @@ function activityStatusLabel(projection: ReturnType<typeof projectAgentWorkflow>
     }
   }
   if (status === "completed") {
+    if (projection.toolOutcomes.failed > 0) {
+      return language === "en"
+        ? `Answer completed, but ${projection.toolOutcomes.failed} tool call${projection.toolOutcomes.failed === 1 ? "" : "s"} failed`
+        : `回答已完成，但 ${projection.toolOutcomes.failed} 个工具调用失败`;
+    }
     const kinds = new Set(steps.map((step) => step.kind));
     if (kinds.size === 1 && kinds.has("reasoning")) return language === "en" ? "Thinking completed" : "思考已完成";
     if (kinds.size === 1 && kinds.has("skill")) return language === "en" ? "Skills completed" : "技能使用已完成";
@@ -310,5 +324,6 @@ function skillActivationLabel(activation: "manual" | "slash" | "model", language
 }
 
 function formatDuration(value: number) {
+  if (value < 1) return "<1 ms";
   return value < 1_000 ? `${Math.round(value)} ms` : `${(value / 1_000).toFixed(1)} s`;
 }

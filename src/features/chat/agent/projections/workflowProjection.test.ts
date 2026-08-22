@@ -61,6 +61,43 @@ describe("projectAgentWorkflow", () => {
     }));
     expect(projection.steps.filter((step) => step.kind === "tool")).toHaveLength(1);
     expect(projection.steps.find((step) => step.kind === "tool")?.status).toBe("failed");
+    expect(projection.toolOutcomes).toEqual({
+      total: 1,
+      succeeded: 0,
+      failed: 1,
+      active: 0,
+    });
+  });
+
+  it("区分回答完成与部分工具调用失败", () => {
+    const projection = projectAgentWorkflow(message({
+      toolTraces: [
+        {
+          callId: "call-success",
+          name: "search_skills",
+          status: "completed",
+          risk: "builtinRead",
+          argumentSummary: "{}",
+          durationMs: 0,
+        },
+        {
+          callId: "call-failed",
+          name: "inspect_skill",
+          status: "failed",
+          risk: "builtinRead",
+          argumentSummary: "{}",
+          durationMs: 0,
+        },
+      ],
+    }));
+
+    expect(projection.status).toBe("completed");
+    expect(projection.toolOutcomes).toEqual({
+      total: 2,
+      succeeded: 1,
+      failed: 1,
+      active: 0,
+    });
   });
 
   it("审批、失败与停止保持为需要处理的展开状态", () => {

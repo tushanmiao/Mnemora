@@ -49,6 +49,11 @@
   background: color-mix(in srgb, var(--color-success) 13%, transparent);
 }
 
+.agent-workflow-completed.has-issues .agent-workflow-status-icon {
+  color: var(--status-warning);
+  background: var(--status-warning-soft);
+}
+
 .agent-workflow-waitingApproval .agent-workflow-status-icon,
 .agent-workflow-waitingUser .agent-workflow-status-icon {
   color: var(--workflow-reasoning);

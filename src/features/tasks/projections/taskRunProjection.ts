@@ -130,13 +130,12 @@ export function projectChatTaskRun(
   reasoning: string,
   streaming: boolean,
   language: Language,
-  now = Date.now(),
+  _now = Date.now(),
 ): TaskRunProjection | null {
   if (!message || !hasAgentActivity(message, reasoning)) return null;
 
   const workflow = projectAgentWorkflow(message, { reasoning, streaming, language });
   const status = chatRunStatus(workflow.status);
-  if (TERMINAL_STATUSES.has(status) && now - message.updatedAt > RECENT_TERMINAL_TASK_MS) return null;
 
   const steps: TaskRunStepProjection[] = workflow.steps.map((step) => ({
     id: `chat:${message.id}:${step.id}`,
@@ -155,7 +154,11 @@ export function projectChatTaskRun(
   }));
   const current = currentTaskStep(steps);
   const completedCount = steps.filter((step) => step.status === "completed").length;
-  const statusLabel = chatStatusLabels[language][status];
+  const failedToolCount = workflow.toolOutcomes.failed;
+  const completedWithToolFailures = status === "completed" && failedToolCount > 0;
+  const statusLabel = completedWithToolFailures
+    ? language === "en" ? "Answer completed with tool failures" : "回答完成，但工具有失败"
+    : chatStatusLabels[language][status];
 
   return {
     id: `chat:${message.id}`,
@@ -164,8 +167,8 @@ export function projectChatTaskRun(
     title: language === "en" ? "Chat Agent" : "Chat Agent",
     status,
     statusLabel,
-    currentStepLabel: current?.label ?? statusLabel,
-    activity: chatActivityLabel(steps, status, language),
+    currentStepLabel: completedWithToolFailures ? statusLabel : current?.label ?? statusLabel,
+    activity: chatActivityLabel(steps, status, language, failedToolCount),
     startedAt: message.createdAt,
     updatedAt: message.updatedAt,
     finishedAt: TERMINAL_STATUSES.has(status) ? message.updatedAt : undefined,
@@ -177,7 +180,7 @@ export function projectChatTaskRun(
       skills: workflow.summary.skillCount || undefined,
       tokens: message.usage?.totalTokens,
     },
-    needsAttention: workflow.needsAttention,
+    needsAttention: workflow.needsAttention || failedToolCount > 0,
     canPause: false,
     canResume: false,
     canRetry: false,
@@ -258,8 +261,14 @@ function chatActivityLabel(
   steps: readonly TaskRunStepProjection[],
   status: TaskRunStatus,
   language: Language,
+  failedToolCount = 0,
 ) {
   const current = currentTaskStep(steps);
+  if (status === "completed" && failedToolCount > 0) {
+    return language === "en"
+      ? `Answer completed, but ${failedToolCount} tool call${failedToolCount === 1 ? "" : "s"} failed`
+      : `回答已完成，但 ${failedToolCount} 个工具调用失败`;
+  }
   if (status === "completed") return language === "en" ? "Reasoning and calls completed" : "思考与调用已完成";
   if (status === "failed") return language === "en" ? "Agent processing failed" : "Agent 处理失败";
   if (status === "stopped") return language === "en" ? "Agent processing stopped" : "Agent 处理已停止";
@@ -274,7 +283,11 @@ function toolLabel(name: string, language: Language) {
   const labels: Record<string, [string, string]> = {
     search_tools: ["搜索工具目录", "Search tool catalog"],
     search_skills: ["搜索技能目录", "Search skill catalog"],
+    inspect_tool: ["查看工具契约", "Inspect tool contract"],
+    inspect_skill: ["查看技能说明", "Inspect skill"],
+    activate_skill: ["加载技能", "Load skill"],
     skill: ["加载技能", "Load skill"],
+    read_skill_resource: ["读取技能资源", "Read skill resource"],
     read_attachment_text: ["读取文本附件", "Read text attachment"],
     read_pdf_pages: ["读取 PDF 页面", "Read PDF pages"],
     read_docx_blocks: ["读取 DOCX 内容", "Read DOCX blocks"],
