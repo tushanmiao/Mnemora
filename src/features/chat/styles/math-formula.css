@@ -1,0 +1,105 @@
+.markdown-math-block {
+  width: 100%;
+  min-width: 0;
+  margin: 14px 0;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-panel);
+  background: var(--color-app);
+}
+
+.markdown-math-toolbar {
+  height: auto;
+  min-height: 34px;
+  padding-block: 3px;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.markdown-math-view-switch {
+  display: inline-flex;
+  padding: 2px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+}
+
+.markdown-math-view-switch button {
+  min-height: 24px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--radius-control);
+  color: var(--color-muted);
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+}
+
+.markdown-math-view-switch button:hover,
+.markdown-math-view-switch button[aria-pressed="true"] {
+  color: var(--color-text);
+  background: var(--color-surface-raised);
+}
+
+.markdown-math-view-switch button:focus-visible,
+.markdown-math-block .markdown-copy-button:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+.markdown-math-rendered {
+  min-height: 82px;
+  padding: 18px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  color: var(--color-text);
+  background: var(--color-surface-raised);
+  scrollbar-color: var(--color-border) transparent;
+  scrollbar-width: thin;
+}
+
+.markdown-math-rendered .katex-display {
+  width: max-content;
+  min-width: 100%;
+  margin: 0;
+  text-align: center;
+}
+
+.markdown-math-rendered .katex-error {
+  display: block;
+  color: var(--color-danger) !important;
+  font-family: var(--code-font-family, "Cascadia Code", "SFMono-Regular", Consolas, monospace);
+  font-size: 14px;
+  text-align: left;
+  white-space: pre-wrap;
+}
+
+.markdown-math-source {
+  max-width: 100%;
+  margin: 0;
+  padding: 14px;
+  overflow: auto;
+  color: var(--color-text);
+  background: var(--color-app);
+  font-family: var(--code-font-family, "Cascadia Code", "SFMono-Regular", Consolas, monospace);
+  font-size: 14px;
+  line-height: 1.6;
+  white-space: pre;
+  tab-size: 4;
+}
+
+.markdown-content .markdown-math-source code {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  white-space: inherit;
+}
+
+@media (max-width: 620px) {
+  .markdown-math-rendered { padding: 14px 10px; }
+  .markdown-math-source { padding: 12px; }
+}

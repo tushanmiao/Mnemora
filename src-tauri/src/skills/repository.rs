@@ -825,6 +825,13 @@ mod tests {
                 && skill.supported_modes.len() == 3
                 && skill.required_tools.is_empty()
         }));
+        assert!(skills.iter().any(|skill| {
+            skill.id == "hatch-pet"
+                && !skill.default_enabled
+                && skill
+                    .supported_modes
+                    .contains(&crate::skills::types::SkillMode::Notes)
+        }));
         assert!(!skills
             .iter()
             .any(|skill| skill.id == "code-review-excellence"));

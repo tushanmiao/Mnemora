@@ -53,6 +53,18 @@ export class PdfRenderScheduler {
     this.queue = remaining;
   }
 
+  cancelByPrefix(prefix: string) {
+    if (this.active?.id.startsWith(prefix)) this.active.controller.abort();
+    const remaining: ScheduledTask[] = [];
+    for (const task of this.queue) {
+      if (task.id.startsWith(prefix)) {
+        task.controller.abort();
+        task.resolve();
+      } else remaining.push(task);
+    }
+    this.queue = remaining;
+  }
+
   dispose() {
     this.disposed = true;
     this.active?.controller.abort();

@@ -90,6 +90,12 @@ export class PdfCanvasBudget {
     reservation.registration.release();
   }
 
+  releaseByPrefix(prefix: string) {
+    for (const owner of [...this.reservations.keys()]) {
+      if (owner.startsWith(prefix)) this.evict(owner);
+    }
+  }
+
   releaseAll() {
     for (const owner of [...this.reservations.keys()]) this.evict(owner);
   }

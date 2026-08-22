@@ -59,6 +59,10 @@ pub struct PendingChatAttachment {
 pub struct AttachmentDisplaySource {
     pub kind: &'static str,
     pub value: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
 }
 
 struct InspectedAttachment {
@@ -73,6 +77,8 @@ struct InspectedAttachment {
 
 struct Thumbnail {
     bytes: Vec<u8>,
+    width: u32,
+    height: u32,
 }
 
 pub fn inspect_attachment_paths(paths: Vec<String>) -> Result<Vec<PendingChatAttachment>, String> {
@@ -243,6 +249,34 @@ pub fn import_attachments(
     Ok(stored)
 }
 
+/// 将本地文件安全复制为一个可被深度笔记读取的会话附件。
+/// 复用聊天附件的签名、大小、图片像素和相对路径校验，但不要求模型具备工具调用能力。
+pub fn import_note_source_files(
+    repository: &ConversationRepository,
+    conversation_id: &str,
+    paths: Vec<String>,
+) -> Result<Vec<StoredChatAttachment>, String> {
+    let inspected = inspect_sources(paths)?;
+    if inspected.iter().any(|item| {
+        item.kind != "image"
+            && !attachment_formats::is_text_name(&item.name)
+            && !matches!(
+                attachment_formats::extension(&item.name).as_str(),
+                "pdf" | "docx" | "xlsx"
+            )
+    }) {
+        return Err(
+            "本地笔记导入目前支持 Markdown、TXT、代码/文本文件、DOCX、XLSX、PDF 和图片。"
+                .to_string(),
+        );
+    }
+    let paths = inspected
+        .into_iter()
+        .map(|item| item.path.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    import_attachments(repository, conversation_id, paths, None)
+}
+
 pub fn read_attachment_preview(
     repository: &ConversationRepository,
     conversation_id: Option<&str>,
@@ -259,9 +293,12 @@ pub fn read_attachment_preview(
             return Err("附件缩略图无效。".to_string());
         }
         ensure_not_cancelled(cancellation)?;
+        let dimensions = image::image_dimensions(&full_path).ok();
         return Ok(AttachmentDisplaySource {
             kind: "asset",
             value: full_path.to_string_lossy().into_owned(),
+            width: dimensions.map(|value| value.0),
+            height: dimensions.map(|value| value.1),
         });
     }
 
@@ -281,6 +318,8 @@ pub fn read_attachment_preview(
             "data:image/jpeg;base64,{}",
             general_purpose::STANDARD.encode(thumbnail.bytes)
         ),
+        width: Some(thumbnail.width),
+        height: Some(thumbnail.height),
     })
 }
 
@@ -308,6 +347,8 @@ pub fn read_attachment_image(
     Ok(AttachmentDisplaySource {
         kind: "asset",
         value: full_path.to_string_lossy().into_owned(),
+        width: inspected.width,
+        height: inspected.height,
     })
 }
 
@@ -508,7 +549,8 @@ fn create_thumbnail(
         .map_err(|error| format!("解码图片失败：{error}"))?;
     ensure_not_cancelled(cancellation)?;
 
-    let mut max_dimension = THUMBNAIL_MAX_DIMENSION;
+    // 小图保持原始尺寸，避免为了预览反向放大后增加解码与 GPU 占用。
+    let mut max_dimension = THUMBNAIL_MAX_DIMENSION.min(image.width().max(image.height()).max(1));
     loop {
         let thumbnail = image.thumbnail(max_dimension, max_dimension);
         let rgb = thumbnail.to_rgb8();
@@ -518,7 +560,11 @@ fn create_thumbnail(
             .map_err(|error| format!("编码附件缩略图失败：{error}"))?;
         ensure_not_cancelled(cancellation)?;
         if bytes.len() <= MAX_THUMBNAIL_BYTES || max_dimension <= THUMBNAIL_MIN_DIMENSION {
-            return Ok(Thumbnail { bytes });
+            return Ok(Thumbnail {
+                bytes,
+                width: rgb.width(),
+                height: rgb.height(),
+            });
         }
         max_dimension = (max_dimension * 3 / 4).max(THUMBNAIL_MIN_DIMENSION);
     }
@@ -661,8 +707,8 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        import_attachments, inspect_attachment_paths, load_model_image, read_attachment_image,
-        save_pasted_attachment,
+        import_attachments, import_note_source_files, inspect_attachment_paths, load_model_image,
+        read_attachment_image, read_attachment_preview, save_pasted_attachment,
     };
     use crate::chat::storage::ConversationRepository;
 
@@ -754,6 +800,18 @@ mod tests {
             .unwrap()
             .is_file());
 
+        let preview = read_attachment_preview(
+            &repository,
+            Some("conversation-1"),
+            &stored[0].path,
+            stored[0].preview_path.as_deref(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(preview.kind, "asset");
+        assert_eq!(preview.width, Some(8));
+        assert_eq!(preview.height, Some(6));
+
         let image = load_model_image(&repository, "conversation-1", &stored[0]).unwrap();
         assert_eq!(image.media_type, "image/png");
         assert!(!image.data_base64.is_empty());
@@ -779,12 +837,43 @@ mod tests {
         let source =
             read_attachment_image(&repository, "conversation-1", &stored[0].path, None).unwrap();
         assert_eq!(source.kind, "asset");
+        assert_eq!(source.width, Some(8));
+        assert_eq!(source.height, Some(6));
         assert!(Path::new(&source.value).is_file());
         assert!(read_attachment_image(
             &repository,
             "conversation-1",
             "../source/capture.png",
             None
+        )
+        .is_err());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_note_sources_accept_text_and_reject_unknown_binary() {
+        let root = std::env::temp_dir().join(format!("mnemora-local-note-{}", Uuid::new_v4()));
+        let source = root.join("source");
+        fs::create_dir_all(&source).unwrap();
+        let markdown = source.join("knowledge.md");
+        fs::write(&markdown, "# Knowledge\n\nEvidence").unwrap();
+        let repository = ConversationRepository::new(root.clone());
+
+        let imported = import_note_source_files(
+            &repository,
+            "local-source-1",
+            vec![markdown.to_string_lossy().into_owned()],
+        )
+        .unwrap();
+        assert_eq!(imported.len(), 1);
+        assert_eq!(imported[0].name, "knowledge.md");
+
+        let archive = source.join("unknown.zip");
+        fs::write(&archive, b"PK\x03\x04not-a-note").unwrap();
+        assert!(import_note_source_files(
+            &repository,
+            "local-source-2",
+            vec![archive.to_string_lossy().into_owned()],
         )
         .is_err());
         let _ = fs::remove_dir_all(root);

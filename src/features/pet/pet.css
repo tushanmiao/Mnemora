@@ -38,10 +38,11 @@ button { font: inherit; }
 .pet-window-loading { opacity: 0; }
 
 .pet-character-button {
-  display: block;
+  display: grid;
   width: var(--pet-size);
   height: var(--pet-size);
   padding: 0;
+  place-items: end center;
   border: 0;
   outline-offset: -8px;
   background: transparent;
@@ -57,6 +58,27 @@ button { font: inherit; }
   height: 100%;
   transform-origin: 50% 88%;
   animation: pet-breathe 2.6s ease-in-out infinite;
+}
+
+.pet-sprite {
+  position: relative;
+  width: 92.3077%;
+  height: 100%;
+  overflow: hidden;
+  aspect-ratio: 12 / 13;
+  image-rendering: auto;
+}
+
+.pet-sprite-atlas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: block;
+  max-width: none;
+  pointer-events: none;
+  transform-origin: top left;
+  user-select: none;
+  -webkit-user-drag: none;
 }
 
 .pet-mascot svg { display: block; width: 100%; height: 100%; overflow: visible; }
@@ -98,6 +120,8 @@ button { font: inherit; }
 .pet-window-shell[data-state="success"] .pet-mascot { animation: pet-celebrate 0.7s ease-out 2; }
 .pet-window-shell[data-state="error"] .pet-body { fill: #4b3550; }
 .pet-window-shell[data-state="error"] .pet-sprout { fill: var(--pet-danger); }
+.pet-window-shell[data-idle="true"] .pet-mascot,
+.pet-window-shell[data-idle="true"] .pet-eye { animation: none; }
 
 .pet-bubble {
   position: absolute;

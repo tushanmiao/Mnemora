@@ -2,22 +2,42 @@
 //!
 //! 所有文件读写都放入阻塞线程；保存、删除和清空使用同一异步互斥锁串行化，避免索引竞争。
 
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    path::PathBuf,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use tauri::{AppHandle, State};
 
 use crate::{
-    chat::conversation_types::{ConversationListItem, ConversationListPage, StoredConversation},
+    ai::types::ModelRole,
     chat::note_pipeline,
+    chat::{
+        attachments::import_note_source_files,
+        conversation_types::{
+            AiPermissionMode, ConversationListItem, ConversationListPage, MessageStatus,
+            StoredChatMessage, StoredConversation,
+        },
+    },
     library::types::{
         LibraryNote, LibraryNoteCreate, MAX_NOTE_CONTENT_CHARS, MAX_NOTE_TITLE_CHARS,
     },
     state::AppState,
 };
+use uuid::Uuid;
 
 const DEFAULT_CONVERSATION_PAGE_SIZE: usize = 50;
 const MAX_CONVERSATION_PAGE_SIZE: usize = 100;
 const MAX_EXPORT_PATH_CHARS: usize = 32_768;
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalNoteSourceResult {
+    pub conversation_id: String,
+    pub file_names: Vec<String>,
+    pub attachment_count: usize,
+}
 
 #[derive(Debug, Clone, Copy, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -158,6 +178,121 @@ pub async fn save_conversation_as_note(
             content: clamp_note_content(markdown),
             group_name: None,
         })
+    })
+    .await
+    .map_err(join_error)?
+}
+
+/// 把本地文件复制到一个隐藏的来源会话，再交给既有深度笔记管线处理。
+/// 每个文件独占一条完成态消息，避免单消息 10 附件上限限制批量导入，同时保留文件级来源边界。
+#[tauri::command]
+pub async fn prepare_local_note_source(
+    state: State<'_, AppState>,
+    paths: Vec<String>,
+) -> Result<LocalNoteSourceResult, String> {
+    if paths.is_empty() || paths.len() > 100 {
+        return Err("一次请选择 1 到 100 个本地文件。".to_string());
+    }
+    let conversation_id = Uuid::new_v4().to_string();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    let repository = state.conversation_repository.clone();
+    let _write_guard = state.conversation_writes.lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = (|| {
+            let mut messages = Vec::with_capacity(paths.len());
+            let mut file_names = Vec::with_capacity(paths.len());
+            for path in paths {
+                let attachments =
+                    import_note_source_files(&repository, &conversation_id, vec![path])?;
+                let Some(attachment) = attachments.into_iter().next() else {
+                    return Err("本地文件没有生成有效附件。".to_string());
+                };
+                file_names.push(attachment.name.clone());
+                messages.push(StoredChatMessage {
+                    id: Uuid::new_v4().to_string(),
+                    conversation_id: conversation_id.clone(),
+                    role: ModelRole::User,
+                    content: format!(
+                        "本地文件来源：{}\n请把该文件作为主要证据，生成可追溯的深度笔记。",
+                        attachment.name
+                    ),
+                    attachments: vec![attachment],
+                    literature_references: Vec::new(),
+                    note_references: Vec::new(),
+                    reasoning: None,
+                    status: MessageStatus::Completed,
+                    created_at: now,
+                    updated_at: now,
+                    model_id: None,
+                    model_snapshot: None,
+                    usage: None,
+                    activated_skills: Vec::new(),
+                    tool_traces: Vec::new(),
+                    agent_events: Some(Vec::new()),
+                    agent_run_id: None,
+                    workflow_summary: None,
+                    error_message: None,
+                });
+            }
+            let title = if file_names.len() == 1 {
+                format!("本地文件：{}", file_names[0])
+            } else {
+                format!("本地文件笔记（{} 个文件）", file_names.len())
+            };
+            repository.save(&StoredConversation {
+                id: conversation_id.clone(),
+                title,
+                messages,
+                assistant_id: None,
+                provider_id: None,
+                model_id: None,
+                thinking_enabled: None,
+                reasoning_effort: None,
+                system_prompt: String::new(),
+                context_summary: String::new(),
+                compressed_until_message_id: None,
+                context_compression_count: 0,
+                enabled_skill_ids: Vec::new(),
+                linked_library_item_ids: Vec::new(),
+                permission_mode: AiPermissionMode::AskSensitive,
+                project_id: None,
+                collection_id: None,
+                source_kind: Some("localFiles".to_string()),
+                pinned: false,
+                created_at: now,
+                updated_at: now,
+            })?;
+            Ok(LocalNoteSourceResult {
+                conversation_id: conversation_id.clone(),
+                attachment_count: file_names.len(),
+                file_names,
+            })
+        })();
+        if result.is_err() {
+            let _ = repository.delete(&conversation_id);
+        }
+        result
+    })
+    .await
+    .map_err(join_error)?
+}
+
+#[tauri::command]
+pub async fn discard_local_note_source(
+    state: State<'_, AppState>,
+    conversation_id: String,
+) -> Result<bool, String> {
+    let _write_guard = state.conversation_writes.lock().await;
+    let repository = state.conversation_repository.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let conversation = repository.load(&conversation_id)?;
+        if conversation.source_kind.as_deref() != Some("localFiles") {
+            return Err("只能清理本地文件笔记的隐藏来源。".to_string());
+        }
+        repository.delete(&conversation_id)
     })
     .await
     .map_err(join_error)?

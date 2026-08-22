@@ -29,6 +29,7 @@ import {
   type MarkdownOutlineItem,
 } from "../../chat/markdown/utils/outline";
 import { NotesBrowser, type GroupFilter, type NoteSort } from "./NotesBrowser";
+import { chooseLocalNoteSourceFiles } from "../api/localNoteSource";
 import { NoteEditor, type NoteSelectionMenu } from "./NoteEditor";
 import {
   lineAtOffset,
@@ -65,6 +66,7 @@ export type NotesWorkspaceProps = {
   }) => void;
   onBack: () => void;
   onOpenSourceConversation?: (conversationId: string, messageId: string | null) => void;
+  onGenerateFromLocalFiles?: (paths: string[]) => Promise<void>;
 };
 
 /** 旧版 localStorage 分组一次性迁入 SQLite；成败都不阻塞页面。 */
@@ -119,6 +121,7 @@ export default function NotesWorkspace({
   onEditSelection,
   onBack,
   onOpenSourceConversation,
+  onGenerateFromLocalFiles,
 }: NotesWorkspaceProps) {
   const editorRef = useRef<HTMLTextAreaElement>(null);
   const previewRef = useRef<HTMLDivElement>(null);
@@ -292,6 +295,21 @@ export default function NotesWorkspace({
       setLoading(false);
     }
   }, [loadNotes]);
+
+  const generateFromLocalFiles = useCallback(async () => {
+    if (!onGenerateFromLocalFiles) return;
+    const paths = await chooseLocalNoteSourceFiles();
+    if (paths.length === 0) return;
+    setLoading(true);
+    setError("");
+    try {
+      await onGenerateFromLocalFiles(paths);
+    } catch (generateError) {
+      setError(generateError instanceof Error ? generateError.message : String(generateError));
+    } finally {
+      setLoading(false);
+    }
+  }, [onGenerateFromLocalFiles]);
 
   useEffect(() => {
     // Strict Mode 可能会先执行一次清理，再重新挂载；重新进入页面时恢复保存状态。
@@ -597,6 +615,7 @@ export default function NotesWorkspace({
         onBack={onBack}
         onCreateNote={() => void createNote()}
         onImportNotes={() => void importNotes()}
+        onGenerateFromFiles={onGenerateFromLocalFiles ? () => void generateFromLocalFiles() : undefined}
         onCreateGroup={() => void createGroup()}
         onRemoveGroup={(name) => void removeGroup(name)}
         onOpenNote={(noteId) => void openNote(noteId)}

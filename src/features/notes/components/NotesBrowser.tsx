@@ -12,6 +12,7 @@ import {
   Search,
   SlidersHorizontal,
   Trash2,
+  WandSparkles,
 } from "lucide-react";
 import { useState, type Dispatch, type SetStateAction } from "react";
 import type { LibraryNoteGroup, LibraryNoteSummary } from "../../library/types";
@@ -38,6 +39,7 @@ type NotesBrowserProps = {
   onBack: () => void;
   onCreateNote: () => void;
   onImportNotes: () => void;
+  onGenerateFromFiles?: () => void;
   onCreateGroup: () => void;
   onRemoveGroup: (name: string) => void;
   onOpenNote: (noteId: string) => void;
@@ -65,6 +67,7 @@ export function NotesBrowser({
   onBack,
   onCreateNote,
   onImportNotes,
+  onGenerateFromFiles,
   onCreateGroup,
   onRemoveGroup,
   onOpenNote,
@@ -111,6 +114,12 @@ export function NotesBrowser({
           <FileText size={15} />
           <span>导入 Markdown</span>
         </button>
+        {onGenerateFromFiles ? (
+          <button type="button" className="notes-back-button" disabled={loading} onClick={onGenerateFromFiles}>
+            <WandSparkles size={15} />
+            <span>从本地文件生成</span>
+          </button>
+        ) : null}
       </header>
       <div className="notes-browser-body">
         <aside className="notes-groups-nav" aria-label="笔记分组">

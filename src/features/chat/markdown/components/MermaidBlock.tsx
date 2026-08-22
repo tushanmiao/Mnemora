@@ -10,7 +10,6 @@ import { Check, Code2, Copy, Eye, LoaderCircle, Maximize2, Minus, Plus, RotateCc
 import { useElementVisibility } from "../hooks/useElementVisibility";
 import {
   getDefaultMermaidViewMode,
-  getMermaidPreviewLayout,
   getMermaidViewerScale,
   isLargeMermaidDiagram,
   type MermaidViewMode,
@@ -18,6 +17,7 @@ import {
 import { renderMermaid } from "../utils/mermaidRuntime";
 import { sanitizeMermaidSvg, mermaidThemeConfig, type MermaidSvgMetrics } from "../utils/mermaidSecurity";
 import { MARKDOWN_RENDER_LIMITS } from "../utils/renderLimits";
+import { renderMermaidSvgInShadowHost } from "../utils/mermaidShadow";
 import "../styles/enhanced-markdown.css";
 
 type MermaidBlockProps = {
@@ -29,6 +29,33 @@ type Status = "source" | "loading" | "ready" | "error";
 
 let renderSequence = 0;
 const MERMAID_RENDER_DEBOUNCE_MS = 120;
+
+function MermaidSvgHost({
+  svg,
+  className,
+  style,
+}: {
+  svg: string;
+  className: string;
+  style?: CSSProperties;
+}) {
+  const hostRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host || !svg) return;
+    if (host.classList.contains("markdown-mermaid-lightbox-svg")) {
+      host.setAttribute("data-mermaid-viewer", "true");
+    } else {
+      host.removeAttribute("data-mermaid-viewer");
+    }
+    try {
+      renderMermaidSvgInShadowHost(svg, host);
+    } catch (reason) {
+      console.error("Mermaid SVG 挂载失败", reason);
+    }
+  }, [svg]);
+  return <div ref={hostRef} className={className} style={style} data-testid="mermaid-shadow-host" />;
+}
 
 export function MermaidBlock({ code, streaming = false }: MermaidBlockProps) {
   const { ref, visible } = useElementVisibility<HTMLDivElement>();
@@ -192,12 +219,6 @@ export function MermaidBlock({ code, streaming = false }: MermaidBlockProps) {
     resetView();
   };
 
-  const previewLayout = metrics ? getMermaidPreviewLayout(metrics, previewWidth) : null;
-  const previewStyle = previewLayout ? ({
-    "--mermaid-min-render-width": `${previewLayout.minRenderWidth}px`,
-    "--mermaid-max-render-width": `${previewLayout.maxRenderWidth}px`,
-  } as CSSProperties) : undefined;
-  const previewOverflowsHorizontally = Boolean(previewLayout && previewLayout.projectedWidth > previewWidth + 1);
   const isLarge = metrics ? isLargeMermaidDiagram(metrics, previewWidth) : code.length > 8_000 || code.split(/\r?\n/).length > 64;
   const baseScale = metrics ? getMermaidViewerScale(metrics, canvasSize, viewMode) : 1;
   const renderedScale = Math.min(8, Math.max(0.05, baseScale * zoom));
@@ -289,10 +310,9 @@ export function MermaidBlock({ code, streaming = false }: MermaidBlockProps) {
       ) : null}
       {status === "ready" && !showSource ? (
         <>
-          <div
-            className={`markdown-mermaid-svg markdown-mermaid-rendered${isLarge ? " markdown-mermaid-viewport" : ""}${previewOverflowsHorizontally ? " markdown-mermaid-overflow-x" : ""}`}
-            style={previewStyle}
-            dangerouslySetInnerHTML={{ __html: svg }}
+          <MermaidSvgHost
+            className={`markdown-mermaid-svg${isLarge ? " markdown-mermaid-viewport" : ""}`}
+            svg={svg}
           />
           {isLarge ? <button type="button" className="markdown-code-expand" onClick={openViewer}>在大图查看器中打开</button> : null}
         </>
@@ -329,7 +349,7 @@ export function MermaidBlock({ code, streaming = false }: MermaidBlockProps) {
             onPointerCancel={endPan}
             onKeyDown={handleCanvasKeyDown}
           >
-            <div className="markdown-mermaid-lightbox-svg markdown-mermaid-rendered" style={viewerStyle} dangerouslySetInnerHTML={{ __html: svg }} />
+            <MermaidSvgHost className="markdown-mermaid-lightbox-svg" style={viewerStyle} svg={svg} />
           </div>
         </div>
       ) : null}

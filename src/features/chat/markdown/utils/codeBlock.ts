@@ -42,5 +42,5 @@ export function isMermaidLanguage(language: string | null | undefined) {
 }
 
 export function containsMermaidFence(code: string) {
-  return /^ {0,3}(?:`{3,}|~{3,})\s*mermaid(?:\s+[^\n]*)?\s*$/im.test(code);
+  return /(?:^|\n)[ \t>]*(?:(?:[*+-]|\d{1,9}[.)])[ \t]+)?(?:`{3,}|~{3,})[ \t]*mermaid\b[^\n]*$/im.test(code);
 }

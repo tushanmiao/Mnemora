@@ -4,6 +4,9 @@ import type { PDFDocumentProxy, PDFPageProxy, RenderTask } from "pdfjs-dist";
 import { Virtualizer } from "virtua";
 import { usePdfReaderBridge, type PdfOutlineEntry } from "../context/PdfReaderContext";
 import { useI18n } from "../../../i18n/I18nProvider";
+import type { PdfCanvasBudget } from "../runtime/pdfCanvasBudget";
+import type { PdfCanvasLease } from "../runtime/pdfCanvasBudget";
+import { PdfRenderScheduler } from "../runtime/pdfRenderScheduler";
 import "../styles/pdf-navigator.css";
 
 type NavigatorMode = "outline" | "thumbnails";
@@ -13,11 +16,24 @@ export function PdfNavigatorPanel() {
   const { controller } = usePdfReaderBridge();
   const [mode, setMode] = useState<NavigatorMode>("outline");
   const scrollRef = useRef<HTMLDivElement>(null);
+  const thumbnailScheduler = useMemo(
+    () => new PdfRenderScheduler(),
+    [controller?.itemId],
+  );
   const thumbnailRows = useMemo(() => (
     Array.from({ length: Math.ceil((controller?.pageCount ?? 0) / 2) }, (_, rowIndex) => (
       [rowIndex * 2, rowIndex * 2 + 1].filter((pageIndex) => pageIndex < (controller?.pageCount ?? 0))
     ))
   ), [controller?.pageCount]);
+
+  useEffect(() => {
+    if (mode === "thumbnails" && controller) return undefined;
+    thumbnailScheduler.cancelByPrefix("pdf-thumbnail:");
+    controller?.canvasBudget.releaseByPrefix("pdf-thumbnail:");
+    return undefined;
+  }, [controller, mode, thumbnailScheduler]);
+
+  useEffect(() => () => thumbnailScheduler.dispose(), [thumbnailScheduler]);
 
   if (!controller) {
     return (
@@ -84,6 +100,8 @@ export function PdfNavigatorPanel() {
                       pdf={controller.pdf}
                       pageIndex={pageIndex}
                       active={controller.currentPage === pageIndex + 1}
+                      canvasBudget={controller.canvasBudget}
+                      renderScheduler={thumbnailScheduler}
                       onOpen={() => controller.goToPage(pageIndex)}
                     />
                   ))}
@@ -137,11 +155,15 @@ function PdfThumbnail({
   pdf,
   pageIndex,
   active,
+  canvasBudget,
+  renderScheduler,
   onOpen,
 }: {
   pdf: PDFDocumentProxy;
   pageIndex: number;
   active: boolean;
+  canvasBudget: PdfCanvasBudget;
+  renderScheduler: PdfRenderScheduler;
   onOpen: () => void;
 }) {
   const { t } = useI18n();
@@ -152,48 +174,106 @@ function PdfThumbnail({
     let cancelled = false;
     let page: PDFPageProxy | null = null;
     let renderTask: RenderTask | null = null;
+    let canvasLease: PdfCanvasLease | null = null;
     const canvas = canvasRef.current;
 
-    const render = async () => {
+    const clearCanvas = () => {
+      if (!canvas) return;
+      canvas.width = 0;
+      canvas.height = 0;
+      canvas.style.width = "0";
+      canvas.style.height = "0";
+    };
+    const cleanupPage = () => {
+      page?.cleanup();
+      page = null;
+    };
+
+    const render = async (signal: AbortSignal) => {
       if (!canvas) return;
       try {
         page = await pdf.getPage(pageIndex + 1);
-        if (cancelled) return;
+        if (cancelled || signal.aborted) {
+          cleanupPage();
+          return;
+        }
         const baseViewport = page.getViewport({ scale: 1 });
         const viewport = page.getViewport({ scale: 124 / baseViewport.width });
         const ratio = Math.min(window.devicePixelRatio || 1, 1.5);
-        canvas.width = Math.max(1, Math.floor(viewport.width * ratio));
-        canvas.height = Math.max(1, Math.floor(viewport.height * ratio));
+        canvasLease = canvasBudget.reserve({
+          owner: `pdf-thumbnail:${pageIndex}`,
+          width: viewport.width,
+          height: viewport.height,
+          requestedScale: ratio,
+          priority: 20,
+          onEvict: () => {
+            renderTask?.cancel();
+            canvasLease = null;
+            clearCanvas();
+          },
+        });
+        if (!canvasLease || cancelled || signal.aborted) {
+          canvasLease?.release();
+          canvasLease = null;
+          cleanupPage();
+          return;
+        }
+        const canvasScale = canvasLease.scale;
+        canvas.width = Math.max(1, Math.floor(viewport.width * canvasScale));
+        canvas.height = Math.max(1, Math.floor(viewport.height * canvasScale));
         canvas.style.width = `${viewport.width}px`;
         canvas.style.height = `${viewport.height}px`;
         const context = canvas.getContext("2d", { alpha: false });
-        if (!context) return;
+        if (!context) {
+          canvasLease.release();
+          canvasLease = null;
+          clearCanvas();
+          cleanupPage();
+          return;
+        }
         renderTask = page.render({
           canvas,
           canvasContext: context,
           viewport,
-          transform: ratio === 1 ? undefined : [ratio, 0, 0, ratio, 0, 0],
+          transform: canvasScale === 1 ? undefined : [canvasScale, 0, 0, canvasScale, 0, 0],
         });
+        const cancelRender = () => renderTask?.cancel();
+        signal.addEventListener("abort", cancelRender, { once: true });
         await renderTask.promise;
-      } catch (error) {
-        if (!cancelled && error instanceof Error && error.name !== "RenderingCancelledException") {
-          canvas.width = 0;
-          canvas.height = 0;
+        signal.removeEventListener("abort", cancelRender);
+        if (cancelled || signal.aborted) {
+          canvasLease?.release();
+          canvasLease = null;
+          clearCanvas();
+          cleanupPage();
+          return;
         }
+        cleanupPage();
+      } catch (error) {
+        canvasLease?.release();
+        canvasLease = null;
+        clearCanvas();
+        cleanupPage();
+        if (cancelled || (error instanceof Error && error.name === "RenderingCancelledException")) return;
       }
     };
 
-    void render();
+    const scheduled = renderScheduler.schedule(
+      `pdf-thumbnail:${pageIndex}`,
+      20,
+      render,
+    );
+    void scheduled.promise.catch(() => undefined);
     return () => {
       cancelled = true;
+      scheduled.cancel();
       renderTask?.cancel();
-      if (canvas) {
-        canvas.width = 0;
-        canvas.height = 0;
-      }
-      if (page) page.cleanup();
+      canvasLease?.release();
+      canvasLease = null;
+      clearCanvas();
+      cleanupPage();
     };
-  }, [pdf, pageIndex]);
+  }, [canvasBudget, pageIndex, pdf, renderScheduler]);
 
   return (
     <button

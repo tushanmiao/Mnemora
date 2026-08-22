@@ -39,4 +39,18 @@ describe("PdfCanvasBudget", () => {
     expect(firstEvicted).toHaveBeenCalledOnce();
     expect(secondEvicted).toHaveBeenCalledOnce();
   });
+
+  it("releases only reservations owned by a resource class", () => {
+    const budget = new PdfCanvasBudget(2_000_000);
+    const pageEvicted = vi.fn();
+    const thumbnailEvicted = vi.fn();
+    budget.reserve({ owner: "pdf-page:1", width: 250, height: 250, requestedScale: 1, priority: 0, onEvict: pageEvicted });
+    budget.reserve({ owner: "pdf-thumbnail:1", width: 250, height: 250, requestedScale: 1, priority: 20, onEvict: thumbnailEvicted });
+
+    budget.releaseByPrefix("pdf-thumbnail:");
+
+    expect(thumbnailEvicted).toHaveBeenCalledOnce();
+    expect(pageEvicted).not.toHaveBeenCalled();
+    expect(budget.usedBytes).toBe(250 * 250 * 4);
+  });
 });

@@ -40,6 +40,7 @@ import {
   selectOutlineSections,
   type DeepNoteOutline,
 } from "../../features/chat/notePipeline/outlineSchema";
+import { discardLocalNoteSource, prepareLocalNoteSource } from "../../features/notes/api/localNoteSource";
 import type { DeepNoteProgress } from "../../features/workspace/runtime/DeepNoteViewRuntime";
 
 type NoteFeedback = {
@@ -520,25 +521,25 @@ export function useNoteActions({
       showFeedback("error", deepNoteRunRef.current.conversationId === conversationId
         ? "这个对话已有一个深度笔记任务正在进行。"
         : "已有一个深度笔记任务正在进行，请完成或取消后再试。");
-      return;
+      return false;
     }
     let inspection;
     try {
       inspection = await inspectNotePipelineStart(conversationId);
     } catch (error) {
       showFeedback("error", `检查已有深度笔记失败：${noteErrorText(error)}`);
-      return;
+      return false;
     }
     if (inspection.unsupportedAttachmentNames.length > 0) {
       showFeedback(
         "error",
         `深度笔记无法安全读取这些附件：${inspection.unsupportedAttachmentNames.join("、")}。请先转换为当前支持的文本、PDF、DOCX、XLSX 或图片格式。`,
       );
-      return;
+      return false;
     }
     if (inspection.status === "upToDate") {
       showFeedback("success", inspection.message);
-      return;
+      return false;
     }
     let replaceInvalidated = false;
     let forceRebuild = false;
@@ -548,7 +549,7 @@ export function useNoteActions({
       );
       if (!replaceInvalidated) {
         showFeedback("error", "已有笔记的覆盖快照已失效，未启动重新生成。");
-        return;
+        return false;
       }
     }
     if (inspection.status === "updateAvailable" && inspection.noteId) {
@@ -558,7 +559,7 @@ export function useNoteActions({
         );
         if (!shouldUpdate) {
           showFeedback("success", "已保留现有笔记，没有读取新增附件。");
-          return;
+          return false;
         }
         setNoteEditBusy(true);
         showFeedback("progress", "正在读取新增附件并生成增量更新提案…");
@@ -579,14 +580,14 @@ export function useNoteActions({
         } finally {
           setNoteEditBusy(false);
         }
-        return;
+        return true;
       } else {
         const shouldUpdate = window.confirm(
           `${inspection.message}\n\n已有笔记「${inspection.noteTitle ?? "未命名"}」。是否只合入新增消息并更新这份笔记？`,
         );
         if (!shouldUpdate) {
           showFeedback("success", "已保留现有笔记，没有启动新的生成任务。");
-          return;
+          return false;
         }
         setNoteEditBusy(true);
         showFeedback("progress", "正在只用新增消息生成增量更新提案…");
@@ -607,7 +608,7 @@ export function useNoteActions({
         } finally {
           setNoteEditBusy(false);
         }
-        return;
+        return true;
       }
     }
     deepNoteRunRef.current = { conversationId, runId: null, cancelRequested: false };
@@ -642,6 +643,7 @@ export function useNoteActions({
         refreshDeepNoteDetail(run.id, true);
         if (active.cancelRequested) await cancelNotePipeline(run.id);
       }
+      return true;
     } catch (error) {
       const message = noteErrorText(error);
       try {
@@ -669,7 +671,7 @@ export function useNoteActions({
           }
           refreshDeepNoteDetail(recoverable.id, true);
           showFeedback("success", "已找回这个对话中保存的深度笔记任务。可继续处理，无需重新启动。");
-          return;
+          return true;
         }
       } catch {
         // Keep the original start error when recovery discovery is also unavailable.
@@ -685,6 +687,7 @@ export function useNoteActions({
       });
       finishDeepNoteRun();
       showFeedback("error", `生成深度笔记失败：${message}`);
+      return false;
     }
   }, [
     finishDeepNoteRun,
@@ -693,6 +696,24 @@ export function useNoteActions({
     setProgress,
     showFeedback,
   ]);
+
+  const startLocalFilesDeepNote = useCallback(async (paths: string[]) => {
+    if (deepNoteRunRef.current) {
+      showFeedback("error", "已有一个深度笔记任务正在进行，请完成或取消后再试。");
+      return false;
+    }
+    showFeedback("progress", "正在安全复制本地文件并创建来源快照…");
+    let source: Awaited<ReturnType<typeof prepareLocalNoteSource>>;
+    try {
+      source = await prepareLocalNoteSource(paths);
+    } catch (error) {
+      showFeedback("error", `准备本地文件失败：${noteErrorText(error)}`);
+      return false;
+    }
+    const started = await startDeepNote(source.conversationId);
+    if (!started) await discardLocalNoteSource(source.conversationId).catch(() => undefined);
+    return started;
+  }, [showFeedback, startDeepNote]);
 
   const adjustDeepNoteOutline = useCallback(async (requirement: string) => {
     if (!deepNoteReview || deepNoteReviewBusy) return;
@@ -1178,6 +1199,7 @@ export function useNoteActions({
     saveConversationAsNote,
     summarizeConversationAsNote,
     startDeepNote,
+    startLocalFilesDeepNote,
     adjustDeepNoteOutline,
     confirmDeepNoteOutline,
     pauseDeepNote,

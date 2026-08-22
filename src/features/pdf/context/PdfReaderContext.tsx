@@ -7,6 +7,7 @@ import type {
   LibraryNoteSummary,
 } from "../../library/types";
 import type { WorkNoteSourceContext } from "../../workspace/types";
+import type { PdfCanvasBudget } from "../runtime/pdfCanvasBudget";
 
 export type PdfOutlineEntry = {
   id: string;
@@ -23,6 +24,8 @@ export type PdfReaderController = {
   currentPage: number;
   zoom: number;
   outline: PdfOutlineEntry[];
+  /** 主阅读区与缩略图共享同一 GPU Canvas 预算。 */
+  canvasBudget: PdfCanvasBudget;
   annotations: LibraryAnnotation[];
   notes: LibraryNoteSummary[];
   annotationsLoading: boolean;

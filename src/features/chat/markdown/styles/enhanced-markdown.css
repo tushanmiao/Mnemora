@@ -80,10 +80,11 @@
 }
 
 .markdown-mermaid-svg {
+  box-sizing: border-box;
   width: 100%;
   min-height: 100px;
   padding: 16px;
-  overflow: hidden;
+  overflow: visible;
   color: var(--color-text);
   background: var(--color-surface-raised);
 }
@@ -92,24 +93,6 @@
   max-height: min(62vh, 620px);
   overflow: auto;
   scrollbar-gutter: stable;
-}
-
-.markdown-mermaid-overflow-x {
-  overflow: auto;
-  scrollbar-gutter: stable;
-}
-
-.markdown-mermaid-svg svg {
-  display: block;
-  width: clamp(var(--mermaid-min-render-width, 100%), 100%, var(--mermaid-max-render-width, 100%));
-  max-width: none;
-  height: auto;
-  max-height: none;
-  margin: 0 auto;
-}
-
-.markdown-mermaid-overflow-x svg {
-  margin: 0;
 }
 
 .markdown-mermaid-lightbox {
@@ -223,133 +206,11 @@
   flex: none;
   max-width: none;
   max-height: none;
+  padding: 0;
+  overflow: visible;
+  contain: none;
   transform-origin: center;
   will-change: transform;
-}
-
-.markdown-mermaid-lightbox-svg svg {
-  display: block;
-  width: 100%;
-  height: 100%;
-  max-width: none;
-  max-height: none;
-}
-
-.markdown-mermaid-rendered svg .node text,
-.markdown-mermaid-rendered svg .node tspan,
-.markdown-mermaid-rendered svg .label text,
-.markdown-mermaid-rendered svg .label tspan,
-.markdown-mermaid-rendered svg .cluster-label text,
-.markdown-mermaid-rendered svg .cluster-label tspan {
-  fill: var(--color-text) !important;
-  color: var(--color-text) !important;
-}
-
-.markdown-mermaid-rendered svg [data-mnemora-cluster-default="true"] > rect {
-  fill: #f7f8fc !important;
-  stroke: var(--color-border) !important;
-}
-
-.app-shell[data-theme="dark"] .markdown-mermaid-rendered svg [data-mnemora-cluster-default="true"] > rect {
-  fill: #252a31 !important;
-  stroke: var(--color-border) !important;
-}
-
-.markdown-mermaid-rendered svg [data-mnemora-cluster-tone="light"] .cluster-label text,
-.markdown-mermaid-rendered svg [data-mnemora-cluster-tone="light"] .cluster-label tspan {
-  fill: #202427 !important;
-  color: #202427 !important;
-}
-
-.markdown-mermaid-rendered svg [data-mnemora-cluster-tone="dark"] .cluster-label text,
-.markdown-mermaid-rendered svg [data-mnemora-cluster-tone="dark"] .cluster-label tspan {
-  fill: #f7f4ff !important;
-  color: #f7f4ff !important;
-}
-
-/* Mermaid's generated labels may carry presentation attributes. Keep the
-   readable text contract local to labels; node paint is intentionally left to
-   the safe per-node palette below or to authored Mermaid styles. */
-
-.markdown-mermaid-rendered svg .labelBkg,
-.markdown-mermaid-rendered svg .edgeLabel rect,
-.markdown-mermaid-rendered svg .edgeLabel .labelBkg {
-  fill: var(--color-surface-raised) !important;
-  background-color: var(--color-surface-raised) !important;
-  opacity: 1 !important;
-}
-
-.markdown-mermaid-rendered svg .edgePath path,
-.markdown-mermaid-rendered svg .flowchart-link,
-.markdown-mermaid-rendered svg marker path {
-  stroke: var(--color-muted) !important;
-}
-
-.markdown-mermaid-rendered svg marker path {
-  fill: var(--color-muted) !important;
-}
-
-/* sanitizeMermaidSvg only marks nodes that have no authored classDef/style.
-   The palette therefore enriches ordinary diagrams without overwriting the
-   colors users deliberately wrote into Mermaid source. */
-.markdown-mermaid-rendered svg [data-mnemora-node-tone="0"] {
-  fill: #dcecff !important;
-  stroke: #397eb8 !important;
-}
-
-.markdown-mermaid-rendered svg [data-mnemora-node-tone="1"] {
-  fill: #f1e3ff !important;
-  stroke: #8553a5 !important;
-}
-
-.markdown-mermaid-rendered svg [data-mnemora-node-tone="2"] {
-  fill: #dff3e5 !important;
-  stroke: #4d8f62 !important;
-}
-
-.markdown-mermaid-rendered svg [data-mnemora-node-tone="3"] {
-  fill: #fff1c7 !important;
-  stroke: #a97916 !important;
-}
-
-.markdown-mermaid-rendered svg [data-mnemora-node-tone="4"] {
-  fill: #fde1eb !important;
-  stroke: #a53e6b !important;
-}
-
-.markdown-mermaid-rendered svg [data-mnemora-node-tone="5"] {
-  fill: #dff3f1 !important;
-  stroke: #287f78 !important;
-}
-
-.app-shell[data-theme="dark"] .markdown-mermaid-rendered svg [data-mnemora-node-tone="0"] {
-  fill: #263f55 !important;
-  stroke: #75b5e8 !important;
-}
-
-.app-shell[data-theme="dark"] .markdown-mermaid-rendered svg [data-mnemora-node-tone="1"] {
-  fill: #3f3150 !important;
-  stroke: #c59be3 !important;
-}
-
-.app-shell[data-theme="dark"] .markdown-mermaid-rendered svg [data-mnemora-node-tone="2"] {
-  fill: #2f4939 !important;
-  stroke: #85c69a !important;
-}
-
-.app-shell[data-theme="dark"] .markdown-mermaid-rendered svg [data-mnemora-node-tone="3"] {
-  fill: #55452b !important;
-  stroke: #e2bd68 !important;
-}
-
-.app-shell[data-theme="dark"] .markdown-mermaid-rendered svg [data-mnemora-node-tone="4"] {
-  fill: #4d303d !important;
-  stroke: #e18aaf !important;
-}
-
-.app-shell[data-theme="dark"] .markdown-mermaid-rendered svg [data-mnemora-node-tone="5"] {
-  fill: #244a47 !important;
-  stroke: #72d4c5 !important;
 }
 
 .markdown-enhanced-status,

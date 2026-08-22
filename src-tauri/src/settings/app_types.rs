@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::memory::MemorySettings;
 
-pub const CURRENT_APP_SETTINGS_VERSION: u32 = 14;
+pub const CURRENT_APP_SETTINGS_VERSION: u32 = 15;
 pub const DEFAULT_GLOBAL_SYSTEM_PROMPT: &str = concat!(
     "你是 Mnemora 的学习与研究助手。\n",
     "优先直接回答问题，并根据复杂度使用清晰的标题、列表、表格或代码块。\n",
@@ -126,6 +126,8 @@ pub struct PetSettings {
     pub reduced_motion: bool,
     #[serde(default = "default_true")]
     pub task_events: bool,
+    #[serde(default = "default_pet_id")]
+    pub selected_pet_id: String,
     #[serde(default)]
     pub position_x: Option<f64>,
     #[serde(default)]
@@ -144,6 +146,7 @@ impl Default for PetSettings {
             speech_bubbles: true,
             reduced_motion: false,
             task_events: true,
+            selected_pet_id: default_pet_id(),
             position_x: None,
             position_y: None,
         }
@@ -334,6 +337,10 @@ fn default_pet_opacity() -> u8 {
     96
 }
 
+fn default_pet_id() -> String {
+    "mimo".to_string()
+}
+
 fn default_max_output_tokens() -> u32 {
     32_768
 }
@@ -403,7 +410,10 @@ impl AppSettings {
         self.update_proxy.url = self.update_proxy.url.trim().to_string();
         if source_version < 14 {
             self.pet = PetSettings::default();
+        } else if source_version < 15 {
+            self.pet.selected_pet_id = default_pet_id();
         }
+        self.pet.selected_pet_id = self.pet.selected_pet_id.trim().to_string();
 
         if self.user_display_name.chars().count() > 100 {
             return Err("User display name is too long".to_string());
@@ -474,6 +484,18 @@ impl AppSettings {
         }
         if !(40..=100).contains(&self.pet.opacity) {
             return Err("Pet opacity must be between 40 and 100".to_string());
+        }
+        if self.pet.selected_pet_id.len() > 96
+            || (!self.pet.selected_pet_id.is_empty()
+                && (!self.pet.selected_pet_id.chars().all(|character| {
+                    character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-'
+                }) || self.pet.selected_pet_id.starts_with('-')
+                    || self.pet.selected_pet_id.ends_with('-')))
+        {
+            return Err("Pet id must be a lowercase slug".to_string());
+        }
+        if self.pet.selected_pet_id.is_empty() {
+            self.pet.selected_pet_id = default_pet_id();
         }
         if self
             .pet
@@ -809,6 +831,34 @@ mod tests {
     }
 
     #[test]
+    fn version_fourteen_settings_receive_the_builtin_pet_selection() {
+        let value = serde_json::json!({
+            "version": 14,
+            "interfaceLanguage": "zh",
+            "theme": "system",
+            "themePreset": "mnemora",
+            "themeColor": "neutral",
+            "fontSize": 14,
+            "noteFontSize": 16,
+            "noteLineHeight": 1.85,
+            "retryEnabled": true,
+            "retryAttempts": 5,
+            "maxOutputTokens": 32768,
+            "pet": {
+                "enabled": true,
+                "size": 176,
+                "opacity": 96
+            }
+        });
+        let settings: AppSettings = serde_json::from_value(value).unwrap();
+        let settings = settings.normalize_and_validate().unwrap();
+
+        assert_eq!(settings.version, CURRENT_APP_SETTINGS_VERSION);
+        assert_eq!(settings.pet.selected_pet_id, "mimo");
+        assert!(settings.pet.enabled);
+    }
+
+    #[test]
     fn rejects_invalid_pet_window_settings() {
         let invalid_size = AppSettings {
             pet: super::PetSettings {
@@ -827,6 +877,15 @@ mod tests {
             ..AppSettings::default()
         };
         assert!(invalid_position.normalize_and_validate().is_err());
+
+        let invalid_pet_id = AppSettings {
+            pet: super::PetSettings {
+                selected_pet_id: "../unsafe".to_string(),
+                ..super::PetSettings::default()
+            },
+            ..AppSettings::default()
+        };
+        assert!(invalid_pet_id.normalize_and_validate().is_err());
     }
 
     #[test]

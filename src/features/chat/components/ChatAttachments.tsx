@@ -1,9 +1,15 @@
 import { ExternalLink, FileText, Image as ImageIcon, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ChatAttachment, PendingChatAttachment } from "../../../types/attachment";
 import { useI18n } from "../../../i18n/I18nProvider";
 import { loadChatAttachmentPreview, openChatAttachment } from "../api/attachments";
+import {
+  chatPreviewDecodeBudget,
+  estimatePreviewDecodedBytes,
+  type DecodedImageLease,
+} from "../runtime/imageDecodeBudget";
 import { useImageViewer } from "../image-viewer/ImageViewerContext";
+import { useWorkspaceLifecycle } from "../../../runtime/resources/useWorkspaceLifecycle";
 import "../styles/chat-attachments.css";
 
 type AttachmentLike = ChatAttachment | PendingChatAttachment;
@@ -33,19 +39,40 @@ function AttachmentImage({
   const { t } = useI18n();
   const [preview, setPreview] = useState("");
   const [failed, setFailed] = useState(false);
+  const leaseRef = useRef<DecodedImageLease | null>(null);
+  const lifecycleState = useWorkspaceLifecycle();
 
   useEffect(() => {
     let cancelled = false;
     setPreview("");
     setFailed(false);
+    leaseRef.current?.release();
+    leaseRef.current = null;
+    if (lifecycleState !== "active") return undefined;
     const previewLoad = loadChatAttachmentPreview(
       attachment.path,
       conversationId,
       attachment.previewPath,
     );
     void previewLoad.promise
-      .then((dataUrl) => {
-        if (!cancelled) setPreview(dataUrl);
+      .then((source) => {
+        if (cancelled) return;
+        const lease = chatPreviewDecodeBudget.reserve({
+          owner: `chat-preview:${conversationId ?? "pending"}:${attachment.id}`,
+          estimatedBytes: estimatePreviewDecodedBytes(source.width, source.height),
+          onEvict: () => {
+            if (!cancelled) {
+              setPreview("");
+              setFailed(true);
+            }
+          },
+        });
+        if (!lease) {
+          setFailed(true);
+          return;
+        }
+        leaseRef.current = lease;
+        setPreview(source.src);
       })
       .catch(() => {
         if (!cancelled) setFailed(true);
@@ -53,8 +80,10 @@ function AttachmentImage({
     return () => {
       cancelled = true;
       previewLoad.release();
+      leaseRef.current?.release();
+      leaseRef.current = null;
     };
-  }, [attachment.path, attachment.previewPath, conversationId]);
+  }, [attachment.id, attachment.path, attachment.previewPath, conversationId, lifecycleState]);
 
   if (!preview || failed) {
     return (
@@ -71,7 +100,13 @@ function AttachmentImage({
       title={t("chat.previewImage")}
       aria-label={t("chat.previewNamedImage", { name: attachment.name })}
     >
-      <img className="chat-attachment-image" src={preview} alt={attachment.name} />
+      <img
+        className="chat-attachment-image"
+        src={preview}
+        alt={attachment.name}
+        loading="lazy"
+        decoding="async"
+      />
     </button>
   );
 }

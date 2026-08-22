@@ -52,7 +52,11 @@ impl ConversationRepository {
     }
 
     pub fn list_page(&self, offset: usize, limit: usize) -> Result<ConversationListPage, String> {
-        let conversations = self.list()?;
+        let conversations = self
+            .list()?
+            .into_iter()
+            .filter(|item| item.source_kind.is_none())
+            .collect::<Vec<_>>();
         let total = conversations.len();
         let items = conversations
             .into_iter()
@@ -403,6 +407,7 @@ mod tests {
             permission_mode: AiPermissionMode::AskSensitive,
             project_id: None,
             collection_id: None,
+            source_kind: None,
             pinned: false,
             created_at: updated_at,
             updated_at,
@@ -451,6 +456,30 @@ mod tests {
         repository.clear().unwrap();
         assert!(repository.list().unwrap().is_empty());
         assert!(!remaining_attachments.exists());
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn hidden_local_file_sources_stay_loadable_but_out_of_sidebar_pages() {
+        let directory = test_directory("hidden-local-source");
+        let repository = ConversationRepository::new(directory.clone());
+        let mut hidden = conversation("local-source", 30);
+        hidden.source_kind = Some("localFiles".to_string());
+        repository.save(&hidden).unwrap();
+        repository.save(&conversation("normal", 20)).unwrap();
+
+        assert_eq!(repository.list().unwrap().len(), 2);
+        let page = repository.list_page(0, 50).unwrap();
+        assert_eq!(page.total, 1);
+        assert_eq!(page.items[0].id, "normal");
+        assert_eq!(
+            repository
+                .load("local-source")
+                .unwrap()
+                .source_kind
+                .as_deref(),
+            Some("localFiles")
+        );
         let _ = fs::remove_dir_all(directory);
     }
 

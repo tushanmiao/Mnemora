@@ -521,6 +521,7 @@ fn parse_conversation(
         permission_mode: AiPermissionMode::AskSensitive,
         project_id: None,
         collection_id: None,
+        source_kind: None,
         pinned: false,
         created_at: now,
         updated_at: now.saturating_add(1),

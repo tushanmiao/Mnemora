@@ -48,6 +48,8 @@ export interface Conversation {
   projectId: string | null;
   /** 对话所属集合 ID；为空表示未加入集合。 */
   collectionId: string | null;
+  /** 宿主创建的隐藏来源类型；普通 Chat 为 null/undefined。 */
+  sourceKind?: "localFiles" | null;
   /** 对话是否置顶。 */
   pinned: boolean;
   /** 对话创建时间，使用毫秒时间戳。 */
@@ -76,6 +78,8 @@ export interface ConversationListItem {
   projectId: string | null;
   /** 对话所属集合 ID。 */
   collectionId: string | null;
+  /** 隐藏来源会话不会进入普通侧栏分页。 */
+  sourceKind?: "localFiles" | null;
   /** 对话是否置顶。 */
   pinned: boolean;
   /** 对话创建时间，使用毫秒时间戳。 */

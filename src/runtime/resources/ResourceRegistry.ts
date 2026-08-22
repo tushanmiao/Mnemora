@@ -2,6 +2,7 @@ export type ResourceKind =
   | "audio"
   | "cache"
   | "canvas"
+  | "image"
   | "objectUrl"
   | "observer"
   | "timer"

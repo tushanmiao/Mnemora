@@ -1,6 +1,4 @@
-const DANGEROUS_SVG_TAGS = new Set(["script", "foreignobject", "iframe", "object", "embed", "image"]);
-const MERMAID_NODE_SHAPES = "rect, polygon, circle, ellipse, path";
-const MERMAID_PALETTE_SIZE = 6;
+const DANGEROUS_SVG_TAGS = new Set(["script", "iframe", "object", "embed", "image"]);
 
 // Kept as a compatibility export for callers that previously imported the
 // large-diagram predicate from the security module. Layout policy now lives in
@@ -25,39 +23,56 @@ export function sanitizeMermaidSvg(svg: string): SanitizedMermaidSvg {
   }
   const parsed = new DOMParser().parseFromString(svg, "image/svg+xml");
   const root = parsed.documentElement;
-  if (!root || root.tagName.toLowerCase() !== "svg") throw new Error("Mermaid 未生成有效 SVG");
+  const parserError = parsed.querySelector("parsererror");
+  if (parserError || !root || root.tagName.toLowerCase() !== "svg") {
+    throw new Error("Mermaid 未生成有效 SVG");
+  }
 
-  for (const element of Array.from(root.querySelectorAll("*"))) {
+  for (const element of [root, ...Array.from(root.querySelectorAll("*"))]) {
     if (DANGEROUS_SVG_TAGS.has(element.tagName.toLowerCase())) {
       element.remove();
       continue;
     }
-    for (const attribute of Array.from(element.attributes)) {
+    for (const attribute of Array.from(element.attributes ?? [])) {
       const name = attribute.name.toLowerCase();
       const value = attribute.value.trim().toLowerCase();
       if (name.startsWith("on") || name === "srcdoc") {
         element.removeAttribute(attribute.name);
       } else if ((name === "href" || name === "xlink:href") && !value.startsWith("#")) {
         element.removeAttribute(attribute.name);
+      } else if (name === "style" && containsExternalCssUrl(value)) {
+        element.removeAttribute(attribute.name);
       }
+    }
+    if (element.tagName.toLowerCase() === "style") {
+      element.textContent = sanitizeMermaidCss(element.textContent ?? "");
     }
   }
 
-  markDefaultFlowchartNodes(root);
-  markFlowchartClusters(root);
+  ensureMermaidViewBox(root);
   const metrics = extractMermaidSvgMetrics(root.outerHTML);
   root.setAttribute("role", "img");
-  root.setAttribute("width", String(metrics.width));
-  root.setAttribute("height", String(metrics.height));
-  root.setAttribute("preserveAspectRatio", "xMidYMid meet");
-  root.style.removeProperty("max-width");
-  root.style.removeProperty("width");
+  root.setAttribute("width", "100%");
+  root.removeAttribute("height");
+  root.setAttribute("preserveAspectRatio", "xMidYMin meet");
+  root.style.setProperty("max-width", `${metrics.width}px`);
+  root.style.setProperty("width", "100%");
   root.style.removeProperty("height");
   root.style.removeProperty("background");
   root.style.removeProperty("background-color");
-  root.setAttribute("data-mnemora-mermaid", "true");
+  root.setAttribute("data-mnemora-mermaid", "shadow");
   root.removeAttribute("aria-roledescription");
   return { svg: new XMLSerializer().serializeToString(root), metrics };
+}
+
+function ensureMermaidViewBox(root: Element) {
+  const current = root.getAttribute("viewBox")?.trim();
+  if (current && /^[-+\d.eE]+[\s,]+[-+\d.eE]+[\s,]+[-+\d.eE]+[\s,]+[-+\d.eE]+$/.test(current)) {
+    return;
+  }
+  const width = parseSvgLength(root.getAttribute("width"));
+  const height = parseSvgLength(root.getAttribute("height"));
+  if (width > 0 && height > 0) root.setAttribute("viewBox", `0 0 ${width} ${height}`);
 }
 
 export function extractMermaidSvgMetrics(svg: string): MermaidSvgMetrics {
@@ -74,96 +89,20 @@ function parseSvgDimension(svg: string, attribute: "width" | "height") {
   return match ? Number(match[1]) : Number.NaN;
 }
 
-/**
- * Mermaid 11 把默认主题色主要放在 SVG 内嵌样式表中，而 classDef/style
- * 通常会写成 shape 的 inline style。仅依赖 `[fill="#..."]` 无法稳定命中
- * 默认节点；使用全局 `!important` 又会抹掉用户定义的语义颜色。
- *
- * 因此这里只给“没有额外 class、没有 inline fill/stroke”的默认流程图节点
- * 标记色板序号。实际颜色仍由应用 CSS 根据明暗主题决定。用户 classDef、
- * `style A ...`、透明辅助路径和标签背景都不会被标记。
- */
-function markDefaultFlowchartNodes(root: Element) {
-  let paletteIndex = 0;
-  for (const group of Array.from(root.querySelectorAll("g.node"))) {
-    const classes = Array.from(group.classList);
-    if (!classes.includes("default") || classes.some((name) => name !== "node" && name !== "default")) {
-      continue;
-    }
-
-    const shapes = Array.from(group.querySelectorAll(MERMAID_NODE_SHAPES)).filter((shape) => {
-      if (shape.closest(".label, marker, defs, clipPath")) return false;
-      return shape.getAttribute("fill")?.trim().toLowerCase() !== "none";
-    });
-    if (shapes.length === 0 || shapes.some(hasAuthoredNodePaint)) continue;
-
-    for (const shape of shapes) {
-      shape.setAttribute("data-mnemora-node-tone", String(paletteIndex));
-    }
-    paletteIndex = (paletteIndex + 1) % MERMAID_PALETTE_SIZE;
-  }
+function parseSvgLength(value: string | null) {
+  if (!value) return Number.NaN;
+  const match = value.trim().match(/^([-+\d.eE]+)/);
+  return match ? Number(match[1]) : Number.NaN;
 }
 
-function hasAuthoredNodePaint(element: Element) {
-  const style = element.getAttribute("style")?.toLowerCase() ?? "";
-  return /(?:^|;)\s*(?:fill|stroke)\s*:/.test(style);
+function containsExternalCssUrl(value: string) {
+  return /url\s*\(\s*["']?(?!#)[^)]*\)/i.test(value);
 }
 
-function hasClusterPaint(element: Element) {
-  return hasAuthoredNodePaint(element) || element.hasAttribute("fill") || element.hasAttribute("stroke");
-}
-
-function markFlowchartClusters(root: Element) {
-  for (const group of Array.from(root.querySelectorAll("g.cluster"))) {
-    const shape = Array.from(group.children).find((element) => element.tagName.toLowerCase() === "rect");
-    if (!shape) continue;
-
-    if (!hasClusterPaint(shape)) {
-      group.setAttribute("data-mnemora-cluster-default", "true");
-      continue;
-    }
-
-    const fill = readInlinePaint(shape, "fill");
-    const tone = fill ? getColorTone(fill) : null;
-    if (tone) group.setAttribute("data-mnemora-cluster-tone", tone);
-  }
-}
-
-function readInlinePaint(element: Element, property: "fill" | "stroke") {
-  const attribute = element.getAttribute(property)?.trim();
-  if (attribute) return attribute;
-  const style = element.getAttribute("style") ?? "";
-  return style.match(new RegExp(`(?:^|;)\\s*${property}\\s*:\\s*([^;!]+)`, "i"))?.[1]?.trim() ?? "";
-}
-
-function getColorTone(color: string): "light" | "dark" | null {
-  const rgb = parseRgbColor(color);
-  if (!rgb) return null;
-  const luminance = rgb
-    .map((channel) => {
-      const value = channel / 255;
-      return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
-    })
-    .reduce((sum, value, index) => sum + value * [0.2126, 0.7152, 0.0722][index], 0);
-  return luminance > 0.42 ? "light" : "dark";
-}
-
-function parseRgbColor(color: string): [number, number, number] | null {
-  const normalized = color.trim().toLowerCase();
-  const namedColors: Record<string, [number, number, number]> = {
-    black: [0, 0, 0],
-    white: [255, 255, 255],
-    gray: [128, 128, 128],
-    grey: [128, 128, 128],
-  };
-  if (namedColors[normalized]) return namedColors[normalized];
-  const shortHex = normalized.match(/^#([0-9a-f])([0-9a-f])([0-9a-f])$/i);
-  if (shortHex) return shortHex.slice(1).map((value) => Number.parseInt(value + value, 16)) as [number, number, number];
-  const hex = normalized.match(/^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})(?:[0-9a-f]{2})?$/i);
-  if (hex) return hex.slice(1, 4).map((value) => Number.parseInt(value, 16)) as [number, number, number];
-  const rgb = normalized.match(/^rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)/i);
-  if (!rgb) return null;
-  return rgb.slice(1, 4).map((value) => Math.min(255, Math.max(0, Number(value)))) as [number, number, number];
+function sanitizeMermaidCss(value: string) {
+  return value
+    .replace(/@import[^;]+;?/gi, "")
+    .replace(/url\s*\(\s*["']?(?!#)[^)]*\)/gi, "none");
 }
 
 export function mermaidThemeConfig(host: HTMLElement) {
@@ -176,9 +115,11 @@ export function mermaidThemeConfig(host: HTMLElement) {
     // 始终从 base 主题出发并显式注入明暗色，避免 Mermaid dark 主题中的
     // 黑色内嵌背景与应用表面色叠加后形成无法阅读的色块。
     theme: "base" as const,
+    // 保持 Mermaid strict；htmlLabels 只负责渲染器生成的中文换行容器，
+    // 下游清洗器仍会再次移除脚本、事件、外部 href 与 CSS 外链。
     securityLevel: "strict" as const,
     startOnLoad: false,
-    htmlLabels: false,
+    htmlLabels: true,
     wrap: true,
     markdownAutoWrap: true,
     fontSize: 13,

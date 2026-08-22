@@ -222,16 +222,22 @@ function createMarkdownComponents(
 function findAllowedMermaidOffsets(content: string, budget: number) {
   const offsets = new Set<number>();
   if (budget <= 0) return offsets;
-  const fencePattern = /^ {0,3}(?:`{3,}|~{3,})\s*mermaid(?:\s+[^\n]*)?\s*$/gim;
+  // 与 Cherry Studio 一样容忍列表、引用、空格和 info metadata；误判只会
+  // 懒加载 Mermaid，漏判则会让合法图表退化成普通代码块。
+  const fencePattern = /(^|\n)([ \t>]*(?:(?:[*+-]|\d{1,9}[.)])[ \t]+)?)(?:`{3,}|~{3,})[ \t]*mermaid\b[^\n]*$/gim;
+  let matchedBlocks = 0;
   for (const match of content.matchAll(fencePattern)) {
-    if (offsets.size >= budget) break;
-    if (typeof match.index === "number") offsets.add(match.index);
+    if (matchedBlocks >= budget || typeof match.index !== "number") break;
+    const lineStart = match.index + (match[1] ? match[1].length : 0);
+    offsets.add(lineStart);
+    offsets.add(lineStart + (match[2]?.length ?? 0));
+    matchedBlocks += 1;
   }
   return offsets;
 }
 
 function countMermaidBlocks(content: string) {
-  return findAllowedMermaidOffsets(content, Number.MAX_SAFE_INTEGER).size;
+  return [...content.matchAll(/(^|\n)[ \t>]*(?:(?:[*+-]|\d{1,9}[.)])[ \t]+)?(?:`{3,}|~{3,})[ \t]*mermaid\b[^\n]*$/gim)].length;
 }
 
 const streamingComponents: Components = {
@@ -246,7 +252,7 @@ const streamingComponents: Components = {
 };
 
 function containsMath(content: string) {
-  return /(?:^|[^\\])```(?:math|latex|tex)(?:\s*\r?\n)[\s\S]+?\r?\n```/im.test(content)
+  return /(?:^|[^\\])(?:`{3,}|~{3,})[ \t]*(?:math|latex|tex)\b[^\r\n]*(?:\r?\n)[\s\S]+?\r?\n(?:`{3,}|~{3,})/im.test(content)
     || /(?:^|[^\\])\$\$[\s\S]+?\$\$|(?:^|[^\\])\$(?!\s)[^\n$]+?\$(?!\$)/m.test(content);
 }
 
@@ -255,7 +261,7 @@ function containsMath(content: string) {
  * highlighting. */
 export function normalizeMathFenceLanguage(content: string) {
   return content.replace(
-    /(^|\n)([ \t]{0,3}```)(?:latex|tex)(?=\s*(?:\r?\n|$))/gi,
+    /(^|\n)([ \t]{0,3}(?:`{3,}|~{3,}))(?:latex|tex)(?=\s*(?:\r?\n|$))/gi,
     "$1$2math",
   );
 }

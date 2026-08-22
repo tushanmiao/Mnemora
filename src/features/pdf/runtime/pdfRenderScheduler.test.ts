@@ -13,4 +13,17 @@ describe("PdfRenderScheduler", () => {
     expect(adjacentAborted).toBe(true);
     scheduler.dispose();
   });
+
+  it("cancels queued work by resource prefix", async () => {
+    const scheduler = new PdfRenderScheduler();
+    let activeAborted = false;
+    const first = scheduler.schedule("pdf-thumbnail:1", 20, (signal) => new Promise<void>((resolve) => {
+      signal.addEventListener("abort", () => { activeAborted = true; resolve(); }, { once: true });
+    }));
+    const second = scheduler.schedule("pdf-thumbnail:2", 20, async () => undefined);
+    scheduler.cancelByPrefix("pdf-thumbnail:");
+    await Promise.all([first.promise, second.promise]);
+    expect(activeAborted).toBe(true);
+    scheduler.dispose();
+  });
 });

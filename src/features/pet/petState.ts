@@ -5,6 +5,25 @@ import type { PetStatePayload } from "./types";
 
 const RECENT_SUCCESS_MS = 8_000;
 
+export function nextPetStateExpiry(
+  chatMessage: ChatMessage | null,
+  deepNoteDetail: DeepNoteRunDetail | null,
+  deepNoteProgress: DeepNoteProgress | null,
+  now = Date.now(),
+) {
+  const phase = deepNoteProgress?.phase ?? deepNoteDetail?.run.phase ?? null;
+  if (phase === "done") {
+    return remainingExpiry(
+      deepNoteProgress?.updatedAt ?? deepNoteDetail?.run.updatedAt ?? now,
+      now,
+    );
+  }
+  if (!phase && chatMessage?.status === "completed") {
+    return remainingExpiry(chatMessage.updatedAt, now);
+  }
+  return null;
+}
+
 export function projectPetState(
   chatMessage: ChatMessage | null,
   deepNoteDetail: DeepNoteRunDetail | null,
@@ -54,4 +73,9 @@ function payload(
   updatedAt: number,
 ): PetStatePayload {
   return { state, label, detail, updatedAt };
+}
+
+function remainingExpiry(updatedAt: number, now: number) {
+  const remaining = RECENT_SUCCESS_MS - Math.max(0, now - updatedAt);
+  return remaining > 0 ? remaining : null;
 }

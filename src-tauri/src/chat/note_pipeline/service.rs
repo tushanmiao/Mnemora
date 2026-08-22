@@ -70,7 +70,7 @@ const PLANNER_FALLBACK_RETRIES: u8 = 1;
 const FAST_PLANNER_OUTPUT_TOKENS: u32 = 1_024;
 const SECTION_OUTPUT_TOKEN_LIMIT: u32 = 2_048;
 const SECTION_SOURCE_TOKEN_LIMIT: u64 = 3_000;
-const FAST_PLANNER_SYSTEM_PROMPT: &str = r#"You are the outline planner for a study note. Return exactly one valid JSON object and no markdown. Use only the supplied ledger and message IDs. Identify the unspoken question, missing prerequisite, confused causal link, or misconception that actually blocks understanding. Prefer causal mechanisms over empty abstraction. Record useful Mermaid opportunities when at least three nodes, steps, dependencies, branches, states, or temporal interactions exist. Keep the outline concise: 4 to 8 sections. Required shape: {"goal":"","audience":"","scope":"","title":"","summary":"","weakPoints":[],"hiddenQuestions":[],"knowledgeGaps":[],"misconceptions":[],"causalChains":[],"visualizationOpportunities":[],"allowAiSupplement":false,"evidencePolicy":"","sourceIds":[],"sections":[{"id":"sec-1","heading":"","kind":"prerequisite|concept|comparison|pitfall|example|summary|selfcheck","purpose":"","brief":"","dependsOn":[],"evidenceRequirements":[],"successCriteria":[],"sourceScope":[],"targetDepth":"standard","allowAiSupplement":false,"needsSupplement":false,"sourceMessageIds":[]}]}. Every sourceMessageIds value must be copied from the ledger. Do not invent facts or IDs."#;
+const FAST_PLANNER_SYSTEM_PROMPT: &str = r#"You are the outline planner for a study note. Return exactly one valid JSON object and no markdown. Use only the supplied ledger and message IDs. Identify the unspoken question, missing prerequisite, confused causal link, or misconception that actually blocks understanding. Prefer causal mechanisms over empty abstraction. Record Mermaid opportunities as 'diagram type | cognitive question | target section'. Choose by semantics instead of defaulting to flowchart: mindmap for hierarchy, stateDiagram-v2 for lifecycle, sequenceDiagram for interactions, erDiagram for entities, classDiagram for types, gantt/timeline for real schedules, journey for execution experience, requirementDiagram for requirements, and xychart-beta/pie only for sourced numeric data. Keep the outline concise: 4 to 8 sections. Required shape: {"goal":"","audience":"","scope":"","title":"","summary":"","weakPoints":[],"hiddenQuestions":[],"knowledgeGaps":[],"misconceptions":[],"causalChains":[],"visualizationOpportunities":[],"allowAiSupplement":false,"evidencePolicy":"","sourceIds":[],"sections":[{"id":"sec-1","heading":"","kind":"prerequisite|concept|comparison|pitfall|example|summary|selfcheck","purpose":"","brief":"","dependsOn":[],"evidenceRequirements":[],"successCriteria":[],"sourceScope":[],"targetDepth":"standard","allowAiSupplement":false,"needsSupplement":false,"sourceMessageIds":[]}]}. Every sourceMessageIds value must be copied from the ledger. Do not invent facts, IDs, schedules, or numbers."#;
 const OUTLINE_SIZE_SUFFIX: &str =
     "Prefer 6 to 12 sections and never exceed 12 sections. Keep every field concise.";
 const DEFAULT_CHUNK_TARGET_TOKENS: u64 = 16_000;
@@ -3358,6 +3358,12 @@ fn validate_section_markdown(
             "erDiagram",
             "timeline",
             "gantt",
+            "mindmap",
+            "journey",
+            "requirementDiagram",
+            "xychart-beta",
+            "pie",
+            "gitGraph",
         ]
         .iter()
         .any(|kind| normalized.contains(kind))
@@ -6640,6 +6646,7 @@ mod tests {
             permission_mode: AiPermissionMode::AskSensitive,
             project_id: None,
             collection_id: None,
+            source_kind: None,
             pinned: false,
             created_at: 1,
             updated_at: 1,

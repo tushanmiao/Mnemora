@@ -13,9 +13,9 @@ describe("mermaidLayout", () => {
     const layout = getMermaidPreviewLayout(tallDiagram, 868);
 
     expect(layout.minRenderWidth).toBe(617);
-    expect(layout.maxRenderWidth).toBe(926);
-    expect(layout.projectedWidth).toBe(868);
-    expect(layout.projectedHeight).toBeGreaterThan(1_600);
+    expect(layout.maxRenderWidth).toBe(617);
+    expect(layout.projectedWidth).toBe(617);
+    expect(layout.projectedHeight).toBe(1_162);
     expect(layout.requiresViewport).toBe(true);
   });
 

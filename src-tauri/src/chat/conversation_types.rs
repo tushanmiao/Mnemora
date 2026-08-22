@@ -369,6 +369,10 @@ pub struct StoredConversation {
     pub permission_mode: AiPermissionMode,
     pub project_id: Option<String>,
     pub collection_id: Option<String>,
+    /// `Some` 仅用于宿主创建的非 Chat 来源任务，例如本地文件生成笔记。
+    /// 普通用户会话保持 `None`，不会改变侧栏展示或模型上下文。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_kind: Option<String>,
     pub pinned: bool,
     pub created_at: u64,
     pub updated_at: u64,
@@ -387,6 +391,8 @@ pub struct ConversationListItem {
     pub model_id: Option<String>,
     pub project_id: Option<String>,
     pub collection_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_kind: Option<String>,
     pub pinned: bool,
     pub created_at: u64,
     pub updated_at: u64,
@@ -441,6 +447,13 @@ impl StoredConversation {
         }
         validate_optional_id("Project ID", self.project_id.as_deref())?;
         validate_optional_id("Collection ID", self.collection_id.as_deref())?;
+        if self
+            .source_kind
+            .as_deref()
+            .is_some_and(|value| !matches!(value, "localFiles"))
+        {
+            return Err("Conversation source kind is invalid".to_string());
+        }
         if self.enabled_skill_ids.len() > 64 {
             return Err("Conversation cannot enable more than 64 skills".to_string());
         }
@@ -690,6 +703,7 @@ impl StoredConversation {
             model_id: self.model_id.clone(),
             project_id: self.project_id.clone(),
             collection_id: self.collection_id.clone(),
+            source_kind: self.source_kind.clone(),
             pinned: self.pinned,
             created_at: self.created_at,
             updated_at: self.updated_at,
@@ -750,6 +764,7 @@ mod tests {
             permission_mode: AiPermissionMode::AskSensitive,
             project_id: None,
             collection_id: None,
+            source_kind: None,
             pinned: false,
             created_at: 1,
             updated_at: 1,

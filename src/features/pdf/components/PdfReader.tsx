@@ -479,6 +479,7 @@ export function PdfReader({ item, onOpenExternal, onOpenNote, onAskSelection }: 
       currentPage,
       zoom,
       outline,
+      canvasBudget,
       annotations: resources.annotations,
       notes: resources.notes,
       annotationsLoading: resources.annotationsLoading,
@@ -508,6 +509,7 @@ export function PdfReader({ item, onOpenExternal, onOpenNote, onAskSelection }: 
   }, [
     annotationColor,
     annotationMode,
+    canvasBudget,
     currentPage,
     goToAnnotation,
     goToPage,

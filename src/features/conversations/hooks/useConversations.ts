@@ -68,6 +68,7 @@ function toConversationListItem(conversation: Conversation): ConversationListIte
     modelId: conversation.modelId,
     projectId: conversation.projectId,
     collectionId: conversation.collectionId,
+    sourceKind: conversation.sourceKind ?? null,
     pinned: conversation.pinned,
     createdAt: conversation.createdAt,
     updatedAt: conversation.updatedAt,

@@ -52,7 +52,7 @@ import { TaskCenter } from "./features/tasks/components/TaskCenter";
 import { clearAttachmentPreviewCache } from "./features/chat/api/attachments";
 import { releaseBackgroundResources } from "./runtime/resources/ResourceRegistry";
 import { initializeWorkspaceLifecycle, subscribeWorkspaceLifecycle } from "./runtime/resources/WorkspaceLifecycle";
-import { projectPetState } from "./features/pet/petState";
+import { nextPetStateExpiry, projectPetState } from "./features/pet/petState";
 function App() {
   const appShellRef = useRef<HTMLElement>(null);
   const navigation = useWorkspaceNavigation();
@@ -154,9 +154,24 @@ function App() {
 
   useEffect(() => {
     if (!settings.appSettings.pet.enabled || !settings.appSettings.pet.taskEvents) return undefined;
-    const timer = window.setInterval(() => setPetClock(Date.now()), 2_000);
-    return () => window.clearInterval(timer);
-  }, [settings.appSettings.pet.enabled, settings.appSettings.pet.taskEvents]);
+    const now = Date.now();
+    setPetClock(now);
+    const delay = nextPetStateExpiry(
+      latestAssistantMessage,
+      noteActions.deepNoteDetail,
+      noteActions.deepNoteProgress,
+      now,
+    );
+    if (delay === null) return undefined;
+    const timer = window.setTimeout(() => setPetClock(Date.now()), delay + 25);
+    return () => window.clearTimeout(timer);
+  }, [
+    latestAssistantMessage,
+    noteActions.deepNoteDetail,
+    noteActions.deepNoteProgress,
+    settings.appSettings.pet.enabled,
+    settings.appSettings.pet.taskEvents,
+  ]);
 
   const petState = useMemo(() => (
     settings.appSettings.pet.taskEvents
@@ -552,6 +567,9 @@ function App() {
             },
             onAskSelection: references.addNoteReference,
             onEditSelection: noteActions.openSelectionNoteEdit,
+            onGenerateFromLocalFiles: async (paths: string[]) => {
+              if (await noteActions.startLocalFilesDeepNote(paths)) changeWorkspaceMode("deepNote");
+            },
             onOpenSourceConversation: (conversationId: string) => {
               conversations.selectConversation(conversationId);
               changeWorkspaceMode("chat");

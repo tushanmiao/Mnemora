@@ -14,11 +14,14 @@
   padding: 0 24px;
   align-items: center;
   gap: 12px;
+  overflow-x: auto;
+  scrollbar-width: thin;
   border-bottom: 1px solid var(--color-border);
   background: var(--color-surface);
 }
 
 .notes-browser-toolbar > strong { flex: 1; font-size: 15px; }
+.notes-browser-toolbar > button { flex: none; }
 
 .notes-back-button,
 .notes-create-button {

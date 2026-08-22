@@ -42,6 +42,22 @@ describe("MarkdownMessage safe HTML", () => {
     expect(output).toContain('class="katex"');
     expect(output).toContain('class="katex-display"');
     expect(output).toContain('<math');
+    expect(output.match(/class="markdown-math-block"/g)).toHaveLength(2);
+    expect(output).toContain('aria-label="公式显示方式"');
+    expect(output).toContain('aria-label="复制 LaTeX"');
+    expect(output).toContain('class="markdown-math-source" hidden=""');
+    expect(output).toContain('\\int_0^1 x^2 dx');
+  });
+
+  it("keeps invalid display math in a copyable source container", () => {
+    const output = renderToStaticMarkup(
+      <MathMarkdownContent content={'$$\n\\frac{\n$$'} components={{}} />,
+    );
+
+    expect(output).toContain('class="markdown-math-block"');
+    expect(output).toContain('class="katex-error"');
+    expect(output).toContain('class="markdown-math-source" hidden=""');
+    expect(output).toContain('\\frac{');
   });
 
   it("renders fenced math blocks with KaTeX instead of a code block", () => {
@@ -57,11 +73,23 @@ describe("MarkdownMessage safe HTML", () => {
     expect(output).not.toContain('markdown-highlighted-code');
   });
 
+  it("renders tilde math fences with the same formula toolbar", () => {
+    const output = renderToStaticMarkup(
+      <MarkdownMessage content={'~~~math\np = x^2\n~~~'} />,
+    );
+
+    expect(output).toContain('class="markdown-math-block"');
+    expect(output).toContain('aria-label="公式显示方式"');
+    expect(output).not.toContain('class="language-math"');
+  });
+
   it("normalizes legacy LaTeX and TeX fence aliases", () => {
     expect(normalizeMathFenceLanguage("```latex\nx^2\n```"))
       .toBe("```math\nx^2\n```");
     expect(normalizeMathFenceLanguage("```tex\ny^2\n```"))
       .toBe("```math\ny^2\n```");
+    expect(normalizeMathFenceLanguage("~~~latex\nz^2\n~~~"))
+      .toBe("~~~math\nz^2\n~~~");
   });
 
   it("renders Mermaid as an enhanced block with a source fallback", () => {
@@ -75,6 +103,16 @@ describe("MarkdownMessage safe HTML", () => {
     expect(output).toContain("mermaid");
     expect(output).toContain("flowchart TD");
     expect(output).toContain("显示 Mermaid 图表");
+  });
+
+  it.each([
+    ["space after fence", "``` mermaid title=\"Flow\"\nflowchart TD\nA-->B\n```"],
+    ["tilde fence", "~~~mermaid\nflowchart TD\nA-->B\n~~~"],
+    ["blockquote", "> ```mermaid\n> flowchart TD\n> A-->B\n> ```"],
+    ["list item", "1. Diagram\n\n   ```mermaid\n   flowchart TD\n   A-->B\n   ```"],
+  ])("recognizes Cherry Studio-compatible Mermaid fence: %s", (_label, content) => {
+    const output = renderToStaticMarkup(<MarkdownMessage content={content} />);
+    expect(output).toContain('class="markdown-mermaid-block"');
   });
 
   it("safely previews Mermaid nested in a Markdown source fence and keeps a source toggle", () => {

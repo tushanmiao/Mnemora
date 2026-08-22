@@ -3,9 +3,10 @@ import { emitTo, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { loadApplicationSettings } from "../settings/api/appSettings";
 import type { PetSettings } from "../../types/appSettings";
-import { openMainFromPet, setPetEnabled, updatePetPosition } from "./api";
+import { listPets, openMainFromPet, setPetEnabled, updatePetPosition } from "./api";
 import { PetMascot } from "./PetMascot";
-import type { PetStatePayload } from "./types";
+import { PetSprite } from "./PetSprite";
+import type { PetDescriptor, PetStatePayload } from "./types";
 import "./pet.css";
 
 const idleState: PetStatePayload = {
@@ -18,6 +19,7 @@ const idleState: PetStatePayload = {
 export default function PetWindow() {
   const [settings, setSettings] = useState<PetSettings | null>(null);
   const [state, setState] = useState(idleState);
+  const [pets, setPets] = useState<PetDescriptor[]>([]);
   const positionTimer = useRef<number | null>(null);
 
   useEffect(() => {
@@ -26,13 +28,19 @@ export default function PetWindow() {
     let unlistenSettings: (() => void) | undefined;
     let unlistenMoved: (() => void) | undefined;
     void loadApplicationSettings().then((value) => {
-      if (!disposed) setSettings(value.pet);
+      if (!disposed) {
+        setSettings(value.pet);
+        void listPets().then((value) => { if (!disposed) setPets(value); });
+      }
     });
     void listen<PetStatePayload>("mnemora://pet-state", (event) => {
       if (!disposed) setState(event.payload);
     }).then((unlisten) => { unlistenState = unlisten; });
     void listen<PetSettings>("mnemora://pet-settings", (event) => {
-      if (!disposed) setSettings(event.payload);
+      if (!disposed) {
+        setSettings(event.payload);
+        void listPets().then((value) => { if (!disposed) setPets(value); });
+      }
     }).then((unlisten) => { unlistenSettings = unlisten; });
     const current = getCurrentWindow();
     void current.onMoved(({ payload }) => {
@@ -54,17 +62,23 @@ export default function PetWindow() {
   }, []);
 
   if (!settings) return <main className="pet-window-shell pet-window-loading" />;
+  const selectedPet = pets.find((pet) => pet.id === settings.selectedPetId && pet.compatible)
+    ?? pets.find((pet) => pet.id === "mimo")
+    ?? null;
 
   const beginDrag = (event: ReactPointerEvent<HTMLElement>) => {
     if (event.button !== 0 || settings.clickThrough) return;
     if ((event.target as HTMLElement).closest("button")) return;
-    void getCurrentWindow().startDragging();
+    void getCurrentWindow().startDragging().catch((error) => {
+      console.error("桌面宠物拖拽失败", error);
+    });
   };
 
   return (
     <main
       className="pet-window-shell"
       data-state={state.state}
+      data-idle={state.state === "idle" ? "true" : "false"}
       style={{
         opacity: settings.opacity / 100,
         "--pet-size": String(settings.size) + "px",
@@ -79,12 +93,17 @@ export default function PetWindow() {
       ) : null}
       <div
         className="pet-character-button"
+        data-tauri-drag-region
         title="打开 Mnemora"
         role="img"
         aria-label="Mnemora 桌面宠物；拖动可移动，双击打开应用"
         onDoubleClick={() => void openMainFromPet()}
       >
-        <PetMascot state={state.state} reducedMotion={settings.reducedMotion} />
+        {selectedPet?.spritesheetUrl ? (
+          <PetSprite pet={selectedPet} state={state.state} reducedMotion={settings.reducedMotion} />
+        ) : (
+          <PetMascot state={state.state} reducedMotion={settings.reducedMotion} />
+        )}
       </div>
       {!settings.clickThrough ? (
         <button

@@ -41,6 +41,7 @@ export interface PetSettings {
   speechBubbles: boolean;
   reducedMotion: boolean;
   taskEvents: boolean;
+  selectedPetId: string;
   positionX: number | null;
   positionY: number | null;
 }
@@ -106,7 +107,7 @@ export const DEFAULT_GLOBAL_SYSTEM_PROMPT = [
   "技能只提供工作方法，不扩大应用权限；遵守用户的权限设置和工具结果。",
 ].join("\n");
 
-export const CURRENT_APP_SETTINGS_VERSION = 14;
+export const CURRENT_APP_SETTINGS_VERSION = 15;
 
 export function createInitialAppSettings(): AppSettings {
   return {
@@ -154,6 +155,7 @@ export function createInitialAppSettings(): AppSettings {
       speechBubbles: true,
       reducedMotion: false,
       taskEvents: true,
+      selectedPetId: "mimo",
       positionX: null,
       positionY: null,
     },

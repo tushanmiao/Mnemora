@@ -83,13 +83,20 @@ export function PdfPage({
       }
       if (textLayerContainer) textLayerContainer.replaceChildren();
     };
+    const cleanupPage = () => {
+      page?.cleanup();
+      page = null;
+    };
 
     const renderPage = async (signal: AbortSignal) => {
       if (!canvas || !textLayerContainer) return;
       setStatus("loading");
       try {
         page = await pdf.getPage(pageIndex + 1);
-        if (cancelled || signal.aborted) return;
+        if (cancelled || signal.aborted) {
+          cleanupPage();
+          return;
+        }
         const baseViewport = page.getViewport({ scale: 1 });
         setPageSize({ width: baseViewport.width, height: baseViewport.height });
         const displaySize = resolvePdfPageDisplaySize(
@@ -122,6 +129,7 @@ export function PdfPage({
         if (!canvasLease || cancelled || signal.aborted) {
           canvasLease?.release();
           canvasLease = null;
+          cleanupPage();
           return;
         }
         const canvasScale = canvasLease.scale;
@@ -148,13 +156,20 @@ export function PdfPage({
         };
         signal.addEventListener("abort", cancelRender, { once: true });
         await renderTask.promise;
-        if (cancelled || signal.aborted) return;
+        if (cancelled || signal.aborted) {
+          cleanupPage();
+          return;
+        }
         if (!isCurrent) {
           setStatus("ready");
+          cleanupPage();
           return;
         }
         const textContent = await page.getTextContent();
-        if (cancelled || signal.aborted) return;
+        if (cancelled || signal.aborted) {
+          cleanupPage();
+          return;
+        }
         textLayer = new TextLayer({
           textContentSource: textContent,
           container: textLayerContainer,
@@ -162,7 +177,9 @@ export function PdfPage({
         });
         await textLayer.render();
         if (!cancelled) setStatus("ready");
+        cleanupPage();
       } catch (error) {
+        cleanupPage();
         if (cancelled || (error instanceof Error && error.name === "RenderingCancelledException")) {
           canvasLease?.release();
           canvasLease = null;
@@ -190,7 +207,7 @@ export function PdfPage({
       textLayer?.cancel();
       canvasLease?.release();
       clearLayers();
-      if (page) page.cleanup();
+      cleanupPage();
     };
   }, [canvasBudget, isCurrent, lifecycleState, pdf, pageIndex, readerWidth, renderScheduler, zoom]);
 

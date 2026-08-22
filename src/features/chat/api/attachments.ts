@@ -5,16 +5,30 @@ import { registerResource } from "../../../runtime/resources/ResourceRegistry";
 const MAX_PREVIEW_CACHE_ITEMS = 32;
 const MAX_PREVIEW_CACHE_BYTES = 8 * 1024 * 1024;
 
-type AttachmentDisplaySource = { kind: "asset" | "data"; value: string };
-type PreviewCacheEntry = { src: string; bytes: number; registration: ReturnType<typeof registerResource> };
+export type AttachmentDisplaySource = {
+  kind: "asset" | "data";
+  value: string;
+  width?: number;
+  height?: number;
+};
+export type RenderableAttachmentSource = {
+  src: string;
+  width?: number;
+  height?: number;
+};
+type PreviewCacheEntry = {
+  source: RenderableAttachmentSource;
+  bytes: number;
+  registration: ReturnType<typeof registerResource>;
+};
 type PreviewRequest = {
   requestId: string;
-  promise: Promise<string>;
+  promise: Promise<RenderableAttachmentSource>;
   consumers: number;
 };
 
 export type AttachmentPreviewLoad = {
-  promise: Promise<string>;
+  promise: Promise<RenderableAttachmentSource>;
   release: () => void;
 };
 
@@ -34,14 +48,14 @@ function readCachedPreview(key: string) {
   previewCache.delete(key);
   previewCache.set(key, cached);
   cached.registration.touch();
-  return cached.src;
+  return cached.source;
 }
 
 function cachePreview(key: string, source: AttachmentDisplaySource) {
   // Pending previews are still Data URLs and must not remain in a global cache.
   if (source.kind === "data") return toRenderableSource(source);
-  const src = toRenderableSource(source);
-  const bytes = src.length * 2;
+  const renderable = toRenderableSource(source);
+  const bytes = renderable.src.length * 2;
   if (bytes > MAX_PREVIEW_CACHE_BYTES) return;
   const previous = previewCache.get(key);
   if (previous) {
@@ -56,7 +70,7 @@ function cachePreview(key: string, source: AttachmentDisplaySource) {
     backgroundReleasable: true,
     release: () => removeCachedPreview(key),
   });
-  previewCache.set(key, { src, bytes, registration });
+  previewCache.set(key, { source: renderable, bytes, registration });
   previewCacheBytes += bytes;
   while (previewCache.size > MAX_PREVIEW_CACHE_ITEMS || previewCacheBytes > MAX_PREVIEW_CACHE_BYTES) {
     const oldest = previewCache.entries().next().value as [string, PreviewCacheEntry] | undefined;
@@ -65,7 +79,7 @@ function cachePreview(key: string, source: AttachmentDisplaySource) {
     previewCacheBytes -= oldest[1].bytes;
     oldest[1].registration.release();
   }
-  return src;
+  return renderable;
 }
 
 function removeCachedPreview(key: string) {
@@ -77,7 +91,11 @@ function removeCachedPreview(key: string) {
 }
 
 function toRenderableSource(source: AttachmentDisplaySource) {
-  return source.kind === "asset" ? convertFileSrc(source.value) : source.value;
+  return {
+    src: source.kind === "asset" ? convertFileSrc(source.value) : source.value,
+    width: source.width,
+    height: source.height,
+  };
 }
 
 export function clearAttachmentPreviewCache() {
