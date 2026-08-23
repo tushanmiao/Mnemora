@@ -3,8 +3,19 @@ import { EditorState } from "@codemirror/state";
 import { EditorView, keymap, lineNumbers, highlightActiveLine, drawSelection } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
-import { defaultHighlightStyle, syntaxHighlighting } from "@codemirror/language";
+import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { searchKeymap } from "@codemirror/search";
+import { tags } from "@lezer/highlight";
+
+const markdownHighlightStyle = HighlightStyle.define([
+  { tag: tags.heading, color: "var(--color-accent)", fontWeight: "700" },
+  { tag: [tags.link, tags.url], color: "var(--color-accent)", textDecoration: "underline" },
+  { tag: [tags.strong, tags.keyword], color: "var(--color-text)", fontWeight: "700" },
+  { tag: tags.emphasis, color: "var(--color-text-secondary)", fontStyle: "italic" },
+  { tag: [tags.quote, tags.comment, tags.meta], color: "var(--color-muted)" },
+  { tag: [tags.monospace, tags.string], color: "var(--color-text-secondary)" },
+  { tag: [tags.list, tags.punctuation, tags.separator], color: "var(--color-muted)" },
+]);
 
 export type MarkdownSourceEditorHandle = {
   focus: () => void;
@@ -71,7 +82,8 @@ export const MarkdownSourceEditor = forwardRef<MarkdownSourceEditorHandle, Markd
           highlightActiveLine(),
           keymap.of([indentWithTab, ...defaultKeymap, ...historyKeymap, ...searchKeymap]),
           markdown(),
-          syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+          syntaxHighlighting(markdownHighlightStyle, { fallback: true }),
+          EditorView.lineWrapping,
           EditorView.updateListener.of((update) => {
             if (update.docChanged) {
               const next = update.state.doc.toString();
@@ -82,9 +94,12 @@ export const MarkdownSourceEditor = forwardRef<MarkdownSourceEditorHandle, Markd
           }),
           EditorView.contentAttributes.of({ "aria-label": ariaLabel, spellcheck: "false" }),
           EditorView.theme({
-            "&": { height: "100%" },
+            "&": { height: "100%", color: "var(--color-text)", backgroundColor: "var(--color-surface-layer)" },
             ".cm-scroller": { overflow: "auto", fontFamily: "var(--note-font-family)", fontSize: "var(--note-font-size)", lineHeight: "var(--note-line-height)" },
-            ".cm-content": { minHeight: "100%", padding: "28px clamp(24px, 4vw, 64px) 60px", caretColor: "var(--color-accent)" },
+            ".cm-content": { minHeight: "100%", padding: "28px clamp(24px, 4vw, 64px) 60px", color: "var(--color-text)", caretColor: "var(--color-accent)" },
+            ".cm-line": { color: "var(--color-text)" },
+            ".cm-cursor, .cm-dropCursor": { borderLeftColor: "var(--color-accent)" },
+            "&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection": { backgroundColor: "var(--color-accent-soft)" },
             ".cm-gutters": { color: "var(--color-muted)", backgroundColor: "var(--color-surface-layer)", border: "none" },
             ".cm-activeLine, .cm-activeLineGutter": { backgroundColor: "color-mix(in srgb, var(--color-accent-soft) 42%, transparent)" },
             ".cm-focused": { outline: "none" },

@@ -198,6 +198,7 @@ export function NoteEditor({
             {mode === "source" ? (
               <Suspense fallback={<div className="notes-empty"><LoaderCircle className="is-spinning" size={20} />正在加载编辑器</div>}>
                 <MarkdownSourceEditor
+                  key={activeNote.id}
                   ref={editorRef}
                   value={content}
                   ariaLabel="Markdown 源码编辑器"

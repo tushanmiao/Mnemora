@@ -5,7 +5,7 @@
  * Shadow DOM。这样应用的 Markdown/主题 CSS 不会覆盖 Mermaid 内嵌的
  * classDef、节点文字颜色或 marker 样式。
  */
-import { normalizeMermaidSvgForXml } from "./mermaidSecurity";
+import { mermaidThemeConfig, normalizeMermaidSvgForXml } from "./mermaidSecurity";
 
 export type MermaidShadowViewport = {
   x: number;
@@ -66,7 +66,14 @@ export function renderMermaidSvgInShadowHost(svg: string, host: HTMLElement, vie
       word-break: break-word;
     }
   `;
-  shadow.append(style, document.importNode(root, true));
+  const mountedRoot = document.importNode(root, true);
+  shadow.append(style, mountedRoot);
+  const repaired = repairUnreadableMermaidPaint(mountedRoot, host);
+  if (repaired > 0) {
+    host.setAttribute("data-mermaid-paint-repaired", String(repaired));
+  } else {
+    host.removeAttribute("data-mermaid-paint-repaired");
+  }
 }
 
 /** Update navigation without parsing or cloning the complete SVG tree. */
@@ -107,4 +114,94 @@ function readMetrics(root: Element, sourceSvg: string) {
     ? viewBox[3]
     : Number.parseFloat(root.getAttribute("height") ?? "360") || 360;
   return { width, height };
+}
+
+/**
+ * An SVG whose scoped Mermaid stylesheet failed to apply falls back to the SVG
+ * defaults: black shapes and black text. Repair only groups whose computed
+ * foreground/background contrast is actually unreadable, preserving valid
+ * classDef/style colors and every normally rendered diagram.
+ */
+function repairUnreadableMermaidPaint(root: Element, host: HTMLElement) {
+  if (typeof getComputedStyle === "undefined") return 0;
+  const theme = mermaidThemeConfig(host).themeVariables;
+  const nodePalette = { fill: theme.nodeBkg, stroke: theme.nodeBorder, text: theme.primaryTextColor };
+  const clusterPalette = { fill: theme.clusterBkg, stroke: theme.clusterBorder, text: theme.textColor };
+  let repaired = 0;
+
+  for (const group of Array.from(root.querySelectorAll<SVGGElement>("g.node, g.cluster"))) {
+    const shape = findGroupShape(group);
+    const label = findGroupLabel(group);
+    if (!shape || !label) continue;
+    const shapeFill = getComputedStyle(shape).fill;
+    const labelStyle = getComputedStyle(label);
+    const textPaint = typeof SVGElement !== "undefined" && label instanceof SVGElement
+      ? labelStyle.fill
+      : labelStyle.color || labelStyle.fill;
+    if (!hasUnreadableMermaidContrast(shapeFill, textPaint)) continue;
+
+    const palette = group.classList.contains("cluster") ? clusterPalette : nodePalette;
+    shape.style.setProperty("fill", palette.fill, "important");
+    shape.style.setProperty("stroke", palette.stroke, "important");
+    const labelContainer = label.closest<HTMLElement | SVGElement>(".nodeLabel, .label, .cluster-label") ?? label;
+    labelContainer.style.setProperty("color", palette.text, "important");
+    for (const element of Array.from(labelContainer.querySelectorAll<HTMLElement>("div, p, span"))) {
+      element.style.setProperty("color", palette.text, "important");
+    }
+    for (const element of Array.from(labelContainer.querySelectorAll<SVGElement>("text, tspan"))) {
+      element.style.setProperty("fill", palette.text, "important");
+    }
+    group.setAttribute("data-mnemora-contrast-repair", "true");
+    repaired += 1;
+  }
+  return repaired;
+}
+
+function findGroupShape(group: SVGGElement) {
+  return Array.from(group.querySelectorAll<SVGElement>("rect, polygon, circle, ellipse, path")).find((shape) => (
+    !shape.closest(".label, .nodeLabel, .cluster-label, marker, defs, clipPath")
+    && getComputedStyle(shape).fill !== "none"
+  ));
+}
+
+function findGroupLabel(group: SVGGElement) {
+  const selector = group.classList.contains("cluster")
+    ? ".cluster-label p, .cluster-label span, .cluster-label text, .cluster-label"
+    : ".nodeLabel p, .nodeLabel span, .nodeLabel, .label p, .label span, .label, text, tspan";
+  return group.querySelector<HTMLElement | SVGElement>(selector);
+}
+
+export function hasUnreadableMermaidContrast(background: string, foreground: string) {
+  const backgroundRgb = parseCssRgb(background);
+  const foregroundRgb = parseCssRgb(foreground);
+  if (!backgroundRgb || !foregroundRgb) return false;
+  return contrastRatio(backgroundRgb, foregroundRgb) < 2.5;
+}
+
+function parseCssRgb(value: string): [number, number, number] | null {
+  const hex = value.trim().match(/^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})(?:([0-9a-f]{2}))?$/i);
+  if (hex) {
+    if (hex[4] && Number.parseInt(hex[4], 16) <= 12) return null;
+    return hex.slice(1, 4).map((channel) => Number.parseInt(channel, 16)) as [number, number, number];
+  }
+  const rgb = value.trim().match(/^rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)(?:\s*[,/]\s*([\d.]+))?/i);
+  if (!rgb) return null;
+  if (rgb[4] !== undefined && Number(rgb[4]) <= 0.05) return null;
+  return rgb.slice(1, 4).map((channel) => Math.min(255, Math.max(0, Number(channel)))) as [number, number, number];
+}
+
+function contrastRatio(first: [number, number, number], second: [number, number, number]) {
+  const firstLuminance = relativeLuminance(first);
+  const secondLuminance = relativeLuminance(second);
+  const lighter = Math.max(firstLuminance, secondLuminance);
+  const darker = Math.min(firstLuminance, secondLuminance);
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
+function relativeLuminance(color: [number, number, number]) {
+  const [red, green, blue] = color.map((channel) => {
+    const normalized = channel / 255;
+    return normalized <= 0.04045 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4;
+  });
+  return red * 0.2126 + green * 0.7152 + blue * 0.0722;
 }

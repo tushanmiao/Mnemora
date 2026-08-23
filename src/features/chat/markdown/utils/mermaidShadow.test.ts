@@ -1,7 +1,18 @@
 import { describe, expect, it, vi } from "vitest";
-import { renderMermaidSvgInShadowHost, updateMermaidSvgViewport } from "./mermaidShadow";
+import {
+  hasUnreadableMermaidContrast,
+  renderMermaidSvgInShadowHost,
+  updateMermaidSvgViewport,
+} from "./mermaidShadow";
 
 describe("mermaidShadow", () => {
+  it("detects black-on-black SVG fallback without rewriting readable themes", () => {
+    expect(hasUnreadableMermaidContrast("rgb(0, 0, 0)", "rgb(0, 0, 0)")).toBe(true);
+    expect(hasUnreadableMermaidContrast("rgba(0, 0, 0, 0)", "rgb(0, 0, 0)")).toBe(false);
+    expect(hasUnreadableMermaidContrast("#dcecff", "#202427")).toBe(false);
+    expect(hasUnreadableMermaidContrast("#263f55", "#edf0f2")).toBe(false);
+  });
+
   it("keeps intrinsic dimensions without forcing a host aspect-ratio height", () => {
     const previousDomParser = globalThis.DOMParser;
     const previousDocument = globalThis.document;
@@ -14,6 +25,8 @@ describe("mermaidShadow", () => {
     const host = {
       shadowRoot: null,
       attachShadow: vi.fn(() => shadow),
+      setAttribute: vi.fn(),
+      removeAttribute: vi.fn(),
       style: {
         aspectRatio: "",
         setProperty: (name: string, value: string) => styleProperties.set(name, value),
@@ -57,6 +70,8 @@ describe("mermaidShadow", () => {
     const host = {
       shadowRoot: null,
       attachShadow: vi.fn(() => shadow),
+      setAttribute: vi.fn(),
+      removeAttribute: vi.fn(),
       style: { setProperty: vi.fn() },
     } as unknown as HTMLElement;
 
