@@ -24,6 +24,7 @@ use crate::{
     },
     library::LibraryRepository,
     memory::{MemoryLayer, MemoryModification, MemoryRepository, MemorySettings},
+    settings::app_types::UpdateProxySettings,
     skills::{
         types::{SkillMode, SkillSummary},
         SkillRepository,
@@ -45,7 +46,7 @@ use super::{
     knowledge::{knowledge_list, knowledge_read, knowledge_search},
     notes::{note_create, note_list, note_read, note_update},
     types::{ToolExecution, ToolRisk},
-    web::{web_fetch, web_search},
+    web::{web_fetch, web_search, WebRunState},
     workspace::{workspace_glob, workspace_list, workspace_read, workspace_search},
 };
 
@@ -68,6 +69,8 @@ pub struct ToolRuntimeContext {
     pub max_model_skill_activations: usize,
     pub memory_settings: MemorySettings,
     pub workspace_root: Option<PathBuf>,
+    pub(crate) proxy_settings: UpdateProxySettings,
+    pub(crate) web_run_state: WebRunState,
 }
 
 impl ToolRuntimeContext {
@@ -83,6 +86,8 @@ impl ToolRuntimeContext {
             max_model_skill_activations: 0,
             memory_settings: MemorySettings::default(),
             workspace_root: None,
+            proxy_settings: UpdateProxySettings::default(),
+            web_run_state: WebRunState::default(),
         }
     }
 }
@@ -148,6 +153,7 @@ pub fn build_runtime_context(
     skills: &SkillRepository,
     memory_settings: MemorySettings,
     working_directory: &str,
+    proxy_settings: UpdateProxySettings,
 ) -> Result<ToolRuntimeContext, ModelError> {
     let conversation_id = request.conversation_id.clone().unwrap_or_default();
     let mut attachment_ids = HashSet::new();
@@ -237,6 +243,8 @@ pub fn build_runtime_context(
         max_model_skill_activations: MAX_ACTIVE_SKILLS_PER_RUN.saturating_sub(manual_count),
         memory_settings,
         workspace_root,
+        proxy_settings,
+        web_run_state: WebRunState::default(),
     })
 }
 
@@ -740,8 +748,24 @@ pub async fn execute_tool(
             let arguments = call.arguments.clone();
             run_blocking(cancellation, move || knowledge_read(&library, &arguments)).await
         }
-        ToolHandler::WebSearch => web_search(&call.arguments, cancellation).await,
-        ToolHandler::WebFetch => web_fetch(&call.arguments, cancellation).await,
+        ToolHandler::WebSearch => {
+            web_search(
+                &call.arguments,
+                cancellation,
+                &context.proxy_settings,
+                &context.web_run_state,
+            )
+            .await
+        }
+        ToolHandler::WebFetch => {
+            web_fetch(
+                &call.arguments,
+                cancellation,
+                &context.proxy_settings,
+                &context.web_run_state,
+            )
+            .await
+        }
         ToolHandler::PresentArtifact => present_artifact(&call.arguments),
         ToolHandler::NoteList => {
             let library = library.clone();
@@ -805,6 +829,8 @@ pub async fn execute_bounded_attachment_reader(
         max_model_skill_activations: 0,
         memory_settings: MemorySettings::default(),
         workspace_root: None,
+        proxy_settings: Default::default(),
+        web_run_state: Default::default(),
     };
     let result = match entry.handler {
         ToolHandler::ReadAttachmentText => {
@@ -2189,6 +2215,8 @@ mod tests {
             max_model_skill_activations: 0,
             memory_settings: MemorySettings::default(),
             workspace_root: None,
+            proxy_settings: Default::default(),
+            web_run_state: Default::default(),
         };
         let mut request = ModelRequest {
             model: "test-model".to_string(),
@@ -2223,6 +2251,8 @@ mod tests {
             max_model_skill_activations: 0,
             memory_settings: MemorySettings::default(),
             workspace_root: None,
+            proxy_settings: Default::default(),
+            web_run_state: Default::default(),
         };
         let mut request = ModelRequest {
             model: "test-model".to_string(),
@@ -2407,6 +2437,8 @@ mod tests {
             max_model_skill_activations: 1,
             memory_settings: MemorySettings::default(),
             workspace_root: None,
+            proxy_settings: Default::default(),
+            web_run_state: Default::default(),
         };
         let mut discovery_request = ModelRequest {
             model: "test-model".to_string(),
@@ -2498,6 +2530,8 @@ mod tests {
             max_model_skill_activations: 12,
             memory_settings: MemorySettings::default(),
             workspace_root: None,
+            proxy_settings: Default::default(),
+            web_run_state: Default::default(),
         };
         let conversation = crate::chat::storage::ConversationRepository::new(root.join("chat"));
         let memory = crate::memory::MemoryRepository::new(root.join("memory"));
@@ -2594,6 +2628,8 @@ mod tests {
             model_skills,
             memory_settings: MemorySettings::default(),
             workspace_root: None,
+            proxy_settings: Default::default(),
+            web_run_state: Default::default(),
         };
         let mut request = ModelRequest {
             model: "test-model".to_string(),

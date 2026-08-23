@@ -8,6 +8,7 @@ pub mod english_learning;
 pub mod html_preview;
 pub mod library;
 pub mod memory;
+pub mod network;
 pub mod note_pipeline;
 pub mod pet;
 pub mod providers;

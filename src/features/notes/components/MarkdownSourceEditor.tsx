@@ -1,4 +1,12 @@
-import { forwardRef, useEffect, useImperativeHandle, useRef, type MouseEvent as ReactMouseEvent } from "react";
+import {
+  forwardRef,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
+} from "react";
 import { EditorState } from "@codemirror/state";
 import { EditorView, keymap, lineNumbers, highlightActiveLine, drawSelection } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
@@ -6,6 +14,7 @@ import { markdown } from "@codemirror/lang-markdown";
 import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { searchKeymap } from "@codemirror/search";
 import { tags } from "@lezer/highlight";
+import { shouldUsePlainTextNoteEditor } from "./markdownEditorPolicy";
 
 const markdownHighlightStyle = HighlightStyle.define([
   { tag: tags.heading, color: "var(--color-accent)", fontWeight: "700" },
@@ -32,29 +41,57 @@ type MarkdownSourceEditorProps = {
   className?: string;
   onChange: (value: string) => void;
   onSelectionChange?: () => void;
-  onMouseUp?: (event: ReactMouseEvent<HTMLDivElement>) => void;
+  onMouseUp?: (event: ReactMouseEvent<HTMLElement>) => void;
 };
 
 export const MarkdownSourceEditor = forwardRef<MarkdownSourceEditorHandle, MarkdownSourceEditorProps>(
   function MarkdownSourceEditor({ value, ariaLabel, className, onChange, onSelectionChange, onMouseUp }, ref) {
     const hostRef = useRef<HTMLDivElement>(null);
+    const textareaRef = useRef<HTMLTextAreaElement>(null);
     const viewRef = useRef<EditorView | null>(null);
     const valueRef = useRef(value);
     const onChangeRef = useRef(onChange);
     const onSelectionRef = useRef(onSelectionChange);
+    const [plainTextMode, setPlainTextMode] = useState(() => shouldUsePlainTextNoteEditor(value.length));
+    valueRef.current = value;
     onChangeRef.current = onChange;
     onSelectionRef.current = onSelectionChange;
 
+    useEffect(() => {
+      if (shouldUsePlainTextNoteEditor(value.length)) setPlainTextMode(true);
+    }, [value.length]);
+
     useImperativeHandle(ref, () => ({
-      focus: () => viewRef.current?.focus(),
-      getText: () => viewRef.current?.state.doc.toString() ?? valueRef.current,
+      focus: () => {
+        if (plainTextMode) textareaRef.current?.focus();
+        else viewRef.current?.focus();
+      },
+      getText: () => plainTextMode
+        ? textareaRef.current?.value ?? valueRef.current
+        : viewRef.current?.state.doc.toString() ?? valueRef.current,
       getSelection: () => {
+        if (plainTextMode) {
+          const editor = textareaRef.current;
+          if (!editor) return { text: "", from: 0, to: 0 };
+          const from = editor.selectionStart;
+          const to = editor.selectionEnd;
+          return { text: editor.value.slice(from, to), from, to };
+        }
         const view = viewRef.current;
         if (!view) return { text: "", from: 0, to: 0 };
         const range = view.state.selection.main;
         return { text: view.state.sliceDoc(range.from, range.to), from: range.from, to: range.to };
       },
       setSelection: (from, to = from) => {
+        if (plainTextMode) {
+          const editor = textareaRef.current;
+          if (!editor) return;
+          const nextFrom = Math.max(0, Math.min(from, editor.value.length));
+          const nextTo = Math.max(nextFrom, Math.min(to, editor.value.length));
+          editor.focus();
+          editor.setSelectionRange(nextFrom, nextTo);
+          return;
+        }
         const view = viewRef.current;
         if (!view) return;
         const nextFrom = Math.max(0, Math.min(from, view.state.doc.length));
@@ -62,19 +99,30 @@ export const MarkdownSourceEditor = forwardRef<MarkdownSourceEditorHandle, Markd
         view.dispatch({ selection: { anchor: nextFrom, head: nextTo }, scrollIntoView: true });
       },
       scrollToLine: (line) => {
+        if (plainTextMode) {
+          const editor = textareaRef.current;
+          if (!editor) return;
+          const lines = editor.value.split("\n");
+          const safeLine = Math.max(1, Math.min(line, lines.length));
+          const offset = lines.slice(0, safeLine - 1).reduce((total, entry) => total + entry.length + 1, 0);
+          editor.setSelectionRange(offset, offset);
+          const lineHeight = Number.parseFloat(getComputedStyle(editor).lineHeight) || 24;
+          editor.scrollTop = Math.max(0, (safeLine - 1) * lineHeight);
+          return;
+        }
         const view = viewRef.current;
         if (!view) return;
         const safeLine = Math.max(1, Math.min(line, view.state.doc.lines));
         view.dispatch({ effects: EditorView.scrollIntoView(view.state.doc.line(safeLine).from, { y: "start" }) });
       },
-      getDom: () => viewRef.current?.dom ?? null,
-    }), []);
+      getDom: () => plainTextMode ? textareaRef.current : viewRef.current?.dom ?? null,
+    }), [plainTextMode]);
 
     useEffect(() => {
-      if (!hostRef.current || viewRef.current) return;
-      valueRef.current = value;
+      const host = hostRef.current;
+      if (plainTextMode || !host || viewRef.current) return;
       const state = EditorState.create({
-        doc: value,
+        doc: valueRef.current,
         extensions: [
           lineNumbers(),
           history(),
@@ -106,26 +154,85 @@ export const MarkdownSourceEditor = forwardRef<MarkdownSourceEditorHandle, Markd
           }),
         ],
       });
-      viewRef.current = new EditorView({ state, parent: hostRef.current });
-      return () => {
-        viewRef.current?.destroy();
-        viewRef.current = null;
+      const view = new EditorView({ state, parent: host });
+      viewRef.current = view;
+
+      let frame: number | null = null;
+      let disposed = false;
+      let lastWidth = -1;
+      let lastHeight = -1;
+      const scheduleMeasure = () => {
+        if (disposed || frame !== null) return;
+        frame = window.requestAnimationFrame(() => {
+          frame = null;
+          const bounds = host.getBoundingClientRect();
+          const width = Math.round(bounds.width);
+          const height = Math.round(bounds.height);
+          if (width === lastWidth && height === lastHeight) return;
+          lastWidth = width;
+          lastHeight = height;
+          view.requestMeasure();
+          if (valueRef.current && width > 0 && height > 0 && view.contentDOM.getBoundingClientRect().height <= 0) {
+            setPlainTextMode(true);
+          }
+        });
       };
-      // The editor is intentionally initialized once per mounted note.
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
+      scheduleMeasure();
+      const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(scheduleMeasure);
+      observer?.observe(host);
+      void document.fonts?.ready.then(scheduleMeasure);
+
+      return () => {
+        disposed = true;
+        observer?.disconnect();
+        if (frame !== null) window.cancelAnimationFrame(frame);
+        view.destroy();
+        if (viewRef.current === view) viewRef.current = null;
+      };
+    }, [ariaLabel, plainTextMode]);
 
     useEffect(() => {
+      if (plainTextMode) return;
       const view = viewRef.current;
-      if (!view || value === valueRef.current) return;
+      if (!view || value === view.state.doc.toString()) return;
       const current = view.state.doc.toString();
-      if (current === value) {
-        valueRef.current = value;
-        return;
-      }
       valueRef.current = value;
       view.dispatch({ changes: { from: 0, to: current.length, insert: value } });
-    }, [value]);
+    }, [plainTextMode, value]);
+
+    const handlePlainTextKeyDown = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
+      if (event.key !== "Tab") return;
+      event.preventDefault();
+      const editor = event.currentTarget;
+      const from = editor.selectionStart;
+      const to = editor.selectionEnd;
+      const next = `${editor.value.slice(0, from)}  ${editor.value.slice(to)}`;
+      valueRef.current = next;
+      onChangeRef.current(next);
+      window.requestAnimationFrame(() => {
+        editor.setSelectionRange(from + 2, from + 2);
+        onSelectionRef.current?.();
+      });
+    };
+
+    if (plainTextMode) {
+      return (
+        <textarea
+          ref={textareaRef}
+          className={`notes-source-editor notes-source-editor-native${className ? ` ${className}` : ""}`}
+          value={value}
+          aria-label={ariaLabel}
+          spellCheck={false}
+          onChange={(event) => {
+            valueRef.current = event.currentTarget.value;
+            onChangeRef.current(event.currentTarget.value);
+          }}
+          onKeyDown={handlePlainTextKeyDown}
+          onSelect={() => onSelectionRef.current?.()}
+          onMouseUp={onMouseUp}
+        />
+      );
+    }
 
     return <div ref={hostRef} className={`notes-source-editor-cm${className ? ` ${className}` : ""}`} aria-label={ariaLabel} onMouseUp={onMouseUp} />;
   },

@@ -1,16 +1,23 @@
 //! Web search and fetch with redirect-by-redirect SSRF validation.
 
 use std::{
+    collections::HashMap,
     net::{IpAddr, SocketAddr, ToSocketAddrs},
+    sync::{Arc, Mutex},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use reqwest::{header, redirect::Policy, Client, StatusCode, Url};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
-use crate::ai::error::ModelError;
+use crate::{
+    ai::error::{ModelError, ModelErrorKind},
+    network,
+    settings::app_types::UpdateProxySettings,
+};
 
 use super::types::ToolExecution;
 
@@ -20,6 +27,81 @@ const DEFAULT_RESPONSE_BYTES: usize = 512 * 1024;
 const MAX_EXTRACTED_CHARS: usize = 40_000;
 const MAX_SEARCH_RESULTS: usize = 20;
 const MAX_PREVIEW_CHARS: usize = 2_000;
+const WEB_FAILURE_CIRCUIT_THRESHOLD: u8 = 2;
+
+#[derive(Clone)]
+pub(crate) struct WebRunState {
+    search_gate: Arc<Semaphore>,
+    fetch_gates: Arc<Mutex<HashMap<String, Arc<Semaphore>>>>,
+    failures: Arc<Mutex<WebRunFailures>>,
+}
+
+#[derive(Default)]
+struct WebRunFailures {
+    search_exhausted: bool,
+    fetch_by_host: HashMap<String, u8>,
+}
+
+impl Default for WebRunState {
+    fn default() -> Self {
+        Self {
+            // 同一 Agent Run 的搜索串行进入 provider broker。若第一轮已证明所有
+            // provider 都不可达，后续模型重复调用会直接失败，不再制造并行超时风暴。
+            search_gate: Arc::new(Semaphore::new(1)),
+            fetch_gates: Arc::new(Mutex::new(HashMap::new())),
+            failures: Arc::new(Mutex::new(WebRunFailures::default())),
+        }
+    }
+}
+
+impl WebRunState {
+    fn fetch_gate(&self, host: &str) -> Arc<Semaphore> {
+        self.fetch_gates
+            .lock()
+            .map(|mut gates| {
+                gates
+                    .entry(host.to_string())
+                    .or_insert_with(|| Arc::new(Semaphore::new(1)))
+                    .clone()
+            })
+            .unwrap_or_else(|_| Arc::new(Semaphore::new(1)))
+    }
+
+    fn search_circuit_open(&self) -> bool {
+        self.failures
+            .lock()
+            .map(|state| state.search_exhausted)
+            .unwrap_or(true)
+    }
+
+    fn open_search_circuit(&self) {
+        if let Ok(mut state) = self.failures.lock() {
+            state.search_exhausted = true;
+        }
+    }
+
+    fn fetch_circuit_open(&self, host: &str) -> bool {
+        self.failures
+            .lock()
+            .ok()
+            .and_then(|state| state.fetch_by_host.get(host).copied())
+            .unwrap_or_default()
+            >= WEB_FAILURE_CIRCUIT_THRESHOLD
+    }
+
+    fn record_fetch_failure(&self, host: &str) {
+        if let Ok(mut state) = self.failures.lock() {
+            let failures = state.fetch_by_host.entry(host.to_string()).or_default();
+            *failures = failures.saturating_add(1);
+        }
+    }
+
+    fn clear_fetch_failures(&self, host: &str) {
+        if let Ok(mut state) = self.failures.lock() {
+            state.fetch_by_host.remove(host);
+        }
+    }
+}
 
 struct FetchedResource {
     final_url: Url,
@@ -28,17 +110,62 @@ struct FetchedResource {
     bytes: Vec<u8>,
 }
 
+#[derive(Clone, Copy)]
+enum SearchProvider {
+    DuckDuckGo,
+    Bing,
+}
+
+impl SearchProvider {
+    fn id(self) -> &'static str {
+        match self {
+            Self::DuckDuckGo => "duckduckgo-html",
+            Self::Bing => "bing-html",
+        }
+    }
+}
+
 pub(super) async fn web_fetch(
     arguments: &Value,
     cancellation: &CancellationToken,
+    proxy_settings: &UpdateProxySettings,
+    run_state: &WebRunState,
 ) -> Result<ToolExecution, ModelError> {
     let url = required_string(arguments, "url")?;
+    let host = Url::parse(url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_ascii_lowercase))
+        .unwrap_or_else(|| "invalid".to_string());
+    let fetch_gate = run_state.fetch_gate(&host);
+    let _fetch_permit = tokio::select! {
+        _ = cancellation.cancelled() => return Err(ModelError::cancelled()),
+        permit = fetch_gate.acquire() => permit
+            .map_err(|_| ModelError::provider("网页读取调度器已关闭。"))?,
+    };
+    if run_state.fetch_circuit_open(&host) {
+        return error_execution(
+            "webCircuitOpen",
+            "同一网站在本次任务中已连续读取失败，已停止重复请求。请先运行网络连接测试，或更换可公开访问的来源。",
+            false,
+            None,
+        );
+    }
     let max_bytes = arguments
         .get("maxBytes")
         .and_then(Value::as_u64)
         .unwrap_or(DEFAULT_RESPONSE_BYTES as u64)
         .clamp(1, MAX_RESPONSE_BYTES as u64) as usize;
-    let resource = fetch_resource(url, max_bytes, cancellation).await?;
+    let resource = match fetch_resource(url, max_bytes, cancellation, proxy_settings).await {
+        Ok(resource) => {
+            run_state.clear_fetch_failures(&host);
+            resource
+        }
+        Err(error) if error.kind == ModelErrorKind::Cancelled => return Err(error),
+        Err(error) => {
+            run_state.record_fetch_failure(&host);
+            return execution_from_web_error(error);
+        }
+    };
     let raw = String::from_utf8_lossy(&resource.bytes);
     let is_html = resource.content_type.contains("html")
         || raw
@@ -75,6 +202,8 @@ pub(super) async fn web_fetch(
 pub(super) async fn web_search(
     arguments: &Value,
     cancellation: &CancellationToken,
+    proxy_settings: &UpdateProxySettings,
+    run_state: &WebRunState,
 ) -> Result<ToolExecution, ModelError> {
     let query = required_string(arguments, "query")?;
     let limit = arguments
@@ -82,18 +211,57 @@ pub(super) async fn web_search(
         .and_then(Value::as_u64)
         .unwrap_or(8)
         .clamp(1, MAX_SEARCH_RESULTS as u64) as usize;
-    let mut url = Url::parse("https://html.duckduckgo.com/html/")
-        .map_err(|error| ModelError::invalid_configuration(format!("搜索地址无效：{error}")))?;
-    url.query_pairs_mut().append_pair("q", query);
-    let resource = fetch_resource(url.as_str(), DEFAULT_RESPONSE_BYTES, cancellation).await?;
-    if !resource.status.is_success() {
-        return Err(ModelError::provider(format!(
-            "搜索服务返回 HTTP {}。",
-            resource.status.as_u16()
-        )));
+    let _search_permit = tokio::select! {
+        _ = cancellation.cancelled() => return Err(ModelError::cancelled()),
+        permit = run_state.search_gate.acquire() => permit
+            .map_err(|_| ModelError::provider("网页搜索调度器已关闭。"))?,
+    };
+    if run_state.search_circuit_open() {
+        return error_execution(
+            "webSearchCircuitOpen",
+            "本次任务中的搜索服务均已连接失败，已停止重复搜索。请在“设置 → 关于 → 网络代理”运行连接测试后重试任务。",
+            false,
+            None,
+        );
     }
-    let html = String::from_utf8_lossy(&resource.bytes);
-    let results = parse_duckduckgo_results(&html, limit)
+
+    let providers = [SearchProvider::DuckDuckGo, SearchProvider::Bing];
+    let mut failures = Vec::new();
+    let mut selected = None;
+    let mut first_reachable_provider = None;
+    for provider in providers {
+        match search_provider(provider, query, limit, cancellation, proxy_settings).await {
+            Ok(results) if !results.is_empty() => {
+                selected = Some((provider, results));
+                break;
+            }
+            Ok(_) => {
+                first_reachable_provider.get_or_insert(provider);
+                failures.push(format!("{} 未返回结果", provider.id()));
+            }
+            Err(error) if error.kind == ModelErrorKind::Cancelled => return Err(error),
+            Err(error) => failures.push(format!("{}：{}", provider.id(), error.message)),
+        }
+    }
+    let (provider, results) = match selected {
+        Some(selected) => selected,
+        None => match first_reachable_provider {
+            Some(provider) => (provider, Vec::new()),
+            None => {
+                run_state.open_search_circuit();
+                return error_execution(
+                    "webSearchProvidersUnavailable",
+                    &format!(
+                        "搜索服务均不可用，已停止本次任务继续重试。{}",
+                        failures.join("；")
+                    ),
+                    true,
+                    None,
+                );
+            }
+        },
+    };
+    let results = results
         .into_iter()
         .enumerate()
         .map(|(index, result)| {
@@ -110,7 +278,7 @@ pub(super) async fn web_search(
     execution(json!({
         "status": if results.is_empty() { "successNoResults" } else { "success" },
         "query": query,
-        "provider": "duckduckgo-html",
+        "provider": provider.id(),
         "retrievedAt": now_millis(),
         "trust": "external_untrusted",
         "results": results,
@@ -118,21 +286,148 @@ pub(super) async fn web_search(
     }))
 }
 
+async fn search_provider(
+    provider: SearchProvider,
+    query: &str,
+    limit: usize,
+    cancellation: &CancellationToken,
+    proxy_settings: &UpdateProxySettings,
+) -> Result<Vec<SearchResult>, ModelError> {
+    let mut url = Url::parse(match provider {
+        SearchProvider::DuckDuckGo => "https://html.duckduckgo.com/html/",
+        SearchProvider::Bing => "https://www.bing.com/search",
+    })
+    .map_err(|error| ModelError::invalid_configuration(format!("搜索地址无效：{error}")))?;
+    url.query_pairs_mut().append_pair("q", query);
+    let resource = fetch_resource(
+        url.as_str(),
+        DEFAULT_RESPONSE_BYTES,
+        cancellation,
+        proxy_settings,
+    )
+    .await?;
+    let html = String::from_utf8_lossy(&resource.bytes);
+    Ok(match provider {
+        SearchProvider::DuckDuckGo => parse_duckduckgo_results(&html, limit),
+        SearchProvider::Bing => parse_bing_results(&html, limit),
+    })
+}
+
+fn classify_web_request_error(error: reqwest::Error) -> ModelError {
+    let detail = error.to_string();
+    if error.is_timeout() {
+        ModelError {
+            kind: ModelErrorKind::ClientTimeout,
+            message: format!(
+                "网页连接超时。请检查“设置 → 关于 → 网络代理”，并运行连接测试。详情：{detail}"
+            ),
+            status_code: error.status().map(|status| status.as_u16()),
+            provider_code: Some("webConnectTimeout".to_string()),
+            retry_after_ms: None,
+        }
+    } else {
+        ModelError {
+            kind: ModelErrorKind::Connection,
+            message: format!(
+                "无法连接网页服务。请检查“设置 → 关于 → 网络代理”，并运行连接测试。详情：{detail}"
+            ),
+            status_code: error.status().map(|status| status.as_u16()),
+            provider_code: Some("webConnectionFailed".to_string()),
+            retry_after_ms: None,
+        }
+    }
+}
+
+fn classify_web_body_error(error: reqwest::Error) -> ModelError {
+    let mut classified = classify_web_request_error(error);
+    if classified.provider_code.as_deref() == Some("webConnectionFailed") {
+        classified.provider_code = Some("webBodyReadFailed".to_string());
+        classified.message = format!("读取网页正文失败。{}", classified.message);
+    }
+    classified
+}
+
+fn http_status_error(status: StatusCode) -> ModelError {
+    let guidance = match status {
+        StatusCode::FORBIDDEN => "目标网站拒绝了自动读取；可尝试该站点的公开文档页或其他来源。",
+        StatusCode::TOO_MANY_REQUESTS => "目标网站限制了请求频率，请稍后重试或更换来源。",
+        status if status.is_server_error() => "目标网站暂时不可用，请稍后重试。",
+        _ => "目标网站未返回可读取的正文。",
+    };
+    ModelError {
+        kind: ModelErrorKind::Provider,
+        message: format!("网页返回 HTTP {}。{guidance}", status.as_u16()),
+        status_code: Some(status.as_u16()),
+        provider_code: Some(format!("webHttp{}", status.as_u16())),
+        retry_after_ms: None,
+    }
+}
+
+fn execution_from_web_error(error: ModelError) -> Result<ToolExecution, ModelError> {
+    let code = error.provider_code.as_deref().unwrap_or(match error.kind {
+        ModelErrorKind::ClientTimeout => "webTimeout",
+        ModelErrorKind::Connection => "webConnectionFailed",
+        ModelErrorKind::InvalidConfiguration => "webRequestRejected",
+        _ => "webRequestFailed",
+    });
+    error_execution(
+        code,
+        &error.message,
+        matches!(
+            error.kind,
+            ModelErrorKind::ClientTimeout
+                | ModelErrorKind::Connection
+                | ModelErrorKind::ProviderUnavailable
+        ) || error
+            .status_code
+            .is_some_and(|status| status == 429 || status >= 500),
+        error.status_code,
+    )
+}
+
+fn error_execution(
+    code: &str,
+    message: &str,
+    retryable: bool,
+    http_status: Option<u16>,
+) -> Result<ToolExecution, ModelError> {
+    let content = serde_json::to_string(&json!({
+        "status": "error",
+        "error": {
+            "code": code,
+            "message": message,
+            "retryable": retryable,
+            "httpStatus": http_status,
+        }
+    }))
+    .map_err(|error| ModelError::invalid_configuration(format!("序列化网页错误失败：{error}")))?;
+    let output_chars = content.chars().count();
+    Ok(ToolExecution {
+        content,
+        preview: truncate_chars(message, MAX_PREVIEW_CHARS),
+        is_error: true,
+        activated_skill_id: None,
+        output_chars,
+        output_truncated: false,
+    })
+}
+
 async fn fetch_resource(
     input: &str,
     max_bytes: usize,
     cancellation: &CancellationToken,
+    proxy_settings: &UpdateProxySettings,
 ) -> Result<FetchedResource, ModelError> {
     let mut current = Url::parse(input)
         .map_err(|error| ModelError::invalid_configuration(format!("URL 无效：{error}")))?;
     for redirect_index in 0..=MAX_REDIRECTS {
-        let (client, validated_url) = validated_client(current).await?;
+        let (client, validated_url) = validated_client(current, proxy_settings).await?;
         let response = tokio::select! {
             _ = cancellation.cancelled() => return Err(ModelError::cancelled()),
             response = client
                 .get(validated_url.clone())
                 .header(header::ACCEPT, "text/html,application/xhtml+xml,application/json,text/plain;q=0.9,*/*;q=0.2")
-                .send() => response.map_err(|error| ModelError::provider(format!("网页请求失败：{error}")))?,
+                .send() => response.map_err(classify_web_request_error)?,
         };
         let status = response.status();
         if status.is_redirection() {
@@ -150,10 +445,7 @@ async fn fetch_resource(
             continue;
         }
         if !status.is_success() {
-            return Err(ModelError::provider(format!(
-                "网页返回 HTTP {}。",
-                status.as_u16()
-            )));
+            return Err(http_status_error(status));
         }
         if response
             .content_length()
@@ -175,7 +467,7 @@ async fn fetch_resource(
         loop {
             let chunk = tokio::select! {
                 _ = cancellation.cancelled() => return Err(ModelError::cancelled()),
-                chunk = response.chunk() => chunk.map_err(|error| ModelError::provider(format!("读取网页正文失败：{error}")))?,
+                chunk = response.chunk() => chunk.map_err(classify_web_body_error)?,
             };
             let Some(chunk) = chunk else {
                 break;
@@ -198,7 +490,10 @@ async fn fetch_resource(
     Err(ModelError::provider("网页重定向处理失败。"))
 }
 
-async fn validated_client(url: Url) -> Result<(Client, Url), ModelError> {
+async fn validated_client(
+    url: Url,
+    proxy_settings: &UpdateProxySettings,
+) -> Result<(Client, Url), ModelError> {
     if !matches!(url.scheme(), "http" | "https") {
         return Err(ModelError::invalid_configuration(
             "web_fetch 只允许 HTTP 或 HTTPS URL。",
@@ -232,11 +527,13 @@ async fn validated_client(url: Url) -> Result<(Client, Url), ModelError> {
             "网页工具拒绝访问私有、本机、链路本地或组播地址。",
         ));
     }
-    let mut builder = Client::builder()
+    let builder = Client::builder()
         .redirect(Policy::none())
         .connect_timeout(Duration::from_secs(20))
         .timeout(Duration::from_secs(90))
         .user_agent(concat!("Mnemora/", env!("CARGO_PKG_VERSION")));
+    let (mut builder, _) = network::configure_reqwest_builder(builder, proxy_settings)
+        .map_err(ModelError::invalid_configuration)?;
     if host.parse::<IpAddr>().is_err() {
         builder = builder.resolve(&host, addresses[0]);
     }
@@ -335,6 +632,72 @@ fn parse_duckduckgo_results(html: &str, limit: usize) -> Vec<SearchResult> {
         cursor = next_cursor;
     }
     results
+}
+
+fn parse_bing_results(html: &str, limit: usize) -> Vec<SearchResult> {
+    let lower = html.to_ascii_lowercase();
+    let mut cursor = 0usize;
+    let mut results = Vec::new();
+    while results.len() < limit {
+        let Some(offset) = lower[cursor..].find("b_algo") else {
+            break;
+        };
+        let marker = cursor + offset;
+        let region_end = lower[marker + 6..]
+            .find("b_algo")
+            .map(|next| marker + 6 + next)
+            .unwrap_or(html.len());
+        let region = &html[marker..region_end];
+        let region_lower = region.to_ascii_lowercase();
+        let Some(h2_start) = region_lower.find("<h2") else {
+            cursor = region_end;
+            continue;
+        };
+        let Some(anchor_offset) = region_lower[h2_start..].find("<a") else {
+            cursor = region_end;
+            continue;
+        };
+        let anchor_start = h2_start + anchor_offset;
+        let Some(tag_end_offset) = region_lower[anchor_start..].find('>') else {
+            cursor = region_end;
+            continue;
+        };
+        let tag_end = anchor_start + tag_end_offset;
+        let Some(anchor_end_offset) = region_lower[tag_end + 1..].find("</a>") else {
+            cursor = region_end;
+            continue;
+        };
+        let anchor_end = tag_end + 1 + anchor_end_offset;
+        let tag = &region[anchor_start..=tag_end];
+        let url = extract_attribute(tag, "href").unwrap_or_default();
+        let title = decode_html_entities(html_to_text(&region[tag_end + 1..anchor_end]).trim());
+        let snippet = extract_first_tag_content(region, "p")
+            .map(|value| decode_html_entities(html_to_text(&value).trim()))
+            .unwrap_or_default();
+        if !title.is_empty()
+            && Url::parse(&url)
+                .ok()
+                .is_some_and(|url| matches!(url.scheme(), "http" | "https"))
+        {
+            results.push(SearchResult {
+                title,
+                url,
+                snippet,
+            });
+        }
+        cursor = region_end;
+    }
+    results
+}
+
+fn extract_first_tag_content(region: &str, tag_name: &str) -> Option<String> {
+    let lower = region.to_ascii_lowercase();
+    let opening = format!("<{tag_name}");
+    let start = lower.find(&opening)?;
+    let content_start = lower[start..].find('>')? + start + 1;
+    let closing = format!("</{tag_name}>");
+    let end = lower[content_start..].find(&closing)? + content_start;
+    Some(region[content_start..end].to_string())
 }
 
 fn normalize_search_url(value: &str) -> Option<String> {
@@ -544,7 +907,10 @@ fn truncate_chars(value: &str, limit: usize) -> String {
 mod tests {
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-    use super::{html_to_text, is_forbidden_ip, is_textual_content_type, parse_duckduckgo_results};
+    use super::{
+        html_to_text, is_forbidden_ip, is_textual_content_type, parse_bing_results,
+        parse_duckduckgo_results, WebRunState,
+    };
 
     #[test]
     fn blocks_local_network_addresses() {
@@ -570,5 +936,27 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].title, "Example & title");
         assert_eq!(html_to_text("<script>bad()</script><p>Hello</p>"), "Hello");
+    }
+
+    #[test]
+    fn extracts_bing_fallback_results() {
+        let html = r#"<ol><li class="b_algo"><h2><a href="https://example.com/docs">Example docs</a></h2><div><p>Fallback snippet</p></div></li></ol>"#;
+        let results = parse_bing_results(html, 5);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title, "Example docs");
+        assert_eq!(results[0].snippet, "Fallback snippet");
+    }
+
+    #[test]
+    fn repeated_fetch_failures_open_only_the_current_host_circuit() {
+        let state = WebRunState::default();
+        assert!(!state.fetch_circuit_open("example.com"));
+        state.record_fetch_failure("example.com");
+        assert!(!state.fetch_circuit_open("example.com"));
+        state.record_fetch_failure("example.com");
+        assert!(state.fetch_circuit_open("example.com"));
+        assert!(!state.fetch_circuit_open("other.example"));
+        state.clear_fetch_failures("example.com");
+        assert!(!state.fetch_circuit_open("example.com"));
     }
 }

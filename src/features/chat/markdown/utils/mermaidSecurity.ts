@@ -9,6 +9,8 @@ const XML_VOID_TAGS = new Set(["area", "base", "br", "col", "embed", "hr", "img"
 export { isLargeMermaidDiagram } from "./mermaidLayout";
 
 export type MermaidSvgMetrics = {
+  x?: number;
+  y?: number;
   width: number;
   height: number;
   aspectRatio: number;
@@ -104,18 +106,22 @@ function ensureMermaidViewBox(root: Element) {
 
 export function extractMermaidSvgMetrics(svg: string): MermaidSvgMetrics {
   const viewBox = svg.match(/\bviewBox\s*=\s*["']\s*([-+\d.eE]+)[\s,]+([-+\d.eE]+)[\s,]+([-+\d.eE]+)[\s,]+([-+\d.eE]+)\s*["']/i);
+  let x = viewBox ? Number(viewBox[1]) : 0;
+  let y = viewBox ? Number(viewBox[2]) : 0;
   let width = viewBox ? Number(viewBox[3]) : parseSvgDimension(svg, "width");
   let height = viewBox ? Number(viewBox[4]) : parseSvgDimension(svg, "height");
+  if (!Number.isFinite(x)) x = 0;
+  if (!Number.isFinite(y)) y = 0;
   if (!Number.isFinite(width) || width <= 0) width = 640;
   if (!Number.isFinite(height) || height <= 0) height = 360;
-  return { width, height, aspectRatio: width / height };
+  return { x, y, width, height, aspectRatio: width / height };
 }
 
 export function measureMermaidViewerBudget(svg: string) {
   return withMermaidViewerBudget(svg, extractMermaidSvgMetrics(svg));
 }
 
-function withMermaidViewerBudget(svg: string, dimensions: Pick<MermaidSvgMetrics, "width" | "height" | "aspectRatio">): MermaidSvgMetrics {
+function withMermaidViewerBudget(svg: string, dimensions: Pick<MermaidSvgMetrics, "x" | "y" | "width" | "height" | "aspectRatio">): MermaidSvgMetrics {
   const elementCount = (svg.match(/<([a-z][\w:.-]*)(?:\s|\/?>)/gi) ?? []).length;
   const foreignObjectCount = (svg.match(/<foreignObject(?:\s|\/?>)/gi) ?? []).length;
   const svgChars = svg.length;

@@ -18,6 +18,12 @@ export type MermaidViewerViewport = {
   scale: number;
 };
 
+export type MermaidScrollLayout = {
+  contentWidth: number;
+  contentHeight: number;
+  viewport: MermaidViewerViewport;
+};
+
 const PREVIEW_HEIGHT_LIMIT = 680;
 const VIEWER_PADDING = 48;
 const MIN_VIEWER_SCALE = 0.001;
@@ -113,18 +119,54 @@ export function getMermaidViewerViewport(
   // without distorting or independently stretching either axis.
   const width = Math.max(1, safeCanvasWidth / scale);
   const height = Math.max(1, safeCanvasHeight / scale);
-  const x = getAxisOrigin(metrics.width, width, pan.x, scale, false);
+  const x = getAxisOrigin(metrics.x ?? 0, metrics.width, width, pan.x, scale, false);
   // Fit-width is intentionally top-anchored: a long process diagram starts at
   // its title instead of opening on an arbitrary middle segment.
-  const y = getAxisOrigin(metrics.height, height, pan.y, scale, mode === "width");
+  const y = getAxisOrigin(metrics.y ?? 0, metrics.height, height, pan.y, scale, mode === "width");
   return { x, y, width, height, scale };
 }
 
-function getAxisOrigin(diagramSize: number, viewportSize: number, panPixels: number, scale: number, anchorStart: boolean) {
-  if (viewportSize >= diagramSize) return (diagramSize - viewportSize) / 2;
-  const max = diagramSize - viewportSize;
-  const origin = anchorStart ? 0 : max / 2;
-  return clamp(origin - panPixels / scale, 0, max);
+/**
+ * Maps a native scroll container onto a bounded SVG viewBox. Only the visible
+ * slice is painted; the spacer provides scroll range without creating a
+ * diagram-sized SVG/compositing layer.
+ */
+export function getMermaidScrollLayout(
+  metrics: MermaidSvgMetrics,
+  canvas: { width: number; height: number },
+  scroll: { left: number; top: number },
+  padding = 24,
+): MermaidScrollLayout {
+  const canvasWidth = Math.max(1, Number.isFinite(canvas.width) ? canvas.width : 1);
+  const canvasHeight = Math.max(1, Number.isFinite(canvas.height) ? canvas.height : 1);
+  const safePadding = Math.max(0, Number.isFinite(padding) ? padding : 0);
+  const contentWidth = Math.max(canvasWidth, metrics.width + safePadding * 2);
+  const contentHeight = Math.max(canvasHeight, metrics.height + safePadding * 2);
+  const offsetX = (contentWidth - metrics.width) / 2;
+  const offsetY = (contentHeight - metrics.height) / 2;
+  const maxLeft = Math.max(0, contentWidth - canvasWidth);
+  const maxTop = Math.max(0, contentHeight - canvasHeight);
+  const left = clamp(Number.isFinite(scroll.left) ? scroll.left : 0, 0, maxLeft);
+  const top = clamp(Number.isFinite(scroll.top) ? scroll.top : 0, 0, maxTop);
+
+  return {
+    contentWidth,
+    contentHeight,
+    viewport: {
+      x: (metrics.x ?? 0) - offsetX + left,
+      y: (metrics.y ?? 0) - offsetY + top,
+      width: canvasWidth,
+      height: canvasHeight,
+      scale: 1,
+    },
+  };
+}
+
+function getAxisOrigin(diagramStart: number, diagramSize: number, viewportSize: number, panPixels: number, scale: number, anchorStart: boolean) {
+  if (viewportSize >= diagramSize) return diagramStart + (diagramSize - viewportSize) / 2;
+  const max = diagramStart + diagramSize - viewportSize;
+  const origin = anchorStart ? diagramStart : diagramStart + (diagramSize - viewportSize) / 2;
+  return clamp(origin - panPixels / scale, diagramStart, max);
 }
 
 function clamp(value: number, min: number, max: number) {

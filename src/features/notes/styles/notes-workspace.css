@@ -499,6 +499,7 @@ button.note-source-chip:hover { color: var(--color-accent); background: var(--co
 .note-source-supplement { color: var(--color-accent); background: var(--color-accent-soft); }
 .notes-document-host { position: relative; min-width: 0; min-height: 0; flex: 1; overflow: hidden; }
 .notes-source-editor {
+  box-sizing: border-box;
   width: 100%;
   height: 100%;
   padding: 28px clamp(24px, 4vw, 64px) 60px;
@@ -512,6 +513,12 @@ button.note-source-chip:hover { color: var(--color-accent); background: var(--co
   line-height: var(--note-line-height);
   tab-size: 2;
   scrollbar-width: thin;
+}
+.notes-source-editor-native {
+  display: block;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
 }
 .notes-source-editor-cm {
   width: 100%;

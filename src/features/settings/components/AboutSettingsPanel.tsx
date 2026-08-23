@@ -14,6 +14,7 @@ import {
   Save,
   ShieldCheck,
   Sparkles,
+  Wifi,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useI18n } from "../../../i18n/I18nProvider";
@@ -25,6 +26,7 @@ import {
   discardSignedApplicationUpdate,
   downloadAndInstallSignedUpdate,
 } from "../api/appUpdate";
+import { testWebNetworkConnection } from "../api/network";
 import "../styles/about-settings.css";
 
 type AppMetadata = {
@@ -63,6 +65,7 @@ export function AboutSettingsPanel({ settings, onSaveSettings }: AboutSettingsPa
   const [proxyMode, setProxyMode] = useState<UpdateProxyMode>(settings.updateProxy.mode);
   const [proxyUrl, setProxyUrl] = useState(settings.updateProxy.url);
   const [proxySaving, setProxySaving] = useState(false);
+  const [proxyTesting, setProxyTesting] = useState(false);
   const [proxyFeedback, setProxyFeedback] = useState<{ kind: "success" | "error"; message: string } | null>(null);
 
   useEffect(() => {
@@ -148,6 +151,33 @@ export function AboutSettingsPanel({ settings, onSaveSettings }: AboutSettingsPa
     }
   };
 
+  const testProxyConnection = async () => {
+    setProxyTesting(true);
+    setProxyFeedback(null);
+    try {
+      if (proxyDirty) await saveProxySettings();
+      const report = await testWebNetworkConnection();
+      const summary = report.probes
+        .map((probe) => `${probe.id === "search" ? t("about.proxyProbe.search") : t("about.proxyProbe.page")}：${probe.ok ? t("about.proxyProbe.ok") : probe.message} (${probe.durationMs} ms)`)
+        .join("；");
+      const allOk = report.probes.every((probe) => probe.ok);
+      const route = report.proxyAddress
+        ? `${t("about.proxyProbe.route")} ${report.proxyAddress}`
+        : t("about.proxyProbe.directRoute");
+      setProxyFeedback({
+        kind: allOk ? "success" : "error",
+        message: `${route}；${summary}`,
+      });
+    } catch (reason) {
+      setProxyFeedback({
+        kind: "error",
+        message: reason instanceof Error ? reason.message : String(reason),
+      });
+    } finally {
+      setProxyTesting(false);
+    }
+  };
+
   const checkUpdate = async () => {
     setUpdateStatus("checking");
     setUpdateError("");
@@ -204,7 +234,7 @@ export function AboutSettingsPanel({ settings, onSaveSettings }: AboutSettingsPa
     }
   };
 
-  const updateBusy = proxySaving || updateStatus === "checking" || updateStatus === "downloading" || updateStatus === "installing";
+  const updateBusy = proxySaving || proxyTesting || updateStatus === "checking" || updateStatus === "downloading" || updateStatus === "installing";
 
   return (
     <section className="settings-content about-settings-content" aria-label="关于 Mnemora">
@@ -312,15 +342,26 @@ export function AboutSettingsPanel({ settings, onSaveSettings }: AboutSettingsPa
                   {proxyValidationError ? <span id="about-update-proxy-error" className="settings-field-error">{proxyValidationError}</span> : null}
                 </div>
               ) : null}
-              <button
-                className="settings-button settings-button-secondary about-proxy-save"
-                type="button"
-                disabled={updateBusy || !proxyDirty || Boolean(proxyValidationError)}
-                onClick={() => void saveProxySettings().catch(() => undefined)}
-              >
-                {proxySaving ? <LoaderCircle className="settings-spin" size={15} /> : <Save size={15} />}
-                <span>{proxySaving ? t("common.saving") : t("about.saveProxy")}</span>
-              </button>
+              <div className="about-proxy-actions">
+                <button
+                  className="settings-button settings-button-secondary about-proxy-save"
+                  type="button"
+                  disabled={updateBusy || !proxyDirty || Boolean(proxyValidationError)}
+                  onClick={() => void saveProxySettings().catch(() => undefined)}
+                >
+                  {proxySaving ? <LoaderCircle className="settings-spin" size={15} /> : <Save size={15} />}
+                  <span>{proxySaving ? t("common.saving") : t("about.saveProxy")}</span>
+                </button>
+                <button
+                  className="settings-button settings-button-secondary"
+                  type="button"
+                  disabled={updateBusy || Boolean(proxyValidationError) || !isTauri()}
+                  onClick={() => void testProxyConnection()}
+                >
+                  {proxyTesting ? <LoaderCircle className="settings-spin" size={15} /> : <Wifi size={15} />}
+                  <span>{proxyTesting ? t("about.proxyTesting") : t("about.testProxy")}</span>
+                </button>
+              </div>
             </div>
           </div>
           {proxyFeedback ? (

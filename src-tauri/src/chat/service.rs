@@ -585,6 +585,7 @@ async fn execute_parallel_safe_tools(
                 } else {
                     ToolCallEvent::Succeeded
                 };
+                let error_kind = result.error_kind();
                 match library.transition_agent_tool_call(
                     run_id,
                     &call.id,
@@ -592,7 +593,7 @@ async fn execute_parallel_safe_tools(
                     execution_version,
                     Some(state_version),
                     Some(&result.preview),
-                    result.is_error.then_some("toolExecution"),
+                    error_kind.as_deref(),
                 ) {
                     Ok(_) => result,
                     Err(error) => {
@@ -874,7 +875,7 @@ async fn run_agent_complete(
                 input_chars: Some(call.arguments.to_string().chars().count()),
                 output_chars: Some(execution.output_chars),
                 output_truncated: Some(execution.output_truncated),
-                error_kind: execution.is_error.then_some("toolExecution".to_string()),
+                error_kind: execution.error_kind(),
             });
             if let Some(skill_id) = execution.activated_skill_id.as_ref() {
                 if !activated_skill_ids.contains(skill_id) {
@@ -1181,10 +1182,7 @@ async fn run_agent_stream(
                         input_chars: Some(call.arguments.to_string().chars().count()),
                         output_chars: Some(result.execution.output_chars),
                         output_truncated: Some(result.execution.output_truncated),
-                        error_kind: result
-                            .execution
-                            .is_error
-                            .then_some("toolExecution".to_string()),
+                        error_kind: result.execution.error_kind(),
                     },
                 )?;
                 result.execution
@@ -1550,6 +1548,7 @@ async fn execute_agent_tool(
             } else {
                 ToolCallEvent::Succeeded
             };
+            let error_kind = result.error_kind();
             if let Err(error) = state.library_repository.transition_agent_tool_call(
                 run_id,
                 &call.id,
@@ -1557,7 +1556,7 @@ async fn execute_agent_tool(
                 execution_version,
                 Some(tool_state_version),
                 Some(&result.preview),
-                result.is_error.then_some("toolExecution"),
+                error_kind.as_deref(),
             ) {
                 return rejected_tool(
                     &format!("Tool 已返回，但终态因版本冲突被拒绝：{error}"),
@@ -1584,7 +1583,7 @@ async fn execute_agent_tool(
                     input_chars: Some(call.arguments.to_string().chars().count()),
                     output_chars: Some(result.output_chars),
                     output_truncated: Some(result.output_truncated),
-                    error_kind: result.is_error.then_some("toolExecution".to_string()),
+                    error_kind,
                 },
             );
             result
@@ -1947,6 +1946,12 @@ async fn prepare_call(
         .read()
         .map_err(|_| ModelError::provider("应用设置暂时不可用，请重新启动应用后再试。"))?
         .memory;
+    let proxy_settings = state
+        .app_settings
+        .read()
+        .map_err(|_| ModelError::provider("应用设置暂时不可用，请重新启动应用后再试。"))?
+        .update_proxy
+        .clone();
     let tool_context = if use_agent_tools {
         let working_directory = state
             .app_settings
@@ -1959,6 +1964,7 @@ async fn prepare_call(
             &state.skill_repository,
             memory_settings,
             &working_directory,
+            proxy_settings,
         )?
     } else {
         ToolRuntimeContext::disabled(request.permission_mode)

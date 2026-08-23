@@ -3,6 +3,7 @@ import {
   getDefaultMermaidViewMode,
   getMermaidPreviewLayout,
   getMermaidPreviewViewMode,
+  getMermaidScrollLayout,
   getMermaidViewerScale,
   getMermaidViewerViewport,
   isLargeMermaidDiagram,
@@ -104,5 +105,24 @@ describe("mermaidLayout", () => {
 
     expect(middle.y).toBeGreaterThan(0);
     expect(end.y + end.height).toBeCloseTo(metrics.height, 5);
+  });
+
+  it("preserves a negative Mermaid viewBox origin", () => {
+    const metrics = { x: -24, y: -16, width: 640, height: 360, aspectRatio: 640 / 360 };
+    const viewport = getMermaidViewerViewport(metrics, { width: 320, height: 180 }, "actual", 1, { x: 1_000_000, y: 1_000_000 });
+
+    expect(viewport.x).toBe(-24);
+    expect(viewport.y).toBe(-16);
+  });
+
+  it("maps native scrolling to a bounded viewBox instead of a giant SVG surface", () => {
+    const metrics = { x: -10, y: -20, width: 600, height: 40_000, aspectRatio: 0.015 };
+    const start = getMermaidScrollLayout(metrics, { width: 1_200, height: 700 }, { left: 0, top: 0 });
+    const end = getMermaidScrollLayout(metrics, { width: 1_200, height: 700 }, { left: 0, top: 1_000_000 });
+
+    expect(start.contentHeight).toBe(40_048);
+    expect(start.viewport.height).toBe(700);
+    expect(start.viewport.y).toBe(-44);
+    expect(end.viewport.y + end.viewport.height).toBe(40_004);
   });
 });

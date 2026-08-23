@@ -8,6 +8,7 @@ mod english;
 mod html_preview;
 mod library;
 mod memory;
+mod network;
 mod request_debug;
 mod settings;
 mod skills;
@@ -141,6 +142,7 @@ pub fn run() {
             commands::app_settings::export_settings_bundle,
             commands::app_settings::inspect_settings_bundle,
             commands::app_settings::import_settings_bundle,
+            commands::network::test_web_network_connection,
             commands::storage::storage_get_status,
             commands::storage::storage_open_directory,
             commands::storage::storage_migrate_data,

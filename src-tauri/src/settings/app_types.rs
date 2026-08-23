@@ -204,10 +204,10 @@ impl UpdateProxySettings {
     pub fn manual_url(&self) -> Result<Url, String> {
         let value = self.url.trim();
         if value.is_empty() {
-            return Err("Manual update proxy URL is required".to_string());
+            return Err("Manual network proxy URL is required".to_string());
         }
         if value.len() > 2_048 {
-            return Err("Update proxy URL is too long".to_string());
+            return Err("Network proxy URL is too long".to_string());
         }
         let normalized = if value.contains("://") {
             value.to_string()
@@ -215,20 +215,20 @@ impl UpdateProxySettings {
             format!("http://{value}")
         };
         let url = Url::parse(&normalized)
-            .map_err(|error| format!("Invalid update proxy URL: {error}"))?;
+            .map_err(|error| format!("Invalid network proxy URL: {error}"))?;
         if !matches!(url.scheme(), "http" | "https") {
-            return Err("Update proxy must use HTTP or HTTPS".to_string());
+            return Err("Network proxy must use HTTP or HTTPS".to_string());
         }
         if url.host_str().is_none() {
-            return Err("Update proxy URL must include a host".to_string());
+            return Err("Network proxy URL must include a host".to_string());
         }
         if !url.username().is_empty() || url.password().is_some() {
             return Err(
-                "Update proxy credentials cannot be stored in application settings".to_string(),
+                "Network proxy credentials cannot be stored in application settings".to_string(),
             );
         }
         if url.query().is_some() || url.fragment().is_some() {
-            return Err("Update proxy URL cannot include a query or fragment".to_string());
+            return Err("Network proxy URL cannot include a query or fragment".to_string());
         }
         Ok(url)
     }
@@ -301,6 +301,7 @@ pub struct AppSettings {
     #[serde(default)]
     pub pet: PetSettings,
     #[serde(default)]
+    /// 历史 JSON 键仍为 updateProxy；现在作为网页工具与更新器共用的出站代理策略。
     pub update_proxy: UpdateProxySettings,
     #[serde(default)]
     pub memory: MemorySettings,
@@ -523,7 +524,7 @@ impl AppSettings {
         if !self.update_proxy.url.is_empty() {
             self.update_proxy.url = self.update_proxy.manual_url()?.to_string();
         } else if self.update_proxy.mode == UpdateProxyMode::Manual {
-            return Err("Manual update proxy URL is required".to_string());
+            return Err("Manual network proxy URL is required".to_string());
         }
         Ok(self)
     }

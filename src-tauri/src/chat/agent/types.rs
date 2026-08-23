@@ -60,6 +60,23 @@ pub struct ToolExecution {
     pub output_truncated: bool,
 }
 
+impl ToolExecution {
+    pub fn error_kind(&self) -> Option<String> {
+        if !self.is_error {
+            return None;
+        }
+        serde_json::from_str::<serde_json::Value>(&self.content)
+            .ok()
+            .and_then(|value| {
+                value
+                    .pointer("/error/code")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+            })
+            .or_else(|| Some("toolExecution".to_string()))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentToolCallSnapshot {

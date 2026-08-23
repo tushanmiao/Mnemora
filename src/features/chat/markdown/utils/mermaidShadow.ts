@@ -55,15 +55,19 @@ export function renderMermaidSvgInShadowHost(svg: string, host: HTMLElement, vie
       height: 100% !important;
       max-width: none !important;
     }
-    foreignObject,
+    foreignObject {
+      overflow: visible !important;
+    }
     foreignObject > div,
     .nodeLabel,
     .edgeLabel,
-    .label,
-    p {
+    .label {
       overflow: visible !important;
-      overflow-wrap: anywhere;
-      word-break: break-word;
+    }
+    .nodeLabel p,
+    .edgeLabel p,
+    .label p {
+      margin: 0;
     }
   `;
   const mountedRoot = document.importNode(root, true);

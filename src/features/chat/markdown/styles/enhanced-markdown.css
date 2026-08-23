@@ -89,115 +89,57 @@
   background: var(--color-surface-raised);
 }
 
-.markdown-mermaid-viewport {
-  max-height: min(62vh, 560px);
-  overflow: hidden;
-}
-
-.markdown-mermaid-lightbox {
-  position: fixed;
-  z-index: 1200;
-  inset: 18px;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  border: 1px solid var(--color-border);
-  border-radius: 14px;
-  background: var(--color-app);
-  box-shadow: 0 24px 70px rgb(0 0 0 / 35%);
-}
-
-.markdown-mermaid-lightbox-toolbar {
-  display: flex;
-  min-height: 46px;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 12px;
-  padding: 7px 10px 7px 14px;
-  border-bottom: 1px solid var(--color-border-soft);
-  color: var(--color-text);
-  background: var(--color-surface-raised);
-  font-size: 12px;
-  font-weight: 650;
-}
-
-.markdown-mermaid-lightbox-title {
+.markdown-mermaid-surface {
+  position: relative;
+  width: 100%;
   min-width: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.markdown-mermaid-lightbox-controls {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.markdown-mermaid-view-modes {
-  display: inline-flex;
-  padding: 2px;
-  border: 1px solid var(--color-border);
-  border-radius: 6px;
-  background: var(--color-surface);
-}
-
-.markdown-mermaid-view-modes button {
-  min-height: 26px;
-  padding: 0 8px;
-  border: 0;
-  border-radius: 4px;
-  color: var(--color-muted);
-  background: transparent;
-  cursor: pointer;
-  font: inherit;
-  font-size: 11px;
-}
-
-.markdown-mermaid-view-modes button:hover,
-.markdown-mermaid-view-modes button[aria-pressed="true"] {
-  color: var(--color-text);
   background: var(--color-surface-raised);
 }
 
-.markdown-mermaid-zoom-label {
-  min-width: 42px;
-  color: var(--color-muted);
-  font-size: 11px;
-  text-align: center;
-}
-
-.markdown-mermaid-lightbox-canvas {
-  display: block;
-  position: relative;
-  min-height: 0;
-  flex: 1;
+.markdown-mermaid-viewport {
+  height: 100%;
+  max-height: none;
   overflow: hidden;
-  cursor: grab;
-  background: var(--color-surface);
-  touch-action: none;
 }
 
-.markdown-mermaid-lightbox-canvas:focus-visible {
+.markdown-mermaid-surface-open {
+  position: relative;
+  height: clamp(420px, 72vh, 820px);
+  overflow: hidden;
+  background: var(--color-surface);
+  contain: layout style paint;
+}
+
+.markdown-mermaid-surface-open > .markdown-mermaid-svg {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  height: 100%;
+  max-width: none;
+  padding: 16px;
+  pointer-events: none;
+  contain: layout style paint;
+}
+
+.markdown-mermaid-scrollport {
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  background: transparent;
+}
+
+.markdown-mermaid-scrollport:focus-visible {
   outline: 2px solid var(--color-accent);
   outline-offset: -3px;
 }
 
-.markdown-mermaid-lightbox-canvas:active {
-  cursor: grabbing;
-}
-
-.markdown-mermaid-lightbox-svg {
-  display: block;
-  flex: none;
-  max-width: none;
-  max-height: none;
-  padding: 0;
-  overflow: visible;
-  contain: layout style;
+.markdown-mermaid-scroll-space {
+  pointer-events: none;
+  contain: strict;
 }
 
 .markdown-mermaid-budget-warning {
@@ -462,10 +404,9 @@
 @media (max-width: 620px) {
   .markdown-mermaid-svg { padding: 10px; }
   .markdown-outline { max-width: 100%; }
-  .markdown-mermaid-lightbox { inset: 8px; border-radius: 10px; }
+  .markdown-mermaid-surface-open { height: min(72vh, 620px); }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .markdown-outline-toggle svg:last-child { transition: none; }
-  .markdown-mermaid-lightbox-svg { transition: none; }
 }

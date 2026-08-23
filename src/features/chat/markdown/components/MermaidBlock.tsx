@@ -1,21 +1,11 @@
-import {
-  useEffect,
-  useRef,
-  useState,
-  type CSSProperties,
-  type KeyboardEvent as ReactKeyboardEvent,
-  type PointerEvent as ReactPointerEvent,
-  type WheelEvent as ReactWheelEvent,
-} from "react";
-import { Check, Code2, Copy, Eye, LoaderCircle, Maximize2, Minus, Plus, RotateCcw, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type UIEvent as ReactUIEvent } from "react";
+import { Check, Code2, Copy, Eye, LoaderCircle, Maximize2, Minimize2, RotateCcw, X } from "lucide-react";
 import { useElementVisibility } from "../hooks/useElementVisibility";
 import {
-  getDefaultMermaidViewMode,
   getMermaidPreviewViewMode,
-  getMermaidViewerScale,
+  getMermaidScrollLayout,
   getMermaidViewerViewport,
   isLargeMermaidDiagram,
-  type MermaidViewMode,
 } from "../utils/mermaidLayout";
 import { renderMermaid } from "../utils/mermaidRuntime";
 import { sanitizeMermaidSvg, mermaidThemeConfig, type MermaidSvgMetrics } from "../utils/mermaidSecurity";
@@ -37,49 +27,33 @@ type Status = "source" | "loading" | "ready" | "error";
 let renderSequence = 0;
 const MERMAID_RENDER_DEBOUNCE_MS = 120;
 
-function MermaidSvgHost({
-  svg,
-  className,
-  style,
-  viewport,
-}: {
+function MermaidSvgHost({ svg, className, viewport }: {
   svg: string;
   className: string;
-  style?: CSSProperties;
   viewport?: MermaidShadowViewport;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const hasViewport = viewport !== undefined;
+
   useEffect(() => {
     const host = hostRef.current;
     if (!host || !svg) return;
-    if (host.classList.contains("markdown-mermaid-lightbox-svg")) {
-      host.setAttribute("data-mermaid-viewer", "true");
-    } else {
-      host.removeAttribute("data-mermaid-viewer");
-    }
-    if (viewport) {
-      host.setAttribute("data-mermaid-viewport", "true");
-    } else {
-      host.removeAttribute("data-mermaid-viewport");
-    }
+    host.toggleAttribute("data-mermaid-viewport", hasViewport);
     try {
       renderMermaidSvgInShadowHost(svg, host, viewport);
     } catch (reason) {
       console.error("Mermaid SVG 挂载失败", reason);
     }
   }, [svg, hasViewport]);
+
   useEffect(() => {
     const host = hostRef.current;
-    if (!host) return;
-    if (viewport) {
-      host.setAttribute("data-mermaid-viewport", "true");
-      updateMermaidSvgViewport(host, viewport);
-    } else {
-      host.removeAttribute("data-mermaid-viewport");
-    }
+    if (!host || !viewport) return;
+    host.setAttribute("data-mermaid-viewport", "true");
+    updateMermaidSvgViewport(host, viewport);
   }, [viewport?.x, viewport?.y, viewport?.width, viewport?.height]);
-  return <div ref={hostRef} className={className} style={style} data-testid="mermaid-shadow-host" />;
+
+  return <div ref={hostRef} className={className} data-testid="mermaid-shadow-host" />;
 }
 
 export function MermaidBlock({ code, streaming = false }: MermaidBlockProps) {
@@ -94,16 +68,14 @@ export function MermaidBlock({ code, streaming = false }: MermaidBlockProps) {
   const [expanded, setExpanded] = useState(false);
   const [metrics, setMetrics] = useState<MermaidSvgMetrics | null>(null);
   const [previewWidth, setPreviewWidth] = useState(900);
-  const [viewMode, setViewMode] = useState<MermaidViewMode>("fit");
   const [canvasSize, setCanvasSize] = useState({ width: 1_200, height: 700 });
-  const [zoom, setZoom] = useState(1);
-  const [pan, setPan] = useState({ x: 0, y: 0 });
-  const panRef = useRef<{ pointerId: number; x: number; y: number; originX: number; originY: number } | null>(null);
-  const wheelFrameRef = useRef<number | null>(null);
-  const wheelDeltaRef = useRef(0);
-  const lightboxRef = useRef<HTMLDivElement>(null);
-  const canvasRef = useRef<HTMLDivElement>(null);
-  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const [scrollPosition, setScrollPosition] = useState({ left: 0, top: 0 });
+  const surfaceRef = useRef<HTMLDivElement>(null);
+  const scrollportRef = useRef<HTMLDivElement>(null);
+  const previewResizeFrameRef = useRef<number | null>(null);
+  const canvasResizeFrameRef = useRef<number | null>(null);
+  const scrollFrameRef = useRef<number | null>(null);
+  const lastPreviewWidthRef = useRef(900);
 
   useEffect(() => {
     const shell = ref.current?.closest<HTMLElement>(".app-shell");
@@ -113,35 +85,45 @@ export function MermaidBlock({ code, streaming = false }: MermaidBlockProps) {
       if (visible) setThemeRevision((value) => value + 1);
     });
     observer.observe(shell, { attributes: true, attributeFilter: ["data-theme", "data-theme-preset", "data-theme-color"] });
-    if (root !== shell) {
-      observer.observe(root, { attributes: true, attributeFilter: ["style", "class", "data-theme"] });
-    }
+    if (root !== shell) observer.observe(root, { attributes: true, attributeFilter: ["style", "class", "data-theme"] });
     return () => observer.disconnect();
   }, [ref, visible]);
 
   useEffect(() => {
     const host = ref.current;
-    if (!host) return undefined;
-    const updateWidth = () => setPreviewWidth(Math.max(280, host.getBoundingClientRect().width - 32));
-    updateWidth();
-    if (typeof ResizeObserver === "undefined") return undefined;
-    const observer = new ResizeObserver(updateWidth);
+    if (!host) return;
+    const scheduleMeasurement = () => {
+      if (previewResizeFrameRef.current !== null) return;
+      previewResizeFrameRef.current = window.requestAnimationFrame(() => {
+        previewResizeFrameRef.current = null;
+        const width = Math.max(280, Math.round(host.getBoundingClientRect().width - 32));
+        if (Math.abs(lastPreviewWidthRef.current - width) < 1) return;
+        lastPreviewWidthRef.current = width;
+        setPreviewWidth(width);
+      });
+    };
+    scheduleMeasurement();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(scheduleMeasurement);
     observer.observe(host);
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      if (previewResizeFrameRef.current !== null) window.cancelAnimationFrame(previewResizeFrameRef.current);
+      previewResizeFrameRef.current = null;
+    };
   }, [ref]);
 
   useEffect(() => {
     let cancelled = false;
     if (streaming || showSource) return () => { cancelled = true; };
     if (!visible) {
-      // 离开可视区后释放 SVG 字符串，避免长对话持续保留图形 DOM。
       setSvg((current) => current ? "" : current);
       setStatus((current) => current === "ready" ? "source" : current);
       return () => { cancelled = true; };
     }
     if (code.length > MARKDOWN_RENDER_LIMITS.maxMermaidChars) {
       setStatus("error");
-      setError("图表内容过长，已保留源代码。 ");
+      setError("图表内容过长，已保留源代码。");
       return () => { cancelled = true; };
     }
 
@@ -153,17 +135,13 @@ export function MermaidBlock({ code, streaming = false }: MermaidBlockProps) {
     const currentId = `mnemora-mermaid-${++renderSequence}`;
     const timer = window.setTimeout(() => {
       if (cancelled) return;
-      // A disclosure panel may have become visible in this frame. Measuring
-      // once makes its current width available before Mermaid lays out SVG.
       const width = Math.max(280, host.getBoundingClientRect().width - 32);
       void renderMermaid(code, currentId, mermaidThemeConfig(host), width).then((result) => {
         if (cancelled) return;
         const sanitized = sanitizeMermaidSvg(result.svg);
         setSvg(sanitized.svg);
         setMetrics(sanitized.metrics);
-        setViewMode(getDefaultMermaidViewMode(sanitized.metrics));
-        setZoom(1);
-        setPan({ x: 0, y: 0 });
+        setScrollPosition({ left: 0, top: 0 });
         setStatus("ready");
       }).catch((reason: unknown) => {
         if (cancelled) return;
@@ -179,82 +157,44 @@ export function MermaidBlock({ code, streaming = false }: MermaidBlockProps) {
   }, [code, ref, retryKey, showSource, streaming, themeRevision, visible]);
 
   useEffect(() => {
-    if (!expanded) return undefined;
-    const previousOverflow = document.body.style.overflow;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setExpanded(false);
-        setZoom(1);
-        setPan({ x: 0, y: 0 });
-        return;
-      }
-      if (event.key !== "Tab") return;
-      const focusable = [...(lightboxRef.current?.querySelectorAll<HTMLElement>("button:not(:disabled), [tabindex]:not([tabindex='-1'])") ?? [])];
-      if (focusable.length === 0) return;
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
+    if (!expanded) return;
+    const surface = surfaceRef.current;
+    if (!surface) return;
+    let lastWidth = 0;
+    let lastHeight = 0;
+    const scheduleMeasurement = () => {
+      if (canvasResizeFrameRef.current !== null) return;
+      canvasResizeFrameRef.current = window.requestAnimationFrame(() => {
+        canvasResizeFrameRef.current = null;
+        const bounds = surface.getBoundingClientRect();
+        const width = Math.max(1, Math.round(bounds.width));
+        const height = Math.max(1, Math.round(bounds.height));
+        if (width === lastWidth && height === lastHeight) return;
+        lastWidth = width;
+        lastHeight = height;
+        setCanvasSize({ width, height });
+      });
     };
-    document.body.style.overflow = "hidden";
-    document.addEventListener("keydown", onKeyDown);
+    scheduleMeasurement();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(scheduleMeasurement);
+    observer?.observe(surface);
     return () => {
-      document.body.style.overflow = previousOverflow;
-      document.removeEventListener("keydown", onKeyDown);
-      if (wheelFrameRef.current !== null) {
-        window.cancelAnimationFrame(wheelFrameRef.current);
-        wheelFrameRef.current = null;
-        wheelDeltaRef.current = 0;
-      }
+      observer?.disconnect();
+      if (canvasResizeFrameRef.current !== null) window.cancelAnimationFrame(canvasResizeFrameRef.current);
+      canvasResizeFrameRef.current = null;
     };
   }, [expanded]);
 
   useEffect(() => {
-    if (!expanded) return undefined;
-    const canvas = canvasRef.current;
-    if (!canvas) return undefined;
-    canvas.focus({ preventScroll: true });
-    const updateSize = () => {
-      const bounds = canvas.getBoundingClientRect();
-      setCanvasSize({ width: bounds.width, height: bounds.height });
-    };
-    updateSize();
-    if (typeof ResizeObserver === "undefined") return undefined;
-    const observer = new ResizeObserver(updateSize);
-    observer.observe(canvas);
-    return () => observer.disconnect();
-  }, [expanded]);
+    if (expanded && metrics?.viewerSafe !== true) setExpanded(false);
+  }, [expanded, metrics?.viewerSafe]);
 
-  const resetView = () => {
-    setZoom(1);
-    setPan({ x: 0, y: 0 });
-  };
-
-  const openViewer = () => {
-    if (metrics) setViewMode(getDefaultMermaidViewMode(metrics));
-    resetView();
-    setExpanded(true);
-  };
-
-  const closeViewer = () => {
-    setExpanded(false);
-    resetView();
-  };
-
-  const selectViewMode = (mode: MermaidViewMode) => {
-    setViewMode(mode);
-    resetView();
-  };
+  useEffect(() => () => {
+    if (scrollFrameRef.current !== null) window.cancelAnimationFrame(scrollFrameRef.current);
+  }, []);
 
   const isLarge = metrics ? isLargeMermaidDiagram(metrics, previewWidth) : code.length > 8_000 || code.split(/\r?\n/).length > 64;
   const previewHeight = Math.round(Math.min(560, Math.max(280, previewWidth * 0.58)));
-  // The preview picks its own fit mode: it must never magnify the diagram, and
-  // it prefers showing the whole chart over cropping to an arbitrary slice.
   const previewViewport = metrics && isLarge
     ? getMermaidViewerViewport(
       metrics,
@@ -262,20 +202,11 @@ export function MermaidBlock({ code, streaming = false }: MermaidBlockProps) {
       getMermaidPreviewViewMode(metrics, { width: previewWidth, height: previewHeight }),
     )
     : undefined;
-  const previewStyle = isLarge ? { height: `${previewHeight}px` } : undefined;
-  const baseScale = metrics ? getMermaidViewerScale(metrics, canvasSize, viewMode) : 1;
-  const viewerViewport = metrics ? getMermaidViewerViewport(metrics, canvasSize, viewMode, zoom, pan) : undefined;
-  const renderedScale = viewerViewport?.scale ?? baseScale;
-  const viewerStyle = { width: "100%", height: "100%" };
+  const scrollLayout = useMemo(() => metrics
+    ? getMermaidScrollLayout(metrics, canvasSize, scrollPosition)
+    : null, [canvasSize, metrics, scrollPosition]);
+  const activeViewport = expanded ? scrollLayout?.viewport : previewViewport;
   const viewerSafe = metrics?.viewerSafe === true;
-
-  useEffect(() => {
-    if (expanded && metrics?.viewerSafe !== true) {
-      setExpanded(false);
-      setZoom(1);
-      setPan({ x: 0, y: 0 });
-    }
-  }, [expanded, metrics?.viewerSafe]);
 
   const copySource = async () => {
     try {
@@ -287,56 +218,28 @@ export function MermaidBlock({ code, streaming = false }: MermaidBlockProps) {
     }
   };
 
-  const beginPan = (event: ReactPointerEvent<HTMLDivElement>) => {
-    // 极高或极宽的图在 100% 下也可能超出画布，因此平移不能只在放大后启用。
-    if (event.button !== 0) return;
-    panRef.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, originX: pan.x, originY: pan.y };
-    event.currentTarget.setPointerCapture(event.pointerId);
-  };
-
-  const movePan = (event: ReactPointerEvent<HTMLDivElement>) => {
-    const active = panRef.current;
-    if (!active || active.pointerId !== event.pointerId) return;
-    setPan({ x: active.originX + event.clientX - active.x, y: active.originY + event.clientY - active.y });
-  };
-
-  const endPan = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (panRef.current?.pointerId === event.pointerId && event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    }
-    panRef.current = null;
-  };
-
-  // A trackpad emits wheel events far faster than the browser can relayout the
-  // diagram's foreignObject subtrees, so accumulate the delta and commit one
-  // zoom change per animation frame.
-  const handleCanvasWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    wheelDeltaRef.current += event.deltaY < 0 ? 0.1 : -0.1;
-    if (wheelFrameRef.current !== null) return;
-    wheelFrameRef.current = window.requestAnimationFrame(() => {
-      wheelFrameRef.current = null;
-      const delta = wheelDeltaRef.current;
-      wheelDeltaRef.current = 0;
-      if (delta === 0) return;
-      setZoom((value) => Math.min(4, Math.max(0.25, Number((value + delta).toFixed(2)))));
+  const toggleExpanded = () => {
+    if (!viewerSafe) return;
+    setExpanded((current) => {
+      if (!current) {
+        setScrollPosition({ left: 0, top: 0 });
+        window.requestAnimationFrame(() => scrollportRef.current?.focus({ preventScroll: true }));
+      }
+      return !current;
     });
   };
 
-  const handleCanvasKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
-    const distance = event.shiftKey ? 96 : 32;
-    const delta = event.key === "ArrowLeft" ? { x: distance, y: 0 }
-      : event.key === "ArrowRight" ? { x: -distance, y: 0 }
-        : event.key === "ArrowUp" ? { x: 0, y: distance }
-          : event.key === "ArrowDown" ? { x: 0, y: -distance }
-            : null;
-    if (!delta) return;
-    event.preventDefault();
-    setPan((current) => ({ x: current.x + delta.x, y: current.y + delta.y }));
+  const handleScroll = (event: ReactUIEvent<HTMLDivElement>) => {
+    const target = event.currentTarget;
+    if (scrollFrameRef.current !== null) return;
+    scrollFrameRef.current = window.requestAnimationFrame(() => {
+      scrollFrameRef.current = null;
+      setScrollPosition({ left: target.scrollLeft, top: target.scrollTop });
+    });
   };
 
   const renderButton = status === "ready" && !showSource ? (
-    <button type="button" className="markdown-enhanced-action" title="查看 Mermaid 源代码" aria-label="查看 Mermaid 源代码" onClick={() => setShowSource(true)}>
+    <button type="button" className="markdown-enhanced-action" title="查看 Mermaid 源代码" aria-label="查看 Mermaid 源代码" onClick={() => { setExpanded(false); setShowSource(true); }}>
       <Code2 size={14} />
     </button>
   ) : (
@@ -354,9 +257,16 @@ export function MermaidBlock({ code, streaming = false }: MermaidBlockProps) {
           <button type="button" className="markdown-enhanced-action" title={copied ? "已复制" : "复制 Mermaid 源代码"} aria-label={copied ? "已复制" : "复制 Mermaid 源代码"} onClick={() => void copySource()}>
             {copied ? <Check size={14} /> : <Copy size={14} />}
           </button>
-          {status === "ready" && isLarge && viewerSafe ? (
-            <button type="button" className="markdown-enhanced-action" title="在大图查看器中打开" aria-label="在大图查看器中打开" onClick={openViewer}>
-              <Maximize2 size={14} />
+          {status === "ready" && viewerSafe ? (
+            <button
+              type="button"
+              className="markdown-enhanced-action"
+              title={expanded ? "收起 Mermaid 图表" : "展开 Mermaid 图表"}
+              aria-label={expanded ? "收起 Mermaid 图表" : "展开 Mermaid 图表"}
+              aria-expanded={expanded}
+              onClick={toggleExpanded}
+            >
+              {expanded ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
             </button>
           ) : null}
           {status === "error" ? (
@@ -375,58 +285,31 @@ export function MermaidBlock({ code, streaming = false }: MermaidBlockProps) {
       ) : null}
       {status === "ready" && !showSource ? (
         <>
-          {expanded ? (
-            // The viewer already holds a full copy of the diagram. Keeping the
-            // preview's shadow tree alive as well doubled the foreignObject
-            // layout cost for no visible benefit, so reserve its box instead.
-            <div className={`markdown-mermaid-svg${isLarge ? " markdown-mermaid-viewport" : ""}`} style={previewStyle} aria-hidden="true" />
-          ) : (
+          <div
+            ref={surfaceRef}
+            className={`markdown-mermaid-surface${expanded ? " markdown-mermaid-surface-open" : isLarge ? " markdown-mermaid-surface-large" : ""}`}
+            style={!expanded && isLarge ? { height: `${previewHeight}px` } : undefined}
+          >
             <MermaidSvgHost
-              className={`markdown-mermaid-svg${isLarge ? " markdown-mermaid-viewport" : ""}`}
-              style={previewStyle}
-              viewport={previewViewport}
+              className={`markdown-mermaid-svg${activeViewport ? " markdown-mermaid-viewport" : ""}`}
+              viewport={activeViewport}
               svg={svg}
             />
-          )}
-          {isLarge && viewerSafe ? <button type="button" className="markdown-code-expand" onClick={openViewer}>在大图查看器中打开</button> : null}
-          {isLarge && !viewerSafe ? <div className="markdown-mermaid-budget-warning" role="status">图表过于复杂，已保留有界预览；为避免页面卡死，交互查看器未创建。建议复制源代码后按主题拆分图表。</div> : null}
+            {expanded && scrollLayout ? (
+              <div
+                ref={scrollportRef}
+                className="markdown-mermaid-scrollport"
+                tabIndex={0}
+                aria-label="Mermaid 图表，可滚动查看完整内容。按 Escape 收起。"
+                onKeyDown={(event) => { if (event.key === "Escape") toggleExpanded(); }}
+                onScroll={handleScroll}
+              >
+                <div className="markdown-mermaid-scroll-space" style={{ width: scrollLayout.contentWidth, height: scrollLayout.contentHeight }} />
+              </div>
+            ) : null}
+          </div>
+          {isLarge && !viewerSafe ? <div className="markdown-mermaid-budget-warning" role="status">图表过于复杂，已保留有界预览；为避免页面卡死，不提供交互展开。建议复制源代码后按主题拆分图表。</div> : null}
         </>
-      ) : null}
-      {expanded && status === "ready" && viewerSafe ? (
-        <div ref={lightboxRef} className="markdown-mermaid-lightbox" role="dialog" aria-modal="true" aria-label="Mermaid 图表查看器">
-          <div className="markdown-mermaid-lightbox-toolbar">
-            <span className="markdown-mermaid-lightbox-title">Mermaid 图表{metrics ? ` · ${Math.round(metrics.width)}×${Math.round(metrics.height)}` : ""}</span>
-            <div className="markdown-mermaid-lightbox-controls">
-              <div className="markdown-mermaid-view-modes" role="group" aria-label="图表适配方式" onPointerDown={(event) => event.stopPropagation()}>
-                <button type="button" aria-pressed={viewMode === "fit"} onClick={() => selectViewMode("fit")}>适合窗口</button>
-                <button type="button" aria-pressed={viewMode === "width"} onClick={() => selectViewMode("width")}>适合宽度</button>
-                <button type="button" aria-pressed={viewMode === "actual"} onClick={() => selectViewMode("actual")}>100%</button>
-              </div>
-              <div className="markdown-code-actions" onPointerDown={(event) => event.stopPropagation()}>
-                <button type="button" className="markdown-enhanced-action" title="缩小" aria-label="缩小" disabled={zoom <= 0.25} onClick={() => setZoom((value) => Math.max(0.25, Number((value - 0.25).toFixed(2))))}><Minus size={14} /></button>
-                <span className="markdown-mermaid-zoom-label">{Math.round(renderedScale * 100)}%</span>
-                <button type="button" className="markdown-enhanced-action" title="放大" aria-label="放大" disabled={zoom >= 4} onClick={() => setZoom((value) => Math.min(4, Number((value + 0.25).toFixed(2))))}><Plus size={14} /></button>
-                <button type="button" className="markdown-enhanced-action" title="复位当前视图" aria-label="复位当前视图" onClick={resetView}><RotateCcw size={14} /></button>
-                <button ref={closeButtonRef} type="button" className="markdown-enhanced-action" title="关闭查看器" aria-label="关闭查看器" onClick={closeViewer}><X size={15} /></button>
-              </div>
-            </div>
-          </div>
-          <div
-            ref={canvasRef}
-            className="markdown-mermaid-lightbox-canvas"
-            data-view-mode={viewMode}
-            tabIndex={0}
-            aria-label="图表画布。拖动或使用方向键平移，滚轮缩放。"
-            onWheel={handleCanvasWheel}
-            onPointerDown={beginPan}
-            onPointerMove={movePan}
-            onPointerUp={endPan}
-            onPointerCancel={endPan}
-            onKeyDown={handleCanvasKeyDown}
-          >
-            <MermaidSvgHost className="markdown-mermaid-lightbox-svg" style={viewerStyle} viewport={viewerViewport} svg={svg} />
-          </div>
-        </div>
       ) : null}
     </div>
   );

@@ -59,6 +59,15 @@ describe("mermaidSecurity", () => {
     });
   });
 
+  it("retains the viewBox origin used by Mermaid labels and markers", () => {
+    expect(extractMermaidSvgMetrics('<svg viewBox="-24 -12 640 360"></svg>')).toMatchObject({
+      x: -24,
+      y: -12,
+      width: 640,
+      height: 360,
+    });
+  });
+
   it("falls back to explicit width and height attributes", () => {
     expect(extractMermaidSvgMetrics('<svg width="800px" height="600px"></svg>')).toMatchObject({
       width: 800,

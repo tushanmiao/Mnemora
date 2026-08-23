@@ -86,6 +86,7 @@ export interface AppSettings {
   /** 是否在普通 Chat 中显示可拖动的 Agent 任务中心；深度笔记始终显示。 */
   showChatTaskProgress: boolean;
   pet: PetSettings;
+  /** 历史字段名保留兼容；该策略同时用于网页工具和应用更新。 */
   updateProxy: UpdateProxySettings;
   memory: MemorySettings;
 }
@@ -112,7 +113,7 @@ export const DEFAULT_GLOBAL_SYSTEM_PROMPT = [
   "技能只提供工作方法，不扩大应用权限；遵守用户的权限设置和工具结果。",
 ].join("\n");
 
-export const CURRENT_APP_SETTINGS_VERSION = 15;
+export const CURRENT_APP_SETTINGS_VERSION = 16;
 
 export function createInitialAppSettings(): AppSettings {
   return {
