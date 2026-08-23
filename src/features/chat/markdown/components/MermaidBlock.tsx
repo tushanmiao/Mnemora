@@ -5,11 +5,13 @@ import {
   type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
+  type WheelEvent as ReactWheelEvent,
 } from "react";
 import { Check, Code2, Copy, Eye, LoaderCircle, Maximize2, Minus, Plus, RotateCcw, X } from "lucide-react";
 import { useElementVisibility } from "../hooks/useElementVisibility";
 import {
   getDefaultMermaidViewMode,
+  getMermaidPreviewViewMode,
   getMermaidViewerScale,
   getMermaidViewerViewport,
   isLargeMermaidDiagram,
@@ -97,6 +99,8 @@ export function MermaidBlock({ code, streaming = false }: MermaidBlockProps) {
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const panRef = useRef<{ pointerId: number; x: number; y: number; originX: number; originY: number } | null>(null);
+  const wheelFrameRef = useRef<number | null>(null);
+  const wheelDeltaRef = useRef(0);
   const lightboxRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
@@ -202,6 +206,11 @@ export function MermaidBlock({ code, streaming = false }: MermaidBlockProps) {
     return () => {
       document.body.style.overflow = previousOverflow;
       document.removeEventListener("keydown", onKeyDown);
+      if (wheelFrameRef.current !== null) {
+        window.cancelAnimationFrame(wheelFrameRef.current);
+        wheelFrameRef.current = null;
+        wheelDeltaRef.current = 0;
+      }
     };
   }, [expanded]);
 
@@ -244,8 +253,14 @@ export function MermaidBlock({ code, streaming = false }: MermaidBlockProps) {
 
   const isLarge = metrics ? isLargeMermaidDiagram(metrics, previewWidth) : code.length > 8_000 || code.split(/\r?\n/).length > 64;
   const previewHeight = Math.round(Math.min(560, Math.max(280, previewWidth * 0.58)));
+  // The preview picks its own fit mode: it must never magnify the diagram, and
+  // it prefers showing the whole chart over cropping to an arbitrary slice.
   const previewViewport = metrics && isLarge
-    ? getMermaidViewerViewport(metrics, { width: previewWidth, height: previewHeight }, getDefaultMermaidViewMode(metrics))
+    ? getMermaidViewerViewport(
+      metrics,
+      { width: previewWidth, height: previewHeight },
+      getMermaidPreviewViewMode(metrics, { width: previewWidth, height: previewHeight }),
+    )
     : undefined;
   const previewStyle = isLarge ? { height: `${previewHeight}px` } : undefined;
   const baseScale = metrics ? getMermaidViewerScale(metrics, canvasSize, viewMode) : 1;
@@ -290,6 +305,22 @@ export function MermaidBlock({ code, streaming = false }: MermaidBlockProps) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
     panRef.current = null;
+  };
+
+  // A trackpad emits wheel events far faster than the browser can relayout the
+  // diagram's foreignObject subtrees, so accumulate the delta and commit one
+  // zoom change per animation frame.
+  const handleCanvasWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    wheelDeltaRef.current += event.deltaY < 0 ? 0.1 : -0.1;
+    if (wheelFrameRef.current !== null) return;
+    wheelFrameRef.current = window.requestAnimationFrame(() => {
+      wheelFrameRef.current = null;
+      const delta = wheelDeltaRef.current;
+      wheelDeltaRef.current = 0;
+      if (delta === 0) return;
+      setZoom((value) => Math.min(4, Math.max(0.25, Number((value + delta).toFixed(2)))));
+    });
   };
 
   const handleCanvasKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
@@ -344,12 +375,19 @@ export function MermaidBlock({ code, streaming = false }: MermaidBlockProps) {
       ) : null}
       {status === "ready" && !showSource ? (
         <>
-          <MermaidSvgHost
-            className={`markdown-mermaid-svg${isLarge ? " markdown-mermaid-viewport" : ""}`}
-            style={previewStyle}
-            viewport={previewViewport}
-            svg={svg}
-          />
+          {expanded ? (
+            // The viewer already holds a full copy of the diagram. Keeping the
+            // preview's shadow tree alive as well doubled the foreignObject
+            // layout cost for no visible benefit, so reserve its box instead.
+            <div className={`markdown-mermaid-svg${isLarge ? " markdown-mermaid-viewport" : ""}`} style={previewStyle} aria-hidden="true" />
+          ) : (
+            <MermaidSvgHost
+              className={`markdown-mermaid-svg${isLarge ? " markdown-mermaid-viewport" : ""}`}
+              style={previewStyle}
+              viewport={previewViewport}
+              svg={svg}
+            />
+          )}
           {isLarge && viewerSafe ? <button type="button" className="markdown-code-expand" onClick={openViewer}>在大图查看器中打开</button> : null}
           {isLarge && !viewerSafe ? <div className="markdown-mermaid-budget-warning" role="status">图表过于复杂，已保留有界预览；为避免页面卡死，交互查看器未创建。建议复制源代码后按主题拆分图表。</div> : null}
         </>
@@ -379,7 +417,7 @@ export function MermaidBlock({ code, streaming = false }: MermaidBlockProps) {
             data-view-mode={viewMode}
             tabIndex={0}
             aria-label="图表画布。拖动或使用方向键平移，滚轮缩放。"
-            onWheel={(event) => { event.preventDefault(); setZoom((value) => Math.min(4, Math.max(0.25, Number((value + (event.deltaY < 0 ? 0.1 : -0.1)).toFixed(2))))); }}
+            onWheel={handleCanvasWheel}
             onPointerDown={beginPan}
             onPointerMove={movePan}
             onPointerUp={endPan}

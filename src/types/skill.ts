@@ -6,6 +6,7 @@ export type SkillResourceCost = "low" | "medium" | "high";
 
 /** 上游来源只用于审计和界面展示，不会进入模型提示词。 */
 export interface SkillProvenance {
+  firstParty?: boolean;
   repository?: string;
   path?: string;
   revision?: string;

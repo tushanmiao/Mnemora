@@ -25,6 +25,19 @@ latest.json
 # Local development and learning documents
 md/**/*.md
 
+# Diagnostic and preview artifacts produced while debugging UI work.
+# They are regenerable and reference sandbox-only paths.
+mermaid-diagnose.js
+mermaid-repro/
+theme-preview/
+usage-preview/
+commit-paths.txt
+
+# Desktop agent session settings
+.claude/
+__pycache__/
+*.py[cod]
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

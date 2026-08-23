@@ -1,21 +1,11 @@
-MIT License
+Mnemora 自有 Skill —— 无第三方代码
 
-Copyright GitHub, Inc.
+本 Skill（knowledge-base-retrieval）由 Mnemora 独立编写，针对 Mnemora 自身的
+knowledge_search / knowledge_read / note_read 等工具设计，未复制任何上游项目的代码或文本。
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+此目录此前曾收录 github/awesome-copilot 的 `skills/codebase-memory-mcp/SKILL.md`，
+但那份内容讲的是"用 Codebase Memory MCP 服务器做代码库考古"，与本目录的 id 和
+触发词（/knowledge、/kb、/library）名实不符，且依赖 Mnemora 并不具备的 MCP 服务。
+该上游内容仍以 `workspace-code-reading` 的身份单独保留，出处声明见该目录。
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+本 Skill 随 Mnemora 一同分发，适用 Mnemora 自身的许可条款。

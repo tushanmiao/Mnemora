@@ -17,7 +17,6 @@
   --duration-standard: 200ms;
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
 }
-
 .app-shell {
   --ui-font-family: "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
   --ui-font-size: 14px;
@@ -33,20 +32,20 @@
   --reading-letter-spacing: 0px;
   --on-accent: #ffffff;
 
-  --surface-app: #ebeef8;
+  --surface-app: #efeffa;
   --surface-content: #fbfbff;
   --surface-raised: #ffffff;
-  --surface-sidebar: #e7e4f3;
-  --surface-rail: #2e2850;
-  --surface-hover: #e9e2f2;
-  --surface-selected: #dcd4ee;
-  --surface-user: #e1f1ee;
-  --text-primary: #23213a;
-  --text-secondary: #514e68;
-  --text-muted: #6d6985;
-  --text-faint: #89849d;
-  --border-default: #cbc7dc;
-  --border-subtle: #e2dfec;
+  --surface-sidebar: #e7e7f4;
+  --surface-rail: #261b46;
+  --surface-hover: #e3e3f1;
+  --surface-selected: #d8d8eb;
+  --surface-user: #eeeaf9;
+  --text-primary: #22212e;
+  --text-secondary: #4f4e5a;
+  --text-muted: #6d6d78;
+  --text-faint: #95959f;
+  --border-default: #ccccdd;
+  --border-subtle: #e4e4f1;
 
   --status-success: #287542;
   --status-success-soft: #e2f1e7;
@@ -61,20 +60,26 @@
   --status-info-soft: #e4edf8;
   --status-info-border: #afc6e3;
 
-  --workspace-overview: #ad6100;
-  --workspace-overview-soft: #ffedc7;
-  --workspace-chat: #00786f;
-  --workspace-chat-soft: #d7f1eb;
-  --workspace-notes: #c43b66;
-  --workspace-notes-soft: #fae0e8;
-  --workspace-work: #315fbd;
-  --workspace-work-soft: #dfe8ff;
-  --workspace-english: #477922;
-  --workspace-english-soft: #e3f0d5;
-  --workspace-settings: #6e4aaa;
-  --workspace-settings-soft: #eee6fb;
+  --workspace-overview: #93545e;
+  --workspace-overview-soft: #fee7ea;
+  --workspace-chat: #6c53a4;
+  --workspace-chat-soft: #efeaff;
+  --workspace-notes: #733f7b;
+  --workspace-notes-soft: #f9e7fb;
+  --workspace-work: #2b558d;
+  --workspace-work-soft: #e3efff;
+  --workspace-english: #7f633a;
+  --workspace-english-soft: #f6ecdf;
+  --workspace-settings: #4d696a;
+  --workspace-settings-soft: #e6f0f0;
+  --workspace-overview-strong: #773944;
+  --workspace-chat-strong: #523688;
+  --workspace-notes-strong: #582360;
+  --workspace-work-strong: #0b3a72;
+  --workspace-english-strong: #64481b;
+  --workspace-settings-strong: #324f50;
   --workspace-accent: var(--workspace-chat);
-  --workspace-accent-strong: #07574c;
+  --workspace-accent-strong: var(--workspace-chat-strong);
   --workspace-accent-soft: var(--workspace-chat-soft);
 
   --shadow-menu: 0 10px 28px rgb(35 48 40 / 14%);
@@ -84,56 +89,56 @@
 
 .app-shell[data-active-workspace="overview"] {
   --workspace-accent: var(--workspace-overview);
-  --workspace-accent-strong: #7c5100;
+  --workspace-accent-strong: var(--workspace-overview-strong);
   --workspace-accent-soft: var(--workspace-overview-soft);
 }
 
 .app-shell[data-active-workspace="chat"] {
   --workspace-accent: var(--workspace-chat);
-  --workspace-accent-strong: #07574c;
+  --workspace-accent-strong: var(--workspace-chat-strong);
   --workspace-accent-soft: var(--workspace-chat-soft);
 }
 
 .app-shell[data-active-workspace="notes"] {
   --workspace-accent: var(--workspace-notes);
-  --workspace-accent-strong: #94382f;
+  --workspace-accent-strong: var(--workspace-notes-strong);
   --workspace-accent-soft: var(--workspace-notes-soft);
 }
 
 .app-shell[data-active-workspace="work"] {
   --workspace-accent: var(--workspace-work);
-  --workspace-accent-strong: #1e518f;
+  --workspace-accent-strong: var(--workspace-work-strong);
   --workspace-accent-soft: var(--workspace-work-soft);
 }
 
 .app-shell[data-active-workspace="english"] {
   --workspace-accent: var(--workspace-english);
-  --workspace-accent-strong: #28622e;
+  --workspace-accent-strong: var(--workspace-english-strong);
   --workspace-accent-soft: var(--workspace-english-soft);
 }
 
 .app-shell[data-active-workspace="settings"] {
   --workspace-accent: var(--workspace-settings);
-  --workspace-accent-strong: #57378e;
+  --workspace-accent-strong: var(--workspace-settings-strong);
   --workspace-accent-soft: var(--workspace-settings-soft);
 }
 
 .app-shell[data-theme="dark"] {
   --on-accent: #17131f;
-  --surface-app: #181624;
-  --surface-content: #211f2d;
-  --surface-raised: #2c293b;
-  --surface-sidebar: #272338;
-  --surface-rail: #100e19;
-  --surface-hover: #342f48;
-  --surface-selected: #403956;
-  --surface-user: #203934;
-  --text-primary: #f7f4ff;
-  --text-secondary: #d0cbe0;
-  --text-muted: #aaa4bc;
-  --text-faint: #89839a;
-  --border-default: #49435e;
-  --border-subtle: #373247;
+  --surface-app: #161522;
+  --surface-content: #23232f;
+  --surface-raised: #2f2f3a;
+  --surface-sidebar: #1e1d2a;
+  --surface-rail: #070611;
+  --surface-hover: #373743;
+  --surface-selected: #464653;
+  --surface-user: #2c2936;
+  --text-primary: #f3f3fe;
+  --text-secondary: #ccccd9;
+  --text-muted: #a3a3b0;
+  --text-faint: #80808c;
+  --border-default: #4a4a5c;
+  --border-subtle: #343443;
 
   --status-success: #78c68b;
   --status-success-soft: #24382a;
@@ -148,27 +153,20 @@
   --status-info-soft: #263649;
   --status-info-border: #405f86;
 
-  --workspace-overview: #f1b54a;
-  --workspace-overview-soft: #43351f;
-  --workspace-chat: #59c9b7;
-  --workspace-chat-soft: #203d38;
-  --workspace-notes: #f07c9f;
-  --workspace-notes-soft: #462738;
-  --workspace-work: #82a9ff;
-  --workspace-work-soft: #293650;
-  --workspace-english: #9aca68;
-  --workspace-english-soft: #2c3d27;
-  --workspace-settings: #b89bed;
-  --workspace-settings-soft: #392d50;
+  --workspace-overview: #f4b2bb;
+  --workspace-overview-soft: #412529;
+  --workspace-chat: #c0adf6;
+  --workspace-chat-soft: #312848;
+  --workspace-notes: #ca99d2;
+  --workspace-notes-soft: #3b253e;
+  --workspace-work: #85aee4;
+  --workspace-work-soft: #1d2f47;
+  --workspace-english: #d7bb92;
+  --workspace-english-soft: #382c1a;
+  --workspace-settings: #9cbcbd;
+  --workspace-settings-soft: #233132;
 
   --shadow-menu: 0 12px 30px rgb(0 0 0 / 34%);
   --shadow-panel: -12px 0 28px rgb(0 0 0 / 34%);
   --shadow-composer: 0 8px 24px rgb(0 0 0 / 24%);
 }
-
-.app-shell[data-theme="dark"][data-active-workspace="overview"] { --workspace-accent-strong: #edbe66; }
-.app-shell[data-theme="dark"][data-active-workspace="chat"] { --workspace-accent-strong: #79cbb8; }
-.app-shell[data-theme="dark"][data-active-workspace="notes"] { --workspace-accent-strong: #f39b91; }
-.app-shell[data-theme="dark"][data-active-workspace="work"] { --workspace-accent-strong: #8bb6ee; }
-.app-shell[data-theme="dark"][data-active-workspace="english"] { --workspace-accent-strong: #91ca90; }
-.app-shell[data-theme="dark"][data-active-workspace="settings"] { --workspace-accent-strong: #c7aff2; }

@@ -51,9 +51,9 @@ export function renderMermaidSvgInShadowHost(svg: string, host: HTMLElement, vie
       overflow: visible;
     }
     :host([data-mermaid-viewport="true"]) svg {
-      width: 100%;
-      height: 100%;
-      max-width: none;
+      width: 100% !important;
+      height: 100% !important;
+      max-width: none !important;
     }
     foreignObject,
     foreignObject > div,

@@ -50,6 +50,7 @@ pub enum SkillResourceCost {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SkillProvenance {
+    pub first_party: bool,
     pub repository: Option<String>,
     pub path: Option<String>,
     pub revision: Option<String>,

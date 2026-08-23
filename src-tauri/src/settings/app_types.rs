@@ -49,6 +49,12 @@ pub enum ThemePreset {
     Paper,
     Graphite,
     HighContrast,
+    /// 光家族：冷白天光 / 钨丝暖光。
+    Dawn,
+    Lamp,
+    /// 纸家族：宣纸（墨与朱砂）/ 蓝晒（普鲁士蓝）。
+    Xuan,
+    Cyanotype,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

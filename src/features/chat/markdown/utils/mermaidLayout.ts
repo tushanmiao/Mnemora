@@ -22,6 +22,19 @@ const PREVIEW_HEIGHT_LIMIT = 680;
 const VIEWER_PADDING = 48;
 const MIN_VIEWER_SCALE = 0.001;
 const MAX_VIEWER_SCALE = 32;
+/**
+ * Fit modes shrink, they never magnify. A narrow diagram stretched to fill the
+ * container turned 13px labels into 40px+ text and cropped the viewBox down to
+ * a small slice of the chart. Magnification stays available through the
+ * viewer's explicit zoom controls.
+ */
+const MAX_AUTO_FIT_SCALE = 1;
+/**
+ * Below this scale a shrunk-to-fit diagram is no longer readable, so the
+ * preview switches to fit-width (100% at most) and crops vertically instead,
+ * surfacing the interactive viewer for the rest.
+ */
+const MIN_READABLE_PREVIEW_SCALE = 0.55;
 
 export function getMermaidPreviewLayout(metrics: MermaidSvgMetrics, containerWidth: number): MermaidPreviewLayout {
   const safeContainerWidth = Math.max(280, Number.isFinite(containerWidth) ? containerWidth : 900);
@@ -50,6 +63,18 @@ export function getDefaultMermaidViewMode(metrics: MermaidSvgMetrics): MermaidVi
   return metrics.aspectRatio < 0.85 ? "width" : "fit";
 }
 
+/**
+ * The preview is not a viewer: it must show the whole diagram whenever that
+ * stays legible. Shrink-to-fit is preferred, and fit-width (capped at 100%,
+ * top-anchored) is the fallback for charts too long to shrink.
+ */
+export function getMermaidPreviewViewMode(
+  metrics: MermaidSvgMetrics,
+  canvas: { width: number; height: number },
+): MermaidViewMode {
+  return getMermaidViewerScale(metrics, canvas, "fit") >= MIN_READABLE_PREVIEW_SCALE ? "fit" : "width";
+}
+
 export function getMermaidViewerScale(
   metrics: MermaidSvgMetrics,
   canvas: { width: number; height: number },
@@ -62,7 +87,7 @@ export function getMermaidViewerScale(
   const widthScale = availableWidth / metrics.width;
   const heightScale = availableHeight / metrics.height;
   const scale = mode === "width" ? widthScale : Math.min(widthScale, heightScale);
-  return Math.min(MAX_VIEWER_SCALE, Math.max(MIN_VIEWER_SCALE, scale));
+  return Math.min(MAX_VIEWER_SCALE, Math.max(MIN_VIEWER_SCALE, Math.min(scale, MAX_AUTO_FIT_SCALE)));
 }
 
 /**

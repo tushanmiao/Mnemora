@@ -32,6 +32,7 @@ import {
   validateThemeBackgroundCss,
 } from "../utils/themeBackground";
 import "../styles/general-settings.css";
+import "../styles/theme-preview.generated.css";
 import { FONT_PRESET_VALUES } from "../utils/fontSettings";
 import { useI18n } from "../../../i18n/I18nProvider";
 import { EditableRangeControl } from "./EditableRangeControl";
@@ -52,15 +53,28 @@ type GeneralSettingsPanelProps = {
 const TOKEN_OPTIONS = [4_096, 8_192, 16_384, 32_768, 65_536, 131_072];
 const MAX_AVATAR_BYTES = 2 * 1024 * 1024;
 const ACCEPTED_AVATAR_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
-const THEME_PRESETS: ThemePreset[] = [
-  "mnemora",
-  "forest",
-  "ocean",
-  "rose",
-  "paper",
-  "graphite",
-  "highContrast",
+type TranslationKey = Parameters<ReturnType<typeof useI18n>["t"]>[0];
+// 主题按家族分组：同一家族共享材质性格（边界、圆角、阴影），
+// 家族之间才换整套调色，所以分组本身就是有信息量的结构。
+const THEME_PRESET_GROUPS: { labelKey: TranslationKey; presets: ThemePreset[] }[] = [
+  { labelKey: "general.themeGroupLight", presets: ["dawn", "lamp", "graphite"] },
+  { labelKey: "general.themeGroupPaper", presets: ["xuan", "cyanotype", "paper"] },
+  { labelKey: "general.themeGroupColor", presets: ["mnemora", "forest", "ocean", "rose"] },
+  { labelKey: "general.themeGroupAccess", presets: ["highContrast"] },
 ];
+const THEME_PRESET_LABEL: Record<ThemePreset, { name: TranslationKey; hint: TranslationKey }> = {
+  dawn: { name: "general.themeDawn", hint: "general.themeDawnHint" },
+  lamp: { name: "general.themeLamp", hint: "general.themeLampHint" },
+  graphite: { name: "general.themeGraphite", hint: "general.themeGraphiteHint" },
+  xuan: { name: "general.themeXuan", hint: "general.themeXuanHint" },
+  cyanotype: { name: "general.themeCyanotype", hint: "general.themeCyanotypeHint" },
+  paper: { name: "general.themePaper", hint: "general.themePaperHint" },
+  mnemora: { name: "general.themeMnemora", hint: "general.themeMnemoraHint" },
+  forest: { name: "general.themeForest", hint: "general.themeForestHint" },
+  ocean: { name: "general.themeOcean", hint: "general.themeOceanHint" },
+  rose: { name: "general.themeRose", hint: "general.themeRoseHint" },
+  highContrast: { name: "general.themeHighContrast", hint: "general.themeHighContrastHint" },
+};
 
 export function GeneralSettingsPanel({
   settings,
@@ -296,25 +310,39 @@ export function GeneralSettingsPanel({
             />
           </SettingRow>
           <SettingRow label={t("general.themePreset")} stack>
-            <div className="theme-preset-options" role="radiogroup" aria-label={t("general.themePreset")}>
-              {THEME_PRESETS.map((value) => (
-                <button
-                  className={`theme-preset-option${draft.themePreset === value ? " theme-preset-option-active" : ""}`}
-                  data-theme-preset-preview={value}
-                  type="button"
-                  role="radio"
-                  aria-checked={draft.themePreset === value}
-                  key={value}
-                  onClick={() => updateDraft("themePreset", value)}
-                >
-                  <span className="theme-preset-swatch" aria-hidden="true">
-                    <i /><i /><i />
-                    <span className="theme-preset-palette">
-                      <b /><b /><b /><b /><b />
-                    </span>
-                  </span>
-                  <span>{themePresetLabel(value, t)}</span>
-                </button>
+            <div role="radiogroup" aria-label={t("general.themePreset")}>
+              {THEME_PRESET_GROUPS.map((group) => (
+                <div className="theme-preset-group" key={group.labelKey}>
+                  <span className="theme-preset-group-label">{t(group.labelKey)}</span>
+                  <div className="theme-preset-options">
+                    {group.presets.map((value) => (
+                      <button
+                        className={`theme-preset-option${draft.themePreset === value ? " theme-preset-option-active" : ""}`}
+                        data-theme-preset-preview={value}
+                        type="button"
+                        role="radio"
+                        aria-checked={draft.themePreset === value}
+                        key={value}
+                        onClick={() => updateDraft("themePreset", value)}
+                      >
+                        <span className="theme-preset-swatch" aria-hidden="true">
+                          <span className="theme-preset-rail"><i /><i /><i /></span>
+                          <span className="theme-preset-side" />
+                          <span className="theme-preset-main">
+                            <span className="theme-preset-card"><u /><u /></span>
+                            <span className="theme-preset-palette">
+                              <b /><b /><b /><b /><b /><b />
+                            </span>
+                          </span>
+                        </span>
+                        <span className="theme-preset-name">
+                          <span>{themePresetLabel(value, t)}</span>
+                          <em>{themePresetHint(value, t)}</em>
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
               ))}
             </div>
           </SettingRow>
@@ -666,13 +694,11 @@ export function GeneralSettingsPanel({
 }
 
 function themePresetLabel(value: ThemePreset, t: ReturnType<typeof useI18n>["t"]) {
-  if (value === "forest") return t("general.themeForest");
-  if (value === "ocean") return t("general.themeOcean");
-  if (value === "rose") return t("general.themeRose");
-  if (value === "paper") return t("general.themePaper");
-  if (value === "graphite") return t("general.themeGraphite");
-  if (value === "highContrast") return t("general.themeHighContrast");
-  return "Mnemora";
+  return t(THEME_PRESET_LABEL[value].name);
+}
+
+function themePresetHint(value: ThemePreset, t: ReturnType<typeof useI18n>["t"]) {
+  return t(THEME_PRESET_LABEL[value].hint);
 }
 
 function SettingRow({

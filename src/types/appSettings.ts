@@ -6,7 +6,11 @@ export type FontPreset = "system" | "academic" | "custom";
 export type ChineseFontFamily = "system" | "microsoftYaHei" | "simsun" | "notoSansCjk" | "notoSerifCjk";
 export type LatinFontFamily = "system" | "segoeUi" | "inter" | "timesNewRoman" | "georgia";
 /** 完整主题方案，决定应用表面、文字和边框的整体色调。 */
-export type ThemePreset = "mnemora" | "forest" | "ocean" | "rose" | "paper" | "graphite" | "highContrast";
+export type ThemePreset =
+  | "dawn" | "lamp" | "graphite"
+  | "xuan" | "cyanotype" | "paper"
+  | "mnemora" | "forest" | "ocean" | "rose"
+  | "highContrast";
 /** 强调色只影响按钮、选中状态和交互反馈，不覆盖主题表面。 */
 export type ThemeColor = "neutral" | "warm" | "cool" | "rose" | "amber" | "violet";
 export type ResponseLanguage = "followInput" | "zh" | "zhHant" | "en";

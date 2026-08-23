@@ -141,7 +141,9 @@ describe("mermaidSecurity", () => {
       const result = sanitizeMermaidSvg('<svg viewBox="0 0 617 1162"></svg>');
 
       expect(result.svg).toContain('width="100%"');
-      expect(result.svg).toContain('max-width="100%"');
+      // The cap must be Mermaid's measured width, not the container width;
+      // 100% here let narrow diagrams stretch and magnify their labels.
+      expect(result.svg).toContain('max-width="617px"');
     } finally {
       globalThis.DOMParser = previousDomParser;
       globalThis.document = previousDocument;

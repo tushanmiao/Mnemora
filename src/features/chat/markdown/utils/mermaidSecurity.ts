@@ -76,9 +76,12 @@ export function sanitizeMermaidSvg(svg: string): SanitizedMermaidSvg {
   root.setAttribute("width", "100%");
   root.removeAttribute("height");
   root.setAttribute("preserveAspectRatio", "xMidYMin meet");
-  // Let narrow diagrams use the available reading width. Capping max-width at
-  // the intrinsic width made tall charts render as an unreadable hairline.
-  root.style.setProperty("max-width", "100%");
+  // Mermaid lays the diagram out at its intrinsic size and caps it with
+  // `max-width` (its `useMaxWidth` contract). Overriding that cap with 100%
+  // let a 132px-wide chart stretch across a 1300px column, magnifying 13px
+  // labels roughly tenfold. Keep `width: 100%` so narrow containers still
+  // shrink the diagram, but never grow it past what Mermaid measured.
+  root.style.setProperty("max-width", `${dimensions.width}px`);
   root.style.setProperty("width", "100%");
   root.style.removeProperty("height");
   root.style.removeProperty("background");

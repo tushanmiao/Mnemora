@@ -853,15 +853,28 @@ mod tests {
                 .license
                 .as_deref()
                 .is_some_and(|value| !value.is_empty()));
-            assert!(skill
-                .provenance
-                .repository
-                .as_deref()
-                .is_some_and(|value| value.starts_with("https://github.com/")));
-            assert!(!skill.provenance.adapted);
-            assert!(skill.provenance.revision.as_deref().is_some_and(
-                |value| value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
-            ));
+            if skill.provenance.first_party {
+                assert!(skill.provenance.repository.is_none());
+                assert!(skill.provenance.path.is_none());
+                assert!(skill.provenance.revision.is_none());
+                assert!(!skill.provenance.adapted);
+            } else {
+                assert!(skill
+                    .provenance
+                    .repository
+                    .as_deref()
+                    .is_some_and(|value| value.starts_with("https://github.com/")));
+                if skill.provenance.adapted {
+                    assert!(skill
+                        .provenance
+                        .adaptation_notes
+                        .as_deref()
+                        .is_some_and(|value| !value.trim().is_empty()));
+                }
+                assert!(skill.provenance.revision.as_deref().is_some_and(|value| {
+                    value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+                }));
+            }
             let directory = builtin_dir.join(&skill.id);
             assert!(directory.join("SKILL.md").is_file());
             assert!(directory.join("mnemora.json").is_file());

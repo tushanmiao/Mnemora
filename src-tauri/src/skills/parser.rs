@@ -77,6 +77,8 @@ struct SkillMetadata {
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 struct MnemoraMetadata {
+    #[serde(default, alias = "first_party", alias = "firstParty")]
+    first_party: bool,
     #[serde(alias = "source_repository", alias = "sourceRepository")]
     source_repository: Option<String>,
     #[serde(alias = "source_path", alias = "sourcePath")]
@@ -124,6 +126,8 @@ struct SkillSidecar {
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SkillSidecarProvenance {
+    #[serde(default)]
+    first_party: bool,
     repository: Option<String>,
     path: Option<String>,
     revision: Option<String>,
@@ -193,8 +197,9 @@ pub(crate) fn parse_skill(
         normalized_modes(frontmatter.metadata.mnemora.supported_modes.clone())
     };
 
-    let provenance = if sidecar.provenance.repository.is_some() {
+    let provenance = if sidecar.provenance.first_party || sidecar.provenance.repository.is_some() {
         SkillProvenance {
+            first_party: sidecar.provenance.first_party,
             repository: sidecar.provenance.repository,
             path: sidecar.provenance.path,
             revision: sidecar.provenance.revision,
@@ -204,6 +209,7 @@ pub(crate) fn parse_skill(
         }
     } else {
         SkillProvenance {
+            first_party: frontmatter.metadata.mnemora.first_party,
             repository: frontmatter.metadata.mnemora.source_repository,
             path: frontmatter.metadata.mnemora.source_path,
             revision: frontmatter.metadata.mnemora.source_revision,
@@ -413,6 +419,12 @@ fn validate_frontmatter(value: &SkillFrontmatter, version: &str) -> Result<(), S
 
 fn validate_provenance(source: SkillSource, value: &SkillFrontmatter) -> Result<(), String> {
     let provenance = &value.metadata.mnemora;
+    if provenance.first_party && provenance.source_repository.is_some() {
+        return Err("first-party Skill 不能同时声明 source repository。".to_string());
+    }
+    if provenance.first_party && provenance.adapted {
+        return Err("first-party Skill 不能标记为 adapted。".to_string());
+    }
     if provenance.adapted && provenance.source_repository.is_none() {
         return Err("标记为 adapted 的 Skill 必须记录 source repository。".to_string());
     }
@@ -466,6 +478,12 @@ fn validate_sidecar(source: SkillSource, value: &SkillSidecar) -> Result<(), Str
         value.provenance.adaptation_notes.as_deref(),
         1000,
     )?;
+    if value.provenance.first_party && value.provenance.repository.is_some() {
+        return Err("mnemora.json 的 firstParty 与 source repository 不能同时声明。".to_string());
+    }
+    if value.provenance.first_party && value.provenance.adapted {
+        return Err("mnemora.json 的 firstParty Skill 不能标记为 adapted。".to_string());
+    }
     if let Some(repository) = value.provenance.repository.as_deref() {
         if !repository.starts_with("https://") {
             return Err("mnemora.json 的 source repository 必须使用 HTTPS。".to_string());
