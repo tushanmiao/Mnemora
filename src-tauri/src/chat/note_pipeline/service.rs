@@ -5110,13 +5110,34 @@ async fn supervise_note_pipeline_task<R: Runtime>(
     channel: Channel<NotePipelineProgress>,
     join: tauri::async_runtime::JoinHandle<()>,
 ) {
-    let joined = join.await;
     let state = app.state::<AppState>();
+    let mut join = join;
+    let mut heartbeat = tokio::time::interval(Duration::from_secs(15));
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut heartbeat_enabled = true;
+    let joined = loop {
+        tokio::select! {
+            result = &mut join => break result,
+            _ = heartbeat.tick(), if heartbeat_enabled => {
+                if state.library_repository
+                    .heartbeat_note_pipeline_runtime(&run_id, &instance_id)
+                    .is_err()
+                {
+                    // 终态或实例已被安全接管：停止心跳，但仍等待本 Worker 退出，
+                    // 后续状态写入会由 runtime_instance_id / lease CAS 拒绝。
+                    heartbeat_enabled = false;
+                }
+            }
+        }
+    };
     if state
         .note_pipeline_task_snapshot(&run_id)
         .await
         .map_or(true, |snapshot| snapshot.instance_id != instance_id)
     {
+        let _ = state
+            .library_repository
+            .release_note_pipeline_runtime(&run_id, &instance_id);
         state.clear_detached_note_pipeline_instance(&instance_id);
         return;
     }
@@ -5253,6 +5274,9 @@ async fn supervise_note_pipeline_task<R: Runtime>(
     }
     state.clear_detached_note_pipeline_instance(&instance_id);
     state.finish_note_pipeline_run(&run_id, &instance_id).await;
+    let _ = state
+        .library_repository
+        .release_note_pipeline_runtime(&run_id, &instance_id);
 }
 
 async fn spawn_analysis<R: Runtime>(
@@ -5274,6 +5298,13 @@ async fn spawn_analysis<R: Runtime>(
         .await
     {
         return Err("深度笔记任务已经在运行。".to_string());
+    }
+    if let Err(error) = state
+        .library_repository
+        .claim_note_pipeline_runtime(&run_id, &instance_id)
+    {
+        state.finish_note_pipeline_run(&run_id, &instance_id).await;
+        return Err(error);
     }
     let worker_app = app.clone();
     let worker_channel = channel.clone();
@@ -5299,6 +5330,9 @@ async fn spawn_analysis<R: Runtime>(
     {
         join.abort();
         state.finish_note_pipeline_run(&run_id, &instance_id).await;
+        let _ = state
+            .library_repository
+            .release_note_pipeline_runtime(&run_id, &instance_id);
         return Err("深度笔记分析任务注册在启动期间失效。".to_string());
     }
     tauri::async_runtime::spawn(supervise_note_pipeline_task(
@@ -5331,6 +5365,13 @@ async fn spawn_drafting<R: Runtime>(
     {
         return Err("深度笔记任务已经在运行。".to_string());
     }
+    if let Err(error) = state
+        .library_repository
+        .claim_note_pipeline_runtime(&run_id, &instance_id)
+    {
+        state.finish_note_pipeline_run(&run_id, &instance_id).await;
+        return Err(error);
+    }
     let worker_app = app.clone();
     let worker_channel = channel.clone();
     let worker_run_id = run_id.clone();
@@ -5349,6 +5390,9 @@ async fn spawn_drafting<R: Runtime>(
     {
         join.abort();
         state.finish_note_pipeline_run(&run_id, &instance_id).await;
+        let _ = state
+            .library_repository
+            .release_note_pipeline_runtime(&run_id, &instance_id);
         return Err("深度笔记章节任务注册在启动期间失效。".to_string());
     }
     tauri::async_runtime::spawn(supervise_note_pipeline_task(
@@ -6445,6 +6489,10 @@ pub async fn prepare_note_edit(
         input_snapshot_hash: String::new(),
         current_plan_version: 0,
         execution_version: 1,
+        state_version: 0,
+        runtime_instance_id: None,
+        heartbeat_at: None,
+        last_event_sequence: 0,
         budget_json: "{}".to_string(),
         preflight_json: "{}".to_string(),
         sidecar_json: String::new(),
@@ -7278,6 +7326,10 @@ mod tests {
             input_snapshot_hash: "snapshot".to_string(),
             current_plan_version: 1,
             execution_version: 1,
+            state_version: 0,
+            runtime_instance_id: None,
+            heartbeat_at: None,
+            last_event_sequence: 0,
             budget_json: "{}".to_string(),
             preflight_json: "{}".to_string(),
             sidecar_json: String::new(),

@@ -60,7 +60,17 @@ export interface ModelUsage {
   callCount?: number;
 }
 
-export type ToolTraceStatus = "awaitingApproval" | "running" | "completed" | "rejected" | "failed";
+export type ToolTraceStatus =
+  | "proposed"
+  | "awaitingApproval"
+  | "approved"
+  | "queued"
+  | "running"
+  | "completed"
+  | "rejected"
+  | "failed"
+  | "cancelled"
+  | "timedOut";
 
 /** 助手消息只保存有界工具轨迹，不保存完整工具结果。 */
 export interface ToolTrace {

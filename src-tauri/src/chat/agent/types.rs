@@ -16,11 +16,16 @@ pub enum ToolRisk {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ToolTraceStatus {
+    Proposed,
     AwaitingApproval,
+    Approved,
+    Queued,
     Running,
     Completed,
     Rejected,
     Failed,
+    Cancelled,
+    TimedOut,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -53,4 +58,41 @@ pub struct ToolExecution {
     pub activated_skill_id: Option<String>,
     pub output_chars: usize,
     pub output_truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentToolCallSnapshot {
+    pub call_id: String,
+    pub name: String,
+    pub state: String,
+    pub state_version: u32,
+    pub execution_version: u32,
+    pub approval_id: Option<String>,
+    pub risk: String,
+    pub result_preview: String,
+    pub error_kind: Option<String>,
+    pub expires_at: Option<u64>,
+    pub updated_at: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRunSnapshot {
+    pub id: String,
+    pub conversation_id: String,
+    pub message_id: String,
+    pub state: String,
+    pub activity: String,
+    pub state_version: u32,
+    pub execution_version: u32,
+    pub runtime_instance_id: Option<String>,
+    pub model_id: String,
+    pub error_code: Option<String>,
+    pub error_message: Option<String>,
+    pub heartbeat_at: Option<u64>,
+    pub created_at: u64,
+    pub updated_at: u64,
+    pub finished_at: Option<u64>,
+    pub tool_calls: Vec<AgentToolCallSnapshot>,
 }

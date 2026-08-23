@@ -8,6 +8,7 @@ use tauri::{ipc::Channel, State};
 use crate::{
     ai::error::ModelError,
     chat::{
+        agent::types::AgentRunSnapshot,
         service,
         types::{
             ChatCompletionRequest, ChatCompletionResponse, ChatStreamRequest, ModelStreamEvent,
@@ -15,6 +16,14 @@ use crate::{
     },
     state::AppState,
 };
+
+#[tauri::command]
+pub fn chat_agent_run_get(
+    state: State<'_, AppState>,
+    run_id: String,
+) -> Result<Option<AgentRunSnapshot>, String> {
+    state.library_repository.get_agent_run_snapshot(&run_id)
+}
 
 #[tauri::command]
 pub async fn chat_complete(

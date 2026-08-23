@@ -1,6 +1,7 @@
 import type { ChatMessage } from "../../../types/chat";
 import type { AgentRunStatus, WorkflowStepStatus } from "../../../types/workflow";
 import type { DeepNoteRunDetail, NotePipelinePhase } from "../../chat/api/notePipeline";
+import type { AgentRunSnapshot } from "../../chat/api/chat";
 import { hasAgentActivity, projectAgentWorkflow } from "../../chat/agent/projections/workflowProjection";
 import type { DeepNoteProgress } from "../../workspace/runtime/DeepNoteViewRuntime";
 import {
@@ -135,11 +136,12 @@ export function projectChatTaskRun(
   streaming: boolean,
   language: Language,
   _now = Date.now(),
+  agentRun: AgentRunSnapshot | null = null,
 ): TaskRunProjection | null {
-  if (!message || !hasAgentActivity(message, reasoning)) return null;
+  if (!message || (!agentRun && !hasAgentActivity(message, reasoning))) return null;
 
   const workflow = projectAgentWorkflow(message, { reasoning, streaming, language });
-  const status = chatRunStatus(workflow.status);
+  const status = agentRun ? persistedAgentRunStatus(agentRun.state) : chatRunStatus(workflow.status);
 
   const steps: TaskRunStepProjection[] = workflow.steps.map((step) => ({
     id: `chat:${message.id}:${step.id}`,
@@ -172,10 +174,12 @@ export function projectChatTaskRun(
     status,
     statusLabel,
     currentStepLabel: completedWithToolFailures ? statusLabel : current?.label ?? statusLabel,
-    activity: chatActivityLabel(steps, status, language, failedToolCount),
-    startedAt: message.createdAt,
-    updatedAt: message.updatedAt,
-    finishedAt: TERMINAL_STATUSES.has(status) ? message.updatedAt : undefined,
+    activity: agentRun?.errorMessage
+      ?? persistedAgentActivity(agentRun?.activity, language)
+      ?? chatActivityLabel(steps, status, language, failedToolCount),
+    startedAt: agentRun?.createdAt ?? message.createdAt,
+    updatedAt: agentRun?.updatedAt ?? message.updatedAt,
+    finishedAt: agentRun?.finishedAt ?? (TERMINAL_STATUSES.has(status) ? message.updatedAt : undefined),
     completedCount,
     totalCount: steps.length,
     steps,
@@ -184,14 +188,38 @@ export function projectChatTaskRun(
       skills: workflow.summary.skillCount || undefined,
       tokens: message.usage?.totalTokens,
     },
-    needsAttention: workflow.needsAttention || failedToolCount > 0,
+    needsAttention: status === "waiting" || status === "stopping" || workflow.needsAttention || failedToolCount > 0,
     canPause: false,
     canResume: false,
     canRetry: false,
     canRestart: false,
-    canStop: status === "running",
+    canStop: status === "running" || status === "waiting" || status === "stopping",
     canAbandon: false,
   };
+}
+
+function persistedAgentRunStatus(state: AgentRunSnapshot["state"]): TaskRunStatus {
+  if (state === "waiting") return "waiting";
+  if (state === "stopping") return "stopping";
+  if (state === "completed") return "completed";
+  if (state === "stopped") return "stopped";
+  if (state === "failed" || state === "budgetExhausted") return "failed";
+  return "running";
+}
+
+function persistedAgentActivity(activity: string | undefined, language: Language) {
+  if (!activity || activity === "idle") return null;
+  const labels: Record<string, [string, string]> = {
+    preparing: ["正在准备 Agent", "Preparing agent"],
+    callingModel: ["正在调用模型", "Calling model"],
+    waitingApproval: ["等待工具审批", "Waiting for tool approval"],
+    executingTools: ["正在执行工具", "Executing tools"],
+    waitingUser: ["等待用户输入", "Waiting for user input"],
+    finalizing: ["正在整理最终回答", "Finalizing answer"],
+  };
+  const value = labels[activity];
+  if (!value) return activity;
+  return language === "en" ? value[1] : value[0];
 }
 
 export function sortTaskRuns(tasks: readonly TaskRunProjection[]): TaskRunProjection[] {

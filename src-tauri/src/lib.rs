@@ -16,6 +16,7 @@ mod state;
 mod storage;
 mod sync;
 mod task_diagnostics;
+mod task_runtime;
 mod usage;
 mod window_lifecycle;
 
@@ -148,6 +149,7 @@ pub fn run() {
             commands::app_update::download_and_install_application_update,
             commands::app_update::discard_signed_application_update,
             commands::chat::chat_complete,
+            commands::chat::chat_agent_run_get,
             commands::chat::chat_stream_start,
             commands::chat::chat_stream_cancel,
             commands::chat::chat_tool_approval_resolve,

@@ -107,6 +107,10 @@ export function useStreamingRun({
 
     switch (event.type) {
       case "started":
+        updateMessageMetadata(run, (message) => ({
+          ...message,
+          agentRunId: run.runId,
+        }));
         return;
       case "textDelta":
         appendStreamingDelta(run.messageId, event.delta);

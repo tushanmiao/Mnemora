@@ -8,6 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use sha2::{Digest, Sha256};
 use tauri::ipc::Channel;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
@@ -23,10 +24,14 @@ use crate::{
             ModelStreamOutcome, ModelToolCall, ModelToolResult, ModelUsage, ProviderRequestContext,
         },
     },
-    chat::agent::{self, SkillRunCache, ToolRuntimeContext, ToolTraceSnapshot, ToolTraceStatus},
+    chat::agent::{
+        self,
+        run_machine::{AgentRunEvent, ToolCallEvent},
+        SkillRunCache, ToolRuntimeContext, ToolTraceSnapshot, ToolTraceStatus,
+    },
     request_debug::{self, RequestDebugRecordInput, RequestDebugRequest, RequestDebugResponse},
     settings::types::{ApiProtocol, AuthScheme, ModelPricing, ModelSettings, ProviderKind},
-    state::AppState,
+    state::{AppState, PendingToolApproval},
     usage::{self, UsageRecordInput},
 };
 
@@ -233,6 +238,7 @@ pub async fn stream(
         .then(|| request_debug::build_request(&context, &prepared.request, true))
         .and_then(Result::ok);
     let cancellation = CancellationToken::new();
+    let runtime_instance_id = uuid::Uuid::new_v4().to_string();
 
     {
         let mut active_runs = state.active_chat_runs.lock().await;
@@ -244,12 +250,39 @@ pub async fn stream(
         active_runs.insert(run_id.clone(), cancellation.clone());
     }
 
+    if let Err(error) = state.library_repository.create_agent_run(
+        &run_id,
+        &conversation_id,
+        &message_id,
+        &runtime_instance_id,
+        &prepared.target.model_id,
+    ) {
+        state.active_chat_runs.lock().await.remove(&run_id);
+        return Err(ModelError::provider(format!(
+            "无法建立 Agent 状态机运行记录：{error}"
+        )));
+    }
+
     if let Err(error) = on_event.send(ModelStreamEvent::Started {
         run_id: run_id.clone(),
         conversation_id: conversation_id.clone(),
         message_id: message_id.clone(),
     }) {
         state.active_chat_runs.lock().await.remove(&run_id);
+        let _ = state.library_repository.transition_agent_run(
+            &run_id,
+            AgentRunEvent::CancelRequested,
+            Some(&format!("agent-start-channel-failed:{run_id}")),
+            r#"{"reason":"startChannelClosed"}"#,
+            None,
+        );
+        let _ = state.library_repository.transition_agent_run(
+            &run_id,
+            AgentRunEvent::WorkerStopped,
+            None,
+            r#"{"reason":"workerNotStarted"}"#,
+            None,
+        );
         return Err(ModelError::provider(format!(
             "无法发送流式开始事件：{error}"
         )));
@@ -259,7 +292,7 @@ pub async fn stream(
     let started_at = Instant::now();
     let mut response_preview = String::new();
     let mut reasoning_preview = String::new();
-    let result = run_agent_stream(
+    let mut result = run_agent_stream(
         state,
         &context,
         prepared.request.clone(),
@@ -274,7 +307,48 @@ pub async fn stream(
         &mut reasoning_preview,
     )
     .await;
+    if cancellation.is_cancelled() && result.is_err() {
+        result = Ok(ModelStreamOutcome::Cancelled);
+    }
+    let persisted_terminal = match &result {
+        Ok(ModelStreamOutcome::Completed(_)) => state.library_repository.transition_agent_run(
+            &run_id,
+            AgentRunEvent::FinalizationCompleted,
+            None,
+            "{}",
+            None,
+        ),
+        Ok(ModelStreamOutcome::Cancelled) => {
+            let _ = state.library_repository.transition_agent_run(
+                &run_id,
+                AgentRunEvent::CancelRequested,
+                Some(&format!("agent-cancel:{run_id}")),
+                r#"{"reason":"workerObservedCancellation"}"#,
+                None,
+            );
+            state.library_repository.transition_agent_run(
+                &run_id,
+                AgentRunEvent::WorkerStopped,
+                None,
+                r#"{"reason":"cooperativeWorkerExit"}"#,
+                None,
+            )
+        }
+        Err(error) => state.library_repository.transition_agent_run(
+            &run_id,
+            AgentRunEvent::PanicDetected,
+            None,
+            &serde_json::json!({ "kind": format!("{:?}", error.kind) }).to_string(),
+            Some(&error.message),
+        ),
+    };
     state.active_chat_runs.lock().await.remove(&run_id);
+    state.close_tool_approvals_for_run(&run_id).await;
+    if let Err(error) = persisted_terminal {
+        result = Err(ModelError::provider(format!(
+            "Agent 已结束，但持久化终态失败：{error}"
+        )));
+    }
     let duration_ms = elapsed_ms(started_at);
 
     let (status, _status_code, usage_value, error_kind, debug_response) = match &result {
@@ -403,6 +477,7 @@ async fn execute_parallel_safe_tools(
     run_cache: &SkillRunCache,
     cancellation: &CancellationToken,
     calls: &[ModelToolCall],
+    persisted_run_id: Option<&str>,
 ) -> Vec<Option<ParallelToolExecution>> {
     let mut pending = calls
         .iter()
@@ -423,20 +498,110 @@ async fn execute_parallel_safe_tools(
         let library_operations = state.library_operations.clone();
         let mut skill_cache = run_cache.clone();
         let cancellation = cancellation.clone();
+        let persisted_run_id = persisted_run_id.map(str::to_string);
         tasks.spawn(async move {
             let started = Instant::now();
-            let result = agent::execute_tool(
-                &call,
-                &context,
-                &conversations,
-                &skills,
-                &memory,
-                &library,
-                &library_operations,
-                &mut skill_cache,
-                &cancellation,
-            )
-            .await;
+            let persisted_versions = persisted_run_id.as_deref().and_then(|run_id| {
+                let arguments_hash = format!(
+                    "{:x}",
+                    Sha256::digest(call.arguments.to_string().as_bytes())
+                );
+                match library.create_agent_tool_call(
+                    run_id,
+                    &call.id,
+                    &call.name,
+                    &format!("{:?}", agent::tool_risk(&call)),
+                    &arguments_hash,
+                    None,
+                    None,
+                ) {
+                    Ok((_, execution_version, state_version)) => match library
+                        .transition_agent_tool_call(
+                            run_id,
+                            &call.id,
+                            ToolCallEvent::Started,
+                            execution_version,
+                            Some(state_version),
+                            None,
+                            None,
+                        ) {
+                        Ok((_, execution_version, state_version)) => {
+                            Some((execution_version, state_version))
+                        }
+                        Err(_) => {
+                            let _ = library.transition_agent_tool_call(
+                                run_id,
+                                &call.id,
+                                ToolCallEvent::Cancelled,
+                                execution_version,
+                                Some(state_version),
+                                Some("Tool Call 启动失败。"),
+                                Some("stateTransitionFailed"),
+                            );
+                            None
+                        }
+                    },
+                    Err(_) => None,
+                }
+            });
+            let result = if persisted_run_id.is_some() && persisted_versions.is_none() {
+                agent::ToolExecution {
+                    content: "Tool Call 状态记录失败，已阻止并行工具执行。".to_string(),
+                    preview: "Tool Call 状态记录失败，已阻止并行工具执行。".to_string(),
+                    is_error: true,
+                    activated_skill_id: None,
+                    output_chars: "Tool Call 状态记录失败，已阻止并行工具执行。"
+                        .chars()
+                        .count(),
+                    output_truncated: false,
+                }
+            } else {
+                agent::execute_tool(
+                    &call,
+                    &context,
+                    &conversations,
+                    &skills,
+                    &memory,
+                    &library,
+                    &library_operations,
+                    &mut skill_cache,
+                    &cancellation,
+                )
+                .await
+                .unwrap_or_else(|error| agent::ToolExecution {
+                    output_chars: error.message.chars().count(),
+                    content: error.message.clone(),
+                    preview: error.message,
+                    is_error: true,
+                    activated_skill_id: None,
+                    output_truncated: false,
+                })
+            };
+            let result = if let (Some(run_id), Some((execution_version, state_version))) =
+                (persisted_run_id.as_deref(), persisted_versions)
+            {
+                let event = if result.is_error {
+                    ToolCallEvent::Failed
+                } else {
+                    ToolCallEvent::Succeeded
+                };
+                match library.transition_agent_tool_call(
+                    run_id,
+                    &call.id,
+                    event,
+                    execution_version,
+                    Some(state_version),
+                    Some(&result.preview),
+                    result.is_error.then_some("toolExecution"),
+                ) {
+                    Ok(_) => result,
+                    Err(error) => {
+                        rejected_tool(&format!("并行 Tool 终态因版本冲突被拒绝：{error}"), &call)
+                    }
+                }
+            } else {
+                result
+            };
             (index, result, elapsed_ms(started))
         });
     };
@@ -448,15 +613,7 @@ async fn execute_parallel_safe_tools(
         spawn(&mut tasks, index, call);
     }
     while let Some(joined) = tasks.join_next().await {
-        if let Ok((index, result, duration_ms)) = joined {
-            let execution = result.unwrap_or_else(|error| agent::ToolExecution {
-                output_chars: error.message.chars().count(),
-                content: error.message.clone(),
-                preview: error.message,
-                is_error: true,
-                activated_skill_id: None,
-                output_truncated: false,
-            });
+        if let Ok((index, execution, duration_ms)) = joined {
             results[index] = Some(ParallelToolExecution {
                 execution,
                 duration_ms,
@@ -653,6 +810,7 @@ async fn run_agent_complete(
             &skill_cache,
             execution.cancellation,
             &tool_calls,
+            None,
         )
         .await;
         for (index, call) in tool_calls.into_iter().enumerate() {
@@ -827,6 +985,21 @@ async fn run_agent_stream(
                 "\n\n本次 Agent 已达到运行预算。不要再请求工具，请根据已有结果给出最终回答，并明确说明仍缺少的信息。",
             );
         }
+        if cancellation.is_cancelled() {
+            return Ok(ModelStreamOutcome::Cancelled);
+        }
+        state
+            .library_repository
+            .transition_agent_run(
+                run_id,
+                AgentRunEvent::ModelCallStarted,
+                None,
+                &serde_json::json!({ "roundIndex": round_index }).to_string(),
+                None,
+            )
+            .map_err(|error| {
+                ModelError::provider(format!("Agent 模型调用状态提交失败：{error}"))
+            })?;
         let call_started_at_ms = usage::now_ms();
         let call_started = Instant::now();
         let mut round_text = String::new();
@@ -897,6 +1070,18 @@ async fn run_agent_stream(
             crate::usage::normalize::merge_run_usage(&mut run_usage, call_usage);
         }
         if summary.tool_calls.is_empty() {
+            state
+                .library_repository
+                .transition_agent_run(
+                    run_id,
+                    AgentRunEvent::FinalizationStarted,
+                    None,
+                    &serde_json::json!({ "roundIndex": round_index }).to_string(),
+                    None,
+                )
+                .map_err(|error| {
+                    ModelError::provider(format!("Agent 最终整理状态提交失败：{error}"))
+                })?;
             summary.usage = (run_usage.call_count > 0).then_some(run_usage);
             return Ok(ModelStreamOutcome::Completed(summary));
         }
@@ -915,6 +1100,23 @@ async fn run_agent_stream(
                 continue;
             }
         }
+
+        state
+            .library_repository
+            .transition_agent_run(
+                run_id,
+                AgentRunEvent::ToolBatchStarted,
+                None,
+                &serde_json::json!({
+                    "roundIndex": round_index,
+                    "toolCallCount": summary.tool_calls.len(),
+                })
+                .to_string(),
+                None,
+            )
+            .map_err(|error| {
+                ModelError::provider(format!("Agent 工具批次启动状态提交失败：{error}"))
+            })?;
 
         let tool_calls = summary.tool_calls;
         request.messages.push(ModelMessage {
@@ -954,6 +1156,7 @@ async fn run_agent_stream(
             &skill_cache,
             cancellation,
             &tool_calls,
+            Some(run_id),
         )
         .await;
         for (index, call) in tool_calls.into_iter().enumerate() {
@@ -1026,6 +1229,21 @@ async fn run_agent_stream(
                 }),
             });
         }
+        if cancellation.is_cancelled() {
+            return Ok(ModelStreamOutcome::Cancelled);
+        }
+        state
+            .library_repository
+            .transition_agent_run(
+                run_id,
+                AgentRunEvent::ToolBatchCompleted,
+                None,
+                &serde_json::json!({ "roundIndex": round_index }).to_string(),
+                None,
+            )
+            .map_err(|error| {
+                ModelError::provider(format!("Agent 工具批次状态提交失败：{error}"))
+            })?;
     }
     Err(ModelError::provider("Agent 未能在运行预算内生成最终回答。"))
 }
@@ -1044,8 +1262,53 @@ async fn execute_agent_tool(
 ) -> agent::ToolExecution {
     let risk = agent::tool_risk(call);
     let argument_summary = agent::argument_summary(call);
-    if agent::requires_approval(context.permission_mode, call) {
-        let approval_id = uuid::Uuid::new_v4().to_string();
+    let approval_required = agent::requires_approval(context.permission_mode, call);
+    let approval_id = approval_required.then(|| uuid::Uuid::new_v4().to_string());
+    let expires_at_ms = approval_required
+        .then(|| usage::now_ms().saturating_add(TOOL_APPROVAL_TIMEOUT.as_millis() as u64));
+    let arguments_hash = format!(
+        "{:x}",
+        Sha256::digest(call.arguments.to_string().as_bytes())
+    );
+    let (_, execution_version, mut tool_state_version) =
+        match state.library_repository.create_agent_tool_call(
+            run_id,
+            &call.id,
+            &call.name,
+            &format!("{risk:?}"),
+            &arguments_hash,
+            approval_id.as_deref(),
+            expires_at_ms,
+        ) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                return rejected_tool(
+                    &format!("Tool Call 状态记录创建失败，已阻止执行：{error}"),
+                    call,
+                );
+            }
+        };
+
+    if approval_required {
+        if let Err(error) = state.library_repository.transition_agent_run(
+            run_id,
+            AgentRunEvent::ApprovalRequired,
+            None,
+            &serde_json::json!({ "callId": call.id }).to_string(),
+            None,
+        ) {
+            let _ = state.library_repository.transition_agent_tool_call(
+                run_id,
+                &call.id,
+                ToolCallEvent::Cancelled,
+                execution_version,
+                Some(tool_state_version),
+                Some("Agent 无法进入审批状态。"),
+                Some("agentStateConflict"),
+            );
+            return rejected_tool(&format!("Agent 无法进入工具审批状态：{error}"), call);
+        }
+        let approval_id = approval_id.expect("approval id exists when approval is required");
         let trace = ToolTraceSnapshot {
             call_id: call.id.clone(),
             name: call.name.clone(),
@@ -1060,11 +1323,17 @@ async fn execute_agent_tool(
             error_kind: None,
         };
         let (sender, receiver) = oneshot::channel();
-        state
-            .pending_tool_approvals
-            .lock()
-            .await
-            .insert(approval_id.clone(), sender);
+        state.pending_tool_approvals.lock().await.insert(
+            approval_id.clone(),
+            PendingToolApproval {
+                sender,
+                run_id: run_id.to_string(),
+                call_id: call.id.clone(),
+                execution_version,
+                state_version: tool_state_version,
+                expires_at_ms: expires_at_ms.unwrap_or_default(),
+            },
+        );
         let sent = on_event.send(ModelStreamEvent::ToolApprovalRequested {
             run_id: run_id.to_string(),
             conversation_id: conversation_id.to_string(),
@@ -1078,16 +1347,80 @@ async fn execute_agent_tool(
                 .lock()
                 .await
                 .remove(&approval_id);
+            let _ = state.library_repository.transition_agent_tool_call(
+                run_id,
+                &call.id,
+                ToolCallEvent::Rejected,
+                execution_version,
+                Some(tool_state_version),
+                Some("无法向界面发送工具审批请求。"),
+                Some("approvalChannelClosed"),
+            );
+            let _ = state.library_repository.transition_agent_run(
+                run_id,
+                AgentRunEvent::ApprovalsResolved,
+                None,
+                &serde_json::json!({ "callId": call.id, "approved": false }).to_string(),
+                None,
+            );
             return rejected_tool("无法向界面发送工具审批请求。", call);
         }
         // 审批对象不能因前端失联永久留在 Rust 状态中。五分钟未响应按拒绝处理。
-        let approved = wait_for_tool_approval(receiver, cancellation, TOOL_APPROVAL_TIMEOUT).await;
+        let approval_outcome =
+            wait_for_tool_approval(receiver, cancellation, TOOL_APPROVAL_TIMEOUT).await;
         state
             .pending_tool_approvals
             .lock()
             .await
             .remove(&approval_id);
-        if !approved {
+        if approval_outcome != ToolApprovalOutcome::Approved {
+            let (event, status, message, error_kind) = match approval_outcome {
+                ToolApprovalOutcome::Rejected => (
+                    None,
+                    ToolTraceStatus::Rejected,
+                    "用户拒绝了本次工具调用。",
+                    "approvalRejected",
+                ),
+                ToolApprovalOutcome::TimedOut => (
+                    Some(ToolCallEvent::TimedOut),
+                    ToolTraceStatus::TimedOut,
+                    "工具审批已超时。",
+                    "approvalTimedOut",
+                ),
+                ToolApprovalOutcome::Cancelled => (
+                    Some(ToolCallEvent::Cancelled),
+                    ToolTraceStatus::Cancelled,
+                    "Agent 已取消本次工具调用。",
+                    "agentCancelled",
+                ),
+                ToolApprovalOutcome::ChannelClosed => (
+                    Some(ToolCallEvent::Rejected),
+                    ToolTraceStatus::Rejected,
+                    "工具审批通道已关闭。",
+                    "approvalChannelClosed",
+                ),
+                ToolApprovalOutcome::Approved => unreachable!(),
+            };
+            if let Some(event) = event {
+                let _ = state.library_repository.transition_agent_tool_call(
+                    run_id,
+                    &call.id,
+                    event,
+                    execution_version,
+                    Some(tool_state_version),
+                    Some(message),
+                    Some(error_kind),
+                );
+            }
+            if approval_outcome != ToolApprovalOutcome::Cancelled {
+                let _ = state.library_repository.transition_agent_run(
+                    run_id,
+                    AgentRunEvent::ApprovalsResolved,
+                    None,
+                    &serde_json::json!({ "callId": call.id, "approved": false }).to_string(),
+                    None,
+                );
+            }
             let _ = emit_tool_trace(
                 on_event,
                 run_id,
@@ -1096,20 +1429,87 @@ async fn execute_agent_tool(
                 ToolTraceSnapshot {
                     call_id: call.id.clone(),
                     name: call.name.clone(),
-                    status: ToolTraceStatus::Rejected,
+                    status,
                     risk,
                     argument_summary,
-                    preview: Some("用户拒绝了本次工具调用。".to_string()),
+                    preview: Some(message.to_string()),
                     duration_ms: Some(0),
                     input_chars: Some(call.arguments.to_string().chars().count()),
-                    output_chars: Some("用户拒绝了本次工具调用。".chars().count()),
+                    output_chars: Some(message.chars().count()),
                     output_truncated: Some(false),
-                    error_kind: Some("approvalRejected".to_string()),
+                    error_kind: Some(error_kind.to_string()),
                 },
             );
-            return rejected_tool("用户拒绝了本次工具调用。", call);
+            return rejected_tool(message, call);
         }
+        // resolve_tool_approval 已先以 CAS 持久化 AwaitingApproval -> Approved。
+        tool_state_version = tool_state_version.saturating_add(1);
+        if let Err(error) = state.library_repository.transition_agent_run(
+            run_id,
+            AgentRunEvent::ApprovalsResolved,
+            None,
+            &serde_json::json!({ "callId": call.id, "approved": true }).to_string(),
+            None,
+        ) {
+            let _ = state.library_repository.transition_agent_tool_call(
+                run_id,
+                &call.id,
+                ToolCallEvent::Cancelled,
+                execution_version,
+                Some(tool_state_version),
+                Some("审批后 Agent 状态已变化。"),
+                Some("agentStateConflict"),
+            );
+            return rejected_tool(&format!("审批后 Agent 状态已变化：{error}"), call);
+        }
+        tool_state_version = match state.library_repository.transition_agent_tool_call(
+            run_id,
+            &call.id,
+            ToolCallEvent::Enqueued,
+            execution_version,
+            Some(tool_state_version),
+            None,
+            None,
+        ) {
+            Ok((_, _, version)) => version,
+            Err(error) => {
+                let _ = state.library_repository.transition_agent_tool_call(
+                    run_id,
+                    &call.id,
+                    ToolCallEvent::Cancelled,
+                    execution_version,
+                    Some(tool_state_version),
+                    Some("Tool Call 入队失败。"),
+                    Some("stateTransitionFailed"),
+                );
+                return rejected_tool(&format!("Tool Call 入队失败：{error}"), call);
+            }
+        };
     }
+
+    tool_state_version = match state.library_repository.transition_agent_tool_call(
+        run_id,
+        &call.id,
+        ToolCallEvent::Started,
+        execution_version,
+        Some(tool_state_version),
+        None,
+        None,
+    ) {
+        Ok((_, _, version)) => version,
+        Err(error) => {
+            let _ = state.library_repository.transition_agent_tool_call(
+                run_id,
+                &call.id,
+                ToolCallEvent::Cancelled,
+                execution_version,
+                Some(tool_state_version),
+                Some("Tool Call 启动失败。"),
+                Some("stateTransitionFailed"),
+            );
+            return rejected_tool(&format!("Tool Call 启动被状态机拒绝：{error}"), call);
+        }
+    };
 
     let started = Instant::now();
     let _ = emit_tool_trace(
@@ -1145,6 +1545,25 @@ async fn execute_agent_tool(
     .await
     {
         Ok(result) => {
+            let terminal_event = if result.is_error {
+                ToolCallEvent::Failed
+            } else {
+                ToolCallEvent::Succeeded
+            };
+            if let Err(error) = state.library_repository.transition_agent_tool_call(
+                run_id,
+                &call.id,
+                terminal_event,
+                execution_version,
+                Some(tool_state_version),
+                Some(&result.preview),
+                result.is_error.then_some("toolExecution"),
+            ) {
+                return rejected_tool(
+                    &format!("Tool 已返回，但终态因版本冲突被拒绝：{error}"),
+                    call,
+                );
+            }
             let _ = emit_tool_trace(
                 on_event,
                 run_id,
@@ -1153,7 +1572,11 @@ async fn execute_agent_tool(
                 ToolTraceSnapshot {
                     call_id: call.id.clone(),
                     name: call.name.clone(),
-                    status: ToolTraceStatus::Completed,
+                    status: if result.is_error {
+                        ToolTraceStatus::Failed
+                    } else {
+                        ToolTraceStatus::Completed
+                    },
                     risk,
                     argument_summary,
                     preview: Some(result.preview.clone()),
@@ -1168,6 +1591,15 @@ async fn execute_agent_tool(
         }
         Err(error) => {
             let message = error.message.clone();
+            let _ = state.library_repository.transition_agent_tool_call(
+                run_id,
+                &call.id,
+                ToolCallEvent::Failed,
+                execution_version,
+                Some(tool_state_version),
+                Some(&message),
+                Some(&format!("{:?}", error.kind)),
+            );
             let _ = emit_tool_trace(
                 on_event,
                 run_id,
@@ -1192,15 +1624,30 @@ async fn execute_agent_tool(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ToolApprovalOutcome {
+    Approved,
+    Rejected,
+    Cancelled,
+    TimedOut,
+    ChannelClosed,
+}
+
 async fn wait_for_tool_approval(
     receiver: oneshot::Receiver<bool>,
     cancellation: &CancellationToken,
     timeout: Duration,
-) -> bool {
+) -> ToolApprovalOutcome {
     tokio::select! {
-        _ = cancellation.cancelled() => false,
+        biased;
+        _ = cancellation.cancelled() => ToolApprovalOutcome::Cancelled,
         decision = tokio::time::timeout(timeout, receiver) => {
-            decision.ok().and_then(Result::ok).unwrap_or(false)
+            match decision {
+                Err(_) => ToolApprovalOutcome::TimedOut,
+                Ok(Ok(true)) => ToolApprovalOutcome::Approved,
+                Ok(Ok(false)) => ToolApprovalOutcome::Rejected,
+                Ok(Err(_)) => ToolApprovalOutcome::ChannelClosed,
+            }
         },
     }
 }
@@ -1683,11 +2130,27 @@ fn protocol_name(protocol: ApiProtocol) -> &'static str {
 pub async fn cancel(state: &AppState, run_id: &str) -> Result<bool, ModelError> {
     crate::settings::types::validate_stable_id("Run ID", run_id.trim())
         .map_err(ModelError::invalid_configuration)?;
-    let active_runs = state.active_chat_runs.lock().await;
-    let Some(cancellation) = active_runs.get(run_id.trim()) else {
+    let cancellation = state
+        .active_chat_runs
+        .lock()
+        .await
+        .get(run_id.trim())
+        .cloned();
+    let Some(cancellation) = cancellation else {
         return Ok(false);
     };
+    state
+        .library_repository
+        .transition_agent_run(
+            run_id.trim(),
+            AgentRunEvent::CancelRequested,
+            Some(&format!("agent-cancel:{}", run_id.trim())),
+            r#"{"reason":"userRequested"}"#,
+            None,
+        )
+        .map_err(|error| ModelError::provider(format!("Agent 取消状态提交失败：{error}")))?;
     cancellation.cancel();
+    state.close_tool_approvals_for_run(run_id.trim()).await;
     Ok(true)
 }
 
@@ -1698,12 +2161,41 @@ pub async fn resolve_tool_approval(
 ) -> Result<bool, ModelError> {
     crate::settings::types::validate_stable_id("Approval ID", approval_id.trim())
         .map_err(ModelError::invalid_configuration)?;
-    let sender = state
+    let pending = state
         .pending_tool_approvals
         .lock()
         .await
         .remove(approval_id.trim());
-    Ok(sender.is_some_and(|sender| sender.send(approved).is_ok()))
+    let Some(pending) = pending else {
+        return Ok(false);
+    };
+    let now = usage::now_ms();
+    let decision = if now >= pending.expires_at_ms {
+        ToolCallEvent::TimedOut
+    } else if approved {
+        ToolCallEvent::Approved
+    } else {
+        ToolCallEvent::Rejected
+    };
+    if state
+        .library_repository
+        .transition_agent_tool_call(
+            &pending.run_id,
+            &pending.call_id,
+            decision,
+            pending.execution_version,
+            Some(pending.state_version),
+            None,
+            None,
+        )
+        .is_err()
+    {
+        return Ok(false);
+    }
+    if decision == ToolCallEvent::TimedOut {
+        return Ok(false);
+    }
+    Ok(pending.sender.send(approved).is_ok())
 }
 
 fn retry_policy(state: &AppState) -> RetryPolicy {
@@ -2232,33 +2724,36 @@ mod tests {
     async fn tool_approval_rejection_and_cancellation_never_approve() {
         let (sender, receiver) = oneshot::channel();
         sender.send(false).unwrap();
-        assert!(
-            !super::wait_for_tool_approval(
+        assert_eq!(
+            super::wait_for_tool_approval(
                 receiver,
                 &CancellationToken::new(),
                 Duration::from_secs(1),
             )
-            .await
+            .await,
+            super::ToolApprovalOutcome::Rejected,
         );
 
         let (_sender, receiver) = oneshot::channel();
         let cancellation = CancellationToken::new();
         cancellation.cancel();
-        assert!(
-            !super::wait_for_tool_approval(receiver, &cancellation, Duration::from_secs(1)).await
+        assert_eq!(
+            super::wait_for_tool_approval(receiver, &cancellation, Duration::from_secs(1)).await,
+            super::ToolApprovalOutcome::Cancelled,
         );
     }
 
     #[tokio::test]
     async fn tool_approval_timeout_rejects_and_releases_receiver() {
         let (_sender, receiver) = oneshot::channel();
-        assert!(
-            !super::wait_for_tool_approval(
+        assert_eq!(
+            super::wait_for_tool_approval(
                 receiver,
                 &CancellationToken::new(),
                 Duration::from_millis(1),
             )
-            .await
+            .await,
+            super::ToolApprovalOutcome::TimedOut,
         );
     }
 

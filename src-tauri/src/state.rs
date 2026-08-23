@@ -39,7 +39,7 @@ pub struct AppState {
     pub secrets: SecretStore,
     pub active_chat_runs: Mutex<HashMap<String, CancellationToken>>,
     pub active_note_pipeline_runs: Mutex<HashMap<String, ActiveNotePipelineRun>>,
-    pub pending_tool_approvals: Mutex<HashMap<String, oneshot::Sender<bool>>>,
+    pub pending_tool_approvals: Mutex<HashMap<String, PendingToolApproval>>,
     pub active_attachment_tasks: StdMutex<HashMap<String, CancellationToken>>,
     pub detached_note_pipeline_instances: StdMutex<HashSet<String>>,
     pub attachment_preview_gate: Semaphore,
@@ -80,6 +80,16 @@ pub struct ActiveNotePipelineRun {
     abort_handle: Option<AbortHandle>,
     task_kind: String,
     started_at_ms: u64,
+}
+
+/// 内存中的一次性审批通道只负责唤醒 Worker；审批身份和 CAS 版本同时持久化到 SQLite。
+pub struct PendingToolApproval {
+    pub sender: oneshot::Sender<bool>,
+    pub run_id: String,
+    pub call_id: String,
+    pub execution_version: u32,
+    pub state_version: u32,
+    pub expires_at_ms: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -142,6 +152,9 @@ impl AppState {
         let library_repository = LibraryRepository::new(app_data_dir.clone());
         if let Err(error) = library_repository.recover_stale_cancelling_runs() {
             eprintln!("Failed to recover stale cancelling note tasks: {error}");
+        }
+        if let Err(error) = library_repository.recover_stale_agent_runs() {
+            eprintln!("Failed to recover stale Agent runs: {error}");
         }
         let conversation_repository = ConversationRepository::new(app_data_dir.clone());
         let english_learning_repository = EnglishLearningRepository::new(app_data_dir.clone());
@@ -214,6 +227,15 @@ impl AppState {
     /** 向所有活动 Chat 流发送取消信号；真实任务结束后仍由 service 移除注册项。 */
     pub async fn cancel_all_chat_runs(&self) -> usize {
         let runs = self.active_chat_runs.lock().await;
+        for run_id in runs.keys() {
+            let _ = self.library_repository.transition_agent_run(
+                run_id,
+                crate::chat::agent::run_machine::AgentRunEvent::CancelRequested,
+                Some(&format!("agent-shutdown:{run_id}")),
+                r#"{"reason":"applicationShutdown"}"#,
+                None,
+            );
+        }
         cancel_chat_run_tokens(&runs)
     }
 
@@ -354,8 +376,32 @@ impl AppState {
     pub async fn cancel_all_tool_approvals(&self) -> usize {
         let mut approvals = self.pending_tool_approvals.lock().await;
         let count = approvals.len();
+        for approval in approvals.values() {
+            let _ = self.library_repository.transition_agent_tool_call(
+                &approval.run_id,
+                &approval.call_id,
+                crate::chat::agent::run_machine::ToolCallEvent::Cancelled,
+                approval.execution_version,
+                Some(approval.state_version),
+                Some("应用正在退出，工具审批已取消。"),
+                Some("applicationShutdown"),
+            );
+        }
         approvals.clear();
         count
+    }
+
+    pub async fn close_tool_approvals_for_run(&self, run_id: &str) -> usize {
+        let mut approvals = self.pending_tool_approvals.lock().await;
+        let ids = approvals
+            .iter()
+            .filter(|(_, approval)| approval.run_id == run_id)
+            .map(|(approval_id, _)| approval_id.clone())
+            .collect::<Vec<_>>();
+        for approval_id in &ids {
+            approvals.remove(approval_id);
+        }
+        ids.len()
     }
 
     pub fn register_attachment_task(

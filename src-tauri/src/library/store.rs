@@ -10,14 +10,31 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use rusqlite::{params, params_from_iter, types::Value, Connection, OptionalExtension, Row};
+use rusqlite::{
+    params, params_from_iter, types::Value, Connection, OptionalExtension, Row, Transaction,
+    TransactionBehavior,
+};
 use uuid::Uuid;
 
-use crate::chat::note_pipeline::types::{
-    DeepNoteEvidenceArtifact, DeepNoteEvidenceStatus, DeepNoteInputSnapshot, DeepNoteLedger,
-    DeepNoteSourceChunk, DeepNoteSourceKind, DeepNoteSourceUnit, DeepNoteSourceUnitKind,
-    DeepNoteSourceUnitStatus, DeepNoteSupportLevel,
+use crate::chat::{
+    agent::run_machine::{
+        AgentRunEffect, AgentRunEvent, AgentRunMachine, AgentRunState, ToolCallEvent,
+        ToolCallMachine, ToolCallState,
+    },
+    agent::types::{AgentRunSnapshot, AgentToolCallSnapshot},
+    note_pipeline::{
+        node_machine::{DagNodeEvent, DagNodeMachine},
+        run_machine::DeepNoteRunMachine,
+        types::{
+            DeepNoteEvidenceArtifact, DeepNoteEvidenceStatus, DeepNoteInputSnapshot,
+            DeepNoteLedger, DeepNoteNodeStatus, DeepNoteSourceChunk, DeepNoteSourceKind,
+            DeepNoteSourceUnit, DeepNoteSourceUnitKind, DeepNoteSourceUnitStatus,
+            DeepNoteSupportLevel,
+        },
+    },
 };
+use crate::task_diagnostics::current_task_instance_id;
+use crate::task_runtime::StateMachine;
 
 use super::{
     import::{import_pdf, ImportOutcome},
@@ -37,7 +54,7 @@ use super::{
     },
 };
 
-const LIBRARY_SCHEMA_VERSION: i64 = 10;
+const LIBRARY_SCHEMA_VERSION: i64 = 12;
 const LIBRARY_DIRECTORY_NAME: &str = "library";
 const LIBRARY_DATABASE_NAME: &str = "library.sqlite3";
 const LIBRARY_FILES_DIRECTORY_NAME: &str = "files";
@@ -1050,6 +1067,104 @@ impl LibraryRepository {
             .ok_or_else(|| "深度笔记任务不存在。".to_string())
     }
 
+    /// 领取一个可执行的运行实例。过期心跳可被恢复 Worker 接管，同一实例重复领取幂等。
+    pub fn claim_note_pipeline_runtime(
+        &self,
+        run_id: &str,
+        runtime_instance_id: &str,
+    ) -> Result<(), String> {
+        let run_id = normalize_identifier("任务 ID", run_id)?;
+        let runtime_instance_id = normalize_identifier("运行实例 ID", runtime_instance_id)?;
+        let mut connection = self.open_connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| format!("开始领取深度笔记运行实例失败：{error}"))?;
+        let now = now_millis_i64();
+        let stale_before = now.saturating_sub(60_000);
+        let changed = transaction
+            .execute(
+                "UPDATE note_pipeline_runs
+                 SET runtime_instance_id = ?, heartbeat_at = ?, updated_at = ?
+                 WHERE id = ? AND phase NOT IN ('done', 'cancelled')
+                   AND (runtime_instance_id IS NULL OR runtime_instance_id = ?
+                        OR heartbeat_at IS NULL OR heartbeat_at < ?)",
+                params![
+                    runtime_instance_id,
+                    now,
+                    now,
+                    run_id,
+                    runtime_instance_id,
+                    stale_before,
+                ],
+            )
+            .map_err(|error| format!("领取深度笔记运行实例失败：{error}"))?;
+        if changed != 1 {
+            return Err("深度笔记任务已有未过期的运行实例，拒绝并发 Worker。".to_string());
+        }
+        recover_expired_note_pipeline_nodes_in_transaction(
+            &transaction,
+            &run_id,
+            &runtime_instance_id,
+            now,
+        )?;
+        transaction
+            .commit()
+            .map_err(|error| format!("提交深度笔记运行实例领取失败：{error}"))?;
+        Ok(())
+    }
+
+    pub fn heartbeat_note_pipeline_runtime(
+        &self,
+        run_id: &str,
+        runtime_instance_id: &str,
+    ) -> Result<(), String> {
+        let now = now_millis_i64();
+        let mut connection = self.open_connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| format!("开始更新深度笔记运行心跳失败：{error}"))?;
+        let changed = transaction
+            .execute(
+                "UPDATE note_pipeline_runs SET heartbeat_at = ?, updated_at = ?
+                 WHERE id = ? AND runtime_instance_id = ?
+                   AND phase NOT IN ('done', 'cancelled')",
+                params![now, now, run_id, runtime_instance_id],
+            )
+            .map_err(|error| format!("更新深度笔记运行心跳失败：{error}"))?;
+        if changed != 1 {
+            return Err("深度笔记运行实例已失效，拒绝迟到 Worker 心跳。".to_string());
+        }
+        let lease_expires_at = now.saturating_add(90_000);
+        transaction
+            .execute(
+                "UPDATE note_pipeline_nodes
+                 SET heartbeat_at = ?, lease_expires_at = ?
+                 WHERE run_id = ? AND lease_owner = ?
+                   AND status IN ('leased', 'inProgress', 'in_progress')",
+                params![now, lease_expires_at, run_id, runtime_instance_id],
+            )
+            .map_err(|error| format!("续租深度笔记 DAG 节点失败：{error}"))?;
+        transaction
+            .commit()
+            .map_err(|error| format!("提交深度笔记运行心跳失败：{error}"))?;
+        Ok(())
+    }
+
+    pub fn release_note_pipeline_runtime(
+        &self,
+        run_id: &str,
+        runtime_instance_id: &str,
+    ) -> Result<(), String> {
+        let connection = self.open_connection()?;
+        connection
+            .execute(
+                "UPDATE note_pipeline_runs SET runtime_instance_id = NULL WHERE id = ? AND runtime_instance_id = ?",
+                params![run_id, runtime_instance_id],
+            )
+            .map_err(|error| format!("释放深度笔记运行实例失败：{error}"))?;
+        Ok(())
+    }
+
     pub fn request_note_pipeline_cancellation(
         &self,
         run_id: &str,
@@ -1057,7 +1172,7 @@ impl LibraryRepository {
         let run_id = normalize_identifier("任务 ID", run_id)?;
         let mut connection = self.open_connection()?;
         let transaction = connection
-            .transaction()
+            .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| format!("开始记录深度笔记停止请求失败：{error}"))?;
         let phase: String = transaction
             .query_row(
@@ -1069,29 +1184,17 @@ impl LibraryRepository {
             .map_err(|error| format!("读取深度笔记停止状态失败：{error}"))?
             .ok_or_else(|| "深度笔记任务不存在。".to_string())?;
         if !matches!(phase.as_str(), "done" | "cancelled" | "cancelling") {
-            let now = now_millis_i64();
-            transaction
-                .execute(
-                    "UPDATE note_pipeline_runs
-                     SET phase = 'cancelling', error_message = NULL, updated_at = ? WHERE id = ?",
-                    params![now, run_id],
-                )
-                .map_err(|error| format!("记录深度笔记停止状态失败：{error}"))?;
-            let sequence: i64 = transaction
-                .query_row(
-                    "SELECT COALESCE(MAX(sequence), 0) + 1 FROM note_pipeline_events WHERE run_id = ?",
-                    params![run_id],
-                    |row| row.get(0),
-                )
-                .map_err(|error| format!("读取深度笔记停止事件序号失败：{error}"))?;
-            transaction
-                .execute(
-                    "INSERT INTO note_pipeline_events (
-                        run_id, sequence, event_type, node_id, payload_json, created_at
-                     ) VALUES (?, ?, 'runCancellationRequested', NULL, '{}', ?)",
-                    params![run_id, sequence, now],
-                )
-                .map_err(|error| format!("保存深度笔记停止事件失败：{error}"))?;
+            transition_note_pipeline_phase_in_transaction(
+                &transaction,
+                &run_id,
+                NotePipelinePhase::Cancelling,
+                None,
+                "[]",
+                None,
+                None,
+                "runCancellationRequested",
+                "{}",
+            )?;
         }
         transaction
             .commit()
@@ -1109,7 +1212,7 @@ impl LibraryRepository {
         let run_id = normalize_identifier("任务 ID", run_id)?;
         let mut connection = self.open_connection()?;
         let transaction = connection
-            .transaction()
+            .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| format!("开始完成深度笔记停止状态失败：{error}"))?;
         let phase: String = transaction
             .query_row(
@@ -1121,35 +1224,43 @@ impl LibraryRepository {
             .map_err(|error| format!("读取深度笔记最终停止状态失败：{error}"))?
             .ok_or_else(|| "深度笔记任务不存在。".to_string())?;
         if phase != "done" && phase != "cancelled" {
-            let now = now_millis_i64();
-            transaction
-                .execute(
-                    "UPDATE note_pipeline_runs
-                     SET phase = 'cancelled', error_message = NULL, updated_at = ? WHERE id = ?",
-                    params![now, run_id],
-                )
-                .map_err(|error| format!("完成深度笔记停止状态失败：{error}"))?;
-            let sequence: i64 = transaction
-                .query_row(
-                    "SELECT COALESCE(MAX(sequence), 0) + 1 FROM note_pipeline_events WHERE run_id = ?",
-                    params![run_id],
-                    |row| row.get(0),
-                )
-                .map_err(|error| format!("读取深度笔记最终停止事件序号失败：{error}"))?;
+            if phase != "cancelling" {
+                if !forced {
+                    return Err(
+                        "深度笔记尚未进入 cancelling，不能在没有停止证据时标记 cancelled。"
+                            .to_string(),
+                    );
+                }
+                transition_note_pipeline_phase_in_transaction(
+                    &transaction,
+                    &run_id,
+                    NotePipelinePhase::Cancelling,
+                    None,
+                    "[]",
+                    None,
+                    None,
+                    "runForceCancellationRequested",
+                    &serde_json::json!({ "reason": reason }).to_string(),
+                )?;
+            }
             let payload = serde_json::json!({
                 "forced": forced,
                 "reason": reason,
                 "diagnosticPath": diagnostic_path,
             })
             .to_string();
-            transaction
-                .execute(
-                    "INSERT INTO note_pipeline_events (
-                        run_id, sequence, event_type, node_id, payload_json, created_at
-                     ) VALUES (?, ?, 'runCancelled', NULL, ?, ?)",
-                    params![run_id, sequence, payload, now],
-                )
-                .map_err(|error| format!("保存深度笔记最终停止事件失败：{error}"))?;
+            // Cancelling -> Cancelled 必须等待这里的 WorkerStopped/强制诊断事实。
+            transition_note_pipeline_phase_in_transaction(
+                &transaction,
+                &run_id,
+                NotePipelinePhase::Cancelled,
+                None,
+                "[]",
+                None,
+                None,
+                "runCancelled",
+                &payload,
+            )?;
         }
         transaction
             .commit()
@@ -1218,50 +1329,50 @@ impl LibraryRepository {
     /// 重试和重新生成都不会再把它视为当前任务。
     pub fn abandon_note_pipeline_run(&self, run_id: &str) -> Result<NotePipelineRun, String> {
         let run_id = normalize_identifier("任务 ID", run_id)?;
-        let connection = self.open_connection()?;
+        let mut connection = self.open_connection()?;
         let transaction = connection
-            .unchecked_transaction()
+            .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| format!("开始遗弃深度笔记任务失败：{error}"))?;
-        let current_phase: Option<String> = transaction
+        let current: Option<(String, String)> = transaction
             .query_row(
-                "SELECT phase FROM note_pipeline_runs WHERE id = ?",
+                "SELECT phase, warnings_json FROM note_pipeline_runs WHERE id = ?",
                 params![run_id],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()
             .map_err(|error| format!("读取待遗弃深度笔记任务失败：{error}"))?;
-        let Some(current_phase) = current_phase else {
+        let Some((current_phase, warnings_json)) = current else {
             return Err("深度笔记任务不存在。".to_string());
         };
         if current_phase == NotePipelinePhase::Done.as_str() {
             return Err("已完成的深度笔记不能遗弃。".to_string());
         }
+        if current_phase != NotePipelinePhase::Cancelling.as_str()
+            && current_phase != NotePipelinePhase::Cancelled.as_str()
         {
-            let next_sequence: i64 = transaction
-                .query_row(
-                    "SELECT COALESCE(MAX(sequence), 0) + 1 FROM note_pipeline_events WHERE run_id = ?",
-                    params![run_id],
-                    |row| row.get(0),
-                )
-                .map_err(|error| format!("读取深度笔记事件序号失败：{error}"))?;
-            let now = now_millis_i64();
-            transaction
-                .execute(
-                    "UPDATE note_pipeline_runs
-                     SET phase = 'cancelled', error_message = 'mnemora:abandoned', updated_at = ?
-                     WHERE id = ?",
-                    params![now, run_id],
-                )
-                .map_err(|error| format!("遗弃深度笔记任务失败：{error}"))?;
-            transaction
-                .execute(
-                    "INSERT INTO note_pipeline_events (
-                        run_id, sequence, event_type, node_id, payload_json, created_at
-                     ) VALUES (?, ?, 'runAbandoned', NULL, '{}', ?)",
-                    params![run_id, next_sequence, now],
-                )
-                .map_err(|error| format!("记录深度笔记遗弃事件失败：{error}"))?;
+            transition_note_pipeline_phase_in_transaction(
+                &transaction,
+                &run_id,
+                NotePipelinePhase::Cancelling,
+                None,
+                &warnings_json,
+                None,
+                None,
+                "runAbandonRequested",
+                "{}",
+            )?;
         }
+        transition_note_pipeline_phase_in_transaction(
+            &transaction,
+            &run_id,
+            NotePipelinePhase::Cancelled,
+            None,
+            &warnings_json,
+            Some("mnemora:abandoned"),
+            None,
+            "runAbandoned",
+            "{}",
+        )?;
         transaction
             .commit()
             .map_err(|error| format!("提交深度笔记遗弃状态失败：{error}"))?;
@@ -1369,20 +1480,35 @@ impl LibraryRepository {
         }
         let mut connection = self.open_connection()?;
         let transaction = connection
-            .transaction()
+            .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| format!("开始保存深度笔记提纲失败：{error}"))?;
         let now = now_millis_i64();
-        let changed = transaction
+        let warnings_json: String = transaction
+            .query_row(
+                "SELECT warnings_json FROM note_pipeline_runs WHERE id = ?",
+                params![run_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| format!("读取深度笔记提纲状态失败：{error}"))?
+            .ok_or_else(|| "深度笔记任务不存在。".to_string())?;
+        transaction
             .execute(
-                "UPDATE note_pipeline_runs
-                 SET phase = 'awaiting_outline', outline_json = ?, error_message = NULL, updated_at = ?
-                 WHERE id = ? AND phase NOT IN ('cancelling', 'cancelled')",
-                params![outline_json, now, run_id],
+                "UPDATE note_pipeline_runs SET outline_json = ? WHERE id = ?",
+                params![outline_json, run_id],
             )
             .map_err(|error| format!("保存深度笔记提纲失败：{error}"))?;
-        if changed == 0 {
-            return Err("深度笔记任务不存在。".to_string());
-        }
+        transition_note_pipeline_phase_in_transaction(
+            &transaction,
+            &run_id,
+            NotePipelinePhase::AwaitingOutline,
+            None,
+            &warnings_json,
+            None,
+            None,
+            "outlineGenerated",
+            "{}",
+        )?;
         transaction
             .execute(
                 "DELETE FROM note_pipeline_sections WHERE run_id = ?",
@@ -1534,37 +1660,204 @@ impl LibraryRepository {
         let node_id = normalize_identifier("DAG 节点 ID", node_id)?;
         let evidence_ids_json = serde_json::to_string(evidence_ids)
             .map_err(|error| format!("序列化深度笔记 DAG 证据失败：{error}"))?;
-        let connection = self.open_connection()?;
+        let mut connection = self.open_connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| format!("开始更新深度笔记 DAG 节点失败：{error}"))?;
         let now = now_millis_i64();
-        let changed = connection
+        let current = transaction
+            .query_row(
+                "SELECT status, state_version, execution_version, lease_token,
+                        lease_owner, lease_expires_at
+                 FROM note_pipeline_nodes
+                 WHERE run_id = ? AND plan_version = ? AND node_id = ?",
+                params![run_id, i64::from(plan_version), node_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, Option<i64>>(5)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|error| format!("读取深度笔记 DAG 节点状态失败：{error}"))?
+            .ok_or_else(|| format!("深度笔记 DAG 节点不存在：{node_id}"))?;
+        let current_status = DeepNoteNodeStatus::parse(&current.0)?;
+        let target_status = DeepNoteNodeStatus::parse(status)?;
+        let worker_instance_id = current_task_instance_id();
+        let requires_lease = matches!(
+            current_status,
+            DeepNoteNodeStatus::Leased | DeepNoteNodeStatus::InProgress
+        ) && worker_instance_id.is_some();
+        if requires_lease
+            && (current.3.is_none()
+                || current.4.as_deref() != worker_instance_id.as_deref()
+                || current.5.is_some_and(|expires_at| expires_at < now))
+        {
+            return Err(format!(
+                "深度笔记 DAG 节点租约已失效，拒绝迟到 Worker：{node_id}"
+            ));
+        }
+        if current_status == target_status {
+            let changed = transaction
+                .execute(
+                    "UPDATE note_pipeline_nodes
+                     SET attempt_count = ?, evidence_ids_json = ?, output_ref = ?,
+                         validation_json = ?, error_message = ?, heartbeat_at = ?, updated_at = ?
+                     WHERE run_id = ? AND plan_version = ? AND node_id = ?
+                       AND state_version = ? AND execution_version = ?
+                       AND (? = 0 OR (lease_token = ? AND lease_owner = ?))",
+                    params![
+                        i64::from(attempt_count),
+                        evidence_ids_json,
+                        output_ref,
+                        validation_json,
+                        error_message,
+                        now,
+                        now,
+                        run_id,
+                        i64::from(plan_version),
+                        node_id,
+                        current.1,
+                        current.2,
+                        requires_lease,
+                        current.3,
+                        worker_instance_id.as_deref(),
+                    ],
+                )
+                .map_err(|error| format!("更新深度笔记 DAG 节点检查点失败：{error}"))?;
+            if changed != 1 {
+                return Err(format!(
+                    "深度笔记 DAG 节点版本已变化，拒绝迟到 Worker：{node_id}"
+                ));
+            }
+            transaction
+                .commit()
+                .map_err(|error| format!("提交深度笔记 DAG 节点检查点失败：{error}"))?;
+            return Ok(());
+        }
+        let transition = DagNodeMachine::transition_to(current_status, target_status)
+            .map_err(|error| format!("拒绝深度笔记 DAG 节点状态转换：{error}"))?;
+        if transition.next_state != target_status {
+            return Err("DAG 状态机结果与请求目标不一致，拒绝写入。".to_string());
+        }
+        let clear_lease = transition.effects.iter().any(|effect| {
+            matches!(
+                effect,
+                crate::chat::note_pipeline::node_machine::DagNodeEffect::ReleaseLease
+                    | crate::chat::note_pipeline::node_machine::DagNodeEffect::MarkSuperseded
+            )
+        });
+        let starts_lease = current_status == DeepNoteNodeStatus::Ready
+            && matches!(
+                target_status,
+                DeepNoteNodeStatus::Leased | DeepNoteNodeStatus::InProgress
+            );
+        let new_lease_token = starts_lease.then(|| Uuid::new_v4().to_string());
+        let new_lease_owner = starts_lease.then(|| {
+            worker_instance_id
+                .clone()
+                .unwrap_or_else(|| "compatibility-worker".to_string())
+        });
+        let new_lease_expires_at = starts_lease.then(|| now.saturating_add(90_000));
+        let changed = transaction
             .execute(
                 "UPDATE note_pipeline_nodes
                  SET status = ?, attempt_count = ?, evidence_ids_json = ?, output_ref = ?,
-                     validation_json = ?, error_message = ?, updated_at = ?
-                 WHERE run_id = ? AND plan_version = ? AND node_id = ?",
+                     validation_json = ?, error_message = ?, state_version = state_version + 1,
+                     lease_token = CASE WHEN ? THEN ? WHEN ? THEN NULL ELSE lease_token END,
+                     lease_owner = CASE WHEN ? THEN ? WHEN ? THEN NULL ELSE lease_owner END,
+                     lease_expires_at = CASE WHEN ? THEN ? WHEN ? THEN NULL ELSE lease_expires_at END,
+                     heartbeat_at = ?, updated_at = ?
+                 WHERE run_id = ? AND plan_version = ? AND node_id = ?
+                   AND status = ? AND state_version = ? AND execution_version = ?
+                   AND (? = 0 OR (lease_token = ? AND lease_owner = ?))",
                 params![
-                    status,
+                    target_status.as_str(),
                     i64::from(attempt_count),
                     evidence_ids_json,
                     output_ref,
                     validation_json,
                     error_message,
+                    starts_lease,
+                    new_lease_token,
+                    clear_lease,
+                    starts_lease,
+                    new_lease_owner,
+                    clear_lease,
+                    starts_lease,
+                    new_lease_expires_at,
+                    clear_lease,
+                    now,
                     now,
                     run_id,
                     i64::from(plan_version),
                     node_id,
+                    current_status.as_str(),
+                    current.1,
+                    current.2,
+                    requires_lease,
+                    current.3,
+                    worker_instance_id.as_deref(),
                 ],
             )
             .map_err(|error| format!("更新深度笔记 DAG 节点失败：{error}"))?;
         if changed == 0 {
-            return Err(format!("深度笔记 DAG 节点不存在：{node_id}"));
+            return Err(format!(
+                "深度笔记 DAG 节点状态版本已变化，拒绝迟到 Worker：{node_id}"
+            ));
         }
-        connection
+        let sequence: i64 = transaction
+            .query_row(
+                "SELECT last_event_sequence + 1 FROM note_pipeline_runs WHERE id = ?",
+                params![run_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| format!("读取深度笔记 DAG 事件序号失败：{error}"))?;
+        let run_changed = transaction
             .execute(
-                "UPDATE note_pipeline_runs SET updated_at = ? WHERE id = ?",
-                params![now, run_id],
+                "UPDATE note_pipeline_runs
+                 SET last_event_sequence = ?, heartbeat_at = ?, updated_at = ?
+                 WHERE id = ? AND last_event_sequence = ?",
+                params![sequence, now, now, run_id, sequence.saturating_sub(1)],
             )
             .map_err(|error| format!("更新深度笔记任务时间失败：{error}"))?;
+        if run_changed != 1 {
+            return Err("深度笔记 DAG 事件序号发生并发冲突。".to_string());
+        }
+        let payload = serde_json::json!({
+            "reason": transition.reason,
+            "attemptCount": attempt_count,
+            "stateVersion": current.1.saturating_add(1),
+            "executionVersion": current.2,
+        })
+        .to_string();
+        transaction
+            .execute(
+                "INSERT INTO note_pipeline_events (
+                    run_id, sequence, event_type, node_id, payload_json, created_at,
+                    command_id, from_phase, to_phase, execution_version, runtime_instance_id
+                 ) VALUES (?, ?, 'nodeStateTransition', ?, ?, ?, NULL, ?, ?, ?, ?)",
+                params![
+                    run_id,
+                    sequence,
+                    node_id,
+                    payload,
+                    now,
+                    current_status.as_str(),
+                    target_status.as_str(),
+                    current.2,
+                    worker_instance_id.as_deref(),
+                ],
+            )
+            .map_err(|error| format!("保存深度笔记 DAG 状态事件失败：{error}"))?;
+        transaction
+            .commit()
+            .map_err(|error| format!("提交深度笔记 DAG 节点状态失败：{error}"))?;
         Ok(())
     }
 
@@ -1818,29 +2111,57 @@ impl LibraryRepository {
         payload_json: &str,
     ) -> Result<u64, String> {
         let run_id = normalize_identifier("任务 ID", run_id)?;
-        let connection = self.open_connection()?;
-        let next: i64 = connection
+        let mut connection = self.open_connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| format!("开始保存深度笔记事件失败：{error}"))?;
+        let run_meta = transaction
             .query_row(
-                "SELECT COALESCE(MAX(sequence), 0) + 1 FROM note_pipeline_events WHERE run_id = ?",
+                "SELECT last_event_sequence, execution_version, runtime_instance_id
+                 FROM note_pipeline_runs WHERE id = ?",
                 params![run_id],
-                |row| row.get(0),
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                },
             )
-            .map_err(|error| format!("读取深度笔记事件序号失败：{error}"))?;
-        connection
+            .optional()
+            .map_err(|error| format!("读取深度笔记事件序号失败：{error}"))?
+            .ok_or_else(|| "深度笔记任务不存在。".to_string())?;
+        let next = run_meta.0.saturating_add(1);
+        let now = now_millis_i64();
+        transaction
             .execute(
                 "INSERT INTO note_pipeline_events (
-                    run_id, sequence, event_type, node_id, payload_json, created_at
-                 ) VALUES (?, ?, ?, ?, ?, ?)",
+                    run_id, sequence, event_type, node_id, payload_json, created_at,
+                    execution_version, runtime_instance_id
+                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 params![
                     run_id,
                     next,
                     event_type,
                     node_id,
                     payload_json,
-                    now_millis_i64()
+                    now,
+                    run_meta.1,
+                    run_meta.2,
                 ],
             )
             .map_err(|error| format!("保存深度笔记事件失败：{error}"))?;
+        transaction
+            .execute(
+                "UPDATE note_pipeline_runs
+                 SET last_event_sequence = ?, heartbeat_at = ?, updated_at = ?
+                 WHERE id = ? AND last_event_sequence = ?",
+                params![next, now, now, run_id, run_meta.0],
+            )
+            .map_err(|error| format!("推进深度笔记事件游标失败：{error}"))?;
+        transaction
+            .commit()
+            .map_err(|error| format!("提交深度笔记事件失败：{error}"))?;
         u64::try_from(next).map_err(|_| "深度笔记事件序号无效。".to_string())
     }
 
@@ -1911,19 +2232,33 @@ impl LibraryRepository {
         let run_id = normalize_identifier("任务 ID", run_id)?;
         let mut connection = self.open_connection()?;
         let transaction = connection
-            .transaction()
+            .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| format!("开始准备深度笔记恢复失败：{error}"))?;
-        let (phase, execution_version, outline_json, selected_json): (String, i64, String, String) =
-            transaction
-                .query_row(
-                    "SELECT phase, execution_version, outline_json, selected_section_ids_json
+        let (phase, execution_version, outline_json, selected_json, warnings_json): (
+            String,
+            i64,
+            String,
+            String,
+            String,
+        ) = transaction
+            .query_row(
+                "SELECT phase, execution_version, outline_json, selected_section_ids_json,
+                            warnings_json
                  FROM note_pipeline_runs WHERE id = ?",
-                    params![run_id],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-                )
-                .optional()
-                .map_err(|error| format!("读取深度笔记恢复状态失败：{error}"))?
-                .ok_or_else(|| "深度笔记任务不存在。".to_string())?;
+                params![run_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|error| format!("读取深度笔记恢复状态失败：{error}"))?
+            .ok_or_else(|| "深度笔记任务不存在。".to_string())?;
         if !matches!(phase.as_str(), "error" | "blocked" | "cancelled") {
             return Err("当前深度笔记任务不需要人工恢复。".to_string());
         }
@@ -1940,13 +2275,29 @@ impl LibraryRepository {
         } else {
             NotePipelinePhase::Drafting
         };
+        transition_note_pipeline_phase_in_transaction(
+            &transaction,
+            &run_id,
+            resume_phase,
+            None,
+            &warnings_json,
+            None,
+            None,
+            "runRetryRequested",
+            &serde_json::json!({
+                "resetFailedSections": reset_failed_sections,
+                "nextExecutionVersion": execution_version.saturating_add(1),
+            })
+            .to_string(),
+        )?;
+        let next_execution_version = execution_version.saturating_add(1);
         transaction
             .execute(
                 "UPDATE note_pipeline_runs
-                 SET phase = ?, execution_version = execution_version + 1,
-                     error_message = NULL, updated_at = ?
-                 WHERE id = ?",
-                params![resume_phase.as_str(), now, run_id],
+                 SET execution_version = ?, runtime_instance_id = NULL,
+                     error_message = NULL, heartbeat_at = ?, updated_at = ?
+                 WHERE id = ? AND execution_version = ?",
+                params![next_execution_version, now, now, run_id, execution_version],
             )
             .map_err(|error| format!("更新深度笔记恢复版本失败：{error}"))?;
         if reset_failed_sections {
@@ -1962,19 +2313,12 @@ impl LibraryRepository {
                     params![now, run_id],
                 )
                 .map_err(|error| format!("重置失败章节检查点失败：{error}"))?;
-            transaction
-                .execute(
-                    "UPDATE note_pipeline_nodes
-                     SET status = 'pending', attempt_count = 0, evidence_ids_json = '[]',
-                         output_ref = NULL, validation_json = '', error_message = NULL,
-                         updated_at = ?
-                     WHERE run_id = ? AND status IN (
-                        'failed', 'blocked', 'needs_review', 'needs_revision', 'interrupted',
-                        'needsReview', 'needsRevision'
-                     )",
-                    params![now, run_id],
-                )
-                .map_err(|error| format!("重置失败执行节点失败：{error}"))?;
+            reset_note_pipeline_nodes_for_retry_in_transaction(
+                &transaction,
+                &run_id,
+                next_execution_version,
+                now,
+            )?;
         }
         transaction
             .commit()
@@ -1999,7 +2343,7 @@ impl LibraryRepository {
             .collect::<Result<Vec<_>, _>>()?;
         let selected_json = serde_json::to_string(&selected_section_ids)
             .map_err(|error| format!("序列化章节选择失败：{error}"))?;
-        let connection = self.open_connection()?;
+        let mut connection = self.open_connection()?;
         let available = get_note_pipeline_sections_with_connection(&connection, &run_id)?;
         let available_ids = available
             .iter()
@@ -2011,17 +2355,38 @@ impl LibraryRepository {
         {
             return Err("章节选择包含提纲中不存在的 ID。".to_string());
         }
-        let changed = connection
+        let warnings_json: String = connection
+            .query_row(
+                "SELECT warnings_json FROM note_pipeline_runs WHERE id = ?",
+                params![run_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| format!("读取章节选择状态失败：{error}"))?
+            .ok_or_else(|| "深度笔记任务不存在。".to_string())?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| format!("开始保存章节选择失败：{error}"))?;
+        transaction
             .execute(
-                "UPDATE note_pipeline_runs
-                 SET phase = 'compiling', selected_section_ids_json = ?, error_message = NULL, updated_at = ?
-                 WHERE id = ? AND phase NOT IN ('cancelling', 'cancelled')",
-                params![selected_json, now_millis_i64(), run_id],
+                "UPDATE note_pipeline_runs SET selected_section_ids_json = ? WHERE id = ?",
+                params![selected_json, run_id],
             )
             .map_err(|error| format!("保存章节选择失败：{error}"))?;
-        if changed == 0 {
-            return Err("深度笔记任务不存在。".to_string());
-        }
+        transition_note_pipeline_phase_in_transaction(
+            &transaction,
+            &run_id,
+            NotePipelinePhase::Compiling,
+            None,
+            &warnings_json,
+            None,
+            None,
+            "outlineConfirmed",
+            "{}",
+        )?;
+        transaction
+            .commit()
+            .map_err(|error| format!("提交章节选择失败：{error}"))?;
         self.get_note_pipeline_run(&run_id)
     }
 
@@ -2145,42 +2510,24 @@ impl LibraryRepository {
             .transpose()?;
         let warnings_json = serde_json::to_string(warnings)
             .map_err(|error| format!("序列化深度笔记检查提示失败：{error}"))?;
-        let connection = self.open_connection()?;
-        let target_phase = phase.as_str();
-        let changed = connection
-            .execute(
-                "UPDATE note_pipeline_runs
-                 SET phase = ?, note_id = COALESCE(?, note_id), warnings_json = ?,
-                      error_message = ?, updated_at = ?
-                 WHERE id = ?
-                   AND (
-                     phase NOT IN ('cancelling', 'cancelled')
-                     OR ? IN ('cancelling', 'cancelled')
-                   )",
-                params![
-                    target_phase,
-                    note_id,
-                    warnings_json,
-                    error_message,
-                    now_millis_i64(),
-                    run_id,
-                    target_phase,
-                ],
-            )
-            .map_err(|error| format!("更新深度笔记任务状态失败：{error}"))?;
-        if changed == 0 {
-            let current = self.get_note_pipeline_run(&run_id)?;
-            if matches!(
-                current.phase,
-                NotePipelinePhase::Cancelling | NotePipelinePhase::Cancelled
-            ) && !matches!(
-                phase,
-                NotePipelinePhase::Cancelling | NotePipelinePhase::Cancelled
-            ) {
-                return Err("深度笔记任务已经进入停止状态，拒绝继续推进阶段。".to_string());
-            }
-            return Err("深度笔记任务不存在。".to_string());
-        }
+        let mut connection = self.open_connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| format!("开始更新深度笔记任务状态失败：{error}"))?;
+        transition_note_pipeline_phase_in_transaction(
+            &transaction,
+            &run_id,
+            phase,
+            note_id.as_deref(),
+            &warnings_json,
+            error_message,
+            None,
+            "runStateTransition",
+            "{}",
+        )?;
+        transaction
+            .commit()
+            .map_err(|error| format!("提交深度笔记任务状态失败：{error}"))?;
         self.get_note_pipeline_run(&run_id)
     }
 
@@ -2873,6 +3220,359 @@ impl LibraryRepository {
         Ok(changed > 0)
     }
 
+    pub fn get_agent_run_snapshot(&self, run_id: &str) -> Result<Option<AgentRunSnapshot>, String> {
+        let run_id = normalize_identifier("Agent Run ID", run_id)?;
+        let connection = self.open_connection()?;
+        let raw = connection
+            .query_row(
+                "SELECT id, conversation_id, message_id, state, activity, state_version,
+                        execution_version, runtime_instance_id, model_id, error_code,
+                        error_message, heartbeat_at, created_at, updated_at, finished_at
+                 FROM agent_runs WHERE id = ?",
+                params![run_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, i64>(5)?,
+                        row.get::<_, i64>(6)?,
+                        row.get::<_, Option<String>>(7)?,
+                        row.get::<_, String>(8)?,
+                        row.get::<_, Option<String>>(9)?,
+                        row.get::<_, Option<String>>(10)?,
+                        row.get::<_, Option<i64>>(11)?,
+                        row.get::<_, i64>(12)?,
+                        row.get::<_, i64>(13)?,
+                        row.get::<_, Option<i64>>(14)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|error| format!("读取 Agent Run 快照失败：{error}"))?;
+        let Some(raw) = raw else { return Ok(None) };
+        let mut statement = connection
+            .prepare(
+                "SELECT call_id, name, state, state_version, execution_version,
+                        approval_id, risk, result_preview, error_kind, expires_at, updated_at
+                 FROM agent_tool_calls WHERE run_id = ? ORDER BY created_at ASC, call_id ASC",
+            )
+            .map_err(|error| format!("准备 Agent Tool Call 快照查询失败：{error}"))?;
+        let rows = statement
+            .query_map(params![run_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, Option<String>>(8)?,
+                    row.get::<_, Option<i64>>(9)?,
+                    row.get::<_, i64>(10)?,
+                ))
+            })
+            .map_err(|error| format!("查询 Agent Tool Call 快照失败：{error}"))?;
+        let mut tool_calls = Vec::new();
+        for row in rows {
+            let row = row.map_err(|error| format!("读取 Agent Tool Call 快照失败：{error}"))?;
+            tool_calls.push(AgentToolCallSnapshot {
+                call_id: row.0,
+                name: row.1,
+                state: row.2,
+                state_version: u32::try_from(row.3)
+                    .map_err(|_| "Tool Call 状态版本无效。".to_string())?,
+                execution_version: u32::try_from(row.4)
+                    .map_err(|_| "Tool Call 执行版本无效。".to_string())?,
+                approval_id: row.5,
+                risk: row.6,
+                result_preview: row.7,
+                error_kind: row.8,
+                expires_at: row.9.map(i64_to_u64),
+                updated_at: i64_to_u64(row.10),
+            });
+        }
+        Ok(Some(AgentRunSnapshot {
+            id: raw.0,
+            conversation_id: raw.1,
+            message_id: raw.2,
+            state: raw.3,
+            activity: raw.4,
+            state_version: u32::try_from(raw.5)
+                .map_err(|_| "Agent Run 状态版本无效。".to_string())?,
+            execution_version: u32::try_from(raw.6)
+                .map_err(|_| "Agent Run 执行版本无效。".to_string())?,
+            runtime_instance_id: raw.7,
+            model_id: raw.8,
+            error_code: raw.9,
+            error_message: raw.10,
+            heartbeat_at: raw.11.map(i64_to_u64),
+            created_at: i64_to_u64(raw.12),
+            updated_at: i64_to_u64(raw.13),
+            finished_at: raw.14.map(i64_to_u64),
+            tool_calls,
+        }))
+    }
+
+    /// 建立 Chat Agent 的持久化运行事实，并在同一事务内完成 Created -> Running。
+    pub fn create_agent_run(
+        &self,
+        run_id: &str,
+        conversation_id: &str,
+        message_id: &str,
+        runtime_instance_id: &str,
+        model_id: &str,
+    ) -> Result<(AgentRunState, u32, u32), String> {
+        let run_id = normalize_identifier("Agent Run ID", run_id)?;
+        let conversation_id = normalize_identifier("会话 ID", conversation_id)?;
+        let message_id = normalize_identifier("消息 ID", message_id)?;
+        let runtime_instance_id = normalize_identifier("Agent 运行实例 ID", runtime_instance_id)?;
+        let model_id = model_id.trim();
+        let mut connection = self.open_connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| format!("开始创建 Agent Run 失败：{error}"))?;
+        let now = now_millis_i64();
+        transaction
+            .execute(
+                "INSERT INTO agent_runs (
+                    id, conversation_id, message_id, state, activity, state_version,
+                    execution_version, runtime_instance_id, model_id, budget_json,
+                    heartbeat_at, created_at, updated_at
+                 ) VALUES (?, ?, ?, 'created', 'idle', 0, 1, ?, ?, '{}', ?, ?, ?)",
+                params![
+                    run_id,
+                    conversation_id,
+                    message_id,
+                    runtime_instance_id,
+                    model_id,
+                    now,
+                    now,
+                    now,
+                ],
+            )
+            .map_err(|error| {
+                if is_unique_constraint(&error) {
+                    "相同 Run ID 的 Agent 运行已经存在。".to_string()
+                } else {
+                    format!("创建 Agent Run 失败：{error}")
+                }
+            })?;
+        let command_id = format!("agent-start:{run_id}");
+        let snapshot = transition_agent_run_in_transaction(
+            &transaction,
+            &run_id,
+            AgentRunEvent::StartRequested,
+            Some(&command_id),
+            "{}",
+            None,
+        )?;
+        transaction
+            .commit()
+            .map_err(|error| format!("提交 Agent Run 创建失败：{error}"))?;
+        Ok(snapshot)
+    }
+
+    /// 通过 Agent 状态机和 state_version CAS 推进运行，并原子追加事件。
+    pub fn transition_agent_run(
+        &self,
+        run_id: &str,
+        event: AgentRunEvent,
+        command_id: Option<&str>,
+        payload_json: &str,
+        error_message: Option<&str>,
+    ) -> Result<(AgentRunState, u32, u32), String> {
+        let run_id = normalize_identifier("Agent Run ID", run_id)?;
+        let command_id = command_id
+            .map(|value| normalize_agent_entity_id("Agent 命令 ID", value))
+            .transpose()?;
+        let mut connection = self.open_connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| format!("开始更新 Agent Run 失败：{error}"))?;
+        let snapshot = transition_agent_run_in_transaction(
+            &transaction,
+            &run_id,
+            event,
+            command_id.as_deref(),
+            payload_json,
+            error_message,
+        )?;
+        transaction
+            .commit()
+            .map_err(|error| format!("提交 Agent Run 状态失败：{error}"))?;
+        Ok(snapshot)
+    }
+
+    /// 持久化单个 Tool Call，并由纯状态机决定首个可执行状态。
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_agent_tool_call(
+        &self,
+        run_id: &str,
+        call_id: &str,
+        name: &str,
+        risk: &str,
+        arguments_hash: &str,
+        approval_id: Option<&str>,
+        expires_at: Option<u64>,
+    ) -> Result<(ToolCallState, u32, u32), String> {
+        let run_id = normalize_identifier("Agent Run ID", run_id)?;
+        let call_id = normalize_agent_entity_id("Tool Call ID", call_id)?;
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("Tool 名称不能为空。".to_string());
+        }
+        let approval_id = approval_id
+            .map(|value| normalize_agent_entity_id("Approval ID", value))
+            .transpose()?;
+        let mut connection = self.open_connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| format!("开始创建 Tool Call 失败：{error}"))?;
+        let (run_state, execution_version): (String, i64) = transaction
+            .query_row(
+                "SELECT state, execution_version FROM agent_runs WHERE id = ?",
+                params![run_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(|error| format!("读取 Tool Call 所属 Agent Run 失败：{error}"))?
+            .ok_or_else(|| "Agent Run 不存在。".to_string())?;
+        if !matches!(
+            AgentRunState::parse(&run_state)?,
+            AgentRunState::Running | AgentRunState::Waiting
+        ) {
+            return Err("Agent Run 已停止，不能创建新的 Tool Call。".to_string());
+        }
+        let now = now_millis_i64();
+        transaction
+            .execute(
+                "INSERT INTO agent_tool_calls (
+                    call_id, run_id, name, state, state_version, execution_version,
+                    approval_id, risk, arguments_hash, expires_at, created_at, updated_at
+                 ) VALUES (?, ?, ?, 'proposed', 0, ?, ?, ?, ?, ?, ?, ?)",
+                params![
+                    call_id,
+                    run_id,
+                    name,
+                    execution_version,
+                    approval_id,
+                    risk,
+                    arguments_hash,
+                    expires_at.map(u64_to_i64).transpose()?,
+                    now,
+                    now,
+                ],
+            )
+            .map_err(|error| {
+                if is_unique_constraint(&error) {
+                    "Tool Call 或 Approval ID 已存在。".to_string()
+                } else {
+                    format!("创建 Tool Call 失败：{error}")
+                }
+            })?;
+        let initial_event = if approval_id.is_some() {
+            ToolCallEvent::ApprovalRequired
+        } else {
+            ToolCallEvent::Enqueued
+        };
+        let snapshot = transition_agent_tool_call_in_transaction(
+            &transaction,
+            &run_id,
+            &call_id,
+            initial_event,
+            u32::try_from(execution_version).map_err(|_| "Tool Call 执行版本无效。".to_string())?,
+            Some(0),
+            None,
+            None,
+        )?;
+        transaction
+            .commit()
+            .map_err(|error| format!("提交 Tool Call 创建失败：{error}"))?;
+        Ok(snapshot)
+    }
+
+    /// Tool Call 状态转换必须同时匹配执行世代和可选状态版本。
+    #[allow(clippy::too_many_arguments)]
+    pub fn transition_agent_tool_call(
+        &self,
+        run_id: &str,
+        call_id: &str,
+        event: ToolCallEvent,
+        expected_execution_version: u32,
+        expected_state_version: Option<u32>,
+        result_preview: Option<&str>,
+        error_kind: Option<&str>,
+    ) -> Result<(ToolCallState, u32, u32), String> {
+        let run_id = normalize_identifier("Agent Run ID", run_id)?;
+        let call_id = normalize_agent_entity_id("Tool Call ID", call_id)?;
+        let mut connection = self.open_connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| format!("开始更新 Tool Call 失败：{error}"))?;
+        let snapshot = transition_agent_tool_call_in_transaction(
+            &transaction,
+            &run_id,
+            &call_id,
+            event,
+            expected_execution_version,
+            expected_state_version,
+            result_preview,
+            error_kind,
+        )?;
+        transaction
+            .commit()
+            .map_err(|error| format!("提交 Tool Call 状态失败：{error}"))?;
+        Ok(snapshot)
+    }
+
+    /// 应用重启时不存在可继续运行的 Chat Worker；所有非终态 Run 和审批安全失效。
+    pub fn recover_stale_agent_runs(&self) -> Result<usize, String> {
+        let mut connection = self.open_connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| format!("开始恢复过期 Agent Run 失败：{error}"))?;
+        let mut statement = transaction
+            .prepare(
+                "SELECT id, state FROM agent_runs
+                 WHERE state IN ('created', 'running', 'waiting', 'stopping')",
+            )
+            .map_err(|error| format!("准备过期 Agent Run 查询失败：{error}"))?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|error| format!("查询过期 Agent Run 失败：{error}"))?;
+        let mut stale_runs = Vec::new();
+        for row in rows {
+            stale_runs.push(row.map_err(|error| format!("读取过期 Agent Run 失败：{error}"))?);
+        }
+        drop(statement);
+        for (run_id, state) in &stale_runs {
+            let event = if AgentRunState::parse(state)? == AgentRunState::Stopping {
+                AgentRunEvent::WorkerStopped
+            } else {
+                AgentRunEvent::PanicDetected
+            };
+            transition_agent_run_in_transaction(
+                &transaction,
+                run_id,
+                event,
+                None,
+                r#"{"reason":"applicationRestart"}"#,
+                Some("应用重启，旧 Agent Worker 与未决审批已失效。"),
+            )?;
+        }
+        transaction
+            .commit()
+            .map_err(|error| format!("提交过期 Agent Run 恢复失败：{error}"))?;
+        Ok(stale_runs.len())
+    }
+
     pub(crate) fn open_connection(&self) -> Result<Connection, String> {
         fs::create_dir_all(&self.root_directory)
             .map_err(|error| format!("创建文献库目录失败：{error}"))?;
@@ -3155,6 +3855,737 @@ impl LibraryRepository {
             .optional()
             .map_err(|error| format!("读取文献笔记失败：{error}"))
     }
+}
+
+fn recover_expired_note_pipeline_nodes_in_transaction(
+    transaction: &Transaction<'_>,
+    run_id: &str,
+    runtime_instance_id: &str,
+    now: i64,
+) -> Result<(), String> {
+    let mut statement = transaction
+        .prepare(
+            "SELECT node_id, status, state_version, execution_version
+             FROM note_pipeline_nodes
+             WHERE run_id = ? AND status IN ('leased', 'inProgress', 'in_progress')
+               AND lease_expires_at IS NOT NULL AND lease_expires_at < ?",
+        )
+        .map_err(|error| format!("准备过期深度笔记 DAG 租约查询失败：{error}"))?;
+    let rows = statement
+        .query_map(params![run_id, now], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })
+        .map_err(|error| format!("查询过期深度笔记 DAG 租约失败：{error}"))?;
+    let mut expired = Vec::new();
+    for row in rows {
+        expired.push(row.map_err(|error| format!("读取过期深度笔记 DAG 租约失败：{error}"))?);
+    }
+    drop(statement);
+
+    for (node_id, raw_status, state_version, execution_version) in expired {
+        let current = DeepNoteNodeStatus::parse(&raw_status)?;
+        let transition = DagNodeMachine::transition(current, &DagNodeEvent::LeaseExpired, &())
+            .map_err(|error| format!("恢复过期 DAG 租约被状态机拒绝：{error}"))?;
+        let changed = transaction
+            .execute(
+                "UPDATE note_pipeline_nodes
+                 SET status = ?, state_version = state_version + 1,
+                     lease_token = NULL, lease_owner = NULL, lease_expires_at = NULL,
+                     heartbeat_at = NULL, error_message = '节点租约过期，等待安全恢复',
+                     updated_at = ?
+                 WHERE run_id = ? AND node_id = ? AND status = ?
+                   AND state_version = ? AND execution_version = ?",
+                params![
+                    transition.next_state.as_str(),
+                    now,
+                    run_id,
+                    node_id,
+                    raw_status,
+                    state_version,
+                    execution_version,
+                ],
+            )
+            .map_err(|error| format!("恢复过期深度笔记 DAG 租约失败：{error}"))?;
+        if changed != 1 {
+            return Err(format!("DAG 节点租约恢复发生版本冲突：{node_id}"));
+        }
+        let sequence: i64 = transaction
+            .query_row(
+                "SELECT last_event_sequence + 1 FROM note_pipeline_runs WHERE id = ?",
+                params![run_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| format!("读取 DAG 租约恢复事件序号失败：{error}"))?;
+        transaction
+            .execute(
+                "UPDATE note_pipeline_runs SET last_event_sequence = ? WHERE id = ?",
+                params![sequence, run_id],
+            )
+            .map_err(|error| format!("更新 DAG 租约恢复事件序号失败：{error}"))?;
+        let payload = serde_json::json!({
+            "reason": transition.reason,
+            "stateVersion": state_version.saturating_add(1),
+            "executionVersion": execution_version,
+        })
+        .to_string();
+        transaction
+            .execute(
+                "INSERT INTO note_pipeline_events (
+                    run_id, sequence, event_type, node_id, payload_json, created_at,
+                    command_id, from_phase, to_phase, execution_version, runtime_instance_id
+                 ) VALUES (?, ?, 'nodeLeaseExpired', ?, ?, ?, NULL, ?, ?, ?, ?)",
+                params![
+                    run_id,
+                    sequence,
+                    node_id,
+                    payload,
+                    now,
+                    current.as_str(),
+                    transition.next_state.as_str(),
+                    execution_version,
+                    runtime_instance_id,
+                ],
+            )
+            .map_err(|error| format!("保存 DAG 租约恢复事件失败：{error}"))?;
+    }
+    Ok(())
+}
+
+fn reset_note_pipeline_nodes_for_retry_in_transaction(
+    transaction: &Transaction<'_>,
+    run_id: &str,
+    next_execution_version: i64,
+    now: i64,
+) -> Result<(), String> {
+    let mut statement = transaction
+        .prepare(
+            "SELECT node_id, status, state_version, execution_version
+             FROM note_pipeline_nodes
+             WHERE run_id = ? AND status IN (
+                'failed', 'blocked', 'needs_review', 'needs_revision', 'interrupted',
+                'needsReview', 'needsRevision'
+             )",
+        )
+        .map_err(|error| format!("准备重试 DAG 节点查询失败：{error}"))?;
+    let rows = statement
+        .query_map(params![run_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })
+        .map_err(|error| format!("查询重试 DAG 节点失败：{error}"))?;
+    let mut nodes = Vec::new();
+    for row in rows {
+        nodes.push(row.map_err(|error| format!("读取重试 DAG 节点失败：{error}"))?);
+    }
+    drop(statement);
+
+    for (node_id, raw_status, state_version, execution_version) in nodes {
+        let current = DeepNoteNodeStatus::parse(&raw_status)?;
+        let transition = DagNodeMachine::transition_to(current, DeepNoteNodeStatus::Pending)
+            .map_err(|error| format!("重试 DAG 节点被状态机拒绝：{error}"))?;
+        let changed = transaction
+            .execute(
+                "UPDATE note_pipeline_nodes
+                 SET status = ?, attempt_count = 0, evidence_ids_json = '[]',
+                     output_ref = NULL, validation_json = '', error_message = NULL,
+                     state_version = state_version + 1, execution_version = ?,
+                     lease_token = NULL, lease_owner = NULL, lease_expires_at = NULL,
+                     heartbeat_at = NULL, updated_at = ?
+                 WHERE run_id = ? AND node_id = ? AND status = ?
+                   AND state_version = ? AND execution_version = ?",
+                params![
+                    transition.next_state.as_str(),
+                    next_execution_version,
+                    now,
+                    run_id,
+                    node_id,
+                    raw_status,
+                    state_version,
+                    execution_version,
+                ],
+            )
+            .map_err(|error| format!("重置失败执行节点失败：{error}"))?;
+        if changed != 1 {
+            return Err(format!("重试 DAG 节点发生版本冲突：{node_id}"));
+        }
+        let sequence: i64 = transaction
+            .query_row(
+                "SELECT last_event_sequence + 1 FROM note_pipeline_runs WHERE id = ?",
+                params![run_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| format!("读取 DAG 重试事件序号失败：{error}"))?;
+        transaction
+            .execute(
+                "UPDATE note_pipeline_runs SET last_event_sequence = ? WHERE id = ?",
+                params![sequence, run_id],
+            )
+            .map_err(|error| format!("更新 DAG 重试事件序号失败：{error}"))?;
+        let payload = serde_json::json!({
+            "reason": transition.reason,
+            "stateVersion": state_version.saturating_add(1),
+            "previousExecutionVersion": execution_version,
+            "executionVersion": next_execution_version,
+        })
+        .to_string();
+        transaction
+            .execute(
+                "INSERT INTO note_pipeline_events (
+                    run_id, sequence, event_type, node_id, payload_json, created_at,
+                    command_id, from_phase, to_phase, execution_version, runtime_instance_id
+                 ) VALUES (?, ?, 'nodeRetryScheduled', ?, ?, ?, NULL, ?, ?, ?, NULL)",
+                params![
+                    run_id,
+                    sequence,
+                    node_id,
+                    payload,
+                    now,
+                    current.as_str(),
+                    transition.next_state.as_str(),
+                    next_execution_version,
+                ],
+            )
+            .map_err(|error| format!("保存 DAG 重试事件失败：{error}"))?;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn transition_note_pipeline_phase_in_transaction(
+    transaction: &Transaction<'_>,
+    run_id: &str,
+    target: NotePipelinePhase,
+    note_id: Option<&str>,
+    warnings_json: &str,
+    error_message: Option<&str>,
+    command_id: Option<&str>,
+    event_type: &str,
+    payload_json: &str,
+) -> Result<(), String> {
+    let current = transaction
+        .query_row(
+            "SELECT phase, state_version, execution_version, runtime_instance_id,
+                    last_event_sequence
+             FROM note_pipeline_runs WHERE id = ?",
+            params![run_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, i64>(4)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|error| format!("读取深度笔记状态快照失败：{error}"))?
+        .ok_or_else(|| "深度笔记任务不存在。".to_string())?;
+    let current_phase = NotePipelinePhase::parse(&current.0)?;
+    if let Some(command_id) = command_id {
+        let handled = transaction
+            .query_row(
+                "SELECT 1 FROM note_pipeline_events WHERE run_id = ? AND command_id = ?",
+                params![run_id, command_id],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(|error| format!("检查深度笔记幂等命令失败：{error}"))?
+            .is_some();
+        if handled {
+            return Ok(());
+        }
+    }
+    let worker_instance_id = current_task_instance_id();
+    if let Some(worker_instance_id) = worker_instance_id.as_deref() {
+        if current.3.as_deref() != Some(worker_instance_id) {
+            return Err("深度笔记运行实例已变化，拒绝迟到 Worker 状态写入。".to_string());
+        }
+    }
+    let transition = DeepNoteRunMachine::transition_to(current_phase, target)
+        .map_err(|error| format!("拒绝深度笔记状态转换：{error}"))?;
+    let now = now_millis_i64();
+
+    // 幂等状态写入只合并伴随数据，不伪造第二个状态事件。
+    if transition.next_state == current_phase {
+        let changed = transaction
+            .execute(
+                "UPDATE note_pipeline_runs
+                 SET note_id = COALESCE(?, note_id), warnings_json = ?, error_message = ?,
+                     heartbeat_at = ?, updated_at = ?
+                 WHERE id = ? AND phase = ? AND state_version = ?
+                   AND (? IS NULL OR runtime_instance_id = ?)",
+                params![
+                    note_id,
+                    warnings_json,
+                    error_message,
+                    now,
+                    now,
+                    run_id,
+                    current.0,
+                    current.1,
+                    worker_instance_id.as_deref(),
+                    worker_instance_id.as_deref(),
+                ],
+            )
+            .map_err(|error| format!("更新深度笔记幂等状态失败：{error}"))?;
+        if changed != 1 {
+            return Err("深度笔记状态版本已变化，拒绝并发幂等写入。".to_string());
+        }
+        return Ok(());
+    }
+
+    let sequence = current.4.saturating_add(1);
+    let changed = transaction
+        .execute(
+            "UPDATE note_pipeline_runs
+             SET phase = ?, note_id = COALESCE(?, note_id), warnings_json = ?,
+                 error_message = ?, state_version = state_version + 1,
+                 heartbeat_at = ?, last_event_sequence = ?, updated_at = ?
+             WHERE id = ? AND phase = ? AND state_version = ? AND execution_version = ?
+               AND (? IS NULL OR runtime_instance_id = ?)",
+            params![
+                transition.next_state.as_str(),
+                note_id,
+                warnings_json,
+                error_message,
+                now,
+                sequence,
+                now,
+                run_id,
+                current.0,
+                current.1,
+                current.2,
+                worker_instance_id.as_deref(),
+                worker_instance_id.as_deref(),
+            ],
+        )
+        .map_err(|error| format!("更新深度笔记任务状态失败：{error}"))?;
+    if changed != 1 {
+        return Err("深度笔记状态版本已变化，拒绝迟到或并发写入。".to_string());
+    }
+    let event_payload = serde_json::json!({
+        "reason": transition.reason,
+        "payload": serde_json::from_str::<serde_json::Value>(payload_json)
+            .unwrap_or_else(|_| serde_json::Value::String(payload_json.to_string())),
+    })
+    .to_string();
+    transaction
+        .execute(
+            "INSERT INTO note_pipeline_events (
+                run_id, sequence, event_type, node_id, payload_json, created_at,
+                command_id, from_phase, to_phase, execution_version, runtime_instance_id
+             ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)",
+            params![
+                run_id,
+                sequence,
+                event_type,
+                event_payload,
+                now,
+                command_id,
+                current_phase.as_str(),
+                transition.next_state.as_str(),
+                current.2,
+                current.3,
+            ],
+        )
+        .map_err(|error| {
+            if is_unique_constraint(&error) && command_id.is_some() {
+                "深度笔记命令已处理。".to_string()
+            } else {
+                format!("保存深度笔记状态事件失败：{error}")
+            }
+        })?;
+    Ok(())
+}
+
+fn agent_run_event_name(event: AgentRunEvent) -> &'static str {
+    match event {
+        AgentRunEvent::StartRequested => "startRequested",
+        AgentRunEvent::ModelCallStarted => "modelCallStarted",
+        AgentRunEvent::ApprovalRequired => "approvalRequired",
+        AgentRunEvent::ApprovalsResolved => "approvalsResolved",
+        AgentRunEvent::ToolBatchStarted => "toolBatchStarted",
+        AgentRunEvent::ToolBatchCompleted => "toolBatchCompleted",
+        AgentRunEvent::UserInputRequired => "userInputRequired",
+        AgentRunEvent::FinalizationStarted => "finalizationStarted",
+        AgentRunEvent::FinalizationCompleted => "finalizationCompleted",
+        AgentRunEvent::CancelRequested => "cancelRequested",
+        AgentRunEvent::WorkerStopped => "workerStopped",
+        AgentRunEvent::BudgetExceeded => "budgetExceeded",
+        AgentRunEvent::PanicDetected => "executionFailed",
+    }
+}
+
+fn agent_activity_for_event(event: AgentRunEvent, next: AgentRunState) -> &'static str {
+    if matches!(
+        next,
+        AgentRunState::Completed
+            | AgentRunState::Stopped
+            | AgentRunState::Failed
+            | AgentRunState::BudgetExhausted
+            | AgentRunState::Stopping
+    ) {
+        return "idle";
+    }
+    match event {
+        AgentRunEvent::StartRequested => "preparing",
+        AgentRunEvent::ModelCallStarted => "callingModel",
+        AgentRunEvent::ApprovalRequired => "waitingApproval",
+        AgentRunEvent::ApprovalsResolved => "executingTools",
+        AgentRunEvent::ToolBatchStarted => "executingTools",
+        AgentRunEvent::ToolBatchCompleted => "callingModel",
+        AgentRunEvent::UserInputRequired => "waitingUser",
+        AgentRunEvent::FinalizationStarted => "finalizing",
+        _ => "idle",
+    }
+}
+
+fn transition_agent_run_in_transaction(
+    transaction: &Transaction<'_>,
+    run_id: &str,
+    event: AgentRunEvent,
+    command_id: Option<&str>,
+    payload_json: &str,
+    error_message: Option<&str>,
+) -> Result<(AgentRunState, u32, u32), String> {
+    let current = transaction
+        .query_row(
+            "SELECT state, state_version, execution_version
+             FROM agent_runs WHERE id = ?",
+            params![run_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|error| format!("读取 Agent Run 状态快照失败：{error}"))?
+        .ok_or_else(|| "Agent Run 不存在。".to_string())?;
+    let current_state = AgentRunState::parse(&current.0)?;
+    let current_state_version =
+        u32::try_from(current.1).map_err(|_| "Agent Run 状态版本无效。".to_string())?;
+    let execution_version =
+        u32::try_from(current.2).map_err(|_| "Agent Run 执行版本无效。".to_string())?;
+
+    if let Some(command_id) = command_id {
+        let handled = transaction
+            .query_row(
+                "SELECT 1 FROM agent_run_events WHERE run_id = ? AND command_id = ?",
+                params![run_id, command_id],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(|error| format!("检查 Agent 幂等命令失败：{error}"))?
+            .is_some();
+        if handled {
+            return Ok((current_state, execution_version, current_state_version));
+        }
+    }
+
+    let transition = AgentRunMachine::transition(current_state, &event, &())
+        .map_err(|error| format!("拒绝 Agent Run 状态转换：{error}"))?;
+    let now = now_millis_i64();
+    let terminal = matches!(
+        transition.next_state,
+        AgentRunState::Completed
+            | AgentRunState::Stopped
+            | AgentRunState::Failed
+            | AgentRunState::BudgetExhausted
+    );
+    let activity = agent_activity_for_event(event, transition.next_state);
+    let changed = transaction
+        .execute(
+            "UPDATE agent_runs
+             SET state = ?, activity = ?, state_version = state_version + 1,
+                 error_code = ?, error_message = ?, heartbeat_at = ?, updated_at = ?,
+                 finished_at = CASE WHEN ? THEN ? ELSE NULL END,
+                 runtime_instance_id = CASE WHEN ? THEN NULL ELSE runtime_instance_id END
+             WHERE id = ? AND state = ? AND state_version = ? AND execution_version = ?",
+            params![
+                transition.next_state.as_str(),
+                activity,
+                (transition.next_state == AgentRunState::Failed).then_some("agentExecutionFailed"),
+                error_message,
+                now,
+                now,
+                terminal,
+                now,
+                terminal,
+                run_id,
+                current.0,
+                current.1,
+                current.2,
+            ],
+        )
+        .map_err(|error| format!("更新 Agent Run 状态失败：{error}"))?;
+    if changed != 1 {
+        return Err("Agent Run 状态版本已变化，拒绝迟到或并发写入。".to_string());
+    }
+    let sequence: i64 = transaction
+        .query_row(
+            "SELECT COALESCE(MAX(sequence), 0) + 1 FROM agent_run_events WHERE run_id = ?",
+            params![run_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("读取 Agent Run 事件序号失败：{error}"))?;
+    let event_payload = serde_json::json!({
+        "reason": transition.reason,
+        "executionVersion": execution_version,
+        "stateVersion": current_state_version.saturating_add(1),
+        "payload": serde_json::from_str::<serde_json::Value>(payload_json)
+            .unwrap_or_else(|_| serde_json::Value::String(payload_json.to_string())),
+    })
+    .to_string();
+    transaction
+        .execute(
+            "INSERT INTO agent_run_events (
+                run_id, sequence, command_id, event_type, from_state, to_state,
+                payload_json, created_at
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            params![
+                run_id,
+                sequence,
+                command_id,
+                agent_run_event_name(event),
+                current_state.as_str(),
+                transition.next_state.as_str(),
+                event_payload,
+                now,
+            ],
+        )
+        .map_err(|error| {
+            if is_unique_constraint(&error) && command_id.is_some() {
+                "Agent 命令已处理。".to_string()
+            } else {
+                format!("保存 Agent Run 事件失败：{error}")
+            }
+        })?;
+
+    if transition
+        .effects
+        .contains(&AgentRunEffect::ClosePendingApprovals)
+    {
+        cancel_agent_tool_calls_in_transaction(transaction, run_id)?;
+    }
+    Ok((
+        transition.next_state,
+        execution_version,
+        current_state_version.saturating_add(1),
+    ))
+}
+
+fn tool_call_event_name(event: ToolCallEvent) -> &'static str {
+    match event {
+        ToolCallEvent::ApprovalRequired => "toolApprovalRequired",
+        ToolCallEvent::Approved => "toolApproved",
+        ToolCallEvent::Rejected => "toolRejected",
+        ToolCallEvent::Enqueued => "toolEnqueued",
+        ToolCallEvent::Started => "toolStarted",
+        ToolCallEvent::Succeeded => "toolSucceeded",
+        ToolCallEvent::Failed => "toolFailed",
+        ToolCallEvent::Cancelled => "toolCancelled",
+        ToolCallEvent::TimedOut => "toolTimedOut",
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn transition_agent_tool_call_in_transaction(
+    transaction: &Transaction<'_>,
+    run_id: &str,
+    call_id: &str,
+    event: ToolCallEvent,
+    expected_execution_version: u32,
+    expected_state_version: Option<u32>,
+    result_preview: Option<&str>,
+    error_kind: Option<&str>,
+) -> Result<(ToolCallState, u32, u32), String> {
+    let current = transaction
+        .query_row(
+            "SELECT t.state, t.state_version, t.execution_version, t.expires_at,
+                    t.lease_token, r.state
+             FROM agent_tool_calls t
+             JOIN agent_runs r ON r.id = t.run_id
+             WHERE t.run_id = ? AND t.call_id = ?",
+            params![run_id, call_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, Option<i64>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, String>(5)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|error| format!("读取 Tool Call 状态失败：{error}"))?
+        .ok_or_else(|| "Tool Call 不存在。".to_string())?;
+    let current_state = ToolCallState::parse(&current.0)?;
+    let current_state_version =
+        u32::try_from(current.1).map_err(|_| "Tool Call 状态版本无效。".to_string())?;
+    let execution_version =
+        u32::try_from(current.2).map_err(|_| "Tool Call 执行版本无效。".to_string())?;
+    if execution_version != expected_execution_version {
+        return Err("Tool Call 执行世代已变化，拒绝迟到 Worker。".to_string());
+    }
+    if expected_state_version.is_some_and(|expected| expected != current_state_version) {
+        return Err("Tool Call 状态版本已变化，拒绝重复审批或并发写入。".to_string());
+    }
+    let agent_state = AgentRunState::parse(&current.5)?;
+    let now = now_millis_i64();
+    match event {
+        ToolCallEvent::Approved => {
+            if agent_state != AgentRunState::Waiting {
+                return Err("Agent 已不再等待审批，旧审批不能生效。".to_string());
+            }
+            if current.3.is_some_and(|expires_at| expires_at <= now) {
+                return Err("工具审批已经过期。".to_string());
+            }
+        }
+        ToolCallEvent::Enqueued | ToolCallEvent::Started => {
+            if agent_state != AgentRunState::Running {
+                return Err("Agent 未处于运行状态，Tool Call 不能开始。".to_string());
+            }
+        }
+        _ => {}
+    }
+    let transition = ToolCallMachine::transition(current_state, &event, &())
+        .map_err(|error| format!("拒绝 Tool Call 状态转换：{error}"))?;
+    let terminal = matches!(
+        transition.next_state,
+        ToolCallState::Completed
+            | ToolCallState::Rejected
+            | ToolCallState::Failed
+            | ToolCallState::Cancelled
+            | ToolCallState::TimedOut
+    );
+    let next_lease_token = if transition.next_state == ToolCallState::Running {
+        Some(Uuid::new_v4().to_string())
+    } else if terminal {
+        None
+    } else {
+        current.4
+    };
+    let preview = result_preview.map(|value| value.chars().take(2_000).collect::<String>());
+    let changed = transaction
+        .execute(
+            "UPDATE agent_tool_calls
+             SET state = ?, state_version = state_version + 1, lease_token = ?,
+                 result_preview = COALESCE(?, result_preview), error_kind = ?, updated_at = ?
+             WHERE run_id = ? AND call_id = ? AND state = ?
+               AND state_version = ? AND execution_version = ?",
+            params![
+                transition.next_state.as_str(),
+                next_lease_token,
+                preview,
+                error_kind,
+                now,
+                run_id,
+                call_id,
+                current.0,
+                current.1,
+                current.2,
+            ],
+        )
+        .map_err(|error| format!("更新 Tool Call 状态失败：{error}"))?;
+    if changed != 1 {
+        return Err("Tool Call 状态版本已变化，拒绝迟到或并发写入。".to_string());
+    }
+    let sequence: i64 = transaction
+        .query_row(
+            "SELECT COALESCE(MAX(sequence), 0) + 1 FROM agent_run_events WHERE run_id = ?",
+            params![run_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("读取 Tool Call 事件序号失败：{error}"))?;
+    let payload = serde_json::json!({
+        "callId": call_id,
+        "event": tool_call_event_name(event),
+        "fromState": current_state.as_str(),
+        "toState": transition.next_state.as_str(),
+        "stateVersion": current_state_version.saturating_add(1),
+        "executionVersion": execution_version,
+        "errorKind": error_kind,
+    })
+    .to_string();
+    transaction
+        .execute(
+            "INSERT INTO agent_run_events (
+                run_id, sequence, command_id, event_type, from_state, to_state,
+                payload_json, created_at
+             ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?)",
+            params![
+                run_id,
+                sequence,
+                tool_call_event_name(event),
+                agent_state.as_str(),
+                agent_state.as_str(),
+                payload,
+                now,
+            ],
+        )
+        .map_err(|error| format!("保存 Tool Call 状态事件失败：{error}"))?;
+    Ok((
+        transition.next_state,
+        execution_version,
+        current_state_version.saturating_add(1),
+    ))
+}
+
+fn cancel_agent_tool_calls_in_transaction(
+    transaction: &Transaction<'_>,
+    run_id: &str,
+) -> Result<(), String> {
+    let mut statement = transaction
+        .prepare(
+            "SELECT call_id, execution_version, state_version
+             FROM agent_tool_calls
+             WHERE run_id = ? AND state IN (
+                'proposed', 'awaitingApproval', 'approved', 'queued', 'running'
+             )",
+        )
+        .map_err(|error| format!("准备待取消 Tool Call 查询失败：{error}"))?;
+    let rows = statement
+        .query_map(params![run_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })
+        .map_err(|error| format!("查询待取消 Tool Call 失败：{error}"))?;
+    let mut calls = Vec::new();
+    for row in rows {
+        calls.push(row.map_err(|error| format!("读取待取消 Tool Call 失败：{error}"))?);
+    }
+    drop(statement);
+    for (call_id, execution_version, state_version) in calls {
+        transition_agent_tool_call_in_transaction(
+            transaction,
+            run_id,
+            &call_id,
+            ToolCallEvent::Cancelled,
+            u32::try_from(execution_version).map_err(|_| "Tool Call 执行版本无效。".to_string())?,
+            Some(u32::try_from(state_version).map_err(|_| "Tool Call 状态版本无效。".to_string())?),
+            Some("Agent 运行已停止。"),
+            Some("agentCancelled"),
+        )?;
+    }
+    Ok(())
 }
 
 fn migrate(connection: &Connection) -> Result<(), String> {
@@ -3753,6 +5184,110 @@ fn migrate(connection: &Connection) -> Result<(), String> {
             )
             .map_err(|error| format!("升级深度笔记取消状态结构失败：{error}"))?;
     }
+    // v11：统一状态机运行元数据、DAG 租约和状态事件信封。
+    // 这些列全部带兼容默认值，旧任务可以继续读取；迁移同时回填已有事件序号和心跳。
+    if version <= 10 {
+        connection
+            .execute_batch(
+                "BEGIN IMMEDIATE;
+                 ALTER TABLE note_pipeline_runs ADD COLUMN state_version INTEGER NOT NULL DEFAULT 0;
+                 ALTER TABLE note_pipeline_runs ADD COLUMN runtime_instance_id TEXT;
+                 ALTER TABLE note_pipeline_runs ADD COLUMN heartbeat_at INTEGER;
+                 ALTER TABLE note_pipeline_runs ADD COLUMN last_event_sequence INTEGER NOT NULL DEFAULT 0;
+                 ALTER TABLE note_pipeline_nodes ADD COLUMN state_version INTEGER NOT NULL DEFAULT 0;
+                 ALTER TABLE note_pipeline_nodes ADD COLUMN execution_version INTEGER NOT NULL DEFAULT 1;
+                 ALTER TABLE note_pipeline_nodes ADD COLUMN lease_token TEXT;
+                 ALTER TABLE note_pipeline_nodes ADD COLUMN lease_owner TEXT;
+                 ALTER TABLE note_pipeline_nodes ADD COLUMN lease_expires_at INTEGER;
+                 ALTER TABLE note_pipeline_nodes ADD COLUMN heartbeat_at INTEGER;
+                 ALTER TABLE note_pipeline_events ADD COLUMN command_id TEXT;
+                 ALTER TABLE note_pipeline_events ADD COLUMN from_phase TEXT;
+                 ALTER TABLE note_pipeline_events ADD COLUMN to_phase TEXT;
+                 ALTER TABLE note_pipeline_events ADD COLUMN execution_version INTEGER NOT NULL DEFAULT 1;
+                 ALTER TABLE note_pipeline_events ADD COLUMN runtime_instance_id TEXT;
+                 UPDATE note_pipeline_runs
+                 SET heartbeat_at = updated_at,
+                     last_event_sequence = COALESCE((
+                         SELECT MAX(sequence)
+                         FROM note_pipeline_events
+                         WHERE note_pipeline_events.run_id = note_pipeline_runs.id
+                     ), 0);
+                 CREATE UNIQUE INDEX IF NOT EXISTS note_pipeline_event_command
+                    ON note_pipeline_events(run_id, command_id)
+                    WHERE command_id IS NOT NULL;
+                 CREATE INDEX IF NOT EXISTS note_pipeline_nodes_lease
+                    ON note_pipeline_nodes(run_id, plan_version, status, lease_expires_at);
+                 PRAGMA user_version = 11;
+                 COMMIT;",
+            )
+            .map_err(|error| format!("升级统一状态机元数据结构失败：{error}"))?;
+    }
+    // v12：Chat Agent 与 Tool Call 运行期事实表。历史消息继续保存有界快照，
+    // 但审批、取消和工具终态由这里的 CAS 与事件账本裁决。
+    if version <= 11 {
+        connection
+            .execute_batch(
+                "BEGIN IMMEDIATE;
+                 CREATE TABLE IF NOT EXISTS agent_runs (
+                    id TEXT PRIMARY KEY,
+                    conversation_id TEXT NOT NULL,
+                    message_id TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    activity TEXT NOT NULL DEFAULT 'idle',
+                    state_version INTEGER NOT NULL DEFAULT 0,
+                    execution_version INTEGER NOT NULL DEFAULT 1,
+                    runtime_instance_id TEXT,
+                    model_id TEXT NOT NULL DEFAULT '',
+                    budget_json TEXT NOT NULL DEFAULT '{}',
+                    error_code TEXT,
+                    error_message TEXT,
+                    heartbeat_at INTEGER,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    finished_at INTEGER
+                 );
+                 CREATE INDEX IF NOT EXISTS agent_runs_conversation_updated
+                    ON agent_runs(conversation_id, updated_at DESC);
+                 CREATE TABLE IF NOT EXISTS agent_tool_calls (
+                    call_id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+                    name TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    state_version INTEGER NOT NULL DEFAULT 0,
+                    execution_version INTEGER NOT NULL DEFAULT 1,
+                    approval_id TEXT,
+                    risk TEXT NOT NULL DEFAULT '',
+                    arguments_hash TEXT NOT NULL DEFAULT '',
+                    lease_token TEXT,
+                    result_preview TEXT NOT NULL DEFAULT '',
+                    error_kind TEXT,
+                    expires_at INTEGER,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL
+                 );
+                 CREATE UNIQUE INDEX IF NOT EXISTS agent_tool_call_approval
+                    ON agent_tool_calls(approval_id) WHERE approval_id IS NOT NULL;
+                 CREATE INDEX IF NOT EXISTS agent_tool_calls_run_state
+                    ON agent_tool_calls(run_id, state, updated_at);
+                 CREATE TABLE IF NOT EXISTS agent_run_events (
+                    run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+                    sequence INTEGER NOT NULL,
+                    command_id TEXT,
+                    event_type TEXT NOT NULL,
+                    from_state TEXT NOT NULL,
+                    to_state TEXT NOT NULL,
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    created_at INTEGER NOT NULL,
+                    PRIMARY KEY (run_id, sequence)
+                 );
+                 CREATE UNIQUE INDEX IF NOT EXISTS agent_run_event_command
+                    ON agent_run_events(run_id, command_id)
+                    WHERE command_id IS NOT NULL;
+                 PRAGMA user_version = 12;
+                 COMMIT;",
+            )
+            .map_err(|error| format!("升级 Chat Agent 状态机结构失败：{error}"))?;
+    }
     Ok(())
 }
 
@@ -3879,7 +5414,8 @@ fn get_note_pipeline_run_with_connection(
                     selected_section_ids_json, provider_id, model_id, max_output_tokens,
                     thinking_enabled, retry_attempts, warnings_json, error_message,
                     created_at, updated_at, input_snapshot_hash, current_plan_version,
-                    execution_version, budget_json, preflight_json, sidecar_json, idempotency_key
+                     execution_version, budget_json, preflight_json, sidecar_json, idempotency_key,
+                     state_version, runtime_instance_id, heartbeat_at, last_event_sequence
              FROM note_pipeline_runs WHERE id = ?",
             params![run_id],
             |row| {
@@ -3906,6 +5442,10 @@ fn get_note_pipeline_run_with_connection(
                     row.get::<_, String>(19)?,
                     row.get::<_, String>(20)?,
                     row.get::<_, String>(21)?,
+                    row.get::<_, i64>(22)?,
+                    row.get::<_, Option<String>>(23)?,
+                    row.get::<_, Option<i64>>(24)?,
+                    row.get::<_, i64>(25)?,
                 ))
             },
         )
@@ -3942,6 +5482,10 @@ fn get_note_pipeline_run_with_connection(
             .map_err(|_| "深度笔记计划版本无效。".to_string())?,
         execution_version: u32::try_from(raw.17)
             .map_err(|_| "深度笔记执行版本无效。".to_string())?,
+        state_version: u32::try_from(raw.22).map_err(|_| "深度笔记状态版本无效。".to_string())?,
+        runtime_instance_id: raw.23,
+        heartbeat_at: raw.24.map(i64_to_u64),
+        last_event_sequence: i64_to_u64(raw.25),
         budget_json: raw.18,
         preflight_json: raw.19,
         sidecar_json: raw.20,
@@ -4525,6 +6069,18 @@ fn i64_to_u64(value: i64) -> u64 {
     u64::try_from(value).unwrap_or(0)
 }
 
+fn u64_to_i64(value: u64) -> Result<i64, String> {
+    i64::try_from(value).map_err(|_| "时间戳超出 SQLite 支持范围。".to_string())
+}
+
+fn normalize_agent_entity_id(label: &str, value: &str) -> Result<String, String> {
+    let value = value.trim();
+    if value.is_empty() || value.len() > 256 || value.chars().any(char::is_control) {
+        return Err(format!("{label}无效。"));
+    }
+    Ok(value.to_string())
+}
+
 fn bool_to_i64(value: bool) -> i64 {
     if value {
         1
@@ -4549,9 +6105,12 @@ mod tests {
     use rusqlite::Connection;
 
     use super::LibraryRepository;
-    use crate::chat::note_pipeline::types::{
-        DeepNoteCapabilities, DeepNoteInputSnapshot, DeepNoteModelSnapshot, DeepNoteSourceUnit,
-        DeepNoteSourceUnitKind, DeepNoteSourceUnitStatus,
+    use crate::chat::{
+        agent::run_machine::{AgentRunEvent, AgentRunState, ToolCallEvent, ToolCallState},
+        note_pipeline::types::{
+            DeepNoteCapabilities, DeepNoteInputSnapshot, DeepNoteModelSnapshot, DeepNoteSourceUnit,
+            DeepNoteSourceUnitKind, DeepNoteSourceUnitStatus,
+        },
     };
     use crate::library::types::{
         LibraryAnnotationColor, LibraryAnnotationCreate, LibraryAnnotationKind,
@@ -4937,7 +6496,7 @@ mod tests {
         let version: i64 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 10);
+        assert_eq!(version, 12);
         let event_parent: String = connection
             .query_row("PRAGMA foreign_key_list(note_pipeline_events)", [], |row| {
                 row.get(2)
@@ -4955,13 +6514,14 @@ mod tests {
                 "SELECT COUNT(*) FROM sqlite_master
                  WHERE type = 'table'
                    AND name IN (
-                     'library_annotations', 'library_notes', 'library_note_groups', 'note_sources'
+                     'library_annotations', 'library_notes', 'library_note_groups', 'note_sources',
+                     'agent_runs', 'agent_tool_calls', 'agent_run_events'
                    )",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(tables, 4);
+        assert_eq!(tables, 7);
 
         let _ = fs::remove_dir_all(directory);
     }
@@ -5954,6 +7514,160 @@ mod tests {
             )
             .unwrap();
         assert_eq!(versions, 2);
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn agent_tool_approval_cancel_race_rejects_late_worker_result() {
+        let directory = test_directory("agent-state-machine");
+        let repository = LibraryRepository::new(directory.clone());
+        let (state, execution_version, state_version) = repository
+            .create_agent_run(
+                "run-agent-1",
+                "conversation-1",
+                "message-1",
+                "runtime-1",
+                "model-1",
+            )
+            .unwrap();
+        assert_eq!(state, AgentRunState::Running);
+        assert_eq!(execution_version, 1);
+        assert_eq!(state_version, 1);
+
+        let (tool_state, tool_execution_version, tool_state_version) = repository
+            .create_agent_tool_call(
+                "run-agent-1",
+                "call-1",
+                "memory_write",
+                "MemoryWrite",
+                "sha256:test",
+                Some("approval-1"),
+                Some(u64::MAX / 2),
+            )
+            .unwrap();
+        assert_eq!(tool_state, ToolCallState::AwaitingApproval);
+        assert_eq!(tool_state_version, 1);
+        repository
+            .transition_agent_run(
+                "run-agent-1",
+                AgentRunEvent::ApprovalRequired,
+                None,
+                "{}",
+                None,
+            )
+            .unwrap();
+        repository
+            .transition_agent_run(
+                "run-agent-1",
+                AgentRunEvent::CancelRequested,
+                Some("cancel:command:1"),
+                "{}",
+                None,
+            )
+            .unwrap();
+        let duplicate = repository
+            .transition_agent_run(
+                "run-agent-1",
+                AgentRunEvent::CancelRequested,
+                Some("cancel:command:1"),
+                "{}",
+                None,
+            )
+            .unwrap();
+        assert_eq!(duplicate.0, AgentRunState::Stopping);
+        assert!(repository
+            .transition_agent_tool_call(
+                "run-agent-1",
+                "call-1",
+                ToolCallEvent::Approved,
+                tool_execution_version,
+                Some(tool_state_version),
+                None,
+                None,
+            )
+            .is_err());
+        repository
+            .transition_agent_run(
+                "run-agent-1",
+                AgentRunEvent::WorkerStopped,
+                None,
+                "{}",
+                None,
+            )
+            .unwrap();
+
+        let connection = repository.open_connection().unwrap();
+        let final_run_state: String = connection
+            .query_row(
+                "SELECT state FROM agent_runs WHERE id = 'run-agent-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let final_tool_state: String = connection
+            .query_row(
+                "SELECT state FROM agent_tool_calls WHERE call_id = 'call-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let (event_count, distinct_sequences): (i64, i64) = connection
+            .query_row(
+                "SELECT COUNT(*), COUNT(DISTINCT sequence)
+                 FROM agent_run_events WHERE run_id = 'run-agent-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(final_run_state, "stopped");
+        assert_eq!(final_tool_state, "cancelled");
+        assert_eq!(event_count, distinct_sequences);
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn startup_recovery_invalidates_unfinished_agent_approvals() {
+        let directory = test_directory("agent-recovery");
+        let repository = LibraryRepository::new(directory.clone());
+        repository
+            .create_agent_run(
+                "run-agent-recovery",
+                "conversation-1",
+                "message-1",
+                "runtime-1",
+                "model-1",
+            )
+            .unwrap();
+        repository
+            .create_agent_tool_call(
+                "run-agent-recovery",
+                "call-recovery",
+                "note_write",
+                "NoteWrite",
+                "sha256:test",
+                Some("approval-recovery"),
+                Some(u64::MAX / 2),
+            )
+            .unwrap();
+        assert_eq!(repository.recover_stale_agent_runs().unwrap(), 1);
+        let connection = repository.open_connection().unwrap();
+        let run_state: String = connection
+            .query_row(
+                "SELECT state FROM agent_runs WHERE id = 'run-agent-recovery'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let tool_state: String = connection
+            .query_row(
+                "SELECT state FROM agent_tool_calls WHERE call_id = 'call-recovery'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(run_state, "failed");
+        assert_eq!(tool_state, "cancelled");
+        assert_eq!(repository.recover_stale_agent_runs().unwrap(), 0);
         let _ = fs::remove_dir_all(directory);
     }
 }

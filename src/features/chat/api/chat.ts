@@ -76,6 +76,50 @@ export type ChatStreamRequest = {
   completion: ChatCompletionRequest;
 };
 
+export type AgentRunState =
+  | "created"
+  | "running"
+  | "waiting"
+  | "stopping"
+  | "completed"
+  | "stopped"
+  | "failed"
+  | "budgetExhausted";
+
+export type AgentToolCallSnapshot = {
+  callId: string;
+  name: string;
+  state: "proposed" | "awaitingApproval" | "approved" | "queued" | "running"
+    | "completed" | "rejected" | "failed" | "cancelled" | "timedOut";
+  stateVersion: number;
+  executionVersion: number;
+  approvalId: string | null;
+  risk: string;
+  resultPreview: string;
+  errorKind: string | null;
+  expiresAt: number | null;
+  updatedAt: number;
+};
+
+export type AgentRunSnapshot = {
+  id: string;
+  conversationId: string;
+  messageId: string;
+  state: AgentRunState;
+  activity: string;
+  stateVersion: number;
+  executionVersion: number;
+  runtimeInstanceId: string | null;
+  modelId: string;
+  errorCode: string | null;
+  errorMessage: string | null;
+  heartbeatAt: number | null;
+  createdAt: number;
+  updatedAt: number;
+  finishedAt: number | null;
+  toolCalls: AgentToolCallSnapshot[];
+};
+
 export type ModelStreamEvent =
   | {
       type: "started";
@@ -183,6 +227,11 @@ export function cancelChatStream(runId: string): Promise<boolean> {
 export function resolveToolApproval(approvalId: string, approved: boolean): Promise<boolean> {
   if (!isTauri()) return Promise.resolve(false);
   return invoke<boolean>("chat_tool_approval_resolve", { approvalId, approved });
+}
+
+export function getAgentRunSnapshot(runId: string): Promise<AgentRunSnapshot | null> {
+  if (!isTauri()) return Promise.resolve(null);
+  return invoke<AgentRunSnapshot | null>("chat_agent_run_get", { runId });
 }
 
 /** 把 Tauri、JavaScript 或未知错误统一成界面可以安全显示的结构。 */

@@ -10,6 +10,7 @@ mod documents;
 mod knowledge;
 mod notes;
 pub mod registry;
+pub mod run_machine;
 pub mod types;
 mod web;
 mod workspace;

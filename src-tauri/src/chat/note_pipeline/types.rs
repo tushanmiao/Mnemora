@@ -633,6 +633,7 @@ impl DeepNoteNodeType {
 pub enum DeepNoteNodeStatus {
     Pending,
     Ready,
+    Leased,
     InProgress,
     Completed,
     NeedsReview,
@@ -640,6 +641,7 @@ pub enum DeepNoteNodeStatus {
     Failed,
     Blocked,
     Skipped,
+    Superseded,
     Interrupted,
 }
 
@@ -648,6 +650,7 @@ impl DeepNoteNodeStatus {
         match self {
             Self::Pending => "pending",
             Self::Ready => "ready",
+            Self::Leased => "leased",
             Self::InProgress => "inProgress",
             Self::Completed => "completed",
             Self::NeedsReview => "needsReview",
@@ -655,6 +658,7 @@ impl DeepNoteNodeStatus {
             Self::Failed => "failed",
             Self::Blocked => "blocked",
             Self::Skipped => "skipped",
+            Self::Superseded => "superseded",
             Self::Interrupted => "interrupted",
         }
     }
@@ -663,6 +667,7 @@ impl DeepNoteNodeStatus {
         match value {
             "pending" => Ok(Self::Pending),
             "ready" => Ok(Self::Ready),
+            "leased" => Ok(Self::Leased),
             "inProgress" | "in_progress" => Ok(Self::InProgress),
             "completed" => Ok(Self::Completed),
             "needsReview" | "needs_review" => Ok(Self::NeedsReview),
@@ -670,6 +675,7 @@ impl DeepNoteNodeStatus {
             "failed" => Ok(Self::Failed),
             "blocked" => Ok(Self::Blocked),
             "skipped" => Ok(Self::Skipped),
+            "superseded" => Ok(Self::Superseded),
             "interrupted" => Ok(Self::Interrupted),
             _ => Err(format!("未知的深度笔记执行节点状态：{value}")),
         }

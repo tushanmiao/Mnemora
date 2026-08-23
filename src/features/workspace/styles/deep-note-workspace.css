@@ -394,7 +394,14 @@
 .deep-note-node-list div { display: grid; grid-template-columns: 7px minmax(0, 1fr); align-items: center; gap: 7px; }
 .deep-note-node-list div > span { width: 6px; height: 6px; border-radius: 50%; background: var(--color-border); }
 .deep-note-node-list div[data-status="completed"] > span { background: var(--color-success); }
+.deep-note-node-list div[data-status="leased"] > span,
 .deep-note-node-list div[data-status="inProgress"] > span { background: var(--color-accent); }
+.deep-note-node-list div[data-status="failed"] > span,
+.deep-note-node-list div[data-status="blocked"] > span { background: var(--color-danger); }
+.deep-note-node-list div[data-status="interrupted"] > span,
+.deep-note-node-list div[data-status="needsReview"] > span,
+.deep-note-node-list div[data-status="needsRevision"] > span { background: var(--color-warning); }
+.deep-note-node-list div[data-status="superseded"] > span { background: var(--color-text-tertiary); }
 .deep-note-node-list small { overflow: hidden; color: var(--color-muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 
 @media (max-width: 1080px) {

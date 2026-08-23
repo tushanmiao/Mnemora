@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ChatMessage } from "../../../types/chat";
 import type { DeepNoteRunDetail } from "../../chat/api/notePipeline";
+import type { AgentRunSnapshot } from "../../chat/api/chat";
 import {
   projectChatTaskRun,
   projectDeepNoteTaskRun,
@@ -150,6 +151,36 @@ describe("taskRunProjection", () => {
     }), "", true, "zh", 2_000);
     expect(task).toMatchObject({ status: "waiting", needsAttention: true });
     expect(task?.steps[0]).toMatchObject({ kind: "tool", status: "waiting" });
+  });
+
+  it("以后端 Agent Run 快照覆盖消息中的过期状态", () => {
+    const snapshot: AgentRunSnapshot = {
+      id: "run-1",
+      conversationId: "conversation-1",
+      messageId: "assistant-1",
+      state: "stopping",
+      activity: "idle",
+      stateVersion: 4,
+      executionVersion: 1,
+      runtimeInstanceId: "runtime-1",
+      modelId: "model-1",
+      errorCode: null,
+      errorMessage: null,
+      heartbeatAt: 2_100,
+      createdAt: 1_000,
+      updatedAt: 2_100,
+      finishedAt: null,
+      toolCalls: [],
+    };
+    const task = projectChatTaskRun(
+      assistant({ status: "streaming", agentRunId: "run-1" }),
+      "",
+      true,
+      "zh",
+      2_200,
+      snapshot,
+    );
+    expect(task).toMatchObject({ status: "stopping", updatedAt: 2_100, canStop: true });
   });
 
   it("回答完成但工具失败时保留完成事实并明确提示异常", () => {

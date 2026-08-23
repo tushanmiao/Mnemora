@@ -53,9 +53,16 @@ function runStatus(message: ChatMessage, streaming: boolean): AgentRunStatus {
 }
 
 function stepStatus(status: ToolTraceStatus): WorkflowStepStatus {
-  if (status === "awaitingApproval" || status === "running") return "running";
+  if (
+    status === "proposed"
+    || status === "awaitingApproval"
+    || status === "approved"
+    || status === "queued"
+    || status === "running"
+  ) return "running";
   if (status === "completed") return "completed";
   if (status === "rejected") return "rejected";
+  if (status === "cancelled") return "stopped";
   return "failed";
 }
 

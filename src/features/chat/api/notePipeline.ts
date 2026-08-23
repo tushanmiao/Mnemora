@@ -34,6 +34,10 @@ export interface NotePipelineRun {
   inputSnapshotHash: string;
   currentPlanVersion: number;
   executionVersion: number;
+  stateVersion?: number;
+  runtimeInstanceId?: string | null;
+  heartbeatAt?: number | null;
+  lastEventSequence?: number;
   budgetJson: string;
   preflightJson: string;
   sidecarJson: string;
@@ -140,12 +144,26 @@ export interface NotePipelineEventRecord {
   createdAt: number;
 }
 
+export type DeepNoteDagNodeStatus =
+  | "pending"
+  | "ready"
+  | "leased"
+  | "inProgress"
+  | "needsReview"
+  | "needsRevision"
+  | "completed"
+  | "failed"
+  | "blocked"
+  | "skipped"
+  | "interrupted"
+  | "superseded";
+
 export interface DeepNoteDagNode {
   nodeId: string;
   nodeType: string;
   sectionId: string | null;
   dependsOn: string[];
-  status: string;
+  status: DeepNoteDagNodeStatus;
   attemptCount: number;
   evidenceIds: string[];
   validationJson: string;

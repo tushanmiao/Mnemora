@@ -24,6 +24,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, 
 import type { ChatMessage } from "../../../types/chat";
 import { useI18n } from "../../../i18n/I18nProvider";
 import type { DeepNoteRunDetail } from "../../chat/api/notePipeline";
+import { getAgentRunSnapshot, type AgentRunSnapshot } from "../../chat/api/chat";
 import { useStreamingMessage } from "../../chat/stores/streamingStore";
 import type { DeepNoteProgress } from "../../workspace/runtime/DeepNoteViewRuntime";
 import {
@@ -143,6 +144,7 @@ export function TaskCenter({
   const [position, setPosition] = useState<TaskCenterPosition | null>(loadTaskCenterPosition);
   const cachedChatMessagesRef = useRef(new Map<string, ChatMessage>());
   const [dragging, setDragging] = useState(false);
+  const [agentRunSnapshot, setAgentRunSnapshot] = useState<AgentRunSnapshot | null>(null);
   const rootRef = useRef<HTMLElement>(null);
   const dragRef = useRef<{
     pointerId: number;
@@ -173,6 +175,29 @@ export function TaskCenter({
   ));
   const taskStreaming = useStreamingMessage(taskChatMessage?.id ?? "", taskChatCanStream);
   const taskReasoning = taskStreaming?.reasoning ?? taskChatMessage?.reasoning ?? "";
+  const agentRunId = taskChatMessage?.agentRunId ?? null;
+  useEffect(() => {
+    if (!agentRunId) {
+      setAgentRunSnapshot(null);
+      return undefined;
+    }
+    let disposed = false;
+    const load = () => {
+      void getAgentRunSnapshot(agentRunId)
+        .then((snapshot) => {
+          if (!disposed) setAgentRunSnapshot(snapshot);
+        })
+        .catch(() => undefined);
+    };
+    load();
+    const terminal = agentRunSnapshot?.id === agentRunId
+      && ["completed", "stopped", "failed", "budgetExhausted"].includes(agentRunSnapshot.state);
+    const timer = terminal ? null : window.setInterval(load, 1_000);
+    return () => {
+      disposed = true;
+      if (timer !== null) window.clearInterval(timer);
+    };
+  }, [agentRunId, agentRunSnapshot?.id, agentRunSnapshot?.state]);
 
   const tasks = useMemo(() => sortTaskRuns([
     projectDeepNoteTaskRun({
@@ -180,7 +205,14 @@ export function TaskCenter({
       progress: deepNoteProgress,
       reviewTitle: deepNoteReviewTitle,
     }, language, clock),
-    showChatTask ? projectChatTaskRun(taskChatMessage, taskReasoning, taskChatCanStream || taskStreaming !== null, language, clock) : null,
+    showChatTask ? projectChatTaskRun(
+      taskChatMessage,
+      taskReasoning,
+      taskChatCanStream || taskStreaming !== null,
+      language,
+      clock,
+      agentRunSnapshot?.id === agentRunId ? agentRunSnapshot : null,
+    ) : null,
   ].filter((task): task is TaskRunProjection => task !== null)), [
     taskChatMessage,
     taskChatCanStream,
@@ -191,6 +223,8 @@ export function TaskCenter({
     deepNoteReviewTitle,
     language,
     taskReasoning,
+    agentRunId,
+    agentRunSnapshot,
     showChatTask,
   ]);
 
