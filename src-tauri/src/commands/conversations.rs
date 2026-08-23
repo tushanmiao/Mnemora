@@ -3,8 +3,9 @@
 //! 所有文件读写都放入阻塞线程；保存、删除和清空使用同一异步互斥锁串行化，避免索引竞争。
 
 use std::{
+    collections::{HashMap, HashSet},
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -139,19 +140,27 @@ pub async fn export_conversation(
     conversation_id: String,
     path: String,
     format: ConversationExportFormat,
-) -> Result<(), String> {
+) -> Result<String, String> {
     if path.trim().is_empty() || path.chars().count() > MAX_EXPORT_PATH_CHARS {
         return Err("导出路径无效。".to_string());
     }
     let repository = state.conversation_repository.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let conversation = repository.load(&conversation_id)?;
-        let content = match format {
-            ConversationExportFormat::Markdown => conversation_to_markdown(&conversation),
-            ConversationExportFormat::Json => serde_json::to_string_pretty(&conversation)
-                .map_err(|error| format!("序列化会话失败：{error}"))?,
-        };
-        write_export_file(PathBuf::from(path), content.as_bytes())
+        match format {
+            ConversationExportFormat::Markdown => {
+                let exported =
+                    export_markdown_bundle(&repository, &conversation, PathBuf::from(path))?;
+                Ok(exported.to_string_lossy().into_owned())
+            }
+            ConversationExportFormat::Json => {
+                let path = PathBuf::from(path);
+                let content = serde_json::to_string_pretty(&conversation)
+                    .map_err(|error| format!("序列化会话失败：{error}"))?;
+                write_export_file(path.clone(), content.as_bytes())?;
+                Ok(path.to_string_lossy().into_owned())
+            }
+        }
     })
     .await
     .map_err(join_error)?
@@ -331,6 +340,13 @@ fn clamp_note_content(content: String) -> String {
 }
 
 fn conversation_to_markdown(conversation: &StoredConversation) -> String {
+    conversation_to_markdown_with_attachments(conversation, None)
+}
+
+fn conversation_to_markdown_with_attachments(
+    conversation: &StoredConversation,
+    exported_attachments: Option<&HashMap<String, String>>,
+) -> String {
     let mut output = format!("# {}\n\n", conversation.title.trim());
     for message in &conversation.messages {
         let role = match message.role {
@@ -346,10 +362,26 @@ fn conversation_to_markdown(conversation: &StoredConversation) -> String {
         if !message.attachments.is_empty() {
             output.push_str("附件：\n");
             for attachment in &message.attachments {
-                output.push_str(&format!(
-                    "- {}（{}，{} bytes）\n",
-                    attachment.name, attachment.mime_type, attachment.size_bytes
-                ));
+                if let Some(relative) =
+                    exported_attachments.and_then(|attachments| attachments.get(&attachment.path))
+                {
+                    let label = escape_markdown_label(&attachment.name);
+                    let destination = relative.replace('\\', "/");
+                    let link = if attachment.kind == "image" {
+                        format!("![{label}](<{destination}>)")
+                    } else {
+                        format!("[{label}](<{destination}>)")
+                    };
+                    output.push_str(&format!(
+                        "- {link}（{}，{} bytes）\n",
+                        attachment.mime_type, attachment.size_bytes
+                    ));
+                } else {
+                    output.push_str(&format!(
+                        "- {}（{}，{} bytes）\n",
+                        attachment.name, attachment.mime_type, attachment.size_bytes
+                    ));
+                }
             }
             output.push('\n');
         }
@@ -401,6 +433,164 @@ fn conversation_to_markdown(conversation: &StoredConversation) -> String {
     output
 }
 
+fn export_markdown_bundle(
+    repository: &crate::chat::storage::ConversationRepository,
+    conversation: &StoredConversation,
+    parent: PathBuf,
+) -> Result<PathBuf, String> {
+    fs::create_dir_all(&parent).map_err(|error| format!("创建导出位置失败：{error}"))?;
+    let metadata = fs::metadata(&parent).map_err(|error| format!("读取导出位置失败：{error}"))?;
+    if !metadata.is_dir() {
+        return Err("Markdown 会话包必须导出到一个目录中。".to_string());
+    }
+
+    let folder_name = sanitize_export_name(&conversation.title, "mnemora-conversation");
+    let final_directory = unique_export_directory(&parent, &folder_name)?;
+    let staging_directory = parent.join(format!(".mnemora-export-{}", Uuid::new_v4()));
+    fs::create_dir(&staging_directory).map_err(|error| format!("创建导出临时目录失败：{error}"))?;
+
+    let result = (|| {
+        let attachment_directory = staging_directory.join("attachments");
+        let mut exported = HashMap::new();
+        let mut used_names = HashSet::new();
+        let has_attachments = conversation
+            .messages
+            .iter()
+            .any(|message| !message.attachments.is_empty());
+        if has_attachments {
+            fs::create_dir(&attachment_directory)
+                .map_err(|error| format!("创建导出附件目录失败：{error}"))?;
+        }
+
+        for message in &conversation.messages {
+            for attachment in &message.attachments {
+                if exported.contains_key(&attachment.path) {
+                    continue;
+                }
+                let source =
+                    repository.resolve_attachment_path(&conversation.id, &attachment.path)?;
+                let source_metadata = fs::metadata(&source)
+                    .map_err(|error| format!("读取附件“{}”失败：{error}", attachment.name))?;
+                if !source_metadata.is_file() || source_metadata.len() != attachment.size_bytes {
+                    return Err(format!("附件“{}”缺失或大小与记录不一致。", attachment.name));
+                }
+                let safe_name = sanitize_export_name(&attachment.name, "attachment");
+                let export_name = unique_export_file_name(&safe_name, &mut used_names);
+                let destination = attachment_directory.join(&export_name);
+                fs::copy(&source, &destination)
+                    .map_err(|error| format!("复制附件“{}”失败：{error}", attachment.name))?;
+                exported.insert(
+                    attachment.path.clone(),
+                    format!("attachments/{export_name}"),
+                );
+            }
+        }
+
+        let markdown = conversation_to_markdown_with_attachments(conversation, Some(&exported));
+        let markdown_path = staging_directory.join(format!("{folder_name}.md"));
+        fs::write(&markdown_path, markdown.as_bytes())
+            .map_err(|error| format!("写入 Markdown 会话包失败：{error}"))?;
+        fs::rename(&staging_directory, &final_directory)
+            .map_err(|error| format!("完成 Markdown 会话包导出失败：{error}"))?;
+        Ok(final_directory.clone())
+    })();
+
+    if result.is_err() && staging_directory.exists() {
+        let _ = fs::remove_dir_all(&staging_directory);
+    }
+    result
+}
+
+fn sanitize_export_name(value: &str, fallback: &str) -> String {
+    let cleaned = value
+        .chars()
+        .map(|character| {
+            if character.is_control()
+                || matches!(
+                    character,
+                    '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'
+                )
+            {
+                '_'
+            } else {
+                character
+            }
+        })
+        .collect::<String>();
+    let cleaned = cleaned.trim().trim_matches(['.', ' ']);
+    let bounded = cleaned.chars().take(120).collect::<String>();
+    let bounded = bounded.trim_end_matches(['.', ' ']);
+    if bounded.is_empty() {
+        fallback.to_string()
+    } else {
+        avoid_windows_reserved_name(&bounded)
+    }
+}
+
+fn avoid_windows_reserved_name(value: &str) -> String {
+    let device = value
+        .split('.')
+        .next()
+        .unwrap_or(value)
+        .to_ascii_uppercase();
+    let reserved = matches!(device.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || device
+            .strip_prefix("COM")
+            .or_else(|| device.strip_prefix("LPT"))
+            .is_some_and(|suffix| suffix.len() == 1 && matches!(suffix.as_bytes()[0], b'1'..=b'9'));
+    if !reserved {
+        return value.to_string();
+    }
+    value
+        .find('.')
+        .map(|dot| format!("{}_{}", &value[..dot], &value[dot..]))
+        .unwrap_or_else(|| format!("{value}_"))
+}
+
+fn unique_export_directory(parent: &Path, base_name: &str) -> Result<PathBuf, String> {
+    for index in 0..1_000usize {
+        let name = if index == 0 {
+            base_name.to_string()
+        } else {
+            format!("{base_name} ({index})")
+        };
+        let candidate = parent.join(name);
+        if !candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+    Err("导出位置中同名会话包过多，请更换目录后重试。".to_string())
+}
+
+fn unique_export_file_name(base_name: &str, used: &mut HashSet<String>) -> String {
+    let path = Path::new(base_name);
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("attachment");
+    let extension = path.extension().and_then(|value| value.to_str());
+    for index in 0..10_000usize {
+        let name = if index == 0 {
+            base_name.to_string()
+        } else if let Some(extension) = extension {
+            format!("{stem} ({index}).{extension}")
+        } else {
+            format!("{stem} ({index})")
+        };
+        if used.insert(name.to_lowercase()) {
+            return name;
+        }
+    }
+    format!("attachment-{}", Uuid::new_v4())
+}
+
+fn escape_markdown_label(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('[', "\\[")
+        .replace(']', "\\]")
+}
+
 fn write_export_file(path: PathBuf, content: &[u8]) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| format!("创建导出目录失败：{error}"))?;
@@ -411,6 +601,7 @@ fn write_export_file(path: PathBuf, content: &[u8]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::chat::conversation_types::StoredChatAttachment;
 
     #[test]
     fn note_title_falls_back_and_strips_control_characters() {
@@ -435,5 +626,107 @@ mod tests {
         let clamped = clamp_note_content(oversized);
         assert!(clamped.chars().count() <= MAX_NOTE_CONTENT_CHARS);
         assert!(clamped.ends_with("完整内容请使用「导出 Markdown」。"));
+    }
+
+    #[test]
+    fn markdown_bundle_copies_attachments_and_uses_relative_links() {
+        let root =
+            std::env::temp_dir().join(format!("mnemora-conversation-export-{}", Uuid::new_v4()));
+        let repository = crate::chat::storage::ConversationRepository::new(root.clone());
+        let conversation_id = "conversation-1".to_string();
+        let attachment_directory = repository.attachments_directory(&conversation_id).unwrap();
+        fs::create_dir_all(&attachment_directory).unwrap();
+        fs::write(attachment_directory.join("stored-one.txt"), b"first").unwrap();
+        fs::write(attachment_directory.join("stored-two.txt"), b"second").unwrap();
+        let attachments = vec![
+            StoredChatAttachment {
+                id: "attachment-1".to_string(),
+                kind: "file".to_string(),
+                name: "source file.txt".to_string(),
+                mime_type: "text/plain".to_string(),
+                size_bytes: 5,
+                path: "stored-one.txt".to_string(),
+                preview_path: None,
+                width: None,
+                height: None,
+            },
+            StoredChatAttachment {
+                id: "attachment-2".to_string(),
+                kind: "file".to_string(),
+                name: "source file.txt".to_string(),
+                mime_type: "text/plain".to_string(),
+                size_bytes: 6,
+                path: "stored-two.txt".to_string(),
+                preview_path: None,
+                width: None,
+                height: None,
+            },
+        ];
+        let conversation = StoredConversation {
+            id: conversation_id,
+            title: "附件导出测试".to_string(),
+            messages: vec![StoredChatMessage {
+                id: "message-1".to_string(),
+                conversation_id: "conversation-1".to_string(),
+                role: ModelRole::User,
+                content: "请整理附件。".to_string(),
+                attachments,
+                literature_references: Vec::new(),
+                note_references: Vec::new(),
+                reasoning: None,
+                status: MessageStatus::Completed,
+                created_at: 1,
+                updated_at: 1,
+                model_id: None,
+                model_snapshot: None,
+                usage: None,
+                activated_skills: Vec::new(),
+                tool_traces: Vec::new(),
+                agent_events: Some(Vec::new()),
+                agent_run_id: None,
+                workflow_summary: None,
+                error_message: None,
+            }],
+            assistant_id: None,
+            provider_id: None,
+            model_id: None,
+            thinking_enabled: None,
+            reasoning_effort: None,
+            system_prompt: String::new(),
+            context_summary: String::new(),
+            compressed_until_message_id: None,
+            context_compression_count: 0,
+            enabled_skill_ids: Vec::new(),
+            linked_library_item_ids: Vec::new(),
+            permission_mode: AiPermissionMode::AskSensitive,
+            project_id: None,
+            collection_id: None,
+            source_kind: None,
+            pinned: false,
+            created_at: 1,
+            updated_at: 1,
+        };
+        let export_parent = root.join("exports");
+        let exported = export_markdown_bundle(&repository, &conversation, export_parent).unwrap();
+        assert!(exported.join("附件导出测试.md").is_file());
+        assert_eq!(
+            fs::read(exported.join("attachments").join("source file.txt")).unwrap(),
+            b"first"
+        );
+        assert_eq!(
+            fs::read(exported.join("attachments").join("source file (1).txt")).unwrap(),
+            b"second"
+        );
+        let markdown = fs::read_to_string(exported.join("附件导出测试.md")).unwrap();
+        assert!(markdown.contains("[source file.txt](<attachments/source file.txt>)"));
+        assert!(markdown.contains("[source file.txt](<attachments/source file (1).txt>)"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn export_names_avoid_windows_devices() {
+        assert_eq!(sanitize_export_name("CON", "fallback"), "CON_");
+        assert_eq!(sanitize_export_name("lpt1.txt", "fallback"), "lpt1_.txt");
+        assert_eq!(sanitize_export_name("normal.txt", "fallback"), "normal.txt");
     }
 }

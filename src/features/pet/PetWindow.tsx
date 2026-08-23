@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { Lock, Unlock, X } from "lucide-react";
 import { loadApplicationSettings } from "../settings/api/appSettings";
 import type { PetSettings } from "../../types/appSettings";
-import { listPets, openMainFromPet, setPetEnabled, updatePetPosition } from "./api";
+import { listPets, openMainFromPet, setPetEnabled, setPetLocked, updatePetPosition } from "./api";
 import { PetMascot } from "./PetMascot";
 import { PetSprite } from "./PetSprite";
 import type { PetDescriptor, PetStatePayload } from "./types";
@@ -67,7 +68,7 @@ export default function PetWindow() {
     ?? null;
 
   const beginDrag = (event: ReactPointerEvent<HTMLElement>) => {
-    if (event.button !== 0 || settings.clickThrough) return;
+    if (event.button !== 0 || settings.clickThrough || settings.locked) return;
     if ((event.target as HTMLElement).closest("button")) return;
     void getCurrentWindow().startDragging().catch((error) => {
       console.error("桌面宠物拖拽失败", error);
@@ -79,6 +80,7 @@ export default function PetWindow() {
       className="pet-window-shell"
       data-state={state.state}
       data-idle={state.state === "idle" ? "true" : "false"}
+      data-locked={settings.locked ? "true" : "false"}
       style={{
         opacity: settings.opacity / 100,
         "--pet-size": String(settings.size) + "px",
@@ -93,10 +95,12 @@ export default function PetWindow() {
       ) : null}
       <div
         className="pet-character-button"
-        data-tauri-drag-region
-        title="打开 Mnemora"
+        data-tauri-drag-region={settings.locked ? undefined : ""}
+        title={settings.locked ? "宠物已锁定；双击打开 Mnemora" : "拖动宠物；双击打开 Mnemora"}
         role="img"
-        aria-label="Mnemora 桌面宠物；拖动可移动，双击打开应用"
+        aria-label={settings.locked
+          ? "Mnemora 桌面宠物；当前已锁定，双击打开应用"
+          : "Mnemora 桌面宠物；拖动可移动，双击打开应用"}
         onDoubleClick={() => void openMainFromPet()}
       >
         {selectedPet?.spritesheetUrl ? (
@@ -107,12 +111,25 @@ export default function PetWindow() {
       </div>
       {!settings.clickThrough ? (
         <button
+          className="pet-lock"
+          data-locked={settings.locked ? "true" : "false"}
+          type="button"
+          title={settings.locked ? "解锁宠物以移动或关闭" : "锁定宠物，防止误移动或误关闭"}
+          aria-label={settings.locked ? "解锁桌面宠物" : "锁定桌面宠物"}
+          aria-pressed={settings.locked}
+          onClick={() => void setPetLocked(!settings.locked)}
+        >
+          {settings.locked ? <Lock size={14} /> : <Unlock size={14} />}
+        </button>
+      ) : null}
+      {!settings.clickThrough && !settings.locked ? (
+        <button
           className="pet-close"
           type="button"
           title="关闭桌面宠物"
           onClick={() => void setPetEnabled(false)}
         >
-          ×
+          <X size={15} />
         </button>
       ) : null}
     </main>

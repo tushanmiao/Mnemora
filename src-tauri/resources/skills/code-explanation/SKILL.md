@@ -1,55 +1,174 @@
 ---
-id: code-explanation
-name: 代码与技术解读
-description: 面向零基础或正在学习的用户，用生活化直觉、术语铺垫、输入到输出的因果链和具体示例，讲解代码、配置、错误、架构及技术概念；同时保留函数名、路径和代码证据。用于“这是什么”“为什么这样设计”“怎么运行”“给小白讲讲”等解读请求，不默认做缺陷审查或风险排序。
-version: 1.1.0
+name: acquire-codebase-knowledge
+description: 'Use this skill when the user explicitly asks to map, document, or onboard into an existing codebase. Trigger for prompts like "map this codebase", "document this architecture", "onboard me to this repo", or "create codebase docs". Do not trigger for routine feature implementation, bug fixes, or narrow code edits unless the user asks for repository-level discovery.'
 license: MIT
-compatibility: 可读取 2 MB 以内的常见源代码与配置附件；不扫描整个本地仓库，不执行代码，也不自动获取 Git 历史。
-triggers:
-  - /explain-code
-  - /explain-tech
-  - /code
-argument-hint: "<代码、配置、错误、技术概念或希望理解的问题>"
-recommended-tools:
-  - read_attachment_text
+compatibility: 'Cross-platform. Requires Python 3.8+ and git. Run scripts/scan.py from the target project root.'
 metadata:
-  mnemora:
-    default-enabled: true
-    supported-modes: [chat, work, notes]
-    risk: low
-    resource-cost: low
-    source-repository: https://github.com/github/awesome-copilot
-    source-path: skills/acquire-codebase-knowledge/SKILL.md
-    source-revision: 786bdcfc65b669faee10803db460a7218858ad21
-    attribution: "Acquire Codebase Knowledge skill from GitHub's awesome-copilot repository, licensed under MIT."
-    adapted: true
-    adaptation-notes: 将仓库级扫描和文档生成流程收敛为会话内代码与技术解读；保留证据可追踪、结构映射、未知项标记和意图与实现分离的方法，并按 Mnemora 的学习定位加入面向零基础用户的直觉优先、术语铺垫、因果机制与完整示例。
+  version: "1.3"
+  enhancements:
+    - Multi-language manifest detection (25+ languages supported)
+    - CI/CD pipeline detection (10+ platforms)
+    - Container & orchestration detection
+    - Code metrics by language
+    - Security & compliance config detection
+    - Performance testing markers
+argument-hint: 'Optional: specific area to focus on, e.g. "architecture only", "testing and concerns"'
 ---
 
-# 代码与技术解读
+# Acquire Codebase Knowledge
 
-目标是帮助用户真正建立心智模型，而不是展示术语数量，也不是默认进行 Code Review（代码审查）。只解释当前上下文中实际存在的代码或材料；缺少调用方、类型定义或配置时明确指出，不根据文件名猜测实现。
+Produces seven populated documents in `docs/codebase/` covering everything needed to work effectively on the project. Only document what is verifiable from files or terminal output — never infer or assume.
 
-## 讲解原则
+## Output Contract (Required)
 
-1. 先判断用户在当前主题上的基础；用户已说明是零基础时，不要求其先掌握术语。
-2. 先用一句通俗的话说明“它解决什么问题”，再讲内部结构。必要时使用生活类比，但要指出类比在哪些地方不完全成立。
-3. 首次出现关键术语时写出中文含义和英文原名，立即解释它在当前场景中的作用。
-4. 按“输入 → 处理 → 输出”追踪一个具体案例，讲清每一步为什么发生、上一环节如何导致下一环节。
-5. 展示最小且完整的代码例子；不要只逐行翻译，也不要一开始倾倒所有边界情况。
-6. 区分事实、合理推断和未知项。事实引用函数名、类型名、文件路径、配置键或附件行号；无法确认时明确说明需要什么材料。
-7. 将内容分为“现在必须理解”和“以后再深入”，避免一次引入过多新概念。
-8. 只有用户明确要求审查、找 Bug 或评估风险时才切换为审查视角；普通解读不按严重级别列缺陷。
+Before finishing, all of the following must be true:
 
-## 推荐结构
+1. Exactly these files exist in `docs/codebase/`: `STACK.md`, `STRUCTURE.md`, `ARCHITECTURE.md`, `CONVENTIONS.md`, `INTEGRATIONS.md`, `TESTING.md`, `CONCERNS.md`.
+2. Every claim is traceable to source files, config, or terminal output.
+3. Unknowns are marked as `[TODO]`; intent-dependent decisions are marked `[ASK USER]`.
+4. Every document includes a short "evidence" list with concrete file paths.
+5. Final response includes numbered `[ASK USER]` questions and intent-vs-reality divergences.
 
-- 通俗版：一句话说明它是什么、解决什么问题。
-- 直觉与类比：从用户已知事物搭桥，并说明类比边界。
-- 术语小字典：只解释本轮真正会用到的术语。
-- 完整走一遍：用一个具体输入追踪处理过程和输出结果。
-- 对照真实实现：给出代码、函数、类型、路径或配置证据。
-- 为什么这样设计：说明关键取舍背后的因果关系，而不只描述“代码做了什么”。
-- 必须记住 / 暂时可以不学：帮助零基础用户控制学习负担。
-- 未知项与下一步：列出当前材料不能证明的内容，以及最值得继续理解的一个问题。
+## Workflow
 
-如果用户只想快速理解，先给短版，再允许其选择是否展开。若用户表示没有理解，应更换入口、类比或例子，不要只是把原解释重复得更长。
+Copy and track this checklist:
+
+```
+- [ ] Phase 1: Run scan, read intent documents
+- [ ] Phase 2: Investigate each documentation area
+- [ ] Phase 3: Populate all seven docs in docs/codebase/
+- [ ] Phase 4: Validate docs, present findings, resolve all [ASK USER] items
+```
+
+## Focus Area Mode
+
+If the user supplies a focus area (for example: "architecture only" or "testing and concerns"):
+
+1. Always run Phase 1 in full.
+2. Fully complete focus-area documents first.
+3. For non-focus documents not yet analyzed, keep required sections present and mark unknowns as `[TODO]`.
+4. Still run the Phase 4 validation loop on all seven documents before final output.
+
+### Phase 1: Scan and Read Intent
+
+1. Run the scan script from the target project root:
+   ```bash
+   python3 "$SKILL_ROOT/scripts/scan.py" --output docs/codebase/.codebase-scan.txt
+   ```
+   Where `$SKILL_ROOT` is the absolute path to the skill folder. Works on Windows, macOS, and Linux.
+
+   **Quick start:** If you have the path inline:
+   ```bash
+   python3 /absolute/path/to/skills/acquire-codebase-knowledge/scripts/scan.py --output docs/codebase/.codebase-scan.txt
+   ```
+
+2. Search for `PRD`, `TRD`, `README`, `ROADMAP`, `SPEC`, `DESIGN` files and read them.
+3. Summarise the stated project intent before reading any source code.
+
+### Phase 2: Investigate
+
+Use the scan output to answer questions for each of the seven templates. Load [`references/inquiry-checkpoints.md`](references/inquiry-checkpoints.md) for the full per-template question list.
+
+If the stack is ambiguous (multiple manifest files, unfamiliar file types, no `package.json`), load [`references/stack-detection.md`](references/stack-detection.md).
+
+### Phase 3: Populate Templates
+
+Copy each template from `assets/templates/` into `docs/codebase/`. Fill in this order:
+
+1. [STACK.md](assets/templates/STACK.md) — language, runtime, frameworks, all dependencies
+2. [STRUCTURE.md](assets/templates/STRUCTURE.md) — directory layout, entry points, key files
+3. [ARCHITECTURE.md](assets/templates/ARCHITECTURE.md) — layers, patterns, data flow
+4. [CONVENTIONS.md](assets/templates/CONVENTIONS.md) — naming, formatting, error handling, imports
+5. [INTEGRATIONS.md](assets/templates/INTEGRATIONS.md) — external APIs, databases, auth, monitoring
+6. [TESTING.md](assets/templates/TESTING.md) — frameworks, file organization, mocking strategy
+7. [CONCERNS.md](assets/templates/CONCERNS.md) — tech debt, bugs, security risks, perf bottlenecks
+
+Use `[TODO]` for anything that cannot be determined from code. Use `[ASK USER]` where the right answer requires team intent.
+
+### Phase 4: Validate, Repair, Verify
+
+Run this mandatory validation loop before finalizing:
+
+1. Validate each doc against `references/inquiry-checkpoints.md`.
+2. For each non-trivial claim, confirm at least one evidence reference exists.
+3. If any required section is missing or unsupported:
+  - Fix the document.
+  - Re-run validation.
+4. Repeat until all seven docs pass.
+
+Then present a summary of all seven documents, list every `[ASK USER]` item as a numbered question, and highlight any Intent vs. Reality divergences from Phase 1.
+
+Validation pass criteria:
+
+- No unsupported claims.
+- No empty required sections.
+- Unknowns use `[TODO]` rather than assumptions.
+- Team-intent gaps are explicitly marked `[ASK USER]`.
+
+---
+
+## Gotchas
+
+**Monorepos:** Root `package.json` may have no source — check for `workspaces`, `packages/`, or `apps/` directories. Each workspace may have independent dependencies and conventions. Map each sub-package separately.
+
+**Outdated README:** README often describes intended architecture, not the current one. Cross-reference with actual file structure before treating any README claim as fact.
+
+**TypeScript path aliases:** `tsconfig.json` `paths` config means imports like `@/foo` don't map directly to the filesystem. Map aliases to real paths before documenting structure.
+
+**Generated/compiled output:** Never document patterns from `dist/`, `build/`, `generated/`, `.next/`, `out/`, or `__pycache__/`. These are artefacts — document source conventions only.
+
+**`.env.example` reveals required config:** Secrets are never committed. Read `.env.example`, `.env.template`, or `.env.sample` to discover required environment variables.
+
+**`devDependencies` ≠ production stack:** Only `dependencies` (or equivalent, e.g. `[tool.poetry.dependencies]`) runs in production. Document linters, formatters, and test frameworks separately as dev tooling.
+
+**Test TODOs ≠ production debt:** TODOs inside `test/`, `tests/`, `__tests__/`, or `spec/` are coverage gaps, not production technical debt. Separate them in `CONCERNS.md`.
+
+**High-churn files = fragile areas:** Files appearing most in recent git history have the highest modification rate and likely hidden complexity. Always note them in `CONCERNS.md`.
+
+---
+
+## Anti-Patterns
+
+| ❌ Don't | ✅ Do instead |
+|---------|--------------|
+| "Uses Clean Architecture with Domain/Data layers." (when no such directories exist) | State only what directory structure actually shows. |
+| "This is a Next.js project." (without checking `package.json`) | Check `dependencies` first. State what's actually there. |
+| Guess the database from a variable name like `dbUrl` | Check manifest for `pg`, `mysql2`, `mongoose`, `prisma`, etc. |
+| Document `dist/` or `build/` naming patterns as conventions | Source files only. |
+
+---
+
+## Enhanced Scan Output Sections
+
+The `scan.py` script now produce the following sections in addition to the original output:
+
+- **CODE METRICS** — Total files, lines of code by language, largest files (complexity signals)
+- **CI/CD PIPELINES** — Detected GitHub Actions, GitLab CI, Jenkins, CircleCI, etc.
+- **CONTAINERS & ORCHESTRATION** — Docker, Docker Compose, Kubernetes, Vagrant configs
+- **SECURITY & COMPLIANCE** — Snyk, Dependabot, SECURITY.md, SBOM, security policies
+- **PERFORMANCE & TESTING** — Benchmark configs, profiling markers, load testing tools
+
+Use these sections during Phase 2 to inform investigation questions and identify tool-specific patterns.
+
+---
+
+## Bundled Assets
+
+| Asset | When to load |
+|-------|-------------|
+| [`scripts/scan.py`](scripts/scan.py) | Phase 1 — run first, before reading any code (Python 3.8+ required) |
+
+| [`references/inquiry-checkpoints.md`](references/inquiry-checkpoints.md) | Phase 2 — load for per-template investigation questions |
+| [`references/stack-detection.md`](references/stack-detection.md) | Phase 2 — only if stack is ambiguous |
+| [`assets/templates/STACK.md`](assets/templates/STACK.md) | Phase 3 step 1 |
+| [`assets/templates/STRUCTURE.md`](assets/templates/STRUCTURE.md) | Phase 3 step 2 |
+| [`assets/templates/ARCHITECTURE.md`](assets/templates/ARCHITECTURE.md) | Phase 3 step 3 |
+| [`assets/templates/CONVENTIONS.md`](assets/templates/CONVENTIONS.md) | Phase 3 step 4 |
+| [`assets/templates/INTEGRATIONS.md`](assets/templates/INTEGRATIONS.md) | Phase 3 step 5 |
+| [`assets/templates/TESTING.md`](assets/templates/TESTING.md) | Phase 3 step 6 |
+| [`assets/templates/CONCERNS.md`](assets/templates/CONCERNS.md) | Phase 3 step 7 |
+
+Template usage mode:
+
+- Default mode: complete only the "Core Sections (Required)" in each template.
+- Extended mode: add optional sections only when the repo complexity justifies them.

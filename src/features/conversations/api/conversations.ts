@@ -1,5 +1,5 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
-import { save } from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import type {
   Conversation,
   ConversationListItem,
@@ -46,13 +46,19 @@ export async function exportStoredConversation(
   if (!isTauri()) throw new Error("会话导出需要在 Tauri 应用中运行。");
   const extension = format === "markdown" ? "md" : "json";
   const safeTitle = title.trim().replace(/[<>:"/\\|?*\u0000-\u001f]/g, "-").slice(0, 80) || "mnemora-conversation";
-  const path = await save({
-    title: format === "markdown" ? "导出会话为 Markdown" : "导出会话为 JSON",
-    defaultPath: `${safeTitle}.${extension}`,
-    filters: [{ name: format === "markdown" ? "Markdown" : "JSON", extensions: [extension] }],
-  });
-  if (!path) return false;
-  await invoke("export_conversation", { conversationId, path, format });
+  const path = format === "markdown"
+    ? await open({
+        title: "选择 Markdown 会话包的保存位置",
+        directory: true,
+        multiple: false,
+      })
+    : await save({
+        title: "导出会话为 JSON",
+        defaultPath: `${safeTitle}.${extension}`,
+        filters: [{ name: "JSON", extensions: [extension] }],
+      });
+  if (typeof path !== "string") return false;
+  await invoke<string>("export_conversation", { conversationId, path, format });
   return true;
 }
 

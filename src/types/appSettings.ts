@@ -36,6 +36,7 @@ export interface PetSettings {
   showOnStartup: boolean;
   alwaysOnTop: boolean;
   clickThrough: boolean;
+  locked: boolean;
   size: number;
   opacity: number;
   speechBubbles: boolean;
@@ -150,6 +151,7 @@ export function createInitialAppSettings(): AppSettings {
       showOnStartup: false,
       alwaysOnTop: true,
       clickThrough: false,
+      locked: true,
       size: 176,
       opacity: 96,
       speechBubbles: true,

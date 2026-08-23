@@ -1,47 +1,67 @@
 ---
-id: pdf-reading
-name: PDF 阅读
-description: 按需读取当前会话 PDF 的指定页面，提取可核查内容并保留页码引用；适合报告、论文、合同和普通文档阅读。
-version: 1.0.0
-license: Apache-2.0
-compatibility: 需要当前会话中存在带文本层的 PDF；扫描件 OCR、PDF 编辑、合并和创建尚未实现。
-triggers:
-  - /pdf
-  - /pdf-read
-argument-hint: "<阅读范围、页码或重点问题>"
-recommended-tools:
-  - read_pdf_pages
-required-tools:
-  - read_pdf_pages
-metadata:
-  mnemora:
-    default-enabled: true
-    supported-modes: [chat, work]
-    risk: low
-    resource-cost: high
-    source-repository: https://github.com/openai/skills
-    source-path: skills/.curated/pdf/SKILL.md
-    source-revision: 33a75a7b572867072dc0674bee8e63e06c19e67b
-    attribution: "PDF Skill by OpenAI, licensed under Apache-2.0."
-    adapted: true
-    adaptation-notes: 仅保留与 Mnemora 当前按页文本读取能力相符的工作流；移除 Python、Poppler、PDF 创建和视觉渲染依赖。
+name: "pdf"
+description: "Use when tasks involve reading, creating, or reviewing PDF files where rendering and layout matter; prefer visual checks by rendering pages (Poppler) and use Python tools such as `reportlab`, `pdfplumber`, and `pypdf` for generation and extraction."
 ---
 
-# PDF 阅读
 
-只分析 `read_pdf_pages` 实际返回的页面。不要根据文件名、目录、缩略图或未读取页面推测内容。
+# PDF Skill
 
-## 工作流程
+## When to use
+- Read or review PDF content where layout and visuals matter.
+- Create PDFs programmatically with reliable formatting.
+- Validate final rendering before delivery.
 
-1. 明确用户的问题、附件和期望覆盖的页码范围。
-2. 范围不明确时，从目录、摘要、引言或用户指定页面开始，小批量读取。
-3. 对关键结论继续读取其前后页面，避免脱离上下文引用。
-4. 区分原文事实、作者观点、你的归纳和仍需验证的内容。
-5. 每项可核查结论紧邻保留工具返回的 `[PDF:附件ID#page=页码]` 标识。
+## Workflow
+1. Prefer visual review: render PDF pages to PNGs and inspect them.
+   - Use `pdftoppm` if available.
+   - If unavailable, install Poppler or ask the user to review the output locally.
+2. Use `reportlab` to generate PDFs when creating new documents.
+3. Use `pdfplumber` (or `pypdf`) for text extraction and quick checks; do not rely on it for layout fidelity.
+4. After each meaningful update, re-render pages and verify alignment, spacing, and legibility.
 
-## 输出规则
+## Temp and output conventions
+- Use `tmp/pdfs/` for intermediate files; delete when done.
+- Write final artifacts under `output/pdf/` when working in this repo.
+- Keep filenames stable and descriptive.
 
-- 先回答用户的问题，再补充证据和页码。
-- 直接引语保持简短；无法确认原句时使用转述。
-- 页面无法提取、页码不存在或证据不足时明确说明。
-- 不声称已经执行 OCR、修改 PDF、写入批注或保存外部文件。
+## Dependencies (install if missing)
+Prefer `uv` for dependency management.
+
+Python packages:
+```
+uv pip install reportlab pdfplumber pypdf
+```
+If `uv` is unavailable:
+```
+python3 -m pip install reportlab pdfplumber pypdf
+```
+System tools (for rendering):
+```
+# macOS (Homebrew)
+brew install poppler
+
+# Ubuntu/Debian
+sudo apt-get install -y poppler-utils
+```
+
+If installation isn't possible in this environment, tell the user which dependency is missing and how to install it locally.
+
+## Environment
+No required environment variables.
+
+## Rendering command
+```
+pdftoppm -png $INPUT_PDF $OUTPUT_PREFIX
+```
+
+## Quality expectations
+- Maintain polished visual design: consistent typography, spacing, margins, and section hierarchy.
+- Avoid rendering issues: clipped text, overlapping elements, broken tables, black squares, or unreadable glyphs.
+- Charts, tables, and images must be sharp, aligned, and clearly labeled.
+- Use ASCII hyphens only. Avoid U+2011 (non-breaking hyphen) and other Unicode dashes.
+- Citations and references must be human-readable; never leave tool tokens or placeholder strings.
+
+## Final checks
+- Do not deliver until the latest PNG inspection shows zero visual or formatting defects.
+- Confirm headers/footers, page numbering, and section transitions look polished.
+- Keep intermediate files organized or remove them after final approval.

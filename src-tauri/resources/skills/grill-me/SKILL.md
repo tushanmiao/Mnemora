@@ -1,51 +1,7 @@
 ---
-id: grill-me
-name: 拷问检验
-description: 对一个计划、决策、想法或刚学完的知识展开不留情面的逐项拷问，通过一次一问的追问暴露矛盾、依赖和理解漏洞，直到与用户达成共识。适合在动手前压力测试方案，或在学习后检验掌握程度。
-version: 1.0.0
-license: MIT
-compatibility: 纯提示词技能，不调用外部工具；需要核查环境事实时依赖当前对话已有的读取能力。
-triggers:
-  - /grill
-  - /grilling
-argument-hint: "<要拷问的计划、决策或知识主题>"
-metadata:
-  mnemora:
-    default-enabled: true
-    supported-modes: [chat, work, notes]
-    risk: low
-    resource-cost: low
-    source-repository: https://github.com/mattpocock/skills
-    source-path: skills/productivity/grilling/SKILL.md
-    source-revision: 2ab958093e83e0ec752e6c1c5932da465bf23e0c
-    attribution: "grill-me / grilling by Matt Pocock, licensed under MIT and distributed in mattpocock/skills."
-    adapted: true
-    adaptation-notes: 中文化并合并上游 grill-me（入口）与 grilling（本体）为单一技能；触发词适配 Mnemora Slash 体系；按学习平台定位增加「知识检验」用法；核心拷问纪律逐条保留。
+name: grill-me
+description: A relentless interview to sharpen a plan or design.
+disable-model-invocation: true
 ---
 
-# 拷问检验
-
-对用户给出的主题展开不留情面的逐项拷问（grilling），直到双方对每个关键点达成共享理解。拷问的对象可以是一个计划、一次技术选型、一个产品想法，也可以是用户刚学完、想检验掌握程度的知识主题。
-
-## 拷问纪律（逐条遵守）
-
-1. **穷尽每一个分支。** 把主题拆成决策树，沿每条分支走到底；决策之间存在依赖时，按依赖顺序逐个解决，不跳步。
-2. **一次只问一个问题。** 提出问题后等待用户回答，再决定下一问。一次抛出多个问题只会让人无所适从。
-3. **每个问题都附上你的推荐答案。** 不做只提问不表态的旁观者；给出你的倾向和理由，让用户可以直接同意或反驳。
-4. **事实自己查，决策交给用户。** 凡是能从当前环境（文件、对话上下文、可用工具）查证的事实，自行查证后陈述，不拿来提问；真正的决策必须逐个摆到用户面前，等待用户拍板。
-5. **达成共识前不行动。** 在用户确认「我们已经达成共享理解」之前，不开始执行、不写代码、不产出最终结论。
-
-## 应答策略
-
-- 用户回答清晰 → 简短确认，进入下一分支。
-- 用户回答暴露了矛盾或未考虑的依赖 → 指出矛盾点，围绕它追问。
-- 用户说「不知道」→ 给出你的推荐答案与理由，请用户确认或修正。
-- 用户想跳过 → 说明该分支被跳过的风险，标记为「未决」，继续其余分支；结束时汇总所有未决项。
-
-## 知识检验用法（学习场景）
-
-当拷问对象是刚学完的知识时，追问应覆盖：概念的准确定义与边界（什么情况下不成立）、与前置知识的关联（为什么需要它）、一个反例或极端场景的推演、以及「如果换一种做法会怎样」的对比。目的不是考倒用户，而是暴露理解漏洞——结束时把暴露出的薄弱点明确列出，供用户补强或写入笔记。
-
-## 结束方式
-
-当所有分支都已达成共识（或明确标记未决）时：汇总关键结论、罗列未决项与暴露出的薄弱点，然后询问用户是否可以据此行动。
+Call the Skill tool with "grilling".

@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::memory::MemorySettings;
 
-pub const CURRENT_APP_SETTINGS_VERSION: u32 = 15;
+pub const CURRENT_APP_SETTINGS_VERSION: u32 = 16;
 pub const DEFAULT_GLOBAL_SYSTEM_PROMPT: &str = concat!(
     "你是 Mnemora 的学习与研究助手。\n",
     "优先直接回答问题，并根据复杂度使用清晰的标题、列表、表格或代码块。\n",
@@ -116,6 +116,8 @@ pub struct PetSettings {
     pub always_on_top: bool,
     #[serde(default)]
     pub click_through: bool,
+    #[serde(default = "default_true")]
+    pub locked: bool,
     #[serde(default = "default_pet_size")]
     pub size: u16,
     #[serde(default = "default_pet_opacity")]
@@ -141,6 +143,7 @@ impl Default for PetSettings {
             show_on_startup: false,
             always_on_top: true,
             click_through: false,
+            locked: true,
             size: default_pet_size(),
             opacity: default_pet_opacity(),
             speech_bubbles: true,
@@ -413,6 +416,9 @@ impl AppSettings {
         } else if source_version < 15 {
             self.pet.selected_pet_id = default_pet_id();
         }
+        if source_version < 16 {
+            self.pet.locked = true;
+        }
         self.pet.selected_pet_id = self.pet.selected_pet_id.trim().to_string();
 
         if self.user_display_name.chars().count() > 100 {
@@ -679,6 +685,7 @@ mod tests {
         assert!(settings.show_chat_task_progress);
         assert!(!settings.pet.enabled);
         assert!(settings.pet.always_on_top);
+        assert!(settings.pet.locked);
         assert_eq!(settings.pet.size, 176);
         assert_eq!(settings.retry_attempts, 5);
         assert_eq!(settings.agent_max_rounds, 20);
@@ -912,6 +919,26 @@ mod tests {
         assert_eq!(settings.version, CURRENT_APP_SETTINGS_VERSION);
         assert_eq!(settings.pet.selected_pet_id, "mimo");
         assert!(settings.pet.enabled);
+    }
+
+    #[test]
+    fn version_fifteen_settings_receive_the_locked_pet_default() {
+        let value = serde_json::json!({
+            "version": 15,
+            "interfaceLanguage": "zh",
+            "theme": "system",
+            "fontSize": 14,
+            "noteFontSize": 16,
+            "noteLineHeight": 1.85,
+            "retryEnabled": true,
+            "retryAttempts": 5,
+            "maxOutputTokens": 32768,
+            "pet": {"enabled": true, "locked": false}
+        });
+        let settings: AppSettings = serde_json::from_value(value).unwrap();
+        let settings = settings.normalize_and_validate().unwrap();
+        assert_eq!(settings.version, CURRENT_APP_SETTINGS_VERSION);
+        assert!(settings.pet.locked);
     }
 
     #[test]

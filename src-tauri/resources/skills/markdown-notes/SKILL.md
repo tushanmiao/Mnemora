@@ -1,46 +1,196 @@
 ---
-id: markdown-notes
-name: Markdown 笔记
-description: 将对话和材料整理为结构清楚、可追踪来源、兼容 GFM 的 Markdown 笔记，适合知识沉淀和后续 PDF 笔记工作流。
-version: 1.0.0
-license: MIT
-compatibility: 输出使用 Mnemora 当前可渲染的 CommonMark/GFM 子集，支持 Mermaid 图表、脚注、学习提示块和安全 HTML；不依赖 Obsidian Vault、CLI、Wikilink 或专有嵌入语法。
-triggers:
-  - /markdown
-  - /note
-argument-hint: "<笔记用途、结构或目标读者>"
-metadata:
-  mnemora:
-    default-enabled: true
-    supported-modes: [chat, notes]
-    risk: low
-    resource-cost: low
-    source-repository: https://github.com/kepano/obsidian-skills
-    source-path: skills/obsidian-markdown/SKILL.md
-    source-revision: a1dc48e68138490d522c04cbf5822214c6eb1202
-    attribution: "Obsidian Markdown Skill by Steph Ango (@kepano), licensed under MIT."
-    adapted: true
-    adaptation-notes: 将 Obsidian 专用 Markdown 工作流收敛为 Mnemora 的安全 GFM；保留并适配 Mermaid、脚注和引用，移除 Wikilink、Vault 嵌入、CSS class、脚本和其他未支持语法。
+name: obsidian-markdown
+description: Create and edit Obsidian Flavored Markdown with wikilinks, embeds, callouts, properties, and other Obsidian-specific syntax. Use when working with .md files in Obsidian, or when the user mentions wikilinks, callouts, frontmatter, tags, embeds, or Obsidian notes.
 ---
 
-# Markdown 笔记
+# Obsidian Flavored Markdown Skill
 
-生成可以直接阅读和继续编辑的 Markdown，不声称已经写入知识库或本地文件。
+Create and edit valid Obsidian Flavored Markdown. Obsidian extends CommonMark and GFM with wikilinks, embeds, callouts, properties, comments, and other syntax. This skill covers only Obsidian-specific extensions -- standard Markdown (headings, bold, italic, lists, quotes, code blocks, tables) is assumed knowledge.
 
-## 工作流程
+## Workflow: Creating an Obsidian Note
 
-1. 明确笔记用途：速记、学习卡片、概念说明、会议记录、决策记录或资料摘录。
-2. 提取主题、定义、事实、证据、观点、决定、行动项和未解决问题。
-3. 合并真正重复的内容，保留相互冲突的说法及各自来源。
-4. 使用标题、列表、引用、表格、任务列表和代码块组织内容。
-5. 保留文档名、页码、链接或消息上下文；没有来源时不要编造。
-6. 需要表达流程、时序或结构关系时，使用 `mermaid` 代码块；Mnemora 会默认渲染图表，同时保留切换回源码的入口。
-7. 当输出会直接作为笔记正文保存时，不要用 `markdown`、`md`、`text` 或四反引号包裹整份正文；真实 Mermaid 必须是正文顶层代码块。只有用户明确要求展示 Markdown 源码示例时，才使用外层源码围栏。
+1. **Add frontmatter** with properties (title, tags, aliases) at the top of the file. See [PROPERTIES.md](references/PROPERTIES.md) for all property types.
+2. **Write content** using standard Markdown for structure, plus Obsidian-specific syntax below.
+3. **Link related notes** using wikilinks (`[[Note]]`) for internal vault connections, or standard Markdown links for external URLs.
+4. **Embed content** from other notes, images, or PDFs using the `![[embed]]` syntax. See [EMBEDS.md](references/EMBEDS.md) for all embed types.
+5. **Add callouts** for highlighted information using `> [!type]` syntax. See [CALLOUTS.md](references/CALLOUTS.md) for all callout types.
+6. **Verify** the note renders correctly in Obsidian's reading view.
 
-## 格式规则
+> When choosing between wikilinks and Markdown links: use `[[wikilinks]]` for notes within the vault (Obsidian tracks renames automatically) and `[text](url)` for external URLs only.
 
-- 一个章节只承担一个主要主题，标题应准确描述内容。
-- 表格只用于需要横向比较的数据，长段落不要强行放进表格。
-- 代码、命令、路径和标识符使用反引号；多行代码使用带语言标记的代码块。
-- 不使用依赖特定笔记软件的 Wikilink、嵌入、CSS class 或脚本；不要在 Markdown 中生成事件属性、`javascript:` 链接或外部 iframe。
-- 默认结构为“摘要、核心概念、关键事实与证据、结论或决定、待办、来源”。
+## Internal Links (Wikilinks)
+
+```markdown
+[[Note Name]]                          Link to note
+[[Note Name|Display Text]]             Custom display text
+[[Note Name#Heading]]                  Link to heading
+[[Note Name#^block-id]]                Link to block
+[[#Heading in same note]]              Same-note heading link
+```
+
+Define a block ID by appending `^block-id` to any paragraph:
+
+```markdown
+This paragraph can be linked to. ^my-block-id
+```
+
+For lists and quotes, place the block ID on a separate line after the block:
+
+```markdown
+> A quote block
+
+^quote-id
+```
+
+## Embeds
+
+Prefix any wikilink with `!` to embed its content inline:
+
+```markdown
+![[Note Name]]                         Embed full note
+![[Note Name#Heading]]                 Embed section
+![[image.png]]                         Embed image
+![[image.png|300]]                     Embed image with width
+![[document.pdf#page=3]]               Embed PDF page
+```
+
+See [EMBEDS.md](references/EMBEDS.md) for audio, video, search embeds, and external images.
+
+## Callouts
+
+```markdown
+> [!note]
+> Basic callout.
+
+> [!warning] Custom Title
+> Callout with a custom title.
+
+> [!faq]- Collapsed by default
+> Foldable callout (- collapsed, + expanded).
+```
+
+Common types: `note`, `tip`, `warning`, `info`, `example`, `quote`, `bug`, `danger`, `success`, `failure`, `question`, `abstract`, `todo`.
+
+See [CALLOUTS.md](references/CALLOUTS.md) for the full list with aliases, nesting, and custom CSS callouts.
+
+## Properties (Frontmatter)
+
+```yaml
+---
+title: My Note
+date: 2024-01-15
+tags:
+  - project
+  - active
+aliases:
+  - Alternative Name
+cssclasses:
+  - custom-class
+---
+```
+
+Default properties: `tags` (searchable labels), `aliases` (alternative note names for link suggestions), `cssclasses` (CSS classes for styling).
+
+See [PROPERTIES.md](references/PROPERTIES.md) for all property types, tag syntax rules, and advanced usage.
+
+## Tags
+
+```markdown
+#tag                    Inline tag
+#nested/tag             Nested tag with hierarchy
+```
+
+Tags can contain letters, numbers (not first character), underscores, hyphens, and forward slashes. Tags can also be defined in frontmatter under the `tags` property.
+
+## Comments
+
+```markdown
+This is visible %%but this is hidden%% text.
+
+%%
+This entire block is hidden in reading view.
+%%
+```
+
+## Obsidian-Specific Formatting
+
+```markdown
+==Highlighted text==                   Highlight syntax
+```
+
+## Math (LaTeX)
+
+```markdown
+Inline: $e^{i\pi} + 1 = 0$
+
+Block:
+$$
+\frac{a}{b} = c
+$$
+```
+
+## Diagrams (Mermaid)
+
+````markdown
+```mermaid
+graph TD
+    A[Start] --> B{Decision}
+    B -->|Yes| C[Do this]
+    B -->|No| D[Do that]
+```
+````
+
+To link Mermaid nodes to Obsidian notes, add `class NodeName internal-link;`.
+
+## Footnotes
+
+```markdown
+Text with a footnote[^1].
+
+[^1]: Footnote content.
+
+Inline footnote.^[This is inline.]
+```
+
+## Complete Example
+
+````markdown
+---
+title: Project Alpha
+date: 2024-01-15
+tags:
+  - project
+  - active
+status: in-progress
+---
+
+# Project Alpha
+
+This project aims to [[improve workflow]] using modern techniques.
+
+> [!important] Key Deadline
+> The first milestone is due on ==January 30th==.
+
+## Tasks
+
+- [x] Initial planning
+- [ ] Development phase
+  - [ ] Backend implementation
+  - [ ] Frontend design
+
+## Notes
+
+The algorithm uses $O(n \log n)$ sorting. See [[Algorithm Notes#Sorting]] for details.
+
+![[Architecture Diagram.png|600]]
+
+Reviewed in [[Meeting Notes 2024-01-10#Decisions]].
+````
+
+## References
+
+- [Obsidian Flavored Markdown](https://help.obsidian.md/obsidian-flavored-markdown)
+- [Internal links](https://help.obsidian.md/links)
+- [Embed files](https://help.obsidian.md/embeds)
+- [Callouts](https://help.obsidian.md/callouts)
+- [Properties](https://help.obsidian.md/properties)

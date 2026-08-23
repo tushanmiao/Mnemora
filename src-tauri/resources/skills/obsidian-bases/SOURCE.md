@@ -1,6 +1,0 @@
-# 来源
-
-- 仓库：https://github.com/kepano/obsidian-skills
-- 原始路径：`skills/obsidian-bases/SKILL.md`
-- 固定版本：`a1dc48e68138490d522c04cbf5822214c6eb1202`
-- 许可证：MIT

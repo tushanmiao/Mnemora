@@ -1,0 +1,9 @@
+{
+  "id": "beginner-teaching",
+  "version": "official-2671677",
+  "defaultEnabled": true,
+  "supportedModes": ["chat", "work", "notes"],
+  "triggers": ["/teach"],
+  "license": "MIT",
+  "provenance": {"repository": "https://github.com/pjt222/agent-almanac", "path": "skills/teach/SKILL.md", "revision": "2671677379a44b1dbd5c5e342cf4547ca5935625", "attribution": "Official upstream skill; bundled unchanged.", "adapted": false}
+}

@@ -50,6 +50,7 @@ button { font: inherit; }
 }
 
 .pet-character-button:active { cursor: grabbing; }
+.pet-window-shell[data-locked="true"] .pet-character-button { cursor: default; }
 .pet-character-button:focus-visible { outline: 2px solid var(--pet-amber); border-radius: 42%; }
 
 .pet-mascot {
@@ -158,10 +159,10 @@ button { font: inherit; }
 .pet-bubble strong { font-size: 12px; }
 .pet-bubble span { overflow: hidden; color: #5e6473; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 
+.pet-lock,
 .pet-close {
   position: absolute;
   z-index: 6;
-  right: 8px;
   bottom: 16px;
   display: grid;
   width: 24px;
@@ -174,9 +175,24 @@ button { font: inherit; }
   background: rgb(247 245 236 / 82%);
   opacity: 0;
   cursor: pointer;
+  transition: opacity 140ms ease, background 140ms ease, border-color 140ms ease;
 }
 
+.pet-lock { right: 38px; }
+.pet-close { right: 8px; color: var(--pet-danger); }
+.pet-lock[data-locked="true"] {
+  border-color: color-mix(in srgb, var(--pet-amber) 72%, var(--pet-ink));
+  color: var(--pet-ink);
+  background: rgb(247 245 236 / 94%);
+  opacity: 0.92;
+}
+
+.pet-lock:hover,
+.pet-close:hover { background: var(--pet-paper); }
+
+.pet-window-shell:hover .pet-lock,
 .pet-window-shell:hover .pet-close,
+.pet-lock:focus-visible,
 .pet-close:focus-visible { opacity: 1; }
 
 @keyframes pet-breathe {
@@ -205,6 +221,8 @@ button { font: inherit; }
   .pet-eye,
   .pet-seed,
   .pet-tool { animation: none !important; }
+  .pet-lock,
+  .pet-close { transition: none; }
 }
 
 .pet-mascot[data-reduced-motion="true"],

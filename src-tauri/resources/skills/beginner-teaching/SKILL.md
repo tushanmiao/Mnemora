@@ -1,59 +1,207 @@
 ---
-id: beginner-teaching
-name: 小白讲解
-description: 根据用户在当前主题上的基础，从已知到未知分层讲解概念、系统、文档或技术内容；先给通俗直觉和具体例子，再逐步引入准确术语、因果机制与边界。适合“给小白讲讲”“没看懂”“这是什么意思”“从零解释”“举个例子”等学习与解读请求；目标是让用户形成可应用的心智模型，而不是展示知识或考核用户。
-version: 1.0.0
+name: teach
+description: >
+  AI knowledge transfer calibrated to learner level and needs. Models the
+  learner's mental state, scaffolds from known to unknown using Vygotsky's
+  Zone of Proximal Development, employs Socratic questioning to verify
+  understanding, and adapts explanations based on feedback signals. Use
+  when a user asks "how does X work?" and needs graduated explanation,
+  when their questions reveal a conceptual gap, when previous explanations
+  have not landed, or when teaching a concept that depends on prerequisites
+  the learner may not yet have.
 license: MIT
-compatibility: 纯提示词技能，可与 PDF、文档、代码、研究等领域 Skill 组合使用；本身不读取附件，也不执行工具。
-triggers:
-  - /explain
-  - /teach
-  - /beginner
-argument-hint: "<希望从零理解的概念、材料或问题>"
+allowed-tools: Read Grep Glob
 metadata:
-  mnemora:
-    default-enabled: true
-    supported-modes: [chat, work, notes]
-    risk: low
-    resource-cost: low
-    source-repository: https://github.com/pjt222/agent-almanac
-    source-path: skills/teach/SKILL.md
-    source-revision: 6345ef3b26a9ef4b3745a8e3875a0a8eb56b3a18
-    attribution: "Teach by Philipp Thoss from pjt222/agent-almanac, licensed under MIT."
-    adapted: true
-    adaptation-notes: 保留学习者校准、从已知到未知搭脚手架、具体先于抽象、理解检查和更换讲解方式等教学原则；压缩固定课程流程，适配 Mnemora 的中文对话、渐进式披露和零基础技术学习场景。
+  author: Philipp Thoss
+  version: "1.0"
+  domain: esoteric
+  complexity: intermediate
+  language: natural
+  tags: esoteric, teaching, knowledge-transfer, scaffolding, socratic-method, meta-cognition
 ---
 
-# 小白讲解
+# Teach
 
-让用户真正理解并能够用自己的话复述或应用，而不是把专业答案简单“说得更长”。用户的基础按当前主题判断；一个人在某个领域有经验，不代表在本主题上也熟悉。
+Conduct a structured knowledge transfer session — assessing the learner's current understanding, scaffolding from known to unknown, explaining at the calibrated depth, checking comprehension through questioning, adapting to feedback, and reinforcing through practice.
 
-## 讲解流程
+## When to Use
 
-1. 从用户的措辞、已知背景和上一轮困惑判断当前基础。信息不明确时先按零基础到中等之间讲解，并根据反馈调整，不先进行考试式盘问。
-2. 先用一句日常语言给出核心结论：它是什么、解决什么问题、为什么值得关心。
-3. 找到用户已熟悉的事物作为锚点，用一个类比连接新概念；明确类比的有效部分和不适用边界。
-4. 一次只引入一个新概念。先给具体场景或最小例子，再抽象出一般规则。
-5. 首次出现关键术语时保留英文原名，并立刻解释中文含义、在本场景中的角色以及它与相邻概念的区别。
-6. 对流程或系统沿一个完整案例讲清“输入 → 处理 → 输出”，尤其说明为什么上一环节会导致下一环节。
-7. 区分“现在必须理解”“知道存在即可”“以后再深入”，控制零基础用户的认知负担。
-8. 用户仍困惑时，更换类比、例子、图示思路或讲解入口；不要原样重复，也不要把困惑归因于用户。
+- A user asks "how does X work?" and the answer requires graduated explanation, not a data dump
+- The user's questions reveal a gap between their current understanding and what they need to know
+- Previous explanations have not landed — the user is confused or asking the same question differently
+- Teaching a concept that has prerequisites the user may not have
+- After `learn` has built a deep mental model that now needs to be communicated effectively
 
-## 真实性与证据
+## Inputs
 
-- 保留文件路径、命令、错误文本、配置键、模型名和版本等准确细节，不为了通俗而篡改事实。
-- 区分材料直接证明的事实、合理推断、教学类比和未知项。
-- 不把代码审查、风险清单或严重程度排序当作默认讲解结构；只有用户明确要求时才评价缺陷。
-- 不用空洞的术语解释另一个术语。每个抽象概念至少连接一个可观察现象或具体例子。
+- **Required**: The concept, system, or skill to teach
+- **Required**: The learner (available implicitly — the user in conversation)
+- **Optional**: Known learner context (expertise level, background, stated goals)
+- **Optional**: Previous failed explanations (what has already been tried)
+- **Optional**: Time/depth constraint (quick overview vs. deep understanding)
 
-## 推荐输出
+## Procedure
 
-- 一句话通俗版
-- 一个直观例子或类比
-- 按步骤走一遍真实过程
-- 本轮必要术语
-- 为什么这样设计或为什么会发生
-- 必须记住 / 暂时不用记
-- 仍不确定的内容与下一步
+### Step 1: Assess — Map the Learner
 
-简单问题不必机械展示全部标题。需要确认理解时，优先邀请用户用自己的话复述，或给一个很小的变化让用户预测结果；这是诊断讲解是否有效，不是刁难或考试。
+Before explaining anything, determine what the learner already knows and what they need.
+
+```text
+Learner Calibration Matrix:
+┌──────────────┬────────────────────────────┬──────────────────────────┐
+│ Level        │ Explanation Pattern         │ Check Pattern            │
+├──────────────┼────────────────────────────┼──────────────────────────┤
+│ Novice       │ Analogy-first. Connect to  │ "In your own words, what │
+│ (no domain   │ familiar concepts. Avoid   │ does X do?" Accept any   │
+│ vocabulary)  │ jargon entirely. Concrete  │ correct paraphrase.      │
+│              │ before abstract.           │                          │
+├──────────────┼────────────────────────────┼──────────────────────────┤
+│ Intermediate │ Build on existing vocab.   │ "What would happen if    │
+│ (knows terms,│ Fill gaps with targeted    │ we changed Y?" Tests     │
+│ some gaps)   │ explanations. Use code     │ whether they can predict │
+│              │ examples that are close    │ from understanding.      │
+│              │ to their existing work.    │                          │
+├──────────────┼────────────────────────────┼──────────────────────────┤
+│ Advanced     │ Skip fundamentals. Focus   │ "How would you compare   │
+│ (strong base,│ on nuance, trade-offs,     │ X to Z approach?" Tests  │
+│ seeks depth) │ edge cases. Reference      │ integration and judgment. │
+│              │ source material directly.  │                          │
+├──────────────┼────────────────────────────┼──────────────────────────┤
+│ Misaligned   │ Correct gently. Provide    │ "Let me check my under-  │
+│ (confident   │ the right model alongside  │ standing — you're saying  │
+│ but wrong)   │ why the wrong model feels  │ X?" Mirror back to       │
+│              │ right. No shame signals.   │ surface the mismatch.    │
+└──────────────┴────────────────────────────┴──────────────────────────┘
+```
+
+1. Review what the user has said: their questions, vocabulary, stated goals
+2. Classify their likely level for this specific topic (a person can be advanced in one area and novice in another)
+3. Identify the Zone of Proximal Development (ZPD): what is just beyond their current reach but achievable with support?
+4. Note any misconceptions that need to be addressed before the correct model can land
+5. Identify the best entry point: what do they already know that connects to what they need to learn?
+
+**Expected:** A clear picture of: what the learner knows, what they need to know, and what bridge connects the two. The assessment should be specific enough to choose an explanation strategy.
+
+**On failure:** If the learner's level is unclear, ask a calibration question: "Are you familiar with [prerequisite concept]?" This is not a test — it is gathering data to teach better. If asking feels awkward, default to intermediate level and adjust based on their response.
+
+### Step 2: Scaffold — Bridge Known to Unknown
+
+Build a path from what the learner already understands to the new concept.
+
+1. Identify the anchor: one concept the learner definitely understands that relates to the target
+2. State the connection explicitly: "X, which you know, works like Y in this new context because..."
+3. Introduce one new idea at a time — never two new concepts in the same sentence
+4. Use concrete examples before abstract principles
+5. Build layered complexity: simple version first, then add nuance
+6. If prerequisites are missing, teach the prerequisite first (mini-scaffold) before returning to the main concept
+
+**Expected:** A scaffolded path where each step builds on the previous one. The learner should never feel lost because each new idea connects to something they already hold.
+
+**On failure:** If the gap between known and unknown is too large for a single scaffold, break it into multiple smaller steps. If no familiar anchor exists (entirely novel domain), use analogy to a different domain the learner knows. If the analogy is imperfect, acknowledge the limits: "This is like X, except for..."
+
+### Step 3: Explain — Calibrate Depth and Style
+
+Deliver the explanation at the right level, in the right mode.
+
+1. Open with the core idea in one sentence — the headline before the article
+2. Expand with the scaffolded explanation built in Step 2
+3. Use the learner's vocabulary, not the domain's jargon (unless they are advanced)
+4. For code concepts: show a minimal working example, not a comprehensive one
+5. For abstract concepts: provide a concrete instance first, then generalize
+6. For processes: walk through a specific case step-by-step before stating the general rules
+7. Monitor for signs of confusion: if the next question does not build on the explanation, the explanation did not land
+
+**Expected:** The learner receives an explanation that is neither too shallow (leaving them with questions) nor too deep (overwhelming with unnecessary detail). The explanation uses their language and connects to their context.
+
+**On failure:** If the explanation is too long, the core idea may be buried — restate the one-sentence headline. If the learner looks more confused after the explanation, the entry point was wrong — try a different anchor or analogy. If the concept is genuinely complex, acknowledge complexity rather than hiding it: "This has three parts, and they interact. Let me start with the first."
+
+### Step 4: Check — Verify Understanding
+
+Do not assume the explanation worked. Test it through questions that reveal the learner's mental model.
+
+1. Ask a question that requires application, not recall: "Given X, what would you expect to happen?"
+2. Ask for a paraphrase: "Can you explain this back in your own words?"
+3. Present a variation: "What if we changed this one thing?"
+4. Look for the specific understanding: can they predict, not just repeat?
+5. If their answer reveals a misconception, note the specific error for Step 5
+6. If their answer is correct, push slightly further: can they generalize?
+
+**Expected:** The check reveals whether the learner has a working mental model or is parroting back the explanation. A working model can handle variations; a memorized explanation cannot.
+
+**On failure:** If the learner cannot answer the check question, the explanation did not build the right mental model. This is not their failure — it is feedback on the teaching. Note what specifically did not land and proceed to Step 5.
+
+### Step 5: Adapt — Respond to Feedback
+
+Based on the check results, adjust the teaching approach.
+
+1. If understanding is solid: proceed to reinforcement (Step 6) or advance to the next concept
+2. If a specific misconception exists: address it directly with evidence, not repetition
+3. If general confusion exists: try a completely different explanation approach
+4. If the learner is ahead of the assessment: accelerate — skip scaffolding and go to nuance
+5. If the learner is behind the assessment: slow down — teach the prerequisite they are missing
+
+```text
+Adaptation Responses:
+┌──────────────────┬─────────────────────────────────────────────────┐
+│ Signal           │ Adaptation                                       │
+├──────────────────┼─────────────────────────────────────────────────┤
+│ "I think I get   │ Push gently: "Great — so what would happen      │
+│ it"              │ if...?" Verify before moving on.                 │
+├──────────────────┼─────────────────────────────────────────────────┤
+│ "I'm confused"   │ Change modality: if verbal, show code. If code, │
+│                  │ use analogy. If analogy, draw a diagram.         │
+├──────────────────┼─────────────────────────────────────────────────┤
+│ "But what about  │ Good sign — they are testing the model. Address  │
+│ [edge case]?"    │ the edge case, which deepens understanding.      │
+├──────────────────┼─────────────────────────────────────────────────┤
+│ "That doesn't    │ They have a competing model. Explore it: "What   │
+│ seem right"      │ do you think happens instead?" Reconcile the two.│
+├──────────────────┼─────────────────────────────────────────────────┤
+│ Silence or       │ They may be processing, or lost. Ask: "What      │
+│ topic change     │ part feels least clear?" Lower the bar gently.   │
+└──────────────────┴─────────────────────────────────────────────────┘
+```
+
+**Expected:** The teaching adapts in real time based on feedback. No explanation is repeated identically — each retry uses a different approach. The adaptation should feel responsive, not mechanical.
+
+**On failure:** If multiple adaptation attempts fail, the problem may be a missing prerequisite that is so fundamental neither party has identified it. Ask explicitly: "What part of the explanation feels like the biggest jump?" This often reveals the hidden gap.
+
+### Step 6: Reinforce — Provide Practice
+
+Solidify understanding through application, not repetition.
+
+1. Provide a practice problem that requires the new concept (not a trick question)
+2. If in a coding context: suggest a small modification to existing code that uses the concept
+3. If in a conceptual context: present a scenario and ask them to apply the model
+4. Connect forward: "Now that you understand X, this connects to Y, which we can explore next"
+5. Provide reference material for independent exploration: documentation links, related files, further reading
+6. Close the loop: "To summarize what we covered..." — one sentence for the core concept
+
+**Expected:** The learner has applied the concept at least once and has resources for continued learning. The summary anchors the learning for future recall.
+
+**On failure:** If the practice problem is too hard, the teaching jumped too far — simplify the problem. If the learner can do the practice but cannot explain why, they have procedural knowledge without conceptual understanding — return to Step 3 with a focus on the "why" rather than the "how."
+
+## Validation
+
+- [ ] The learner's level was assessed before the explanation began
+- [ ] The explanation was scaffolded from known to unknown, not delivered as a data dump
+- [ ] At least one check question was asked to verify understanding (not assumed)
+- [ ] The teaching adapted based on feedback rather than repeating the same explanation
+- [ ] The learner can apply the concept, not just recall the explanation
+- [ ] Honest gaps were acknowledged rather than glossed over
+
+## Common Pitfalls
+
+- **The curse of knowledge**: Forgetting that the learner does not share the teacher's context. Jargon, assumed prerequisites, and implicit reasoning steps are the primary culprits
+- **Explaining to impress rather than to teach**: Comprehensive, technically precise explanations that demonstrate knowledge but leave the learner behind
+- **Repeating louder**: When an explanation does not land, repeating it with more emphasis rather than trying a different approach
+- **Testing instead of teaching**: Using check questions as gotchas rather than as diagnostic tools. The goal is to reveal understanding, not to catch failure
+- **Assuming silence is understanding**: The absence of questions does not mean the explanation worked — it often means the learner does not know what to ask
+- **One-size-fits-all depth**: Giving a novice an advanced explanation because "they should understand the full picture" overwhelms; giving an expert a beginner explanation because "better safe" wastes their time
+
+## Related Skills
+
+- `teach-guidance` — the human-guidance variant for coaching a person in becoming a better teacher
+- `learn` — systematic knowledge acquisition that builds the understanding to teach from
+- `listen` — deep receptive attention that reveals the learner's actual needs beyond their stated question
+- `meditate` — clearing assumptions between teaching episodes to approach each learner freshly

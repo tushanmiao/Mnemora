@@ -2607,7 +2607,7 @@ mod tests {
 
         let prompt = request.system_prompt.as_deref().unwrap();
         assert!(prompt.contains("<id>question-framing</id>"), "{prompt}");
-        assert!(prompt.contains("为什么会这样"), "{prompt}");
+        assert!(prompt.contains("research effort starts vague"), "{prompt}");
         assert!(request
             .tools
             .iter()

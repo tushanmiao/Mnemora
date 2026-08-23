@@ -1,49 +1,111 @@
 ---
-id: paper-research
-name: 论文研究
-description: 对当前会话中的一篇或多篇论文进行问题、方法、证据、结论、限制和文献间差异分析，并保留 PDF 页码来源。
-version: 1.0.0
-license: MIT
-compatibility: 当前适配版只研究用户已附加的 PDF，不提供 Semantic Scholar、arXiv 搜索或联网下载。
-triggers:
-  - /paper
-  - /papers
-argument-hint: "<研究问题、论文范围或比较维度>"
-recommended-tools:
-  - read_pdf_pages
-required-tools:
-  - read_pdf_pages
-metadata:
-  mnemora:
-    default-enabled: true
-    supported-modes: [chat, work]
-    risk: low
-    resource-cost: high
-    source-repository: https://github.com/xwmxcz/papers-skill
-    source-path: skills/papers-research/SKILL.md
-    source-revision: a64c2eda2c9fc182c96e1409cde267b262dbebde
-    attribution: "Papers Research by xwmxcz, licensed under MIT."
-    adapted: true
-    adaptation-notes: 将原有论文搜索、下载和 Python CLI 流程改为 Mnemora 已有的会话 PDF 按页读取；保留深读、比较和证据追踪方法。
+name: papers-research
+description: Use when the user wants to search academic papers, read research literature, find citations, download arXiv PDFs, or perform any literature-review style task. Self-contained Python toolkit — no MCP server required.
 ---
 
-# 论文研究
+# Papers Research
 
-使用当前会话中实际存在的论文完成研究。当前版本不能在线检索文献，也不能把摘要或标题当作全文证据。
+Skill-mode port of [papers-mcp](https://github.com/xwmxcz/papers-mcp).
+Orchestrates a bundled Python CLI (`scripts/papers.py`) via Bash to search
+papers, fetch metadata/citations, and download + read PDFs.
 
-## 单篇深读
+## One-time setup
 
-1. 识别研究问题、背景缺口和作者主张。
-2. 读取方法、数据、样本、基线、指标和统计分析所在页面。
-3. 将主要结论映射到直接证据，判断结论强度是否超过研究设计能够支持的范围。
-4. 检查限制、利益冲突、数据可用性和作者未排除的替代解释。
-5. 输出“问题、方法、关键结果、证据强度、限制、待确认问题”。
+Verify dependencies (only once per machine):
 
-## 多篇比较
+```bash
+python -c "import httpx, arxiv, fitz" 2>&1 || pip install httpx arxiv PyMuPDF
+```
 
-- 先分别建立“论文 - 主张 - 方法 - 证据 - 限制”记录，再进行横向综合。
-- 区分一致结论、表面一致但定义不同、真实冲突和材料不足。
-- 不以论文数量或引用次数代替证据质量。
-- 每个关键判断保留对应论文的 `[PDF:附件ID#page=页码]` 引用。
+If `python` isn't on PATH, use `py` (Windows) or the full interpreter path.
 
-用户要求“最新研究”或“完整检索”时，明确说明当前 Skill 只覆盖已附加材料。
+## Invocation
+
+The script lives at `${CLAUDE_PLUGIN_ROOT}/skills/papers-research/scripts/papers.py`
+— this variable is auto-substituted by Claude Code's plugin loader. Always
+quote the path (it may contain spaces).
+
+```bash
+python "${CLAUDE_PLUGIN_ROOT}/skills/papers-research/scripts/papers.py" <subcommand> [args]
+```
+
+## Subcommands
+
+| Subcommand | What it does | Example |
+|---|---|---|
+| `search <query> [--limit N]` | Semantic Scholar search (cap 20) | `search "diffusion models" --limit 5` |
+| `detail <paper_id>` | Full metadata, TL;DR, top 10 references | `detail 10.48550/arXiv.2310.06825` |
+| `citations <paper_id> [--limit N]` | Papers that cite this one (cap 20) | `citations <id> --limit 15` |
+| `arxiv <query> [--max-results N]` | arXiv preprint search (cap 10) | `arxiv "RLHF" --max-results 5` |
+| `download <arxiv_id> [--save-dir D]` | Save PDF locally | `download 2310.06825 --save-dir ./pdfs` |
+| `read <pdf_path> [--max-pages N]` | Extract PDF text via PyMuPDF | `read ./pdfs/foo.pdf --max-pages 20` |
+
+## Paper ID conventions
+
+`detail` and `citations` auto-detect ID type:
+- **DOI** (`10.xxxx/...`) → used as-is
+- **arXiv** (`ARXIV:2310.06825`, or bare numeric ≥10 digits → auto-prefixed)
+- **Semantic Scholar paperId** (long hex string) → used as-is
+
+`download` requires a plain arXiv ID like `2310.06825` (no prefix).
+
+## Standard workflows
+
+### A — Literature scan
+1. Run `search <topic>`.
+2. Present results as a ranked table: **# | Title | Year | Citations | ID**.
+3. Ask which paper(s) to dig into.
+
+### B — Deep-read one paper
+1. `detail <id>` → confirm match, show abstract + TL;DR.
+2. If arXiv ID present: `download <arxiv_id> --save-dir ./pdfs`.
+3. `read <pdf_path>` (default 10 pages = abstract + intro + conclusion;
+   raise to 30+ for full read but warn about context usage).
+4. Summarize: **problem · method · key result · limitations**.
+
+### C — Impact analysis
+1. `detail` the anchor paper.
+2. `citations <id> --limit 20`.
+3. Cluster citing papers by year/theme; highlight most-cited follow-ups.
+
+### D — Build a reading list
+1. Run Workflow A.
+2. For each chosen paper, also run `citations` to find related work.
+3. Deduplicate by paperId; annotate each entry with one-line rationale.
+
+## Decision rules
+
+**Which search first?**
+- Generic topic, unknown venue → `search` (broader, has citation counts).
+- User says "preprint" / "latest" / "arXiv" → `arxiv`.
+- Ambiguous → run both, dedupe by title.
+
+**Before downloading a PDF:**
+1. Always `detail` first to confirm match.
+2. If user request was vague, show abstract and confirm before downloading.
+3. Then `download`.
+
+**Reading PDFs:**
+- `max_pages=10` default is fine for skim.
+- Bump to 30+ only when user wants thorough analysis.
+- If extraction returns `PDF无法提取文本（可能是扫描件）`, the PDF is a
+  scanned image — offer to find an alternative version on the publisher
+  site or use OCR (out of scope for this skill).
+
+## Failure handling
+
+- **HTTP 429** → script auto-retries 3× with exponential backoff. If it
+  still fails, wait 10s and retry once before reporting.
+- **Empty results** → broaden query (drop quoted phrases, try synonyms)
+  before giving up.
+- **Unknown paper_id format** → try as DOI first, then `ARXIV:<id>`, then raw.
+- **Missing dependency** → script returns `需要安装 X: pip install X`;
+  surface this and offer to install.
+
+## Output conventions
+
+- Always include the paper ID alongside titles so the user can re-query.
+- Cite format: `[FirstAuthor et al., Year] *Title* (cites: N)`.
+- For downloaded PDFs, always report the absolute save path.
+- Default `save-dir` is the current working directory; ask if the user
+  wants a specific location.

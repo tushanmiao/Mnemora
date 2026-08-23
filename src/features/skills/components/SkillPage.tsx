@@ -138,7 +138,9 @@ export function SkillManager({ state }: Props) {
               <button className="skill-row-main" type="button" onClick={() => void showDetail(skill)}>
                 <span className="skill-source">
                   {skill.source === "builtin"
-                    ? skill.provenance.repository ? "开源适配" : "内置"
+                    ? skill.provenance.repository
+                      ? skill.provenance.adapted ? "开源适配" : "官方原版"
+                      : "内置"
                     : "用户"}
                 </span>
                 <strong>{skill.name}</strong>
@@ -223,7 +225,7 @@ export function SkillManager({ state }: Props) {
                       <div><dt>仓库</dt><dd title={detail.provenance.repository}>{repositoryName(detail.provenance.repository)}</dd></div>
                       <div><dt>原始路径</dt><dd title={detail.provenance.path}>{detail.provenance.path || "未记录"}</dd></div>
                       <div><dt>固定版本</dt><dd title={detail.provenance.revision}>{shortRevision(detail.provenance.revision)}</dd></div>
-                      <div><dt>适配状态</dt><dd>{detail.provenance.adapted ? "已为 Mnemora 适配" : "原样导入"}</dd></div>
+                      <div><dt>版本状态</dt><dd>{detail.provenance.adapted ? "已为 Mnemora 适配" : "官方原版完整导入"}</dd></div>
                     </dl>
                     {detail.provenance.attribution ? <p><strong>署名</strong>{detail.provenance.attribution}</p> : null}
                     {detail.provenance.adaptationNotes ? <p><strong>改编说明</strong>{detail.provenance.adaptationNotes}</p> : null}

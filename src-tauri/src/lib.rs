@@ -42,6 +42,20 @@ pub fn run() {
                 // 先清理后台任务，再让 Tauri 默认关闭流程销毁 WebView。
                 window_lifecycle::cleanup_before_main_window_close(window.app_handle());
             }
+            tauri::WindowEvent::CloseRequested { api, .. }
+                if window.label() == window_lifecycle::PET_WINDOW_LABEL =>
+            {
+                let locked = window
+                    .app_handle()
+                    .state::<state::AppState>()
+                    .app_settings
+                    .read()
+                    .map(|settings| settings.pet.locked)
+                    .unwrap_or(true);
+                if locked {
+                    api.prevent_close();
+                }
+            }
             tauri::WindowEvent::Destroyed => {
                 if window.label() == "main" {
                     html_preview::destroy_all(window.app_handle());
@@ -241,6 +255,7 @@ pub fn run() {
             commands::note_pipeline::note_edit_resolve,
             commands::note_pipeline::note_edit_resolve_content,
             commands::pet::pet_set_enabled,
+            commands::pet::pet_set_locked,
             commands::pet::pet_update_position,
             commands::pet::pet_open_main,
             commands::pet::pet_list,

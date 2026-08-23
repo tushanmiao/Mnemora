@@ -229,6 +229,7 @@ export function PetSettingsPanel({
           <PetRow label="启用桌面宠物" description="保存后创建独立透明窗口；拖动宠物主体即可移动，关闭主窗口时一并销毁。"><Toggle checked={draft.enabled} onChange={(value) => update("enabled", value)} /></PetRow>
           <PetRow label="开机启动时显示" description="只有应用开机自启且宠物已启用时生效。"><Toggle checked={draft.showOnStartup} onChange={(value) => update("showOnStartup", value)} /></PetRow>
           <PetRow label="始终置顶"><Toggle checked={draft.alwaysOnTop} onChange={(value) => update("alwaysOnTop", value)} /></PetRow>
+          <PetRow label="锁定宠物" description="锁定后不能拖动，并隐藏关闭按钮；可点击宠物旁的小锁解锁。"><Toggle checked={draft.locked} onChange={(value) => update("locked", value)} /></PetRow>
           <PetRow label="点击穿透" description="启用后窗口不接收鼠标；需要回到设置关闭。"><Toggle checked={draft.clickThrough} onChange={(value) => update("clickThrough", value)} /></PetRow>
           <PetRow label="显示状态气泡"><Toggle checked={draft.speechBubbles} onChange={(value) => update("speechBubbles", value)} /></PetRow>
         </section>

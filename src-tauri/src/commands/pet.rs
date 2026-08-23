@@ -695,6 +695,18 @@ pub async fn pet_set_enabled(
 }
 
 #[tauri::command]
+pub async fn pet_set_locked(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    locked: bool,
+) -> Result<AppSettings, String> {
+    let settings = save_pet_settings(&state, |settings| settings.pet.locked = locked)?;
+    let _ = app.emit_to("main", "mnemora://app-settings-updated", &settings);
+    window_lifecycle::update_pet_window_runtime(&app, &settings.pet)?;
+    Ok(settings)
+}
+
+#[tauri::command]
 pub async fn pet_update_position(state: State<'_, AppState>, x: f64, y: f64) -> Result<(), String> {
     save_pet_settings(&state, |settings| {
         settings.pet.position_x = Some(x);

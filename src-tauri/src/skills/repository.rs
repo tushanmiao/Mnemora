@@ -594,6 +594,7 @@ fn validate_model_resource_relative(value: &str) -> Result<PathBuf, String> {
     if matches!(
         file_name.as_str(),
         "skill.md"
+            | "mnemora.json"
             | "source.md"
             | "license"
             | "license.txt"
@@ -857,13 +858,13 @@ mod tests {
                 .repository
                 .as_deref()
                 .is_some_and(|value| value.starts_with("https://github.com/")));
-            assert!(skill.provenance.adapted);
+            assert!(!skill.provenance.adapted);
             assert!(skill.provenance.revision.as_deref().is_some_and(
                 |value| value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
             ));
             let directory = builtin_dir.join(&skill.id);
-            assert!(directory.join("SOURCE.md").is_file());
-            assert!(directory.join("LICENSE.txt").is_file());
+            assert!(directory.join("SKILL.md").is_file());
+            assert!(directory.join("mnemora.json").is_file());
         }
 
         let rendered = repository

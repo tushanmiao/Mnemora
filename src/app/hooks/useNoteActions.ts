@@ -169,6 +169,18 @@ export function useNoteActions({
     }
   }, []);
 
+  const showDeepNoteFeedback = useCallback((kind: NoteFeedback["kind"], text: string) => {
+    // 深度笔记的过程状态已经由全局任务中心承载；只保留终态与错误 Toast，
+    // 避免输入区附近出现第二个会持续遮挡内容的长驻进度条。
+    if (kind === "progress") {
+      if (feedbackTimerRef.current !== null) window.clearTimeout(feedbackTimerRef.current);
+      feedbackTimerRef.current = null;
+      setFeedback((current) => current?.kind === "progress" ? null : current);
+      return;
+    }
+    showFeedback(kind, text);
+  }, [showFeedback]);
+
   useEffect(() => () => {
     if (feedbackTimerRef.current !== null) window.clearTimeout(feedbackTimerRef.current);
     if (detailRefreshTimerRef.current !== null) window.clearTimeout(detailRefreshTimerRef.current);
@@ -232,7 +244,7 @@ export function useNoteActions({
         activity: event.activity,
       });
       refreshDeepNoteDetail(event.runId);
-      showFeedback("progress", event.message);
+      showDeepNoteFeedback("progress", event.message);
       return;
     }
     if (event.type === "outlineReady") {
@@ -417,7 +429,7 @@ export function useNoteActions({
           degraded: false,
         });
         refreshDeepNoteDetail(run.id, true);
-        showFeedback("progress", "正在恢复未完成的深度笔记任务…");
+        showDeepNoteFeedback("progress", "正在恢复未完成的深度笔记任务…");
         try {
           await resumeNotePipeline(run.id, handleNotePipelineEvent);
         } catch (error) {
@@ -460,7 +472,7 @@ export function useNoteActions({
               terminal: false,
               degraded: false,
             });
-            showFeedback(
+            showDeepNoteFeedback(
               "progress",
               total > 0 ? `后台正在生成深度笔记 ${completed}/${total}…` : "后台正在分析深度笔记…",
             );
@@ -647,7 +659,7 @@ export function useNoteActions({
       terminal: false,
       degraded: false,
     });
-    showFeedback("progress", "正在启动深度笔记分析…");
+    showDeepNoteFeedback("progress", "正在启动深度笔记分析…");
     try {
       const run = await startNotePipeline(
         conversationId,
@@ -736,7 +748,7 @@ export function useNoteActions({
   const adjustDeepNoteOutline = useCallback(async (requirement: string) => {
     if (!deepNoteReview || deepNoteReviewBusy) return;
     setDeepNoteReviewBusy(true);
-    showFeedback("progress", "正在按补充要求调整提纲…");
+    showDeepNoteFeedback("progress", "正在按补充要求调整提纲…");
     try {
       await adjustNotePipeline(deepNoteReview.runId, requirement.trim(), handleNotePipelineEvent);
     } catch (error) {
@@ -756,7 +768,7 @@ export function useNoteActions({
     }
     setDeepNoteReviewBusy(true);
     setDeepNoteReview(null);
-    showFeedback("progress", `正在扩写 0/${outline.sections.length}…`);
+    showDeepNoteFeedback("progress", `正在扩写 0/${outline.sections.length}…`);
     try {
       await confirmNotePipeline(
         deepNoteReview.runId,
@@ -866,7 +878,7 @@ export function useNoteActions({
         activity: null,
       });
       refreshDeepNoteDetail(runId, true);
-      showFeedback("progress", "已继续深度笔记任务。");
+      showDeepNoteFeedback("progress", "已继续深度笔记任务。");
     } catch (error) {
       if (previousPhase === "paused") deepNotePausedRunIdRef.current = runId;
       setDeepNoteProgress((current) => ({
@@ -911,7 +923,7 @@ export function useNoteActions({
       degraded: false,
       activity: null,
     });
-    showFeedback("progress", "正在重试深度笔记失败步骤…");
+    showDeepNoteFeedback("progress", "正在重试深度笔记失败步骤…");
     try {
       const recovered = await retryNotePipeline(runId, handleNotePipelineEvent);
       refreshDeepNoteDetail(recovered.id, true);
@@ -949,7 +961,7 @@ export function useNoteActions({
       degraded: false,
       activity: null,
     });
-    showFeedback("progress", "正在重新生成深度笔记…");
+    showDeepNoteFeedback("progress", "正在重新生成深度笔记…");
     try {
       const restarted = await restartNotePipeline(oldRunId, handleNotePipelineEvent);
       latestDeepNoteRunIdRef.current = restarted.id;
@@ -982,7 +994,7 @@ export function useNoteActions({
     setDeepNoteControlBusy(true);
     if (!run.runId) {
       run.cancelRequested = true;
-      showFeedback("progress", "正在等待任务启动后取消…");
+      showDeepNoteFeedback("progress", "正在等待任务启动后取消…");
       setDeepNoteControlBusy(false);
       return;
     }
@@ -1032,7 +1044,7 @@ export function useNoteActions({
           message: "后台仍在结束处理中；控制按钮已恢复，可以再次停止或遗弃任务。",
           updatedAt: Date.now(),
         } : progress);
-        showFeedback("progress", "后台仍在结束处理中；可以再次停止或遗弃任务。");
+        showDeepNoteFeedback("progress", "后台仍在结束处理中；可以再次停止或遗弃任务。");
       }
     } catch (error) {
       cancellingDeepNoteRunIdsRef.current.delete(runId);
@@ -1083,7 +1095,7 @@ export function useNoteActions({
     if (!runId || (deepNoteControlBusy && deepNoteProgress?.phase !== "cancelling")) return;
     ignoredDeepNoteRunIdsRef.current.add(runId);
     setDeepNoteControlBusy(true);
-    showFeedback("progress", "正在停止后台请求并永久遗弃任务…");
+    showDeepNoteFeedback("progress", "正在停止后台请求并永久遗弃任务…");
     try {
       await abandonNotePipeline(runId);
       latestDeepNoteRunIdRef.current = null;

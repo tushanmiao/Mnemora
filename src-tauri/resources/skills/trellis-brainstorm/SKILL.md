@@ -1,65 +1,200 @@
 ---
-id: trellis-brainstorm
-name: 需求收敛与方案规划
-description: 在复杂功能、架构调整或需求不清晰时，先基于仓库证据澄清目标、范围、验收标准和关键取舍，再形成可执行方案；适合 Chat、Work 和深度笔记规划，不替代用户做产品决策。
-version: 1.0.0
-license: AGPL-3.0
-compatibility: 规划与分析型 Skill；优先使用当前对话、附件和已授权工具核实事实，不虚构已执行的研究或实现。
-triggers:
-  - /brainstorm
-  - /requirements
-  - /plan
-  - /trellis
-metadata:
-  mnemora:
-    default-enabled: true
-    supported-modes: [chat, work, notes]
-    risk: low
-    resource-cost: low
-    source-repository: https://github.com/mindfold-ai/Trellis
-    source-path: .agents/skills/trellis-brainstorm/SKILL.md
-    source-revision: 9914a7f2b1b61c0e3890be474f771f49aa115f88
-    attribution: "Trellis Brainstorm by Mindfold LLC, distributed under AGPL-3.0; Mnemora uses an independent Chinese adaptation of the workflow ideas."
-    adapted: true
-    adaptation-notes: 仅吸收证据优先、单问题收敛、范围与验收标准澄清、计划确认后再执行等工作流思想；未复制 Trellis 的脚本、任务目录、Agent 配置或代码。Mnemora 中的分析结果仍由当前会话和实际工具事实决定。
+name: trellis-brainstorm
+description: "Guides collaborative requirements discovery before implementation. Creates task directory, seeds PRD, asks high-value questions one at a time, researches technical choices, and converges on MVP scope. Use when requirements are unclear, there are multiple valid approaches, or the user describes a new feature or complex task."
+---
+
+# Trellis Brainstorm
+
+## Non-Negotiable Planning Contract
+
+A request to build, implement, fix, refactor, or "go ahead" is not approval to leave planning. Task-creation consent is also not implementation approval.
+
+For every non-trivial task, the user must respond at least once after the initial request before implementation begins. If no clarification is needed, that response must approve the final planning summary described below.
+
+While any user-owned product, scope, UX, compatibility, risk, or acceptance decision remains unresolved, end the turn with exactly one highest-value question. Do not edit product code, dispatch implementation, or run `task.py start`.
+
+## Non-Negotiable Evidence Rule
+
+If a question can be answered by exploring the codebase, explore the codebase instead.
+
+This is mandatory. Before asking the user a question, first check whether the answer is already available in code, tests, configs, docs, existing specs, or task history.
+
+Do not ask the user to confirm facts that the repository can answer. Ask only for product intent, preference, scope, risk tolerance, acceptance behavior, or decisions that remain ambiguous after inspection.
+
+Repository evidence establishes current behavior and technical constraints. The user's intended behavior, feature scope boundaries, and UX preferences are never answerable by repository evidence alone, even when an existing pattern exists; existing patterns are options and recommendation evidence, not decisions.
 
 ---
 
-# 需求收敛与方案规划
+Use this skill during Phase 1 planning to turn the user's request into clear requirements and planning artifacts.
 
-当用户提出复杂功能、架构重构、性能优化或多个可行方案时，先把问题收敛成可以验证和执行的方案。该 Skill 的重点不是制造流程文档，而是避免在目标、边界和验收方式未明确时过早实施。
+## Preconditions
 
-## 工作方式
+Use this skill only after task-creation consent has been given and the user is ready to enter Trellis planning.
 
-1. 用一句话重述用户真正想得到的结果，区分目标、症状和实现手段。
-2. 先检查当前对话、附件、代码、测试、配置和已有文档；能从已有材料确认的事实，不重复向用户提问。
-3. 明确列出已确认事实、仍需用户决定的产品选择、技术未知项和暂不纳入的范围。
-4. 对每个关键决策给出推荐方案、理由和代价。涉及用户偏好、范围、风险容忍度或最终行为时，不替用户擅自决定。
-5. 一次只提出一个会改变方案的最高价值问题；如果没有阻塞性问题，就给出完整计划并等待用户确认。
-6. 计划必须包含目标、范围、非目标、数据流或工作流、验收标准、风险和验证方法。
-7. 用户确认后，才进入执行；执行结果与计划不一致时，说明差异并重新收敛，不把未完成的工作描述为已完成。
+If no task exists yet, create one:
 
-## 与 Mnemora 的边界
+```bash
+TASK_DIR=$(python3 ./.trellis/scripts/task.py create "<short task title>" --slug <slug>)
+```
 
-- 普通 Chat 中可以直接给出小型分析；只有复杂或高风险任务才展开完整规划。
-- 不因为加载了本 Skill 就伪造工具调用、文件研究、测试结果或完成状态。
-- 需要读取仓库、附件或运行测试时，只有实际工具返回结果才能作为事实。
-- 用户明确要求立即修复且范围清晰时，可以省略形式化提问，但仍应保留最小的范围和验收判断。
-- 深度生成笔记可以把规划结果转换为语义计划和 DAG 节点，但本 Skill 本身不执行章节生成，也不替代运行层调度器。
+Use a concise title from the user's request. Use a slug without a date prefix. `task.py create` adds the `MM-DD-` directory prefix automatically.
 
-## 推荐输出结构
+`task.py create` creates the default `prd.md`. Update that file with the current understanding before asking follow-up questions.
 
-根据任务复杂度选择精简或完整形式。完整形式至少包括：
+## Planning Flow
 
-- 核心目标与问题本质；
-- 已确认事实与证据；
-- 推荐方案及关键取舍；
-- 处理范围与明确不处理的内容；
-- 工作流、接口或数据边界；
-- 可观察的验收标准；
-- 风险、未知项和回滚方式；
-- 下一步需要用户确认的单个决策，或确认后执行的计划。
+1. Capture the user's request and initial known facts in `prd.md`.
+2. Inspect available evidence before asking questions:
+   - code, tests, fixtures, and configs
+   - README files, docs, existing specs, and domain notes
+   - related Trellis tasks, research files, and session history when present
+3. Separate what you found into:
+   - confirmed facts
+   - product intent still needed from the user
+   - scope or risk decisions still needed from the user
+   - likely out-of-scope items
+4. If a user-owned decision remains, ask the single highest-value question, include your recommendation and trade-off, then stop. Do not perform implementation work in the same turn.
+5. After each user answer, update `prd.md`, recompute the decision inventory, and repeat from step 2.
+6. When no user-owned decision remains, create or update `design.md` and `implement.md` for complex tasks.
+7. Run the requirement convergence gate, then the PRD convergence pass.
+8. Present the final planning summary and stop. Do not run `task.py start` or edit product code in the same turn.
+9. Only a subsequent user message that explicitly approves the latest planning summary authorizes `task.py start` and implementation. If the artifacts change materially after approval, repeat the final review.
 
-## 来源与许可证
+Do not invent a project-specific product/spec hierarchy. If the repository already has product, domain, or spec docs, use them. If it does not, proceed with the evidence that exists.
 
-本 Skill 是对 Trellis `trellis-brainstorm` 的独立适配，不包含其代码、脚本或任务系统。来源仓库及原始文件路径、固定版本和许可证信息记录在 frontmatter；Trellis 为 AGPL-3.0，任何直接复制或衍生代码的行为都必须单独进行许可证审查。
+## Question Rules
+
+Ask only one question per message.
+
+Each question must include:
+
+- the decision needed
+- why the answer matters
+- your recommended answer
+- the trade-off if the user chooses differently
+
+Do not ask process questions such as whether to search, inspect files, or continue brainstorming. Do the evidence work directly. Ask the user only when the remaining issue is a product decision, preference, scope boundary, or risk tolerance choice.
+
+Recommendations are not default selections. Never choose a recommended product decision on the user's behalf merely because the user asked for implementation.
+
+Do not manufacture clarification questions when the request and repository evidence already resolve every decision. In that case, proceed directly to the final planning summary, which still requires a subsequent explicit approval.
+
+The final review is a required phase-transition gate, not a prohibited process question. Task-creation consent, the initial implementation request, and approval given before the latest final summary do not satisfy this gate.
+
+## Thinking Framework: First Principles Analysis
+
+When requirements are vague, solutions feel over-engineered, or you're about to add complexity "because everyone does" — decompose to fundamental truths before reasoning upward.
+
+### Step 1: Restate the Problem
+
+Strip away implementation details to one sentence.
+
+> Bad: "We need to add Redis caching to the user profile endpoint"
+> Good: "User profile data takes too long to load"
+
+### Step 2: List Fundamental Truths
+
+What is absolutely true (not opinion or convention)?
+
+| Category | Examples |
+|----------|----------|
+| **Physical constraints** | Network latency ≥ 0, disk I/O has limits |
+| **Business rules** | "Users must see their own data" |
+| **Technical invariants** | "Data must be consistent" |
+| **User needs** | "The user wants X within Y seconds" |
+
+### Step 3: Challenge Assumptions
+
+For each component of the current plan:
+
+- **Fact or convention?** "We always use REST" — why?
+- **What if we removed this?** If nothing breaks, it's unnecessary.
+- **Solving the actual problem or a symptom?** Trace the causal chain.
+- **Who benefits from this complexity?** If "nobody", simplify.
+
+### Step 4: Build Up from Truths
+
+1. Start with the minimum viable mechanism satisfying all truths
+2. Add complexity only when a specific truth demands it
+3. Each addition must answer: "Which truth requires this?"
+
+### Step 5: Validate
+
+- Does the solution solve the original problem?
+- What assumptions need verification?
+- What's the simplest experiment to test this?
+
+## Requirement Convergence Gate
+
+Before final review, verify all of the following:
+
+- the user outcome and product value are explicit
+- in-scope and out-of-scope behavior are explicit
+- acceptance criteria describe observable outcomes
+- user-owned product, scope, UX, compatibility, and risk decisions are resolved
+- blocking open questions are empty
+- technical unknowns are researched or explicitly deferred without changing MVP behavior
+
+Lightweight tasks may omit `design.md` and `implement.md`; they may not skip evidence inspection, requirement convergence, final review, or fresh implementation approval.
+
+The final planning summary must show Goal, In Scope, Out of Scope, Acceptance Criteria, Key Decisions, relevant Risks or Deferred Items, and artifact status.
+
+## Artifact Rules
+
+`prd.md` records requirements and acceptance:
+
+- goal and user value
+- confirmed facts
+- requirements
+- acceptance criteria
+- out of scope
+- open questions that still block planning
+
+`design.md` records technical design for complex tasks:
+
+- architecture and boundaries
+- data flow and contracts
+- compatibility and migration notes
+- important trade-offs
+- operational or rollback considerations
+
+`implement.md` records execution planning for complex tasks:
+
+- ordered implementation checklist
+- validation commands
+- risky files or rollback points
+- follow-up checks before `task.py start`
+
+Lightweight tasks may have only `prd.md`. Complex tasks must have `prd.md`, `design.md`, and `implement.md` before `task.py start`.
+
+`implement.md` is not a replacement for `implement.jsonl`. On sub-agent-dispatch workflows, `implement.jsonl` and `check.jsonl` must each contain at least one real spec/research entry before `task.py start`; the seed `_example` row does not count. Inline workflows skip this JSONL gate because Phase 2 loads context through `trellis-before-dev`.
+
+## PRD Convergence Pass
+
+Before declaring planning ready or running `task.py start`, rewrite `prd.md` once against the final structure described in the artifact rules above. This is not optional cleanup; it is the final planning gate.
+
+The pass must be lossless:
+
+- Collapse repeated facts into one authoritative section.
+- Fold temporary brainstorm sections such as `What I already know`, `Assumptions`, and resolved `Open Questions` into Goal, Background, Requirements, Technical Notes, or Acceptance Criteria.
+- Remove resolved open questions instead of leaving empty or already-answered sections.
+- Merge parallel bug and requirement lists when they describe the same work; keep each defect's severity, evidence, and file:line anchors on the owning requirement.
+- Preserve every file:line anchor, decision, constraint, requirement ID, and acceptance-criteria mapping.
+- Do not proceed to final review while any blocking open question remains.
+
+After the pass, read `prd.md` top to bottom and verify that no fact is repeated across sections unless the repetition adds new information.
+
+## Quality Bar
+
+Before declaring planning ready:
+
+- `prd.md` contains testable acceptance criteria.
+- `prd.md` has passed the PRD convergence pass: no unresolved temporary brainstorm sections, no duplicate facts across sections, and no lost anchors, decisions, or acceptance mappings.
+- Repository-answerable questions have already been answered through inspection.
+- Blocking open questions are empty.
+- Complex tasks have `design.md` and `implement.md`.
+- Sub-agent-dispatch tasks have real curated entries in both `implement.jsonl` and `check.jsonl`; seed-only manifests are not ready.
+- The latest final planning summary has been presented to the user.
+- In a subsequent message, the user explicitly approved that summary for implementation.
+
+Do not start implementation merely because the user originally asked for implementation.

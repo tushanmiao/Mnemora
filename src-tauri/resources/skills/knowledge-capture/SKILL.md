@@ -1,46 +1,56 @@
 ---
-id: knowledge-capture
-name: 知识整理
-description: 将对话、决定和零散笔记转化为可复用的知识条目、操作指南、决策记录或问答，并保留背景与来源线索。
-version: 1.0.0
-license: MIT
-compatibility: 当前适配版只生成结构化 Markdown，不连接 Notion，也不会自动写入 Mnemora 记忆或知识库。
-triggers:
-  - /capture
-  - /knowledge
-argument-hint: "<知识类型、受众或使用场景>"
+name: notion-knowledge-capture
+description: Capture conversations and decisions into structured Notion pages; use when turning chats/notes into wiki entries, how-tos, decisions, or FAQs with proper linking.
 metadata:
-  mnemora:
-    default-enabled: true
-    supported-modes: [chat, notes]
-    risk: low
-    resource-cost: low
-    source-repository: https://github.com/openai/skills
-    source-path: skills/.curated/notion-knowledge-capture/SKILL.md
-    source-revision: 49f948faa9258a0c61caceaf225e179651397431
-    attribution: "Knowledge Capture by Notion Labs, Inc., licensed under MIT and distributed in openai/skills."
-    adapted: true
-    adaptation-notes: 保留知识捕获的分类、结构化和来源追踪方法；移除 Notion MCP、数据库模板、页面创建及更新操作。
+  short-description: Capture conversations into structured Notion pages
 ---
 
-# 知识整理
+# Knowledge Capture
 
-先判断用户要沉淀的知识类型，再选择结构。当前 Skill 只生成正文，除非另有可用工具，否则不声称已经保存。
+Convert conversations and notes into structured, linkable Notion pages for easy reuse.
 
-## 类型选择
+## Quick start
+1) Clarify what to capture (decision, how-to, FAQ, learning, documentation) and target audience.
+2) Identify the right database/template in `reference/` (team wiki, how-to, FAQ, decision log, learning, documentation).
+3) Pull any prior context from Notion with `Notion:notion-search` → `Notion:notion-fetch` (existing pages to update/link).
+4) Draft the page with `Notion:notion-create-pages` using the database’s schema; include summary, context, source links, and tags/owners.
+5) Link from hub pages and related records; update status/owners with `Notion:notion-update-page` as the source evolves.
 
-- **概念条目**：定义、背景、原理、例子、边界、相关概念。
-- **操作指南**：目标、前置条件、步骤、验证、失败处理。
-- **决策记录**：背景、选项、决定、理由、影响、复审条件。
-- **问答**：问题、简短答案、详细说明、例外和来源。
-- **学习笔记**：摘要、关键概念、证据、疑问和下一步。
+## Workflow
+### 0) If any MCP call fails because Notion MCP is not connected, pause and set it up:
+1. Add the Notion MCP:
+   - `codex mcp add notion --url https://mcp.notion.com/mcp`
+2. Enable remote MCP client:
+   - Set `[features].rmcp_client = true` in `config.toml` **or** run `codex --enable rmcp_client`
+3. Log in with OAuth:
+   - `codex mcp login notion`
 
-## 提取规则
+After successful login, the user will have to restart codex. You should finish your answer and tell them so when they try again they can continue with Step 1.
 
-1. 区分事实、决定、意见、推测和行动项。
-2. 对决定保留备选方案、取舍理由和结果，不只记录最终答案。
-3. 对操作说明保留前置条件、异常分支和验证方式。
-4. 标注来源链接、文档、页码或对话背景；来源不明时明确写出。
-5. 删除寒暄和重复过程，但不能删除影响结论的限制条件与分歧。
+### 1) Define the capture
+- Ask purpose, audience, freshness, and whether this is new or an update.
+- Determine content type: decision, how-to, FAQ, concept/wiki entry, learning/note, documentation page.
 
-输出应能脱离当前聊天独立阅读，并包含适合后续更新的“待确认”或“变更记录”部分。
+### 2) Locate destination
+- Pick the correct database using `reference/*-database.md` guides; confirm required properties (title, tags, owner, status, date, relations).
+- If multiple candidate databases, ask the user which to use; otherwise, create in the primary wiki/documentation DB.
+
+### 3) Extract and structure
+- Extract facts, decisions, actions, and rationale from the conversation.
+- For decisions, record alternatives, rationale, and outcomes.
+- For how-tos/docs, capture steps, pre-reqs, links to assets/code, and edge cases.
+- For FAQs, phrase as Q&A with concise answers and links to deeper docs.
+
+### 4) Create/update in Notion
+- Use `Notion:notion-create-pages` with the correct `data_source_id`; set properties (title, tags, owner, status, dates, relations).
+- Use templates in `reference/` to structure content (section headers, checklists).
+- If updating an existing page, fetch then edit via `Notion:notion-update-page`.
+
+### 5) Link and surface
+- Add relations/backlinks to hub pages, related specs/docs, and teams.
+- Add a short summary/changelog for future readers.
+- If follow-up tasks exist, create tasks in the relevant database and link them.
+
+## References and examples
+- `reference/` — database schemas and templates (e.g., `team-wiki-database.md`, `how-to-guide-database.md`, `faq-database.md`, `decision-log-database.md`, `documentation-database.md`, `learning-database.md`, `database-best-practices.md`).
+- `examples/` — capture patterns in practice (e.g., `decision-capture.md`, `how-to-guide.md`, `conversation-to-faq.md`).

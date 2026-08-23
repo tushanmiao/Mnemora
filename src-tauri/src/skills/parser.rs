@@ -11,6 +11,7 @@ use super::types::{
 };
 
 pub const MAX_SKILL_MD_BYTES: u64 = 256 * 1024;
+const MNEMORA_METADATA_FILE: &str = "mnemora.json";
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -97,6 +98,41 @@ struct MnemoraMetadata {
     resource_cost: SkillResourceCost,
 }
 
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SkillSidecar {
+    id: Option<String>,
+    version: Option<String>,
+    #[serde(default)]
+    triggers: Vec<String>,
+    argument_hint: Option<String>,
+    #[serde(default)]
+    recommended_tools: Vec<String>,
+    #[serde(default)]
+    required_tools: Vec<String>,
+    default_enabled: Option<bool>,
+    #[serde(default)]
+    supported_modes: Vec<SkillMode>,
+    risk: Option<SkillRisk>,
+    resource_cost: Option<SkillResourceCost>,
+    license: Option<String>,
+    compatibility: Option<String>,
+    #[serde(default)]
+    provenance: SkillSidecarProvenance,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SkillSidecarProvenance {
+    repository: Option<String>,
+    path: Option<String>,
+    revision: Option<String>,
+    attribution: Option<String>,
+    #[serde(default)]
+    adapted: bool,
+    adaptation_notes: Option<String>,
+}
+
 pub(crate) fn parse_skill(
     directory: &Path,
     source: SkillSource,
@@ -119,10 +155,12 @@ pub(crate) fn parse_skill(
     let body = body.trim().to_string();
     let frontmatter: SkillFrontmatter = serde_yaml::from_str(yaml)
         .map_err(|error| format!("SKILL.md 元数据不是有效 YAML：{error}"))?;
-    let skill_id = resolve_skill_id(directory, &frontmatter)?;
-    let version = resolve_version(&frontmatter)?;
+    let sidecar = read_sidecar(directory)?;
+    let skill_id = resolve_skill_id(directory, &frontmatter, &sidecar)?;
+    let version = resolve_version(&frontmatter, &sidecar)?;
     validate_frontmatter(&frontmatter, &version)?;
     validate_provenance(source, &frontmatter)?;
+    validate_sidecar(source, &sidecar)?;
 
     let mut triggers = frontmatter
         .triggers
@@ -130,34 +168,49 @@ pub(crate) fn parse_skill(
         .iter()
         .map(|value| normalize_trigger(value))
         .collect::<Result<Vec<_>, _>>()?;
+    triggers.extend(
+        sidecar
+            .triggers
+            .iter()
+            .map(|value| normalize_trigger(value))
+            .collect::<Result<Vec<_>, _>>()?,
+    );
     triggers.sort();
     triggers.dedup();
     let mut recommended_tools = frontmatter.recommended_tools.into_values();
+    recommended_tools.extend(sidecar.recommended_tools.iter().cloned());
     recommended_tools.sort();
     recommended_tools.dedup();
     let mut required_tools = frontmatter.required_tools.into_values();
+    required_tools.extend(sidecar.required_tools.iter().cloned());
     required_tools.sort();
     required_tools.dedup();
-    let supported_modes = if frontmatter.metadata.mnemora.supported_modes.is_empty() {
+    let supported_modes = if !sidecar.supported_modes.is_empty() {
+        normalized_modes(sidecar.supported_modes.clone())
+    } else if frontmatter.metadata.mnemora.supported_modes.is_empty() {
         SkillMode::all().to_vec()
     } else {
-        let mut modes = frontmatter.metadata.mnemora.supported_modes.clone();
-        modes.sort_by_key(|mode| match mode {
-            SkillMode::Chat => 0,
-            SkillMode::Work => 1,
-            SkillMode::Notes => 2,
-        });
-        modes.dedup();
-        modes
+        normalized_modes(frontmatter.metadata.mnemora.supported_modes.clone())
     };
 
-    let provenance = SkillProvenance {
-        repository: frontmatter.metadata.mnemora.source_repository,
-        path: frontmatter.metadata.mnemora.source_path,
-        revision: frontmatter.metadata.mnemora.source_revision,
-        attribution: frontmatter.metadata.mnemora.attribution,
-        adapted: frontmatter.metadata.mnemora.adapted,
-        adaptation_notes: frontmatter.metadata.mnemora.adaptation_notes,
+    let provenance = if sidecar.provenance.repository.is_some() {
+        SkillProvenance {
+            repository: sidecar.provenance.repository,
+            path: sidecar.provenance.path,
+            revision: sidecar.provenance.revision,
+            attribution: sidecar.provenance.attribution,
+            adapted: sidecar.provenance.adapted,
+            adaptation_notes: sidecar.provenance.adaptation_notes,
+        }
+    } else {
+        SkillProvenance {
+            repository: frontmatter.metadata.mnemora.source_repository,
+            path: frontmatter.metadata.mnemora.source_path,
+            revision: frontmatter.metadata.mnemora.source_revision,
+            attribution: frontmatter.metadata.mnemora.attribution,
+            adapted: frontmatter.metadata.mnemora.adapted,
+            adaptation_notes: frontmatter.metadata.mnemora.adaptation_notes,
+        }
     };
 
     let content_hash = format!("sha256:{:x}", Sha256::digest(&bytes));
@@ -170,17 +223,22 @@ pub(crate) fn parse_skill(
             source,
             enabled,
             // 缺少该字段时按旧版本行为默认启用；新内置 Skill 可显式写 false。
-            default_enabled: frontmatter.metadata.mnemora.default_enabled.unwrap_or(true),
+            default_enabled: sidecar
+                .default_enabled
+                .or(frontmatter.metadata.mnemora.default_enabled)
+                .unwrap_or(true),
             supported_modes,
-            risk: frontmatter.metadata.mnemora.risk,
-            resource_cost: frontmatter.metadata.mnemora.resource_cost,
+            risk: sidecar.risk.unwrap_or(frontmatter.metadata.mnemora.risk),
+            resource_cost: sidecar
+                .resource_cost
+                .unwrap_or(frontmatter.metadata.mnemora.resource_cost),
             triggers,
-            argument_hint: frontmatter.argument_hint,
+            argument_hint: sidecar.argument_hint.or(frontmatter.argument_hint),
             recommended_tools,
             required_tools,
             disable_model_invocation: frontmatter.disable_model_invocation,
-            license: frontmatter.license,
-            compatibility: frontmatter.compatibility,
+            license: sidecar.license.or(frontmatter.license),
+            compatibility: sidecar.compatibility.or(frontmatter.compatibility),
             provenance,
             content_hash,
         },
@@ -188,6 +246,34 @@ pub(crate) fn parse_skill(
         body,
         directory: directory.to_path_buf(),
     })
+}
+
+fn read_sidecar(directory: &Path) -> Result<SkillSidecar, String> {
+    let path = directory.join(MNEMORA_METADATA_FILE);
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(SkillSidecar::default())
+        }
+        Err(error) => return Err(format!("读取 {MNEMORA_METADATA_FILE} 失败：{error}")),
+    };
+    if bytes.is_empty() || bytes.len() > 64 * 1024 {
+        return Err(format!(
+            "{MNEMORA_METADATA_FILE} 必须是 1 到 64 KB 的 JSON 文件。"
+        ));
+    }
+    serde_json::from_slice(&bytes)
+        .map_err(|error| format!("{MNEMORA_METADATA_FILE} 不是有效 JSON：{error}"))
+}
+
+fn normalized_modes(mut modes: Vec<SkillMode>) -> Vec<SkillMode> {
+    modes.sort_by_key(|mode| match mode {
+        SkillMode::Chat => 0,
+        SkillMode::Work => 1,
+        SkillMode::Notes => 2,
+    });
+    modes.dedup();
+    modes
 }
 
 fn split_frontmatter(raw: &str) -> Result<(&str, &str), String> {
@@ -205,7 +291,15 @@ fn split_frontmatter(raw: &str) -> Result<(&str, &str), String> {
     Ok((yaml, body))
 }
 
-fn resolve_skill_id(directory: &Path, value: &SkillFrontmatter) -> Result<String, String> {
+fn resolve_skill_id(
+    directory: &Path,
+    value: &SkillFrontmatter,
+    sidecar: &SkillSidecar,
+) -> Result<String, String> {
+    if let Some(skill_id) = sidecar.id.as_deref() {
+        validate_skill_id(skill_id)?;
+        return Ok(skill_id.to_string());
+    }
     if let Some(skill_id) = value.id.as_deref() {
         validate_skill_id(skill_id)?;
         return Ok(skill_id.to_string());
@@ -224,16 +318,12 @@ fn resolve_skill_id(directory: &Path, value: &SkillFrontmatter) -> Result<String
     Err("SKILL.md 未声明 id，且目录名和 name 都不能作为安全的 Skill ID。".to_string())
 }
 
-fn resolve_version(value: &SkillFrontmatter) -> Result<String, String> {
-    let version = value
+fn resolve_version(value: &SkillFrontmatter, sidecar: &SkillSidecar) -> Result<String, String> {
+    let version = sidecar
         .version
-        .as_ref()
-        .or(value.metadata.version.as_ref())
-        .map(|value| match value {
-            ScalarText::Text(value) => value.clone(),
-            ScalarText::Integer(value) => value.to_string(),
-            ScalarText::Float(value) => value.to_string(),
-        })
+        .clone()
+        .or_else(|| value.version.as_ref().map(scalar_text))
+        .or_else(|| value.metadata.version.as_ref().map(scalar_text))
         .unwrap_or_else(|| "unversioned".to_string());
     if version.trim().is_empty() || version.len() > 32 {
         return Err("Skill version 不能为空且不能超过 32 个字节。".to_string());
@@ -241,12 +331,20 @@ fn resolve_version(value: &SkillFrontmatter) -> Result<String, String> {
     Ok(version)
 }
 
+fn scalar_text(value: &ScalarText) -> String {
+    match value {
+        ScalarText::Text(value) => value.clone(),
+        ScalarText::Integer(value) => value.to_string(),
+        ScalarText::Float(value) => value.to_string(),
+    }
+}
+
 fn validate_frontmatter(value: &SkillFrontmatter, version: &str) -> Result<(), String> {
     if value.name.trim().is_empty() || value.name.chars().count() > 80 {
         return Err("Skill name 不能为空且不能超过 80 个字符。".to_string());
     }
-    if value.description.trim().is_empty() || value.description.chars().count() > 500 {
-        return Err("Skill description 不能为空且不能超过 500 个字符。".to_string());
+    if value.description.trim().is_empty() || value.description.chars().count() > 4_000 {
+        return Err("Skill description 不能为空且不能超过 4000 个字符。".to_string());
     }
     if version.trim().is_empty() || version.len() > 32 {
         return Err("Skill version 不能为空且不能超过 32 个字节。".to_string());
@@ -332,6 +430,61 @@ fn validate_provenance(source: SkillSource, value: &SkillFrontmatter) -> Result<
         .ok_or_else(|| "带上游来源的内置 Skill 必须固定 source revision。".to_string())?;
     if revision.len() != 40 || !revision.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err("内置 Skill 的 source revision 必须是 40 位 Commit SHA。".to_string());
+    }
+    Ok(())
+}
+
+fn validate_sidecar(source: SkillSource, value: &SkillSidecar) -> Result<(), String> {
+    if let Some(id) = value.id.as_deref() {
+        validate_skill_id(id)?;
+    }
+    if value.triggers.len() > 16 {
+        return Err("mnemora.json 不能声明超过 16 个触发词。".to_string());
+    }
+    if value.recommended_tools.len() > 32 || value.required_tools.len() > 32 {
+        return Err("mnemora.json 不能声明超过 32 个工具。".to_string());
+    }
+    for tool in value
+        .recommended_tools
+        .iter()
+        .chain(value.required_tools.iter())
+    {
+        validate_tool_name(tool)?;
+    }
+    validate_optional_metadata("license", value.license.as_deref(), 160)?;
+    validate_optional_metadata("compatibility", value.compatibility.as_deref(), 1000)?;
+    validate_optional_metadata(
+        "source repository",
+        value.provenance.repository.as_deref(),
+        500,
+    )?;
+    validate_optional_metadata("source path", value.provenance.path.as_deref(), 500)?;
+    validate_optional_metadata("source revision", value.provenance.revision.as_deref(), 128)?;
+    validate_optional_metadata("attribution", value.provenance.attribution.as_deref(), 500)?;
+    validate_optional_metadata(
+        "adaptation notes",
+        value.provenance.adaptation_notes.as_deref(),
+        1000,
+    )?;
+    if let Some(repository) = value.provenance.repository.as_deref() {
+        if !repository.starts_with("https://") {
+            return Err("mnemora.json 的 source repository 必须使用 HTTPS。".to_string());
+        }
+        if source == SkillSource::Builtin {
+            if value.license.as_deref().is_none_or(str::is_empty)
+                || value.provenance.path.as_deref().is_none_or(str::is_empty)
+            {
+                return Err("带上游来源的内置 Skill 必须记录 license 和 source path。".to_string());
+            }
+            let revision = value
+                .provenance
+                .revision
+                .as_deref()
+                .ok_or_else(|| "内置 Skill 必须固定 source revision。".to_string())?;
+            if revision.len() != 40 || !revision.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return Err("内置 Skill 的 source revision 必须是 40 位 Commit SHA。".to_string());
+            }
+        }
     }
     Ok(())
 }
@@ -516,6 +669,44 @@ mod tests {
 
         let record = parse_skill(&skill_dir, SkillSource::User, true).unwrap();
         assert_eq!(record.summary.version, "unversioned");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sidecar_adds_mnemora_discovery_without_rewriting_official_skill() {
+        let root =
+            std::env::temp_dir().join(format!("mnemora-official-skill-{}", uuid::Uuid::new_v4()));
+        let skill_dir = root.join("official-skill");
+        fs::create_dir_all(&skill_dir).unwrap();
+        let upstream = "---\nname: upstream-name\ndescription: Official upstream instructions.\nallowed-tools: Read Bash\n---\n# Original body\n";
+        fs::write(skill_dir.join("SKILL.md"), upstream).unwrap();
+        fs::write(
+            skill_dir.join("mnemora.json"),
+            r#"{
+              "id": "official-skill",
+              "version": "official-0123456",
+              "defaultEnabled": false,
+              "supportedModes": ["chat", "notes"],
+              "triggers": ["/official"],
+              "requiredTools": ["workspace_read"],
+              "license": "MIT",
+              "provenance": {
+                "repository": "https://github.com/example/upstream",
+                "path": "skills/official-skill/SKILL.md",
+                "revision": "0123456789abcdef0123456789abcdef01234567",
+                "adapted": false
+              }
+            }"#,
+        )
+        .unwrap();
+
+        let record = parse_skill(&skill_dir, SkillSource::Builtin, true).unwrap();
+        assert_eq!(record.markdown, upstream);
+        assert_eq!(record.summary.name, "upstream-name");
+        assert_eq!(record.summary.triggers, vec!["/official"]);
+        assert_eq!(record.summary.required_tools, vec!["workspace_read"]);
+        assert!(!record.summary.default_enabled);
+        assert!(!record.summary.provenance.adapted);
         let _ = fs::remove_dir_all(root);
     }
 }

@@ -8,6 +8,11 @@ export function setPetEnabled(enabled: boolean) {
   return invoke<AppSettings>("pet_set_enabled", { enabled });
 }
 
+export function setPetLocked(locked: boolean) {
+  if (!isTauri()) return Promise.resolve<AppSettings | null>(null);
+  return invoke<AppSettings>("pet_set_locked", { locked });
+}
+
 export function updatePetPosition(x: number, y: number) {
   if (!isTauri()) return Promise.resolve();
   return invoke<void>("pet_update_position", { x, y });
