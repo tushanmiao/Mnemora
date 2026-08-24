@@ -241,18 +241,30 @@ function sanitizeMermaidCss(value: string) {
     .replace(/url\s*\(\s*["']?(?!#)[^)]*\)/gi, "none");
 }
 
-export function mermaidThemeConfig(host: HTMLElement, source = "") {
+export function mermaidThemeConfig(host: HTMLElement, _source = "") {
   const shell = host.closest<HTMLElement>(".app-shell") ?? host;
   const styles = getComputedStyle(shell);
   const read = (name: string, fallback: string) => styles.getPropertyValue(name).trim() || fallback;
   const readColor = (name: string, fallback: string) => resolveMermaidColor(shell, name, fallback);
   const dark = shell.getAttribute("data-theme") === "dark";
-  const flowchart = /^\s*(?:%%[^\r\n]*(?:\r?\n|$)\s*)*(?:flowchart|graph)\b/i.test(source);
   const fontFamily = read("--reading-font-family", '"Segoe UI Variable", "Microsoft YaHei UI", system-ui, sans-serif');
+  // Codex-style diagrams deliberately use one neutral ink-and-paper system.
+  // Diagram type still controls geometry, but it no longer invents a separate
+  // blue/purple/green/yellow palette for nodes, actors, notes or ER rows.
+  const canvas = readColor("--color-surface-raised", dark ? "#202428" : "#ffffff");
+  const subtleCanvas = dark ? "#282d32" : "#f6f7f8";
+  const alternateCanvas = dark ? "#30363c" : "#eceff1";
+  const foreground = readColor("--color-text", dark ? "#edf0f2" : "#202427");
+  const mutedForeground = readColor("--color-muted", dark ? "#adb7bc" : "#687276");
+  const border = readColor("--color-border", dark ? "#626a74" : "#d4d8dc");
+  const line = dark ? "#969ea5" : "#62686e";
+  const grayScale = dark
+    ? ["#596168", "#646c73", "#70787f", "#7c848b", "#899198", "#969da4"]
+    : ["#e8eaec", "#dde0e3", "#d2d6d9", "#c7ccd0", "#bcc2c7", "#b1b8bd"];
   return {
-    // 始终从 base 主题出发并显式注入明暗色，避免 Mermaid dark 主题中的
-    // 黑色内嵌背景与应用表面色叠加后形成无法阅读的色块。
-    theme: "base" as const,
+    // Use Mermaid's own print-friendly neutral theme, then map its official
+    // theme variables onto the active Mnemora light/dark surfaces.
+    theme: "neutral" as const,
     // 保持 Mermaid strict；下游清洗器仍会再次移除脚本、事件、外部 href
     // 与 CSS 外链。
     securityLevel: "strict" as const,
@@ -269,17 +281,11 @@ export function mermaidThemeConfig(host: HTMLElement, source = "") {
     fontSize: 13,
     darkMode: dark,
     fontFamily,
-    look: flowchart ? "neo" as const : "classic" as const,
-    themeCSS: `
-      .edgeLabel .label rect {
-        fill: var(--mermaid-surface-background);
-        opacity: 1;
-      }
-      .node[data-look="neo"] rect {
-        rx: var(--radius-md);
-        ry: var(--radius-md);
-      }
-    `,
+    // Codex keeps Mermaid's stable classic geometry as the default. The neo
+    // marker-gap repair below is only a compatibility guard for authored neo
+    // SVGs; globally forcing neo enables SVG drop-shadow filters which WebView2
+    // can composite as opaque black rectangles.
+    look: "classic" as const,
     flowchart: {
       htmlLabels: false,
       useMaxWidth: true,
@@ -287,7 +293,7 @@ export function mermaidThemeConfig(host: HTMLElement, source = "") {
       nodeSpacing: 34,
       rankSpacing: 46,
       wrappingWidth: 250,
-      curve: "rounded" as const,
+      curve: "linear" as const,
     },
     sequence: {
       useMaxWidth: true,
@@ -317,28 +323,142 @@ export function mermaidThemeConfig(host: HTMLElement, source = "") {
     mindmap: { useMaxWidth: true, padding: 14, maxNodeWidth: 240 },
     themeVariables: {
       background: "transparent",
+      // Keep the generated SVG self-contained and WebView2-safe. Mermaid's
+      // base theme otherwise enables gradient strokes and CSS drop-shadow
+      // filters whenever neo geometry is selected.
+      useGradient: false,
+      dropShadow: "none",
       fontSize: "13px",
-      primaryColor: dark ? "#263f55" : "#dcecff",
-      primaryTextColor: readColor("--color-text", dark ? "#edf0f2" : "#202427"),
-      textColor: readColor("--color-text", dark ? "#edf0f2" : "#202427"),
-      primaryBorderColor: dark ? "#75b5e8" : "#397eb8",
-      nodeBkg: dark ? "#263f55" : "#dcecff",
-      nodeBorder: dark ? "#75b5e8" : "#397eb8",
-      labelBackground: readColor("--color-surface-raised", dark ? "#282d32" : "#ffffff"),
-      lineColor: dark ? "rgba(173, 183, 188, 0.72)" : "rgba(81, 90, 95, 0.72)",
-      secondaryColor: dark ? "#3f3150" : "#f1e3ff",
-      secondaryBorderColor: dark ? "#c59be3" : "#8553a5",
-      tertiaryColor: dark ? "#2f4939" : "#dff3e5",
-      tertiaryBorderColor: dark ? "#85c69a" : "#4d8f62",
-      clusterBkg: dark ? "#252a31" : "#f7f8fc",
-      clusterBorder: readColor("--color-border", dark ? "#626a74" : "#bcc3cc"),
-      noteBkgColor: dark ? "#55452b" : "#fff1c7",
-      noteBorderColor: dark ? "#e2bd68" : "#a97916",
-      noteTextColor: readColor("--color-text", dark ? "#edf0f2" : "#202427"),
-      actorBkg: dark ? "#4d303d" : "#fde1eb",
-      actorBorder: dark ? "#e18aaf" : "#a53e6b",
-      actorTextColor: readColor("--color-text", dark ? "#edf0f2" : "#202427"),
-      signalColor: readColor("--color-muted", dark ? "#adb7bc" : "#687276"),
+      primaryColor: canvas,
+      secondaryColor: canvas,
+      tertiaryColor: canvas,
+      primaryTextColor: foreground,
+      secondaryTextColor: foreground,
+      tertiaryTextColor: foreground,
+      textColor: foreground,
+      primaryBorderColor: border,
+      secondaryBorderColor: border,
+      tertiaryBorderColor: border,
+      nodeBkg: canvas,
+      mainBkg: canvas,
+      secondBkg: canvas,
+      nodeBorder: border,
+      labelBackground: canvas,
+      edgeLabelBackground: canvas,
+      lineColor: line,
+      arrowheadColor: line,
+      defaultLinkColor: line,
+      clusterBkg: canvas,
+      clusterBorder: border,
+      noteBkgColor: canvas,
+      noteBorderColor: border,
+      noteTextColor: foreground,
+      actorBkg: canvas,
+      actorBorder: border,
+      actorTextColor: foreground,
+      actorLineColor: border,
+      signalColor: line,
+      signalTextColor: foreground,
+      labelBoxBkgColor: canvas,
+      labelBoxBorderColor: border,
+      labelTextColor: foreground,
+      loopTextColor: foreground,
+      activationBkgColor: subtleCanvas,
+      activationBorderColor: border,
+      stateBkg: canvas,
+      stateBorder: border,
+      stateLabelColor: foreground,
+      transitionColor: line,
+      transitionLabelColor: foreground,
+      labelBackgroundColor: canvas,
+      compositeBackground: canvas,
+      compositeTitleBackground: subtleCanvas,
+      altBackground: subtleCanvas,
+      classText: foreground,
+      rowOdd: canvas,
+      rowEven: canvas,
+      attributeBackgroundColorOdd: canvas,
+      attributeBackgroundColorEven: canvas,
+      sectionBkgColor: subtleCanvas,
+      altSectionBkgColor: canvas,
+      sectionBkgColor2: alternateCanvas,
+      taskBkgColor: alternateCanvas,
+      taskBorderColor: border,
+      activeTaskBkgColor: subtleCanvas,
+      activeTaskBorderColor: line,
+      doneTaskBkgColor: subtleCanvas,
+      doneTaskBorderColor: border,
+      taskTextColor: foreground,
+      taskTextDarkColor: foreground,
+      taskTextLightColor: foreground,
+      taskTextOutsideColor: mutedForeground,
+      gridColor: border,
+      todayLineColor: line,
+      requirementBackground: canvas,
+      requirementBorderColor: border,
+      requirementTextColor: foreground,
+      relationColor: line,
+      relationLabelBackground: canvas,
+      relationLabelColor: foreground,
+      quadrant1Fill: subtleCanvas,
+      quadrant2Fill: alternateCanvas,
+      quadrant3Fill: subtleCanvas,
+      quadrant4Fill: alternateCanvas,
+      quadrant1TextFill: foreground,
+      quadrant2TextFill: foreground,
+      quadrant3TextFill: foreground,
+      quadrant4TextFill: foreground,
+      cScale0: grayScale[0],
+      cScale1: grayScale[1],
+      cScale2: grayScale[2],
+      cScale3: grayScale[3],
+      cScale4: grayScale[4],
+      cScale5: grayScale[5],
+      cScale6: grayScale[0],
+      cScale7: grayScale[1],
+      cScale8: grayScale[2],
+      cScale9: grayScale[3],
+      cScale10: grayScale[4],
+      cScale11: grayScale[5],
+      fillType0: grayScale[0],
+      fillType1: grayScale[1],
+      fillType2: grayScale[2],
+      fillType3: grayScale[3],
+      fillType4: grayScale[4],
+      fillType5: grayScale[5],
+      fillType6: grayScale[1],
+      fillType7: grayScale[3],
+      pie1: grayScale[0],
+      pie2: grayScale[1],
+      pie3: grayScale[2],
+      pie4: grayScale[3],
+      pie5: grayScale[4],
+      pie6: grayScale[5],
+      pie7: grayScale[0],
+      pie8: grayScale[1],
+      pie9: grayScale[2],
+      pie10: grayScale[3],
+      pie11: grayScale[4],
+      pie12: grayScale[5],
+      pieTitleTextColor: foreground,
+      pieSectionTextColor: foreground,
+      pieLegendTextColor: foreground,
+      pieStrokeColor: border,
+      pieOuterStrokeColor: border,
+      git0: grayScale[0],
+      git1: grayScale[1],
+      git2: grayScale[2],
+      git3: grayScale[3],
+      git4: grayScale[4],
+      git5: grayScale[5],
+      git6: grayScale[1],
+      git7: grayScale[3],
+      branchLabelColor: foreground,
+      tagLabelColor: foreground,
+      tagLabelBackground: canvas,
+      tagLabelBorder: border,
+      commitLabelColor: foreground,
+      commitLabelBackground: canvas,
       fontFamily,
     },
   };

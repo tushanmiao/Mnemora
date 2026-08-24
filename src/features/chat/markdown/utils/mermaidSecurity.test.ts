@@ -74,7 +74,7 @@ flowchart LR
   A-->B`)).toThrow("安全级别");
   });
 
-  it("uses Codex-style neo flowcharts with rounded SVG labels", () => {
+  it("uses the Codex-style monochrome classic path without WebView2 SVG filters", () => {
     const previousGetComputedStyle = globalThis.getComputedStyle;
     try {
       globalThis.getComputedStyle = (() => ({ getPropertyValue: () => "" })) as unknown as typeof getComputedStyle;
@@ -84,9 +84,34 @@ flowchart LR
       } as unknown as HTMLElement;
       const config = mermaidThemeConfig(host, "flowchart LR\nA-->B");
 
-      expect(config.look).toBe("neo");
+      expect(config.theme).toBe("neutral");
+      expect(config.look).toBe("classic");
       expect(config.htmlLabels).toBe(false);
-      expect(config.flowchart).toMatchObject({ curve: "rounded", htmlLabels: false });
+      expect(config.flowchart).toMatchObject({ curve: "linear", htmlLabels: false });
+      expect(config.themeVariables).toMatchObject({
+        useGradient: false,
+        dropShadow: "none",
+        primaryColor: "#ffffff",
+        secondaryColor: "#ffffff",
+        tertiaryColor: "#ffffff",
+        nodeBkg: "#ffffff",
+        actorBkg: "#ffffff",
+        noteBkgColor: "#ffffff",
+        clusterBkg: "#ffffff",
+        attributeBackgroundColorOdd: "#ffffff",
+        attributeBackgroundColorEven: "#ffffff",
+      });
+      expect(config.themeVariables.primaryBorderColor).toBe(config.themeVariables.secondaryBorderColor);
+      expect(config.themeVariables.primaryBorderColor).toBe(config.themeVariables.tertiaryBorderColor);
+      expect(config.themeVariables.lineColor).toBe(config.themeVariables.arrowheadColor);
+      expect(new Set([
+        config.themeVariables.pie1,
+        config.themeVariables.pie2,
+        config.themeVariables.pie3,
+        config.themeVariables.pie4,
+        config.themeVariables.pie5,
+        config.themeVariables.pie6,
+      ]).size).toBeGreaterThan(1);
     } finally {
       globalThis.getComputedStyle = previousGetComputedStyle;
     }
