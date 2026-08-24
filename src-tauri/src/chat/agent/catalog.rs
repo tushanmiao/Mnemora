@@ -23,6 +23,7 @@ pub enum ToolNamespace {
     Web,
     Artifact,
     Note,
+    Interview,
 }
 
 impl ToolNamespace {
@@ -38,6 +39,7 @@ impl ToolNamespace {
             Self::Web => "web",
             Self::Artifact => "artifact",
             Self::Note => "note",
+            Self::Interview => "interview",
         }
     }
 }
@@ -79,6 +81,14 @@ pub enum ToolHandler {
     NoteRead,
     NoteCreate,
     NoteUpdate,
+    InterviewListAvailable,
+    InterviewStartSession,
+    InterviewGetQuestion,
+    InterviewSubmitResponse,
+    InterviewGetProgress,
+    InterviewCompleteSession,
+    InterviewExportResults,
+    InterviewResumeSession,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -378,6 +388,63 @@ fn note_update_schema() -> Value {
             "content": { "type": "string", "minLength": 1, "maxLength": 100000 }
         },
         "required": ["id", "title", "content"],
+        "additionalProperties": false
+    })
+}
+
+fn interview_list_available_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+    })
+}
+
+fn interview_start_session_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "scenarioId": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "participantId": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "metadata": { "type": "object", "additionalProperties": true }
+        },
+        "required": ["scenarioId", "participantId"],
+        "additionalProperties": false
+    })
+}
+
+fn interview_session_id_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "sessionId": { "type": "string", "minLength": 1, "maxLength": 128 }
+        },
+        "required": ["sessionId"],
+        "additionalProperties": false
+    })
+}
+
+fn interview_submit_response_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "sessionId": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "questionId": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "value": {}
+        },
+        "required": ["sessionId", "questionId", "value"],
+        "additionalProperties": false
+    })
+}
+
+fn interview_export_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "sessionId": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "format": { "type": "string", "enum": ["json", "markdown"] }
+        },
+        "required": ["sessionId"],
         "additionalProperties": false
     })
 }
@@ -855,6 +922,110 @@ pub static TOOL_ENTRIES: &[ToolEntry] = &[
         resource_cost: ToolResourceCost::Medium,
         max_output_chars: DEFAULT_OUTPUT_LIMIT,
     },
+    ToolEntry {
+        name: "interview_list_available",
+        description: "列出本地可用的面试场景模板；不读取简历、不启动外部服务。",
+        input_schema: interview_list_available_schema,
+        namespace: ToolNamespace::Interview,
+        handler: ToolHandler::InterviewListAvailable,
+        risk: ToolRisk::BuiltinRead,
+        read_only: true,
+        parallel_safe: true,
+        approval: ToolApprovalPolicy::Never,
+        resource_cost: ToolResourceCost::Low,
+        max_output_chars: DEFAULT_OUTPUT_LIMIT,
+    },
+    ToolEntry {
+        name: "interview_start_session",
+        description: "在本地创建可恢复的面试练习会话，并返回场景问题目录。",
+        input_schema: interview_start_session_schema,
+        namespace: ToolNamespace::Interview,
+        handler: ToolHandler::InterviewStartSession,
+        risk: ToolRisk::NoteWrite,
+        read_only: false,
+        parallel_safe: false,
+        approval: ToolApprovalPolicy::Sensitive,
+        resource_cost: ToolResourceCost::Low,
+        max_output_chars: DEFAULT_OUTPUT_LIMIT,
+    },
+    ToolEntry {
+        name: "interview_get_question",
+        description: "读取面试会话的当前下一道未回答问题，不暴露未来题目答案。",
+        input_schema: interview_session_id_schema,
+        namespace: ToolNamespace::Interview,
+        handler: ToolHandler::InterviewGetQuestion,
+        risk: ToolRisk::ConversationRead,
+        read_only: true,
+        parallel_safe: false,
+        approval: ToolApprovalPolicy::ReadOnly,
+        resource_cost: ToolResourceCost::Low,
+        max_output_chars: DEFAULT_OUTPUT_LIMIT,
+    },
+    ToolEntry {
+        name: "interview_submit_response",
+        description: "保存一轮面试回答并更新本地进度；无效回答不会推进问题状态。",
+        input_schema: interview_submit_response_schema,
+        namespace: ToolNamespace::Interview,
+        handler: ToolHandler::InterviewSubmitResponse,
+        risk: ToolRisk::NoteWrite,
+        read_only: false,
+        parallel_safe: false,
+        approval: ToolApprovalPolicy::Sensitive,
+        resource_cost: ToolResourceCost::Low,
+        max_output_chars: DEFAULT_OUTPUT_LIMIT,
+    },
+    ToolEntry {
+        name: "interview_get_progress",
+        description: "读取面试会话进度、必答问题剩余量和当前状态。",
+        input_schema: interview_session_id_schema,
+        namespace: ToolNamespace::Interview,
+        handler: ToolHandler::InterviewGetProgress,
+        risk: ToolRisk::ConversationRead,
+        read_only: true,
+        parallel_safe: true,
+        approval: ToolApprovalPolicy::ReadOnly,
+        resource_cost: ToolResourceCost::Low,
+        max_output_chars: DEFAULT_OUTPUT_LIMIT,
+    },
+    ToolEntry {
+        name: "interview_complete_session",
+        description: "在所有必答问题完成后结束面试会话并生成摘要。",
+        input_schema: interview_session_id_schema,
+        namespace: ToolNamespace::Interview,
+        handler: ToolHandler::InterviewCompleteSession,
+        risk: ToolRisk::NoteWrite,
+        read_only: false,
+        parallel_safe: false,
+        approval: ToolApprovalPolicy::Sensitive,
+        resource_cost: ToolResourceCost::Low,
+        max_output_chars: DEFAULT_OUTPUT_LIMIT,
+    },
+    ToolEntry {
+        name: "interview_export_results",
+        description: "导出本地面试会话的结构化回答记录为 JSON 或 Markdown。",
+        input_schema: interview_export_schema,
+        namespace: ToolNamespace::Interview,
+        handler: ToolHandler::InterviewExportResults,
+        risk: ToolRisk::ConversationRead,
+        read_only: true,
+        parallel_safe: true,
+        approval: ToolApprovalPolicy::ReadOnly,
+        resource_cost: ToolResourceCost::Low,
+        max_output_chars: 100_000,
+    },
+    ToolEntry {
+        name: "interview_resume_session",
+        description: "恢复本地未完成的面试会话，并返回断点和下一道问题。",
+        input_schema: interview_session_id_schema,
+        namespace: ToolNamespace::Interview,
+        handler: ToolHandler::InterviewResumeSession,
+        risk: ToolRisk::ConversationRead,
+        read_only: true,
+        parallel_safe: false,
+        approval: ToolApprovalPolicy::ReadOnly,
+        resource_cost: ToolResourceCost::Low,
+        max_output_chars: DEFAULT_OUTPUT_LIMIT,
+    },
 ];
 
 pub fn find_tool(name: &str) -> Option<&'static ToolEntry> {
@@ -878,6 +1049,7 @@ pub fn assert_valid_registry() {
                 | ToolNamespace::Web
                 | ToolNamespace::Artifact
                 | ToolNamespace::Note
+                | ToolNamespace::Interview
         ) && matches!(
             entry.resource_cost,
             ToolResourceCost::Low | ToolResourceCost::Medium | ToolResourceCost::High

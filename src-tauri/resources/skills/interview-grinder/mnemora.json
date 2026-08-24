@@ -1,0 +1,15 @@
+{
+  "id": "interview-grinder",
+  "version": "upstream-047eb94",
+  "defaultEnabled": false,
+  "supportedModes": ["chat", "work", "notes"],
+  "triggers": ["/sql-interview", "/data-interview"],
+  "license": "Apache-2.0",
+  "provenance": {
+    "repository": "https://github.com/stratascratch/interview-grinder",
+    "path": "skills/strata-interview-grinder/SKILL.md",
+    "revision": "047eb94f729268e2cb86dd663a6300ec2b85e73e",
+    "attribution": "Upstream Agent Skill; bundled unchanged.",
+    "adapted": false
+  }
+}

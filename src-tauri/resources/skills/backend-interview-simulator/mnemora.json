@@ -1,0 +1,16 @@
+{
+  "id": "backend-interview-simulator",
+  "version": "upstream-7a00b21",
+  "defaultEnabled": false,
+  "supportedModes": ["chat", "work", "notes"],
+  "triggers": ["/backend-interview", "/backend-mock"],
+  "recommendedTools": ["read_attachment_text", "read_pdf_pages", "workspace_read"],
+  "license": "MIT",
+  "provenance": {
+    "repository": "https://github.com/Hazehacker/backend-interview-simulator",
+    "path": "SKILL.md",
+    "revision": "7a00b21f037026d0782444881123fbbbd007cf39",
+    "attribution": "Upstream Agent Skill; bundled unchanged.",
+    "adapted": false
+  }
+}

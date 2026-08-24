@@ -5,6 +5,7 @@
 //! 状态长期保留 SQLite 连接和页面缓存。
 
 pub mod import;
+pub mod interview;
 pub mod store;
 pub mod types;
 

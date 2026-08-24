@@ -43,6 +43,12 @@ use super::{
     documents::{
         read_docx_blocks, read_xlsx_rows, MAX_DOCX_BLOCKS_PER_CALL, MAX_XLSX_ROWS_PER_CALL,
     },
+    interview::{
+        complete as interview_complete, export as interview_export,
+        get_progress as interview_get_progress, get_question as interview_get_question,
+        list_available as interview_list_available, resume as interview_resume,
+        start as interview_start, submit_response as interview_submit_response,
+    },
     knowledge::{knowledge_list, knowledge_read, knowledge_search},
     notes::{note_create, note_list, note_read, note_update},
     types::{ToolExecution, ToolRisk},
@@ -184,6 +190,14 @@ pub fn build_runtime_context(
         "note_read",
         "note_create",
         "note_update",
+        "interview_list_available",
+        "interview_start_session",
+        "interview_get_question",
+        "interview_submit_response",
+        "interview_get_progress",
+        "interview_complete_session",
+        "interview_export_results",
+        "interview_resume_session",
     ]);
     if workspace_root.is_some() {
         available_tools.extend([
@@ -789,6 +803,57 @@ pub async fn execute_tool(
             let arguments = call.arguments.clone();
             run_blocking(cancellation, move || note_update(&library, &arguments)).await
         }
+        ToolHandler::InterviewListAvailable => interview_list_available(),
+        ToolHandler::InterviewStartSession => {
+            let _write_guard = library_operations.lock().await;
+            let library = library.clone();
+            let arguments = call.arguments.clone();
+            run_blocking(cancellation, move || interview_start(&library, &arguments)).await
+        }
+        ToolHandler::InterviewGetQuestion => {
+            let library = library.clone();
+            let arguments = call.arguments.clone();
+            run_blocking(cancellation, move || {
+                interview_get_question(&library, &arguments)
+            })
+            .await
+        }
+        ToolHandler::InterviewSubmitResponse => {
+            let _write_guard = library_operations.lock().await;
+            let library = library.clone();
+            let arguments = call.arguments.clone();
+            run_blocking(cancellation, move || {
+                interview_submit_response(&library, &arguments)
+            })
+            .await
+        }
+        ToolHandler::InterviewGetProgress => {
+            let library = library.clone();
+            let arguments = call.arguments.clone();
+            run_blocking(cancellation, move || {
+                interview_get_progress(&library, &arguments)
+            })
+            .await
+        }
+        ToolHandler::InterviewCompleteSession => {
+            let _write_guard = library_operations.lock().await;
+            let library = library.clone();
+            let arguments = call.arguments.clone();
+            run_blocking(cancellation, move || {
+                interview_complete(&library, &arguments)
+            })
+            .await
+        }
+        ToolHandler::InterviewExportResults => {
+            let library = library.clone();
+            let arguments = call.arguments.clone();
+            run_blocking(cancellation, move || interview_export(&library, &arguments)).await
+        }
+        ToolHandler::InterviewResumeSession => {
+            let library = library.clone();
+            let arguments = call.arguments.clone();
+            run_blocking(cancellation, move || interview_resume(&library, &arguments)).await
+        }
     }?;
     Ok(bound_execution(result, entry.max_output_chars))
 }
@@ -1259,6 +1324,66 @@ fn validate_tool_arguments(call: &ModelToolCall, handler: ToolHandler) -> Result
             validate_required_string_length(&call.arguments, "id", 128)?;
             validate_required_string_length(&call.arguments, "title", 200)?;
             validate_required_string_length(&call.arguments, "content", 100_000)?;
+        }
+        ToolHandler::InterviewListAvailable => {
+            ensure_object_keys(&call.arguments, &[])?;
+        }
+        ToolHandler::InterviewStartSession => {
+            ensure_object_keys(
+                &call.arguments,
+                &["scenarioId", "participantId", "metadata"],
+            )?;
+            validate_required_string_length(&call.arguments, "scenarioId", 128)?;
+            validate_required_string_length(&call.arguments, "participantId", 128)?;
+            if let Some(metadata) = call.arguments.get("metadata") {
+                if !metadata.is_object() {
+                    return Err(ModelError::invalid_configuration(
+                        "工具参数 metadata 必须是 JSON 对象。",
+                    ));
+                }
+                let serialized = serde_json::to_string(metadata).map_err(|error| {
+                    ModelError::invalid_configuration(format!("序列化面试元数据失败：{error}"))
+                })?;
+                if serialized.chars().count() > 20_000 {
+                    return Err(ModelError::invalid_configuration(
+                        "面试元数据不能超过 20000 个字符。",
+                    ));
+                }
+            }
+        }
+        ToolHandler::InterviewGetQuestion
+        | ToolHandler::InterviewGetProgress
+        | ToolHandler::InterviewCompleteSession
+        | ToolHandler::InterviewResumeSession => {
+            ensure_object_keys(&call.arguments, &["sessionId"])?;
+            validate_required_string_length(&call.arguments, "sessionId", 128)?;
+        }
+        ToolHandler::InterviewSubmitResponse => {
+            ensure_object_keys(&call.arguments, &["sessionId", "questionId", "value"])?;
+            validate_required_string_length(&call.arguments, "sessionId", 128)?;
+            validate_required_string_length(&call.arguments, "questionId", 128)?;
+            let value = call
+                .arguments
+                .get("value")
+                .ok_or_else(|| ModelError::invalid_configuration("工具参数缺少 value。"))?;
+            if value.is_null() {
+                return Err(ModelError::invalid_configuration(
+                    "工具参数 value 不能为 null。",
+                ));
+            }
+            let serialized = serde_json::to_string(value).map_err(|error| {
+                ModelError::invalid_configuration(format!("序列化面试回答失败：{error}"))
+            })?;
+            if serialized.chars().count() > 50_000 {
+                return Err(ModelError::invalid_configuration(
+                    "面试回答不能超过 50000 个字符。",
+                ));
+            }
+        }
+        ToolHandler::InterviewExportResults => {
+            ensure_object_keys(&call.arguments, &["sessionId", "format"])?;
+            validate_required_string_length(&call.arguments, "sessionId", 128)?;
+            validate_optional_enum(&call.arguments, "format", &["json", "markdown"])?;
         }
     }
     Ok(())

@@ -7,6 +7,7 @@
 mod artifacts;
 pub mod catalog;
 mod documents;
+mod interview;
 mod knowledge;
 mod notes;
 pub mod registry;

@@ -1,0 +1,15 @@
+{
+  "id": "algo-sensei",
+  "version": "upstream-5d44213",
+  "defaultEnabled": false,
+  "supportedModes": ["chat", "work", "notes"],
+  "triggers": ["/algo-interview", "/dsa-interview"],
+  "license": "MIT",
+  "provenance": {
+    "repository": "https://github.com/karanb192/algo-sensei",
+    "path": "SKILL.md",
+    "revision": "5d4421396994494e74ea2e6cc9cde785be742c5b",
+    "attribution": "Upstream Agent Skill; bundled unchanged.",
+    "adapted": false
+  }
+}

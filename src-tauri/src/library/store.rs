@@ -54,7 +54,7 @@ use super::{
     },
 };
 
-const LIBRARY_SCHEMA_VERSION: i64 = 13;
+const LIBRARY_SCHEMA_VERSION: i64 = 14;
 const LIBRARY_DIRECTORY_NAME: &str = "library";
 const LIBRARY_DATABASE_NAME: &str = "library.sqlite3";
 const LIBRARY_FILES_DIRECTORY_NAME: &str = "files";
@@ -5406,6 +5406,32 @@ fn migrate(connection: &Connection) -> Result<(), String> {
                  COMMIT;",
             )
             .map_err(|error| format!("升级深度笔记 Chunk 检查点结构失败：{error}"))?;
+    }
+    // v14：本地面试会话生命周期数据。
+    if version <= 13 {
+        connection
+            .execute_batch(
+                "BEGIN IMMEDIATE;
+                 CREATE TABLE IF NOT EXISTS interview_sessions (
+                    id TEXT PRIMARY KEY,
+                    scenario_id TEXT NOT NULL,
+                    participant_id TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK (status IN ('active', 'completed', 'cancelled')),
+                    questions_json TEXT NOT NULL,
+                    answers_json TEXT NOT NULL DEFAULT '{}',
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    completed_at INTEGER
+                 );
+                 CREATE INDEX IF NOT EXISTS interview_sessions_participant
+                    ON interview_sessions(participant_id, updated_at DESC);
+                 CREATE INDEX IF NOT EXISTS interview_sessions_status_updated
+                    ON interview_sessions(status, updated_at DESC);
+                 PRAGMA user_version = 14;
+                 COMMIT;",
+            )
+            .map_err(|error| format!("升级本地面试会话结构失败：{error}"))?;
     }
     Ok(())
 }

@@ -1,0 +1,16 @@
+{
+  "id": "llm-interview-coach",
+  "version": "upstream-7d95860",
+  "defaultEnabled": false,
+  "supportedModes": ["chat", "work", "notes"],
+  "triggers": ["/llm-interview", "/rag-interview"],
+  "recommendedTools": ["read_attachment_text", "read_pdf_pages", "workspace_read", "note_create"],
+  "license": "MIT",
+  "provenance": {
+    "repository": "https://github.com/llx9826/llm-interview-coach",
+    "path": "SKILL.md",
+    "revision": "7d95860557d8c210b2165ce2ca422a04e2ddd34f",
+    "attribution": "Upstream Agent Skill; bundled unchanged.",
+    "adapted": false
+  }
+}
