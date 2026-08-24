@@ -81,6 +81,10 @@
 
 .markdown-mermaid-surface {
   --mermaid-surface-background: var(--color-surface-raised);
+  --mermaid-node-fill: var(--color-surface-raised);
+  --mermaid-node-stroke: var(--color-border);
+  --mermaid-ink: var(--color-text);
+  --mermaid-line: var(--color-muted);
   --radius-md: 5px;
   display: flex;
   box-sizing: border-box;
@@ -104,6 +108,43 @@
   max-height: none;
   margin: 0 auto;
   text-align: start;
+}
+
+/*
+ * Mermaid emits a scoped <style> inside every SVG. WebView2 can occasionally
+ * detach that stylesheet after the SVG passes through XML sanitization and a
+ * template mount, leaving SVG's black default fill and start-aligned labels.
+ * These app-owned rules are the display fallback; Mermaid still owns parsing,
+ * layout, viewBox and edge geometry.
+ */
+.markdown-mermaid-surface > svg.flowchart g.node > :is(rect, circle, ellipse, polygon, path),
+.markdown-mermaid-surface > svg.flowchart g.cluster > :is(rect, polygon, path) {
+  fill: var(--mermaid-node-fill) !important;
+  stroke: var(--mermaid-node-stroke) !important;
+  stroke-width: 1px;
+}
+
+.markdown-mermaid-surface > svg.flowchart :is(.node, .cluster-label, .edgeLabel) text,
+.markdown-mermaid-surface > svg.flowchart :is(.node, .cluster-label, .edgeLabel) tspan {
+  fill: var(--mermaid-ink) !important;
+  font-family: var(--reading-font-family) !important;
+  font-size: 13px !important;
+  text-anchor: middle;
+}
+
+.markdown-mermaid-surface > svg.flowchart :is(path.flowchart-link, g.edgePath > path.path) {
+  fill: none !important;
+  stroke: var(--mermaid-line) !important;
+}
+
+.markdown-mermaid-surface > svg.flowchart marker :is(path, polygon) {
+  fill: var(--mermaid-line) !important;
+  stroke: var(--mermaid-line) !important;
+}
+
+.markdown-mermaid-surface > svg.flowchart :is(.labelBkg, .edgeLabel rect, .edgeLabel polygon) {
+  fill: var(--mermaid-node-fill) !important;
+  stroke: none !important;
 }
 
 .markdown-mermaid-surface:focus-visible {

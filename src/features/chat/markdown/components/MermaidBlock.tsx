@@ -9,6 +9,7 @@ import {
 } from "../utils/mermaidDom";
 import { renderMermaid } from "../utils/mermaidRuntime";
 import {
+  mermaidSvgPaint,
   mermaidThemeConfig,
   prepareMermaidSource,
   sanitizeMermaidSvg,
@@ -93,11 +94,12 @@ export function MermaidBlock({ code, streaming = false }: MermaidBlockProps) {
     setError("");
     setOverflowed(false);
     const currentId = `mnemora-mermaid-${++renderSequence}`;
+    const paint = mermaidSvgPaint(host);
     const timer = window.setTimeout(() => {
       if (cancelled) return;
-      void renderMermaid(prepared, currentId, mermaidThemeConfig(host, prepared)).then((result) => {
+      void renderMermaid(prepared, currentId, mermaidThemeConfig(host, prepared, paint)).then((result) => {
         if (cancelled) return;
-        const sanitized = sanitizeMermaidSvg(result.svg);
+        const sanitized = sanitizeMermaidSvg(result.svg, paint);
         if (!sanitized.metrics.viewerSafe) {
           setSvg("");
           setStatus("error");

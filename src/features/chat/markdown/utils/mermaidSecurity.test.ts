@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   extractMermaidSvgMetrics,
+  materializeMermaidFallbackPaint,
   measureMermaidViewerBudget,
   mermaidThemeConfig,
   normalizeMermaidSvgForXml,
@@ -47,6 +48,58 @@ describe("mermaidSecurity", () => {
     expect(authorStyled.attributes.get("stroke-width")).toBeUndefined();
     expect(thick.attributes.get("stroke-width")).toBeUndefined();
     expect(rootAttributes.get("data-mnemora-edge-contract")).toBe("stable");
+  });
+
+  it("materializes a readable monochrome fallback when the embedded SVG stylesheet is unavailable", () => {
+    const createElement = () => {
+      const attributes = new Map<string, string>();
+      return {
+        attributes,
+        setAttribute: (name: string, value: string) => attributes.set(name, value),
+      };
+    };
+    const node = createElement();
+    const label = createElement();
+    const edge = createElement();
+    const marker = createElement();
+    const rootAttributes = new Map<string, string>();
+    const root = {
+      setAttribute: (name: string, value: string) => rootAttributes.set(name, value),
+      querySelectorAll: (selector: string) => {
+        if (selector === "text, tspan") return [label];
+        if (selector.includes("g.node > rect")) return [node];
+        if (selector.includes("path.flowchart-link")) return [edge];
+        if (selector === "marker path, marker polygon") return [marker];
+        if (selector.includes(".node text")) return [label];
+        return [];
+      },
+    } as unknown as Element;
+
+    materializeMermaidFallbackPaint(root, {
+      canvas: "#ffffff",
+      subtleCanvas: "#f6f7f8",
+      alternateCanvas: "#eceff1",
+      foreground: "#202427",
+      mutedForeground: "#687276",
+      border: "#d4d8dc",
+      line: "#62686e",
+      fontFamily: "Segoe UI",
+      fontSize: "13px",
+      dark: false,
+    });
+
+    expect(node.attributes).toMatchObject(new Map([
+      ["fill", "#ffffff"],
+      ["stroke", "#d4d8dc"],
+      ["stroke-width", "1"],
+    ]));
+    expect(label.attributes.get("fill")).toBe("#202427");
+    expect(label.attributes.get("text-anchor")).toBe("middle");
+    expect(label.attributes.get("font-size")).toBe("13px");
+    expect(edge.attributes.get("fill")).toBe("none");
+    expect(edge.attributes.get("stroke")).toBe("#62686e");
+    expect(marker.attributes.get("fill")).toBe("#62686e");
+    expect(rootAttributes.get("data-mnemora-paint-fallback")).toBe("materialized");
   });
 
   it("removes executable directives and click handlers before rendering", () => {

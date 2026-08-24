@@ -25,6 +25,19 @@ export type SanitizedMermaidSvg = {
   metrics: MermaidSvgMetrics;
 };
 
+export type MermaidSvgPaint = {
+  canvas: string;
+  subtleCanvas: string;
+  alternateCanvas: string;
+  foreground: string;
+  mutedForeground: string;
+  border: string;
+  line: string;
+  fontFamily: string;
+  fontSize: string;
+  dark: boolean;
+};
+
 /**
  * Keep only the single harmless init option that Codex preserves. Every other
  * directive and all click handlers are removed before Mermaid sees the input;
@@ -75,7 +88,7 @@ export function normalizeMermaidSvgForXml(svg: string) {
 }
 
 /** Mermaid 输出由受信任的渲染器生成，但仍移除脚本、外链和事件属性。 */
-export function sanitizeMermaidSvg(svg: string): SanitizedMermaidSvg {
+export function sanitizeMermaidSvg(svg: string, paint?: MermaidSvgPaint): SanitizedMermaidSvg {
   const normalizedSvg = normalizeMermaidSvgForXml(svg);
   if (typeof DOMParser === "undefined" || typeof document === "undefined") {
     return { svg: normalizedSvg, metrics: measureMermaidViewerBudget(normalizedSvg) };
@@ -110,6 +123,7 @@ export function sanitizeMermaidSvg(svg: string): SanitizedMermaidSvg {
 
   ensureMermaidViewBox(root);
   stabilizeMermaidSvgPaint(root);
+  if (paint) materializeMermaidFallbackPaint(root, paint);
   const dimensions = extractMermaidSvgMetrics(root.outerHTML);
   root.setAttribute("role", "img");
   root.setAttribute("preserveAspectRatio", "xMidYMin meet");
@@ -140,6 +154,102 @@ export function stabilizeMermaidSvgPaint(root: Element) {
   repairNeoFlowchartMarkerGaps(root);
   if (stabilized > 0) root.setAttribute("data-mnemora-edge-contract", "stable");
   return stabilized;
+}
+
+/**
+ * Mermaid scopes its generated theme rules inside the SVG. Some WebView2
+ * production paths can lose that embedded stylesheet while the same SVG is
+ * moved through DOMParser/template mounting. SVG then falls back to black
+ * fills and start-aligned text. Keep Mermaid's geometry and parser untouched,
+ * but duplicate the critical monochrome paint as presentation attributes so
+ * the diagram remains readable even when its style element is unavailable.
+ */
+export function materializeMermaidFallbackPaint(root: Element, paint: MermaidSvgPaint) {
+  root.setAttribute("font-family", paint.fontFamily);
+  root.setAttribute("font-size", paint.fontSize);
+  root.setAttribute("color", paint.foreground);
+
+  setSvgAttributes(root.querySelectorAll("text, tspan"), {
+    fill: paint.foreground,
+    "font-family": paint.fontFamily,
+    "font-size": paint.fontSize,
+  });
+
+  setSvgAttributes(root.querySelectorAll([
+    "g.node > rect",
+    "g.node > circle",
+    "g.node > ellipse",
+    "g.node > polygon",
+    "g.node > path",
+    "g.cluster > rect",
+    "g.cluster > polygon",
+    "g.cluster > path",
+    "rect.actor",
+    "rect.note",
+    "rect.labelBox",
+    ".entityBox",
+    ".attributeBoxOdd",
+    ".attributeBoxEven",
+    ".classGroup rect",
+    ".statediagram-state rect",
+    ".stateGroup rect",
+  ].join(", ")), {
+    fill: paint.canvas,
+    stroke: paint.border,
+    "stroke-width": "1",
+  });
+
+  setSvgAttributes(root.querySelectorAll([
+    ".activation0",
+    ".activation1",
+    ".activation2",
+    ".section0",
+    ".section2",
+    ".task",
+  ].join(", ")), {
+    fill: paint.subtleCanvas,
+    stroke: paint.border,
+  });
+
+  setSvgAttributes(root.querySelectorAll([
+    "path.flowchart-link",
+    "g.edgePath > path.path",
+    ".messageLine0",
+    ".messageLine1",
+    ".loopLine",
+    ".transition",
+    ".relation",
+  ].join(", ")), {
+    fill: "none",
+    stroke: paint.line,
+  });
+
+  setSvgAttributes(root.querySelectorAll("marker path, marker polygon"), {
+    fill: paint.line,
+    stroke: paint.line,
+  });
+
+  setSvgAttributes(root.querySelectorAll([
+    ".node text",
+    ".cluster-label text",
+    ".edgeLabel text",
+  ].join(", ")), {
+    fill: paint.foreground,
+    "text-anchor": "middle",
+  });
+
+  setSvgAttributes(root.querySelectorAll(".labelBkg, .edgeLabel rect, .edgeLabel polygon"), {
+    fill: paint.canvas,
+    stroke: "none",
+  });
+
+  root.setAttribute("data-mnemora-paint-fallback", "materialized");
+}
+
+function setSvgAttributes(elements: NodeListOf<Element> | Element[], attributes: Record<string, string>) {
+  for (const element of Array.from(elements)) {
+    for (const [name, value] of Object.entries(attributes)) element.setAttribute(name, value);
+  }
 }
 
 /** Port the narrow neo-marker correction used by Codex Desktop. */
@@ -241,7 +351,7 @@ function sanitizeMermaidCss(value: string) {
     .replace(/url\s*\(\s*["']?(?!#)[^)]*\)/gi, "none");
 }
 
-export function mermaidThemeConfig(host: HTMLElement, _source = "") {
+export function mermaidSvgPaint(host: HTMLElement): MermaidSvgPaint {
   const shell = host.closest<HTMLElement>(".app-shell") ?? host;
   const styles = getComputedStyle(shell);
   const read = (name: string, fallback: string) => styles.getPropertyValue(name).trim() || fallback;
@@ -258,6 +368,32 @@ export function mermaidThemeConfig(host: HTMLElement, _source = "") {
   const mutedForeground = readColor("--color-muted", dark ? "#adb7bc" : "#687276");
   const border = readColor("--color-border", dark ? "#626a74" : "#d4d8dc");
   const line = dark ? "#969ea5" : "#62686e";
+  return {
+    canvas,
+    subtleCanvas,
+    alternateCanvas,
+    foreground,
+    mutedForeground,
+    border,
+    line,
+    fontFamily,
+    fontSize: "13px",
+    dark,
+  };
+}
+
+export function mermaidThemeConfig(host: HTMLElement, _source = "", paint = mermaidSvgPaint(host)) {
+  const {
+    canvas,
+    subtleCanvas,
+    alternateCanvas,
+    foreground,
+    mutedForeground,
+    border,
+    line,
+    fontFamily,
+    dark,
+  } = paint;
   const grayScale = dark
     ? ["#596168", "#646c73", "#70787f", "#7c848b", "#899198", "#969da4"]
     : ["#e8eaec", "#dde0e3", "#d2d6d9", "#c7ccd0", "#bcc2c7", "#b1b8bd"];
