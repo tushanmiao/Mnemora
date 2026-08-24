@@ -19,7 +19,7 @@ function detail(overrides: Partial<DeepNoteRunDetail> = {}): DeepNoteRunDetail {
     preflight: null,
     inputSnapshot: null,
     planVersion: null,
-    budget: { semanticCallLimit: 12, semanticCallsUsed: 0, nodeAttemptLimit: 5, sectionRevisionLimit: 5, replanLimit: 4, replansUsed: 0, maxParallelNodes: 2 },
+    budget: { semanticCallLimit: 12, semanticCallsUsed: 0, nodeAttemptLimit: 5, sectionRevisionLimit: 5, replanLimit: 4, replansUsed: 0, maxParallelNodes: 2, maxParallelChunks: 2 },
     contextBudget: { contextWindowTokens: 128_000, estimatedInputTokens: 58_000, plannerOutputReserveTokens: 4_096, promptOverheadTokens: 4_096, safetyMarginTokens: 8_000, usableInputTokens: 100_000, directInputLimitTokens: 24_000, chunkTargetTokens: 16_000, chunkCount: 5, processedChunkCount: 5, totalMessageCount: 24, processedMessageCount: 24, coverageComplete: true, omittedMessageIds: [] },
     sourceChunkCount: 5, nodes: [], sections: [], sourceChunks: [], evidence: [], ledger: {}, events: [], markdownPreview: "", sidecarJson: "{}",
     ...overrides,

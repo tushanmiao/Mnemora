@@ -1,6 +1,6 @@
 [package]
 name = "mnemora"
-version = "0.1.22"
+version = "0.1.23"
 description = "Mnemora desktop application"
 authors = ["tushanmiao"]
 edition = "2021"
@@ -47,6 +47,7 @@ keyring = "4.1.5"
 zeroize = "1"
 tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
 tokio-util = { version = "0.7", features = ["rt"] }
+futures = "0.3"
 uuid = { version = "1", features = ["v4"] }
 image = { version = "0.25", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
 # 仅启用常见 ZIP Deflate 解码，避免把不需要的 Zopfli 编码器打进桌面程序。

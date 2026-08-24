@@ -240,6 +240,7 @@ export default function DeepNoteView() {
           `模型: ${modelOption?.providerName ?? runProviderId ?? "-"} / ${modelOption?.displayName ?? runModelId ?? "-"} (${runApiModel ?? modelOption?.apiModel ?? "-"})`,
       `输入覆盖: ${contextBudget?.processedMessageCount ?? 0}/${contextBudget?.totalMessageCount ?? 0}`,
       `语义调用: ${budget?.semanticCallsUsed ?? 0}/${budget?.semanticCallLimit ?? 0}`,
+      `分块并发: ${budget?.maxParallelChunks ?? 1}；章节并发: ${budget?.maxParallelNodes ?? 1}`,
       activity
         ? `当前请求: ${activity.callId}，第 ${activity.attempt}/${activity.maxRetries + 1} 次，已等待 ${formatDuration(activityElapsed ?? 0)}，超时 ${formatDuration(activity.timeoutMs)}`
         : "当前请求: 无",
@@ -551,7 +552,8 @@ export default function DeepNoteView() {
           <div><dt>节点尝试上限</dt><dd>{budget?.nodeAttemptLimit ?? 5}</dd></div>
           <div><dt>章节修订上限</dt><dd>{budget?.sectionRevisionLimit ?? 5}</dd></div>
           <div><dt>提纲调整</dt><dd>{budget?.replansUsed ?? 0}/{budget?.replanLimit ?? 4}</dd></div>
-          <div><dt>章节执行</dt><dd>按章节计划</dd></div>
+          <div><dt>分块并发</dt><dd>{budget?.maxParallelChunks ?? 1}</dd></div>
+          <div><dt>章节并发</dt><dd>{budget?.maxParallelNodes ?? 1}（依赖就绪后）</dd></div>
         </dl>
 
         {totalSections > 0 ? (

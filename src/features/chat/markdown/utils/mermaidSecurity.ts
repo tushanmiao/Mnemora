@@ -2,11 +2,11 @@ import { MARKDOWN_RENDER_LIMITS } from "./renderLimits";
 
 const DANGEROUS_SVG_TAGS = new Set(["script", "iframe", "object", "embed", "image"]);
 const XML_VOID_TAGS = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"]);
-
-// Kept as a compatibility export for callers that previously imported the
-// large-diagram predicate from the security module. Layout policy now lives in
-// mermaidLayout so rendering and viewer sizing share one contract.
-export { isLargeMermaidDiagram } from "./mermaidLayout";
+const MERMAID_DIRECTIVE = /%%\{[\s\S]*?\}%%/g;
+const MERMAID_INIT_DIRECTIVE = /^%%\{\s*(?:init|initialize)\s*:\s*(\{[\s\S]*\})\s*\}%%$/i;
+const MERMAID_SECURITY_OVERRIDE = /["']?securityLevel["']?\s*:/i;
+const MERMAID_CLICK_LINE = /^\s*click\s+.*$/gim;
+const HEX_COLOR = /^#(?:[a-f0-9]{3}|(?:[a-f0-9]{2}){2,4})$/i;
 
 export type MermaidSvgMetrics = {
   x?: number;
@@ -26,10 +26,46 @@ export type SanitizedMermaidSvg = {
 };
 
 /**
+ * Keep only the single harmless init option that Codex preserves. Every other
+ * directive and all click handlers are removed before Mermaid sees the input;
+ * an attempted securityLevel override rejects the diagram entirely.
+ */
+export function prepareMermaidSource(source: string) {
+  let securityOverride = false;
+  const prepared = source.replace(MERMAID_DIRECTIVE, (directive) => {
+    if (MERMAID_SECURITY_OVERRIDE.test(directive)) securityOverride = true;
+    const match = directive.match(MERMAID_INIT_DIRECTIVE);
+    if (!match) return "";
+
+    try {
+      const parsed = JSON.parse((match[1] ?? "").replace(/'/g, '"')) as {
+        themeVariables?: { sequenceNumberColor?: unknown };
+      };
+      const sequenceNumberColor = parsed.themeVariables?.sequenceNumberColor;
+      if (typeof sequenceNumberColor === "string" && HEX_COLOR.test(sequenceNumberColor)) {
+        return `%%{init: ${JSON.stringify({
+          theme: "base",
+          themeVariables: { sequenceNumberColor },
+        })}}%%`;
+      }
+    } catch {
+      // Invalid and unsupported init payloads are intentionally discarded.
+    }
+    return "";
+  });
+
+  if (securityOverride) {
+    throw new Error("Mermaid 图表尝试覆盖安全级别，已阻止渲染。");
+  }
+  return prepared.replace(MERMAID_CLICK_LINE, "").replace(/\\n/g, "<br/>").trim();
+}
+
+/**
  * Mermaid's htmlLabels renderer emits HTML void elements (most notably
  * `<br>`) inside SVG foreignObject nodes. That is valid HTML, but the SVG is
  * subsequently parsed as XML by the sanitizer and Shadow DOM renderer. Make
- * the contract explicit at that boundary instead of disabling htmlLabels.
+ * the contract explicit at that boundary for legacy diagrams and diagram types
+ * that may still contain foreignObject even when flowchart htmlLabels are off.
  */
 export function normalizeMermaidSvgForXml(svg: string) {
   return svg.replace(/<([a-z][\w:.-]*)(\s[^<>]*?)?\s*\/?\s*>/gi, (tag, name: string, attributes = "") => {
@@ -73,25 +109,75 @@ export function sanitizeMermaidSvg(svg: string): SanitizedMermaidSvg {
   }
 
   ensureMermaidViewBox(root);
+  stabilizeMermaidSvgPaint(root);
   const dimensions = extractMermaidSvgMetrics(root.outerHTML);
   root.setAttribute("role", "img");
-  root.setAttribute("width", "100%");
-  root.removeAttribute("height");
   root.setAttribute("preserveAspectRatio", "xMidYMin meet");
-  // Mermaid lays the diagram out at its intrinsic size and caps it with
-  // `max-width` (its `useMaxWidth` contract). Overriding that cap with 100%
-  // let a 132px-wide chart stretch across a 1300px column, magnifying 13px
-  // labels roughly tenfold. Keep `width: 100%` so narrow containers still
-  // shrink the diagram, but never grow it past what Mermaid measured.
-  root.style.setProperty("max-width", `${dimensions.width}px`);
-  root.style.setProperty("width", "100%");
-  root.style.removeProperty("height");
   root.style.removeProperty("background");
   root.style.removeProperty("background-color");
-  root.setAttribute("data-mnemora-mermaid", "shadow");
+  root.setAttribute("data-mnemora-mermaid", "sanitized");
   root.removeAttribute("aria-roledescription");
   const serialized = new XMLSerializer().serializeToString(root);
   return { svg: serialized, metrics: withMermaidViewerBudget(serialized, dimensions) };
+}
+
+/**
+ * Keep only the critical stroke-only edge contract in the sanitized SVG. Line
+ * width and color stay under Mermaid's ownership so normal, thick, dotted and
+ * user-styled edges keep their intended visual hierarchy.
+ */
+export function stabilizeMermaidSvgPaint(root: Element) {
+  let stabilized = 0;
+  const edges = root.querySelectorAll<SVGElement>("path.flowchart-link, g.edgePath > path.path");
+  for (const edge of Array.from(edges)) {
+    if (typeof edge.setAttribute !== "function") continue;
+    edge.setAttribute("fill", "none");
+    edge.style?.setProperty("fill", "none", "important");
+    edge.style?.setProperty("stroke-linecap", "round");
+    edge.style?.setProperty("stroke-linejoin", "round");
+    stabilized += 1;
+  }
+  repairNeoFlowchartMarkerGaps(root);
+  if (stabilized > 0) root.setAttribute("data-mnemora-edge-contract", "stable");
+  return stabilized;
+}
+
+/** Port the narrow neo-marker correction used by Codex Desktop. */
+export function repairNeoFlowchartMarkerGaps(root: Element) {
+  if (!root.classList?.contains("flowchart")) return 0;
+  const markers = new Map(Array.from(root.querySelectorAll("marker"), (marker) => [marker.id, marker]));
+  const shifted = new Set<Element>();
+  let repaired = 0;
+
+  for (const edge of Array.from(root.querySelectorAll<SVGPathElement>('path[data-edge][data-look="neo"].edge-pattern-solid'))) {
+    const dash = edge.style.strokeDasharray.trim().split(/[\s,]+/).map(Number);
+    if (dash.length !== 4 || dash.some((value) => !Number.isFinite(value))) continue;
+
+    const endpoints = (["start", "end"] as const).map((endpoint) => {
+      const reference = edge.getAttribute(`marker-${endpoint}`);
+      const markerId = reference?.match(/#([^)'"\s]+)['"]?\)$/)?.[1];
+      const marker = markerId ? markers.get(markerId) : undefined;
+      const suffix = endpoint === "start" ? "Start" : "End";
+      const expectedRefX = endpoint === "start" ? 1 : 11.5;
+      if (!marker
+        || !new RegExp(`-point${suffix}-margin(?:_.+)?$`).test(marker.id)
+        || (!shifted.has(marker) && Number(marker.getAttribute("refX")) !== expectedRefX)) {
+        return { gap: 0, marker: undefined, offset: 0 };
+      }
+      return { gap: 4, marker, offset: endpoint === "start" ? -4 : 4 };
+    });
+
+    const markerGap = endpoints[0].gap + endpoints[1].gap;
+    if (dash[2] < markerGap) continue;
+    for (const endpoint of endpoints) {
+      if (!endpoint.marker || shifted.has(endpoint.marker)) continue;
+      endpoint.marker.setAttribute("refX", String(Number(endpoint.marker.getAttribute("refX")) + endpoint.offset));
+      shifted.add(endpoint.marker);
+    }
+    edge.style.strokeDasharray = `0 ${dash[1] + endpoints[0].gap} ${dash[2] - markerGap} ${dash[3] + endpoints[1].gap}`;
+    repaired += 1;
+  }
+  return repaired;
 }
 
 function ensureMermaidViewBox(root: Element) {
@@ -129,7 +215,8 @@ function withMermaidViewerBudget(svg: string, dimensions: Pick<MermaidSvgMetrics
     && elementCount <= MARKDOWN_RENDER_LIMITS.maxMermaidViewerElements
     && foreignObjectCount <= MARKDOWN_RENDER_LIMITS.maxMermaidViewerForeignObjects
     && dimensions.width <= MARKDOWN_RENDER_LIMITS.maxMermaidViewerIntrinsicDimension
-    && dimensions.height <= MARKDOWN_RENDER_LIMITS.maxMermaidViewerIntrinsicDimension;
+    && dimensions.height <= MARKDOWN_RENDER_LIMITS.maxMermaidViewerIntrinsicDimension
+    && Math.max(dimensions.aspectRatio, 1 / dimensions.aspectRatio) <= MARKDOWN_RENDER_LIMITS.maxMermaidViewerAspectRatio;
   return { ...dimensions, svgChars, elementCount, foreignObjectCount, viewerSafe };
 }
 
@@ -154,32 +241,53 @@ function sanitizeMermaidCss(value: string) {
     .replace(/url\s*\(\s*["']?(?!#)[^)]*\)/gi, "none");
 }
 
-export function mermaidThemeConfig(host: HTMLElement) {
+export function mermaidThemeConfig(host: HTMLElement, source = "") {
   const shell = host.closest<HTMLElement>(".app-shell") ?? host;
   const styles = getComputedStyle(shell);
   const read = (name: string, fallback: string) => styles.getPropertyValue(name).trim() || fallback;
   const readColor = (name: string, fallback: string) => resolveMermaidColor(shell, name, fallback);
   const dark = shell.getAttribute("data-theme") === "dark";
+  const flowchart = /^\s*(?:%%[^\r\n]*(?:\r?\n|$)\s*)*(?:flowchart|graph)\b/i.test(source);
+  const fontFamily = read("--reading-font-family", '"Segoe UI Variable", "Microsoft YaHei UI", system-ui, sans-serif');
   return {
     // 始终从 base 主题出发并显式注入明暗色，避免 Mermaid dark 主题中的
     // 黑色内嵌背景与应用表面色叠加后形成无法阅读的色块。
     theme: "base" as const,
-    // 保持 Mermaid strict；htmlLabels 只负责渲染器生成的中文换行容器，
-    // 下游清洗器仍会再次移除脚本、事件、外部 href 与 CSS 外链。
+    // 保持 Mermaid strict；下游清洗器仍会再次移除脚本、事件、外部 href
+    // 与 CSS 外链。
     securityLevel: "strict" as const,
     startOnLoad: false,
-    htmlLabels: true,
+    suppressErrorRendering: true,
+    deterministicIds: false,
+    deterministicIDSeed: "mnemora-mermaid",
+    // Codex Desktop takes the same conservative route. Pure SVG text avoids
+    // foreignObject font/CSS inheritance drift and is materially less likely
+    // to clip after a note panel resize or a late font swap.
+    htmlLabels: false,
     wrap: true,
     markdownAutoWrap: true,
     fontSize: 13,
-    suppressErrorRendering: true,
+    darkMode: dark,
+    fontFamily,
+    look: flowchart ? "neo" as const : "classic" as const,
+    themeCSS: `
+      .edgeLabel .label rect {
+        fill: var(--mermaid-surface-background);
+        opacity: 1;
+      }
+      .node[data-look="neo"] rect {
+        rx: var(--radius-md);
+        ry: var(--radius-md);
+      }
+    `,
     flowchart: {
+      htmlLabels: false,
       useMaxWidth: true,
       diagramPadding: 10,
       nodeSpacing: 34,
       rankSpacing: 46,
       wrappingWidth: 250,
-      curve: "basis" as const,
+      curve: "rounded" as const,
     },
     sequence: {
       useMaxWidth: true,
@@ -217,7 +325,7 @@ export function mermaidThemeConfig(host: HTMLElement) {
       nodeBkg: dark ? "#263f55" : "#dcecff",
       nodeBorder: dark ? "#75b5e8" : "#397eb8",
       labelBackground: readColor("--color-surface-raised", dark ? "#282d32" : "#ffffff"),
-      lineColor: readColor("--color-muted", dark ? "#adb7bc" : "#687276"),
+      lineColor: dark ? "rgba(173, 183, 188, 0.72)" : "rgba(81, 90, 95, 0.72)",
       secondaryColor: dark ? "#3f3150" : "#f1e3ff",
       secondaryBorderColor: dark ? "#c59be3" : "#8553a5",
       tertiaryColor: dark ? "#2f4939" : "#dff3e5",
@@ -231,7 +339,7 @@ export function mermaidThemeConfig(host: HTMLElement) {
       actorBorder: dark ? "#e18aaf" : "#a53e6b",
       actorTextColor: readColor("--color-text", dark ? "#edf0f2" : "#202427"),
       signalColor: readColor("--color-muted", dark ? "#adb7bc" : "#687276"),
-      fontFamily: read("--reading-font-family", "system-ui, sans-serif"),
+      fontFamily,
     },
   };
 }

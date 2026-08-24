@@ -6,6 +6,7 @@ use std::{
     time::Duration,
 };
 
+use futures::{stream, StreamExt};
 use sha2::{Digest, Sha256};
 
 use tauri::{ipc::Channel, AppHandle, Manager, Runtime};
@@ -101,7 +102,7 @@ struct ConversationChunk {
     estimated_tokens: u64,
 }
 
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ChunkDigest {
     #[serde(default)]
@@ -120,6 +121,41 @@ struct ChunkDigest {
     global_constraints: Vec<String>,
     #[serde(default)]
     source_message_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ChunkDigestJob {
+    index: usize,
+    chunk: ConversationChunk,
+    system_prompt: String,
+    user_prompt: String,
+    prompt_hash: String,
+}
+
+#[derive(Debug)]
+struct ChunkDigestJobResult {
+    index: usize,
+    chunk_id: String,
+    prompt_hash: String,
+    semantic_calls: u32,
+    result: Result<ChunkDigest, String>,
+}
+
+#[derive(Debug, Clone)]
+struct SectionDagJob {
+    section: DeepNoteSection,
+    dependency_outputs: String,
+    evidence_ids: Vec<String>,
+    persisted: Option<NotePipelineSection>,
+    writer_system_prompt: String,
+    reviewer_system_prompt: String,
+    reserved_semantic_calls: u32,
+}
+
+#[derive(Debug)]
+struct SectionDagJobResult {
+    job: SectionDagJob,
+    result: Result<(Option<(String, DeepNoteValidationReport, u8, u8)>, u32), String>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -615,30 +651,98 @@ fn split_text_by_token_budget(value: &str, target_tokens: u64) -> Vec<String> {
     let mut chunks = Vec::new();
     let mut current = String::new();
     let mut current_units = 0u64;
-    for paragraph in value.split_inclusive("\n\n") {
-        let paragraph_units = paragraph.chars().fold(0u64, |total, character| {
-            total + if character.is_ascii() { 1 } else { 4 }
-        });
-        if !current.is_empty() && current_units.saturating_add(paragraph_units) > target_units {
+    for block in semantic_text_blocks(value) {
+        let block_units = text_budget_units(&block);
+        if !current.is_empty() && current_units.saturating_add(block_units) > target_units {
             chunks.push(std::mem::take(&mut current));
             current_units = 0;
         }
-        if paragraph_units <= target_units {
-            current.push_str(paragraph);
-            current_units += paragraph_units;
+        if block_units <= target_units {
+            current.push_str(&block);
+            current_units += block_units;
             continue;
         }
-        for character in paragraph.chars() {
+        if !current.is_empty() {
+            chunks.push(std::mem::take(&mut current));
+            current_units = 0;
+        }
+        for segment in split_oversized_text_block(&block, target_units) {
+            chunks.push(segment);
+        }
+    }
+    if !current.trim().is_empty() {
+        chunks.push(current);
+    }
+    chunks
+}
+
+fn text_budget_units(value: &str) -> u64 {
+    value.chars().fold(0u64, |total, character| {
+        total + if character.is_ascii() { 1 } else { 4 }
+    })
+}
+
+fn semantic_text_blocks(value: &str) -> Vec<String> {
+    let mut blocks = Vec::new();
+    let mut current = String::new();
+    let mut fence: Option<(char, usize)> = None;
+    for line in value.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        let heading = fence.is_none() && trimmed.starts_with('#');
+        if heading && !current.is_empty() {
+            blocks.push(std::mem::take(&mut current));
+        }
+        current.push_str(line);
+        if let Some((marker, length)) = fence {
+            let candidate_length = trimmed.chars().take_while(|value| *value == marker).count();
+            if candidate_length >= length && trimmed[candidate_length..].trim().is_empty() {
+                fence = None;
+            }
+        } else {
+            let marker = trimmed.chars().next().unwrap_or_default();
+            if matches!(marker, '`' | '~') {
+                let length = trimmed.chars().take_while(|value| *value == marker).count();
+                if length >= 3 {
+                    fence = Some((marker, length));
+                }
+            }
+        }
+        if fence.is_none() && (line.trim().is_empty() || heading) {
+            blocks.push(std::mem::take(&mut current));
+        }
+    }
+    if !current.is_empty() {
+        blocks.push(current);
+    }
+    blocks
+}
+
+fn split_oversized_text_block(value: &str, target_units: u64) -> Vec<String> {
+    let mut chunks = Vec::new();
+    let mut current = String::new();
+    let mut current_units = 0u64;
+    for line in value.split_inclusive('\n') {
+        let line_units = text_budget_units(line);
+        if !current.is_empty() && current_units.saturating_add(line_units) > target_units {
+            chunks.push(std::mem::take(&mut current));
+            current_units = 0;
+        }
+        if line_units <= target_units {
+            current.push_str(line);
+            current_units = current_units.saturating_add(line_units);
+            continue;
+        }
+        for character in line.chars() {
             let units = if character.is_ascii() { 1 } else { 4 };
             if !current.is_empty() && current_units.saturating_add(units) > target_units {
                 chunks.push(std::mem::take(&mut current));
                 current_units = 0;
             }
             current.push(character);
-            current_units += units;
+            current_units = current_units.saturating_add(units);
         }
     }
-    if !current.trim().is_empty() {
+    if !current.is_empty() {
         chunks.push(current);
     }
     chunks
@@ -757,6 +861,32 @@ fn source_chunk_message_ids(chunk: &DeepNoteSourceChunk) -> Vec<String> {
         .collect()
 }
 
+fn evidence_terms(value: &str) -> HashSet<String> {
+    let mut terms = value
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .map(str::trim)
+        .filter(|term| term.len() >= 2)
+        .map(|term| term.to_ascii_lowercase())
+        .collect::<HashSet<_>>();
+    let cjk = value
+        .chars()
+        .filter(|character| !character.is_ascii() && character.is_alphanumeric())
+        .collect::<Vec<_>>();
+    for pair in cjk.windows(2) {
+        terms.insert(pair.iter().collect());
+    }
+    terms
+}
+
+fn evidence_relevance_score(query: &str, chunk: &DeepNoteSourceChunk) -> usize {
+    let query_terms = evidence_terms(query);
+    if query_terms.is_empty() {
+        return 0;
+    }
+    let source_terms = evidence_terms(&chunk.excerpt);
+    query_terms.intersection(&source_terms).count()
+}
+
 fn evidence_for_plan(
     run: &NotePipelineRun,
     plan: &DeepNotePlanVersion,
@@ -776,7 +906,7 @@ fn evidence_for_plan(
                             .any(|message_id| section.source_message_ids.contains(message_id))
                 })
                 .collect::<Vec<_>>();
-            let selected = if section.source_message_ids.is_empty() {
+            let candidates = if section.source_message_ids.is_empty() {
                 chunks.iter().collect::<Vec<_>>()
             } else {
                 scoped
@@ -790,13 +920,34 @@ fn evidence_for_plan(
                 .into_iter()
                 .enumerate()
                 .map(|(index, requirement)| {
+                    let query = format!(
+                        "{} {} {} {}",
+                        section.heading, section.purpose, section.brief, requirement
+                    );
+                    let mut ranked = candidates
+                        .iter()
+                        .map(|chunk| (*chunk, evidence_relevance_score(&query, chunk)))
+                        .collect::<Vec<_>>();
+                    ranked.sort_by(|left, right| {
+                        right
+                            .1
+                            .cmp(&left.1)
+                            .then_with(|| left.0.chunk_id.cmp(&right.0.chunk_id))
+                    });
+                    let best_score = ranked.first().map(|(_, score)| *score).unwrap_or(0);
+                    let selected = ranked
+                        .into_iter()
+                        .filter(|(_, score)| *score > 0 || !section.source_message_ids.is_empty())
+                        .take(4)
+                        .map(|(chunk, _)| chunk)
+                        .collect::<Vec<_>>();
                     let source_chunk_ids = selected
                         .iter()
                         .map(|chunk| chunk.chunk_id.clone())
                         .collect::<Vec<_>>();
                     let source_excerpt = selected
                         .iter()
-                        .take(3)
+                        .take(4)
                         .map(|chunk| {
                             format!(
                                 "[{} · {}]\n{}",
@@ -825,11 +976,13 @@ fn evidence_for_plan(
                         source_chunk_ids,
                         claim: requirement.clone(),
                         model_synthesis: format!(
-                            "章节“{}”必须用这些已冻结来源说明：{}",
-                            section.heading, requirement
+                            "章节“{}”的证据要求已按来源文本相关度绑定；最高匹配分 {}：{}",
+                            section.heading, best_score, requirement
                         ),
                         source_excerpt,
-                        support_level: if status == DeepNoteEvidenceStatus::Verified {
+                        support_level: if status == DeepNoteEvidenceStatus::Verified
+                            && best_score >= 2
+                        {
                             DeepNoteSupportLevel::Direct
                         } else {
                             DeepNoteSupportLevel::Partial
@@ -2742,51 +2895,54 @@ fn ledger_analysis_prompt(
     .join("\n\n"))
 }
 
-fn compact_ledger_for_planner(ledger: &DeepNoteLedger) -> DeepNoteLedger {
-    fn take(values: &[String], limit: usize, max_chars: usize) -> Vec<String> {
-        values
+fn sample_ledger_values(values: &[String], limit: usize, max_chars: usize) -> Vec<String> {
+    if values.len() <= limit {
+        return values
             .iter()
-            .take(limit)
             .map(|value| value.chars().take(max_chars).collect())
-            .collect()
+            .collect();
     }
+    if limit <= 1 {
+        return values
+            .last()
+            .map(|value| vec![value.chars().take(max_chars).collect()])
+            .unwrap_or_default();
+    }
+    (0..limit)
+        .map(|position| position * (values.len() - 1) / (limit - 1))
+        .map(|index| values[index].chars().take(max_chars).collect())
+        .collect()
+}
 
+fn compact_ledger_for_planner(ledger: &DeepNoteLedger) -> DeepNoteLedger {
     DeepNoteLedger {
         note_goal: ledger.note_goal.chars().take(1_000).collect(),
         audience: ledger.audience.chars().take(500).collect(),
-        canonical_terms: take(&ledger.canonical_terms, 16, 80),
-        verified_facts: take(&ledger.verified_facts, 16, 180),
-        evidence_claim_links: take(&ledger.evidence_claim_links, 8, 160),
-        covered_topics: take(&ledger.covered_topics, 16, 80),
-        open_questions: take(&ledger.open_questions, 8, 140),
-        conflicts: take(&ledger.conflicts, 8, 140),
-        ai_supplements: take(&ledger.ai_supplements, 8, 140),
-        section_summaries: take(&ledger.section_summaries, 6, 360),
-        global_constraints: take(&ledger.global_constraints, 8, 140),
+        canonical_terms: sample_ledger_values(&ledger.canonical_terms, 16, 80),
+        verified_facts: sample_ledger_values(&ledger.verified_facts, 16, 180),
+        evidence_claim_links: sample_ledger_values(&ledger.evidence_claim_links, 8, 160),
+        covered_topics: sample_ledger_values(&ledger.covered_topics, 16, 80),
+        open_questions: sample_ledger_values(&ledger.open_questions, 8, 140),
+        conflicts: sample_ledger_values(&ledger.conflicts, 8, 140),
+        ai_supplements: sample_ledger_values(&ledger.ai_supplements, 8, 140),
+        section_summaries: sample_ledger_values(&ledger.section_summaries, 8, 360),
+        global_constraints: sample_ledger_values(&ledger.global_constraints, 8, 140),
     }
 }
 
 fn compact_attachment_ledger(ledger: &DeepNoteLedger) -> DeepNoteLedger {
-    fn take(values: &[String], limit: usize, max_chars: usize) -> Vec<String> {
-        values
-            .iter()
-            .take(limit)
-            .map(|value| value.chars().take(max_chars).collect())
-            .collect()
-    }
-
     DeepNoteLedger {
         note_goal: ledger.note_goal.chars().take(800).collect(),
         audience: ledger.audience.chars().take(400).collect(),
-        canonical_terms: take(&ledger.canonical_terms, 48, 120),
-        verified_facts: take(&ledger.verified_facts, 64, 280),
-        evidence_claim_links: take(&ledger.evidence_claim_links, 24, 180),
-        covered_topics: take(&ledger.covered_topics, 48, 160),
-        open_questions: take(&ledger.open_questions, 32, 220),
-        conflicts: take(&ledger.conflicts, 32, 220),
-        ai_supplements: take(&ledger.ai_supplements, 16, 200),
-        section_summaries: take(&ledger.section_summaries, 24, 420),
-        global_constraints: take(&ledger.global_constraints, 32, 220),
+        canonical_terms: sample_ledger_values(&ledger.canonical_terms, 48, 120),
+        verified_facts: sample_ledger_values(&ledger.verified_facts, 64, 280),
+        evidence_claim_links: sample_ledger_values(&ledger.evidence_claim_links, 24, 180),
+        covered_topics: sample_ledger_values(&ledger.covered_topics, 48, 160),
+        open_questions: sample_ledger_values(&ledger.open_questions, 32, 220),
+        conflicts: sample_ledger_values(&ledger.conflicts, 32, 220),
+        ai_supplements: sample_ledger_values(&ledger.ai_supplements, 16, 200),
+        section_summaries: sample_ledger_values(&ledger.section_summaries, 24, 420),
+        global_constraints: sample_ledger_values(&ledger.global_constraints, 32, 220),
     }
 }
 
@@ -2817,6 +2973,121 @@ fn compact_ledger_analysis_prompt(
         "\n\nGenerate 4 to 8 concise sections. Use only evidence retained in this ledger.",
     );
     Ok(prompt)
+}
+
+fn reserve_parallel_semantic_calls(
+    state: &AppState,
+    run_id: &str,
+    runtime: &mut DeepNoteRuntimeState,
+    calls: u32,
+) -> Result<(), String> {
+    if calls == 0 {
+        return Ok(());
+    }
+    runtime.budget.reserve_semantic_calls(calls);
+    let next = runtime.budget.semantic_calls_used.saturating_add(calls);
+    if next > runtime.budget.semantic_call_limit {
+        return Err(format!(
+            "深度笔记并行语义调用预算不足（需要预留 {calls} 次，当前 {}/{}）。",
+            runtime.budget.semantic_calls_used, runtime.budget.semantic_call_limit
+        ));
+    }
+    // 并行 Worker 启动前做悲观预留，避免应用退出或 Future 被取消后漏记
+    // 已经发出的请求。Worker 全部回收后再归还未使用的 JSON 修复额度。
+    runtime.budget.semantic_calls_used = next;
+    save_runtime_state(state, run_id, runtime)
+}
+
+fn release_unused_parallel_semantic_calls(
+    runtime: &mut DeepNoteRuntimeState,
+    reserved: u32,
+    used: u32,
+) {
+    runtime.budget.semantic_calls_used = runtime
+        .budget
+        .semantic_calls_used
+        .saturating_sub(reserved.saturating_sub(used));
+}
+
+async fn execute_chunk_digest_job(
+    state: &AppState,
+    run: &NotePipelineRun,
+    job: ChunkDigestJob,
+    cancellation: &CancellationToken,
+    channel: Option<&Channel<NotePipelineProgress>>,
+) -> ChunkDigestJobResult {
+    let mut semantic_calls = 1u32;
+    let initial = model_call_with_runtime(
+        state,
+        run,
+        "deepNoteChunk",
+        NotePipelinePhase::Analyzing,
+        job.system_prompt.clone(),
+        job.user_prompt.clone(),
+        run.max_output_tokens.min(CHUNK_OUTPUT_TOKEN_LIMIT),
+        run.retry_attempts,
+        cancellation,
+        channel,
+    )
+    .await
+    .map_err(|error| error.message)
+    .and_then(|raw| parse_json_object::<ChunkDigest>(&raw).and_then(ChunkDigest::validate));
+
+    let result = match initial {
+        Ok(digest) => Ok(digest),
+        Err(initial_error) if !cancellation.is_cancelled() => {
+            semantic_calls = semantic_calls.saturating_add(1);
+            model_call_with_runtime(
+                state,
+                run,
+                "deepNoteChunkRepair",
+                NotePipelinePhase::Analyzing,
+                format!("{}\n\n{}", job.system_prompt, STRICT_JSON_SUFFIX),
+                job.user_prompt.clone(),
+                run.max_output_tokens.min(CHUNK_OUTPUT_TOKEN_LIMIT),
+                run.retry_attempts,
+                cancellation,
+                channel,
+            )
+            .await
+            .map_err(|error| format!("{initial_error}；JSON 修复失败：{}", error.message))
+            .and_then(|raw| parse_json_object::<ChunkDigest>(&raw).and_then(ChunkDigest::validate))
+        }
+        Err(error) => Err(error),
+    };
+
+    if let Ok(digest) = &result {
+        let digest_json = serde_json::to_string(digest)
+            .map_err(|error| format!("序列化 Chunk 摘要失败：{error}"));
+        if let Err(error) = digest_json.and_then(|digest_json| {
+            state.library_repository.save_note_pipeline_chunk_digest(
+                &run.id,
+                &job.chunk.source.chunk_id,
+                &job.chunk.source.content_hash,
+                &job.prompt_hash,
+                &run.provider_id,
+                &run.model_id,
+                &digest_json,
+                semantic_calls,
+            )
+        }) {
+            return ChunkDigestJobResult {
+                index: job.index,
+                chunk_id: job.chunk.source.chunk_id,
+                prompt_hash: job.prompt_hash,
+                semantic_calls,
+                result: Err(error),
+            };
+        }
+    }
+
+    ChunkDigestJobResult {
+        index: job.index,
+        chunk_id: job.chunk.source.chunk_id,
+        prompt_hash: job.prompt_hash,
+        semantic_calls,
+        result,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2860,125 +3131,154 @@ async fn build_chunked_ledger(
                     .collect::<Vec<_>>(),
             )?;
     }
-    let can_resume = runtime.context_budget.chunk_count == chunks.len()
-        && runtime.context_budget.chunk_target_tokens == target_tokens
-        && runtime.context_budget.processed_chunk_count <= chunks.len()
-        && !runtime.ledger.section_summaries.is_empty();
-    if !can_resume {
-        runtime.ledger = DeepNoteLedger::default();
-        runtime.context_budget.processed_chunk_count = 0;
-        runtime.context_budget.processed_message_count = 0;
-    }
+    // Chunk 的完成事实来自独立 Digest 检查点，不再依赖“前 N 个已完成”的
+    // 顺序前缀。这样并行 Worker 可以乱序返回，恢复时也只重做真正缺失的 Chunk。
+    runtime.ledger = DeepNoteLedger::default();
+    runtime.context_budget.processed_chunk_count = 0;
+    runtime.context_budget.processed_message_count = 0;
     runtime.context_budget.chunk_target_tokens = target_tokens;
     runtime.context_budget.chunk_count = chunks.len();
     runtime.context_budget.coverage_complete = false;
     runtime.context_budget.omitted_message_ids.clear();
-    let remaining_chunk_count = chunks
-        .len()
-        .saturating_sub(runtime.context_budget.processed_chunk_count);
-    runtime.budget.reserve_semantic_calls(
-        (remaining_chunk_count as u32)
-            .saturating_mul(2)
-            .saturating_add(2),
+    let cached = state
+        .library_repository
+        .list_note_pipeline_chunk_digests(&run.id)?
+        .into_iter()
+        .map(|checkpoint| (checkpoint.chunk_id.clone(), checkpoint))
+        .collect::<HashMap<_, _>>();
+    let mut digests = vec![None::<ChunkDigest>; chunks.len()];
+    let mut jobs = Vec::new();
+    for (index, chunk) in chunks.iter().cloned().enumerate() {
+        let user_prompt = chunk_analysis_prompt(&chunk);
+        let system_prompt = system_prompt_with_skill_profile(
+            state,
+            &run.id,
+            runtime,
+            DeepNoteSkillProfileKind::Planner,
+            Some("recon-source"),
+            CHUNK_ANALYST_SYSTEM_PROMPT,
+        );
+        let prompt_hash = stable_hash(format!(
+            "chunk-digest-v2\0{}\0{}\0{}\0{}\0{}",
+            run.provider_id,
+            run.model_id,
+            run.max_output_tokens.min(CHUNK_OUTPUT_TOKEN_LIMIT),
+            system_prompt,
+            user_prompt
+        ));
+        let restored = cached.get(&chunk.source.chunk_id).and_then(|checkpoint| {
+            (checkpoint.content_hash == chunk.source.content_hash
+                && checkpoint.prompt_hash == prompt_hash
+                && checkpoint.provider_id == run.provider_id
+                && checkpoint.model_id == run.model_id)
+                .then(|| {
+                    parse_json_object::<ChunkDigest>(&checkpoint.digest_json)
+                        .and_then(ChunkDigest::validate)
+                        .ok()
+                })
+                .flatten()
+        });
+        if let Some(digest) = restored {
+            digests[index] = Some(digest);
+        } else {
+            jobs.push(ChunkDigestJob {
+                index,
+                chunk,
+                system_prompt,
+                user_prompt,
+                prompt_hash,
+            });
+        }
+    }
+
+    let cached_count = digests.iter().filter(|digest| digest.is_some()).count();
+    let reserved_calls = (jobs.len() as u32).saturating_mul(2);
+    reserve_parallel_semantic_calls(state, &run.id, runtime, reserved_calls)?;
+    let parallelism = usize::from(runtime.budget.max_parallel_chunks.max(1));
+    progress(
+        state,
+        channel,
+        &run.id,
+        NotePipelinePhase::Analyzing,
+        Some(cached_count),
+        Some(chunks.len()),
+        format!(
+            "正在并行提取来源分块 · 并发 {} · 已复用 {} 个检查点",
+            parallelism, cached_count
+        ),
     );
 
-    let mut processed_ids = chunks
-        .iter()
-        .take(runtime.context_budget.processed_chunk_count)
-        .flat_map(|chunk| chunk.message_ids.iter().cloned())
-        .collect::<HashSet<_>>();
-    for (index, chunk) in chunks
-        .iter()
-        .enumerate()
-        .skip(runtime.context_budget.processed_chunk_count)
-    {
-        if cancellation.is_cancelled() {
-            return Err("操作已取消。".to_string());
-        }
-        progress(
-            state,
-            channel,
-            &run.id,
-            NotePipelinePhase::Analyzing,
-            Some(index + 1),
-            Some(chunks.len()),
-            format!("正在提取来源分块 {}/{}", index + 1, chunks.len()),
-        );
-        let prompt = chunk_analysis_prompt(chunk);
-        consume_semantic_call(state, &run.id, runtime)?;
-        let raw = await_note_pipeline_cancellable(cancellation, async {
-            model_call_with_runtime(
-                state,
-                run,
-                "deepNoteChunk",
-                NotePipelinePhase::Analyzing,
-                system_prompt_with_skill_profile(
+    let mut failures = Vec::new();
+    let mut results = stream::iter(
+        jobs.into_iter()
+            .map(|job| execute_chunk_digest_job(state, run, job, cancellation, Some(channel))),
+    )
+    .buffer_unordered(parallelism);
+    while let Some(output) = results.next().await {
+        release_unused_parallel_semantic_calls(runtime, 2, output.semantic_calls);
+        match output.result {
+            Ok(digest) => {
+                digests[output.index] = Some(digest);
+                let completed = digests.iter().filter(|digest| digest.is_some()).count();
+                progress(
                     state,
+                    channel,
                     &run.id,
-                    runtime,
-                    DeepNoteSkillProfileKind::Planner,
-                    Some("recon-source"),
-                    CHUNK_ANALYST_SYSTEM_PROMPT,
-                ),
-                prompt.clone(),
-                run.max_output_tokens.min(CHUNK_OUTPUT_TOKEN_LIMIT),
-                run.retry_attempts,
-                cancellation,
-                Some(channel),
-            )
-            .await
-            .map_err(|error| error.message)
-        })
-        .await?;
-        let digest = match parse_json_object::<ChunkDigest>(&raw).and_then(ChunkDigest::validate) {
-            Ok(digest) => digest,
-            Err(_) => {
-                consume_semantic_call(state, &run.id, runtime)?;
-                let repaired = await_note_pipeline_cancellable(cancellation, async {
-                    model_call_with_runtime(
-                        state,
-                        run,
-                        "deepNoteChunkRepair",
-                        NotePipelinePhase::Analyzing,
-                        system_prompt_with_skill_profile(
-                            state,
-                            &run.id,
-                            runtime,
-                            DeepNoteSkillProfileKind::Planner,
-                            Some("recon-source"),
-                            &format!("{CHUNK_ANALYST_SYSTEM_PROMPT}\n\n{STRICT_JSON_SUFFIX}"),
-                        ),
-                        prompt,
-                        run.max_output_tokens.min(CHUNK_OUTPUT_TOKEN_LIMIT),
-                        run.retry_attempts,
-                        cancellation,
-                        Some(channel),
-                    )
-                    .await
-                    .map_err(|error| error.message)
-                })
-                .await?;
-                parse_json_object::<ChunkDigest>(&repaired).and_then(ChunkDigest::validate)?
+                    NotePipelinePhase::Analyzing,
+                    Some(completed),
+                    Some(chunks.len()),
+                    format!("来源分块已完成 {completed}/{}", chunks.len()),
+                );
+                let _ = state.library_repository.append_note_pipeline_event(
+                    &run.id,
+                    "contextChunkCompleted",
+                    Some(&output.chunk_id),
+                    &serde_json::json!({
+                        "chunkIndex": output.index + 1,
+                        "chunkCount": chunks.len(),
+                        "completedChunkCount": completed,
+                        "parallelism": parallelism,
+                        "promptHash": output.prompt_hash,
+                    })
+                    .to_string(),
+                );
             }
-        };
-        merge_chunk_digest(&mut runtime.ledger, chunk, digest);
-        processed_ids.extend(chunk.message_ids.iter().cloned());
-        runtime.context_budget.processed_chunk_count = index + 1;
+            Err(error) => failures.push(format!("{}：{}", output.chunk_id, error)),
+        }
+        runtime.context_budget.processed_chunk_count =
+            digests.iter().filter(|digest| digest.is_some()).count();
+        let processed_ids = chunks
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| digests[*index].is_some())
+            .flat_map(|(_, chunk)| chunk.message_ids.iter().cloned())
+            .collect::<HashSet<_>>();
         runtime.context_budget.processed_message_count = processed_ids.len();
         save_runtime_state(state, &run.id, runtime)?;
-        let _ = state.library_repository.append_note_pipeline_event(
-            &run.id,
-            "contextChunkCompleted",
-            None,
-            &serde_json::json!({
-                "chunkIndex": index + 1,
-                "chunkCount": chunks.len(),
-                "processedMessageCount": processed_ids.len(),
-                "totalMessageCount": runtime.context_budget.total_message_count,
-            })
-            .to_string(),
-        );
     }
+    drop(results);
+    if !failures.is_empty() {
+        return Err(format!(
+            "{} 个来源分块生成失败；已完成分块的检查点已保留：{}",
+            failures.len(),
+            failures.join("；")
+        ));
+    }
+
+    runtime.ledger = DeepNoteLedger::default();
+    let mut processed_ids = HashSet::new();
+    for (index, digest) in digests.into_iter().enumerate() {
+        let digest = digest.ok_or_else(|| {
+            format!(
+                "来源分块 {} 缺少完成的 Digest 检查点。",
+                chunks[index].source.chunk_id
+            )
+        })?;
+        merge_chunk_digest(&mut runtime.ledger, &chunks[index], digest);
+        processed_ids.extend(chunks[index].message_ids.iter().cloned());
+    }
+    runtime.context_budget.processed_chunk_count = chunks.len();
+    runtime.context_budget.processed_message_count = processed_ids.len();
     runtime.context_budget.coverage_complete = runtime.context_budget.processed_chunk_count
         == chunks.len()
         && processed_ids.len() == runtime.context_budget.total_message_count;
@@ -3478,6 +3778,94 @@ fn validate_section_markdown(
     }
 }
 
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DeepNoteGlobalValidationReport {
+    passed: bool,
+    errors: Vec<String>,
+    warnings: Vec<String>,
+    section_hashes: HashMap<String, String>,
+}
+
+fn validate_global_drafts(
+    outline: &DeepNoteOutline,
+    drafts: &[(DeepNoteSection, String, bool)],
+    evidence_by_section: &HashMap<String, Vec<String>>,
+) -> DeepNoteGlobalValidationReport {
+    let mut errors = Vec::new();
+    let mut warnings = Vec::new();
+    let mut section_hashes = HashMap::new();
+    let expected = outline
+        .sections
+        .iter()
+        .map(|section| section.id.as_str())
+        .collect::<HashSet<_>>();
+    let actual = drafts
+        .iter()
+        .map(|(section, _, _)| section.id.as_str())
+        .collect::<HashSet<_>>();
+    for missing in expected.difference(&actual) {
+        errors.push(format!("缺少已确认章节：{missing}"));
+    }
+    for unexpected in actual.difference(&expected) {
+        errors.push(format!("出现计划外章节：{unexpected}"));
+    }
+
+    let mut headings = HashSet::new();
+    let mut content_hashes = HashMap::<String, String>::new();
+    for (section, markdown, failed) in drafts {
+        if *failed {
+            errors.push(format!("章节“{}”仍处于失败状态。", section.heading));
+        }
+        let normalized_heading = section.heading.trim().to_lowercase();
+        if !headings.insert(normalized_heading) {
+            errors.push(format!("章节标题重复：{}", section.heading));
+        }
+        let evidence_ids = evidence_by_section
+            .get(&section.id)
+            .cloned()
+            .unwrap_or_default();
+        let report = validate_section_markdown(section, markdown, &evidence_ids);
+        errors.extend(
+            report
+                .errors
+                .into_iter()
+                .map(|error| format!("{}：{error}", section.heading)),
+        );
+        warnings.extend(
+            report
+                .warnings
+                .into_iter()
+                .map(|warning| format!("{}：{warning}", section.heading)),
+        );
+        if evidence_ids.is_empty() && !section.allow_ai_supplement && !section.needs_supplement {
+            errors.push(format!("章节“{}”没有可验证 Evidence。", section.heading));
+        }
+        for dependency in &section.depends_on {
+            if !actual.contains(dependency.as_str()) {
+                errors.push(format!(
+                    "章节“{}”缺少依赖章节 {dependency} 的完成产物。",
+                    section.heading
+                ));
+            }
+        }
+        let content_hash = stable_hash(markdown);
+        if let Some(previous) = content_hashes.insert(content_hash.clone(), section.id.clone()) {
+            errors.push(format!(
+                "章节 {} 与 {} 的正文完全重复。",
+                previous, section.id
+            ));
+        }
+        section_hashes.insert(section.id.clone(), content_hash);
+    }
+    DeepNoteGlobalValidationReport {
+        passed: errors.is_empty(),
+        errors,
+        warnings,
+        section_hashes,
+    }
+}
+
 fn sidecar_json(
     run: &NotePipelineRun,
     plan: &DeepNotePlanVersion,
@@ -3703,6 +4091,22 @@ async fn analyze_outline(
         runtime.context_budget.processed_message_count = valid_ids.len();
         runtime.context_budget.coverage_complete = true;
         runtime.context_budget.omitted_message_ids.clear();
+        // 直接规划不需要额外 Chunk 模型调用，但执行 DAG 的 BuildLedger 节点
+        // 仍必须拥有真实产物。保存有界原文索引，避免用空 Ledger 伪造完成。
+        runtime.ledger = DeepNoteLedger {
+            section_summaries: direct_chunks
+                .iter()
+                .map(|chunk| {
+                    format!(
+                        "{} | 来源消息 [{}] | {}",
+                        chunk.source.chunk_id,
+                        chunk.message_ids.join(", "),
+                        chunk.source.excerpt.chars().take(4_000).collect::<String>()
+                    )
+                })
+                .collect(),
+            ..DeepNoteLedger::default()
+        };
         save_runtime_state(state, &run.id, runtime)?;
         let _ = state.library_repository.append_note_pipeline_event(
             &run.id,
@@ -4036,23 +4440,24 @@ async fn run_analysis_task<R: Runtime>(
 async fn execute_dag_section(
     state: &AppState,
     run: &NotePipelineRun,
-    runtime: &mut DeepNoteRuntimeState,
+    ledger: &DeepNoteLedger,
+    context_budget: &DeepNoteContextBudget,
     conversation: &StoredConversation,
     selected_outline: &DeepNoteOutline,
     section: &DeepNoteSection,
     ledger_context: &str,
     dependency_outputs: &str,
+    writer_system_prompt: &str,
+    reviewer_system_prompt: &str,
+    node_attempt_limit: u8,
+    section_revision_limit: u8,
     channel: &Channel<NotePipelineProgress>,
     cancellation: &CancellationToken,
     persisted: Option<&NotePipelineSection>,
     evidence_ids: &[String],
-) -> Result<Option<(String, DeepNoteValidationReport, u8, u8)>, String> {
-    let (source_context, using_ledger_summary) = section_source_context(
-        conversation,
-        section,
-        &runtime.ledger,
-        &runtime.context_budget,
-    )?;
+) -> Result<(Option<(String, DeepNoteValidationReport, u8, u8)>, u32), String> {
+    let (source_context, using_ledger_summary) =
+        section_source_context(conversation, section, ledger, context_budget)?;
     if using_ledger_summary {
         let _ = state.library_repository.append_note_pipeline_event(
             &run.id,
@@ -4083,27 +4488,20 @@ async fn execute_dag_section(
     };
     let mut attempts = persisted.map(|value| value.attempt_count).unwrap_or(0);
     let mut revisions = persisted.map(|value| value.revision_count).unwrap_or(0);
-    let node_attempt_limit = runtime.budget.node_attempt_limit.max(1);
-    let section_revision_limit = runtime.budget.section_revision_limit;
+    let node_attempt_limit = node_attempt_limit.max(1);
+    let mut semantic_calls = 0u32;
     'attempts: while attempts < node_attempt_limit {
         if cancellation.is_cancelled() {
             break;
         }
         attempts += 1;
-        consume_semantic_call(state, &run.id, runtime)?;
+        semantic_calls = semantic_calls.saturating_add(1);
         match model_call_with_runtime(
             state,
             run,
             "deepNote",
             NotePipelinePhase::Drafting,
-            system_prompt_with_skill_profile(
-                state,
-                &run.id,
-                runtime,
-                DeepNoteSkillProfileKind::Writer,
-                Some(&format!("draft:{}", section.id)),
-                SECTION_SYSTEM_PROMPT,
-            ),
+            writer_system_prompt.to_string(),
             prompt.clone(),
             run.max_output_tokens.min(SECTION_OUTPUT_TOKEN_LIMIT),
             run.retry_attempts,
@@ -4117,7 +4515,7 @@ async fn execute_dag_section(
                 validation = validate_section_markdown(section, &candidate, evidence_ids);
                 while !validation.passed && revisions < section_revision_limit {
                     revisions += 1;
-                    consume_semantic_call(state, &run.id, runtime)?;
+                    semantic_calls = semantic_calls.saturating_add(1);
                     let revision_prompt = format!(
                         "章节计划：\n{}\n\n当前正文：\n{}\n\n验证报告：\n{}",
                         serde_json::to_string(section).map_err(|error| error.to_string())?,
@@ -4129,14 +4527,7 @@ async fn execute_dag_section(
                         run,
                         "deepNote",
                         NotePipelinePhase::Validating,
-                        system_prompt_with_skill_profile(
-                            state,
-                            &run.id,
-                            runtime,
-                            DeepNoteSkillProfileKind::Reviewer,
-                            Some(&format!("validate:{}", section.id)),
-                            SECTION_REVISION_SYSTEM_PROMPT,
-                        ),
+                        reviewer_system_prompt.to_string(),
                         revision_prompt,
                         run.max_output_tokens.min(SECTION_OUTPUT_TOKEN_LIMIT),
                         run.retry_attempts,
@@ -4170,7 +4561,7 @@ async fn execute_dag_section(
     }
     let Some(markdown) = markdown else {
         if cancellation.is_cancelled() {
-            return Ok(None);
+            return Ok((None, semantic_calls));
         }
         let validation_json =
             serde_json::to_string(&validation).map_err(|error| error.to_string())?;
@@ -4208,7 +4599,10 @@ async fn execute_dag_section(
             &validation_json,
             None,
         )?;
-    Ok(Some((markdown, validation, attempts, revisions)))
+    Ok((
+        Some((markdown, validation, attempts, revisions)),
+        semantic_calls,
+    ))
 }
 
 async fn run_drafting_task<R: Runtime>(
@@ -4336,30 +4730,73 @@ async fn run_drafting_task<R: Runtime>(
                 }
                 return Err("DAG 调度器无法释放下一个章节节点，可能存在未满足的依赖。".to_string());
             }
+            let mut jobs = Vec::with_capacity(ready.len());
+            let mut batch_reserved_calls = 0u32;
             for section_id in ready {
-                if cancellation.is_cancelled() {
-                    break;
-                }
-                let Some(section) = selected_outline
+                let section = selected_outline
                     .sections
                     .iter()
                     .find(|value| value.id == section_id)
                     .cloned()
-                else {
-                    return Err(format!("DAG 节点引用了不存在的章节：{section_id}"));
-                };
+                    .ok_or_else(|| format!("DAG 节点引用了不存在的章节：{section_id}"))?;
+                let persisted = persisted_sections.get(&section_id).cloned();
+                let remaining_attempts = runtime.budget.node_attempt_limit.max(1).saturating_sub(
+                    persisted
+                        .as_ref()
+                        .map(|value| value.attempt_count)
+                        .unwrap_or(0),
+                );
+                let remaining_revisions = runtime.budget.section_revision_limit.saturating_sub(
+                    persisted
+                        .as_ref()
+                        .map(|value| value.revision_count)
+                        .unwrap_or(0),
+                );
+                let reserved_semantic_calls =
+                    u32::from(remaining_attempts) + u32::from(remaining_revisions);
+                batch_reserved_calls = batch_reserved_calls.saturating_add(reserved_semantic_calls);
+                jobs.push(SectionDagJob {
+                    dependency_outputs: dependency_context(&section, &drafts_by_id),
+                    evidence_ids: verified_evidence_ids_for_section(
+                        &evidence_by_section,
+                        &section_id,
+                    ),
+                    persisted,
+                    writer_system_prompt: system_prompt_with_skill_profile(
+                        &state,
+                        &run.id,
+                        &runtime,
+                        DeepNoteSkillProfileKind::Writer,
+                        Some(&format!("draft:{section_id}")),
+                        SECTION_SYSTEM_PROMPT,
+                    ),
+                    reviewer_system_prompt: system_prompt_with_skill_profile(
+                        &state,
+                        &run.id,
+                        &runtime,
+                        DeepNoteSkillProfileKind::Reviewer,
+                        Some(&format!("validate:{section_id}")),
+                        SECTION_REVISION_SYSTEM_PROMPT,
+                    ),
+                    reserved_semantic_calls,
+                    section,
+                });
+            }
+            reserve_parallel_semantic_calls(&state, &run_id, &mut runtime, batch_reserved_calls)?;
+            for job in &jobs {
+                let section_id = &job.section.id;
                 scheduler.transition(
                     &format!("draft:{section_id}"),
                     DeepNoteNodeStatus::InProgress,
                 )?;
                 if let Ok(node) = scheduler.node_mut(&format!("draft:{section_id}")) {
-                    node.attempt_count = persisted_sections
-                        .get(&section_id)
+                    node.attempt_count = job
+                        .persisted
+                        .as_ref()
                         .map(|value| value.attempt_count)
                         .unwrap_or(0);
                     node.error_message = None;
                 }
-                persist_scheduler_state(&state, &run_id, &mut runtime, &scheduler)?;
                 state.library_repository.append_note_pipeline_event(
                     &run_id,
                     "dagNodeStarted",
@@ -4368,56 +4805,135 @@ async fn run_drafting_task<R: Runtime>(
                         "nodeId": format!("draft:{section_id}"),
                         "sectionId": section_id,
                         "nodeType": "draftSection",
+                        "parallelism": runtime.budget.max_parallel_nodes.max(1),
                     })
                     .to_string(),
                 )?;
-                let completed_count = drafts_by_id.len();
-                progress(
-                    &state,
-                    &channel,
-                    &run_id,
-                    NotePipelinePhase::Drafting,
-                    Some(completed_count.saturating_add(1)),
-                    Some(total),
-                    format!(
-                        "正在按依赖执行章节 {}/{}：{}",
-                        completed_count.saturating_add(1),
-                        total,
-                        section.heading
-                    ),
-                );
-                let dependency_outputs = dependency_context(&section, &drafts_by_id);
-                let section_evidence_ids =
-                    verified_evidence_ids_for_section(&evidence_by_section, &section_id);
-                let result = match execute_dag_section(
-                    &state,
-                    &run,
-                    &mut runtime,
-                    &conversation,
-                    &selected_outline,
-                    &section,
-                    &ledger_context,
-                    &dependency_outputs,
-                    &channel,
-                    &cancellation,
-                    persisted_sections.get(&section_id),
-                    &section_evidence_ids,
-                )
-                .await
-                {
-                    Ok(value) => value,
+            }
+            persist_scheduler_state(&state, &run_id, &mut runtime, &scheduler)?;
+            let parallelism = usize::from(runtime.budget.max_parallel_nodes.max(1));
+            progress(
+                &state,
+                &channel,
+                &run_id,
+                NotePipelinePhase::Drafting,
+                Some(drafts_by_id.len()),
+                Some(total),
+                format!("正在并行执行 {} 个依赖已满足的章节", jobs.len()),
+            );
+            let ledger_snapshot = runtime.ledger.clone();
+            let context_budget_snapshot = runtime.context_budget.clone();
+            let node_attempt_limit = runtime.budget.node_attempt_limit;
+            let section_revision_limit = runtime.budget.section_revision_limit;
+            let mut section_results = stream::iter(jobs.into_iter().map(|job| {
+                let job_for_result = job.clone();
+                let state_ref: &AppState = &state;
+                let run_ref = &run;
+                let ledger_ref = &ledger_snapshot;
+                let context_budget_ref = &context_budget_snapshot;
+                let conversation_ref = &conversation;
+                let outline_ref = &selected_outline;
+                let ledger_context_ref = &ledger_context;
+                let channel_ref = &channel;
+                let cancellation_ref = &cancellation;
+                async move {
+                    let result = execute_dag_section(
+                        state_ref,
+                        run_ref,
+                        ledger_ref,
+                        context_budget_ref,
+                        conversation_ref,
+                        outline_ref,
+                        &job.section,
+                        ledger_context_ref,
+                        &job.dependency_outputs,
+                        &job.writer_system_prompt,
+                        &job.reviewer_system_prompt,
+                        node_attempt_limit,
+                        section_revision_limit,
+                        channel_ref,
+                        cancellation_ref,
+                        job.persisted.as_ref(),
+                        &job.evidence_ids,
+                    )
+                    .await;
+                    SectionDagJobResult {
+                        job: job_for_result,
+                        result,
+                    }
+                }
+            }))
+            .buffer_unordered(parallelism);
+            while let Some(output) = section_results.next().await {
+                let section_id = output.job.section.id.clone();
+                match output.result {
+                    Ok((Some((markdown, validation, attempts, revisions)), used_calls)) => {
+                        release_unused_parallel_semantic_calls(
+                            &mut runtime,
+                            output.job.reserved_semantic_calls,
+                            used_calls,
+                        );
+                        let validation_json = serde_json::to_string(&validation)
+                            .map_err(|error| error.to_string())?;
+                        let draft_node_id = format!("draft:{section_id}");
+                        scheduler.transition(&draft_node_id, DeepNoteNodeStatus::Completed)?;
+                        if let Ok(node) = scheduler.node_mut(&draft_node_id) {
+                            node.attempt_count = attempts;
+                            node.evidence_ids = output.job.evidence_ids.clone();
+                            node.output_ref = Some(format!("section:{section_id}"));
+                            node.validation_json = validation_json.clone();
+                            node.error_message = None;
+                        }
+                        scheduler.refresh_ready();
+                        persist_scheduler_state(&state, &run_id, &mut runtime, &scheduler)?;
+                        let validate_node_id = format!("validate:{section_id}");
+                        scheduler.transition(&validate_node_id, DeepNoteNodeStatus::InProgress)?;
+                        persist_scheduler_state(&state, &run_id, &mut runtime, &scheduler)?;
+                        scheduler.transition(&validate_node_id, DeepNoteNodeStatus::Completed)?;
+                        if let Ok(node) = scheduler.node_mut(&validate_node_id) {
+                            node.attempt_count = revisions;
+                            node.evidence_ids = output.job.evidence_ids;
+                            node.output_ref = Some(format!("validation:{section_id}"));
+                            node.validation_json = validation_json;
+                            node.error_message = None;
+                        }
+                        drafts_by_id.insert(section_id.clone(), markdown.clone());
+                        state.library_repository.append_note_pipeline_event(
+                            &run_id,
+                            "dagNodeCompleted",
+                            Some(&draft_node_id),
+                            &serde_json::json!({
+                                "nodeId": draft_node_id,
+                                "sectionId": section_id,
+                                "attemptCount": attempts,
+                                "revisionCount": revisions,
+                                "semanticCalls": used_calls,
+                                "markdownChars": markdown.chars().count(),
+                            })
+                            .to_string(),
+                        )?;
+                    }
+                    Ok((None, used_calls)) => {
+                        release_unused_parallel_semantic_calls(
+                            &mut runtime,
+                            output.job.reserved_semantic_calls,
+                            used_calls,
+                        );
+                        cancelled = true;
+                    }
                     Err(error) => {
                         let draft_node_id = format!("draft:{section_id}");
                         scheduler.transition(&draft_node_id, DeepNoteNodeStatus::Failed)?;
                         if let Ok(node) = scheduler.node_mut(&draft_node_id) {
-                            node.attempt_count = persisted_sections
-                                .get(&section_id)
+                            node.attempt_count = output
+                                .job
+                                .persisted
+                                .as_ref()
                                 .map(|value| value.attempt_count)
                                 .unwrap_or(0)
                                 .saturating_add(1);
                             node.error_message = Some(error.clone());
                         }
-                        persist_scheduler_state(&state, &run_id, &mut runtime, &scheduler)?;
                         state.library_repository.append_note_pipeline_event(
                             &run_id,
                             "dagNodeFailed",
@@ -4429,66 +4945,25 @@ async fn run_drafting_task<R: Runtime>(
                             })
                             .to_string(),
                         )?;
-                        scheduler.refresh_ready();
-                        persist_scheduler_state(&state, &run_id, &mut runtime, &scheduler)?;
-                        continue;
                     }
-                };
-                let Some((markdown, validation, attempts, revisions)) = result else {
-                    scheduler.interrupt_running();
-                    persist_scheduler_state(&state, &run_id, &mut runtime, &scheduler)?;
-                    cancelled = true;
-                    break;
-                };
-                let validation_json =
-                    serde_json::to_string(&validation).map_err(|error| error.to_string())?;
-                let draft_node_id = format!("draft:{section_id}");
-                scheduler.transition(&draft_node_id, DeepNoteNodeStatus::Completed)?;
-                if let Ok(node) = scheduler.node_mut(&draft_node_id) {
-                    node.attempt_count = attempts;
-                    node.evidence_ids = section_evidence_ids.clone();
-                    node.output_ref = Some(format!("section:{section_id}"));
-                    node.validation_json = validation_json.clone();
-                    node.error_message = None;
                 }
-                persist_scheduler_state(&state, &run_id, &mut runtime, &scheduler)?;
-                state.library_repository.append_note_pipeline_event(
-                    &run_id,
-                    "dagNodeCompleted",
-                    Some(&draft_node_id),
-                    &serde_json::json!({
-                        "nodeId": draft_node_id,
-                        "sectionId": section_id,
-                        "attemptCount": attempts,
-                        "revisionCount": revisions,
-                        "markdownChars": markdown.chars().count(),
-                    })
-                    .to_string(),
-                )?;
                 scheduler.refresh_ready();
-                let validate_node_id = format!("validate:{section_id}");
-                scheduler.transition(&validate_node_id, DeepNoteNodeStatus::InProgress)?;
-                scheduler.transition(&validate_node_id, DeepNoteNodeStatus::Completed)?;
-                if let Ok(node) = scheduler.node_mut(&validate_node_id) {
-                    node.attempt_count = revisions;
-                    node.evidence_ids = section_evidence_ids;
-                    node.output_ref = Some(format!("validation:{section_id}"));
-                    node.validation_json = validation_json;
-                    node.error_message = None;
-                }
                 persist_scheduler_state(&state, &run_id, &mut runtime, &scheduler)?;
-                state.library_repository.append_note_pipeline_event(
+                progress(
+                    &state,
+                    &channel,
                     &run_id,
-                    "dagNodeCompleted",
-                    Some(&validate_node_id),
-                    &serde_json::json!({
-                        "nodeId": validate_node_id,
-                        "sectionId": section_id,
-                        "nodeType": "validateSection",
-                    })
-                    .to_string(),
-                )?;
-                drafts_by_id.insert(section_id, markdown);
+                    NotePipelinePhase::Drafting,
+                    Some(drafts_by_id.len()),
+                    Some(total),
+                    format!("章节已完成 {}/{}", drafts_by_id.len(), total),
+                );
+            }
+            drop(section_results);
+            if cancelled {
+                scheduler.interrupt_running();
+                persist_scheduler_state(&state, &run_id, &mut runtime, &scheduler)?;
+                break;
             }
         }
         if cancellation.is_cancelled() {
@@ -4522,16 +4997,52 @@ async fn run_drafting_task<R: Runtime>(
             return Ok(());
         }
         scheduler.refresh_ready();
+        let mut global_validation_warnings = Vec::new();
         if scheduler
             .node("validate-global")
             .is_some_and(|node| node.status == DeepNoteNodeStatus::Ready)
         {
             scheduler.transition("validate-global", DeepNoteNodeStatus::InProgress)?;
+            persist_scheduler_state(&state, &run_id, &mut runtime, &scheduler)?;
+            let report = validate_global_drafts(&selected_outline, &drafts, &evidence_by_section);
+            let report_json = serde_json::to_string(&report).map_err(|error| error.to_string())?;
+            global_validation_warnings = report.warnings.clone();
+            if !report.passed {
+                scheduler.transition("validate-global", DeepNoteNodeStatus::Failed)?;
+                if let Ok(node) = scheduler.node_mut("validate-global") {
+                    node.validation_json = report_json;
+                    node.error_message = Some(report.errors.join("；"));
+                }
+                persist_scheduler_state(&state, &run_id, &mut runtime, &scheduler)?;
+                state.library_repository.append_note_pipeline_event(
+                    &run_id,
+                    "globalValidationFailed",
+                    Some("validate-global"),
+                    &serde_json::json!({
+                        "errors": report.errors,
+                        "warnings": report.warnings,
+                    })
+                    .to_string(),
+                )?;
+                return Err("深度笔记没有通过跨章节全局验证。".to_string());
+            }
             scheduler.transition("validate-global", DeepNoteNodeStatus::Completed)?;
             if let Ok(node) = scheduler.node_mut("validate-global") {
-                node.output_ref = Some("global-validation".to_string());
+                node.output_ref = Some(format!("global-validation:{}", stable_hash(&report_json)));
+                node.validation_json = report_json;
+                node.error_message = None;
             }
             persist_scheduler_state(&state, &run_id, &mut runtime, &scheduler)?;
+            state.library_repository.append_note_pipeline_event(
+                &run_id,
+                "globalValidationCompleted",
+                Some("validate-global"),
+                &serde_json::json!({
+                    "sectionCount": drafts.len(),
+                    "warningCount": global_validation_warnings.len(),
+                })
+                .to_string(),
+            )?;
         }
         {
             let _guard = state.library_operations.lock().await;
@@ -4570,7 +5081,8 @@ async fn run_drafting_task<R: Runtime>(
                 .collect(),
             ..selected_outline
         };
-        let (title, content, warnings) = assemble(&effective_outline, &drafts, false);
+        let (title, content, mut warnings) = assemble(&effective_outline, &drafts, false);
+        warnings.extend(global_validation_warnings);
         if scheduler
             .node("assemble-note")
             .is_some_and(|node| node.status == DeepNoteNodeStatus::InProgress)
@@ -6968,7 +7480,10 @@ pub async fn resolve_note_edit_with_content(
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashSet, time::Duration};
+    use std::{
+        collections::{HashMap, HashSet},
+        time::Duration,
+    };
 
     use tokio_util::sync::CancellationToken;
 
@@ -6990,8 +7505,8 @@ mod tests {
         input_snapshot, ledger_has_real_output, merge_chunk_digest, normalize_generated_markdown,
         normalize_math_fences, phase_expects_background_worker, reset_failed_nodes,
         should_fallback_to_chunked_planner, should_retry_note_model_call,
-        snapshot_conversation_after_validation, validate_recovery_snapshot,
-        validate_section_markdown, ChunkDigest, ConversationChunk,
+        snapshot_conversation_after_validation, split_text_by_token_budget, validate_global_drafts,
+        validate_recovery_snapshot, validate_section_markdown, ChunkDigest, ConversationChunk,
     };
     use crate::chat::note_pipeline::types::{
         DeepNoteCapabilities, DeepNoteDagNode, DeepNoteEvidenceStatus, DeepNoteLedger,
@@ -7409,7 +7924,17 @@ mod tests {
         };
         let compact = compact_ledger_for_planner(&ledger);
         assert_eq!(compact.verified_facts.len(), 16);
-        assert_eq!(compact.section_summaries.len(), 6);
+        assert_eq!(compact.section_summaries.len(), 8);
+        assert!(compact
+            .section_summaries
+            .first()
+            .unwrap()
+            .starts_with("chunk-0:"));
+        assert!(compact
+            .section_summaries
+            .last()
+            .unwrap()
+            .starts_with("chunk-29:"));
         assert!(compact
             .verified_facts
             .iter()
@@ -7418,6 +7943,191 @@ mod tests {
             .section_summaries
             .iter()
             .all(|value| value.chars().count() <= 360));
+    }
+
+    #[test]
+    fn semantic_chunking_preserves_markdown_and_keeps_bounded_fences_atomic() {
+        let source = concat!(
+            "# 标题\n\n",
+            "解释一个需要保留结构的流程。\n\n",
+            "```mermaid\n",
+            "flowchart LR\n",
+            "  A[输入] --> B[输出]\n",
+            "```\n\n",
+            "## 结论\n\n",
+            "最后的说明。\n"
+        );
+        let chunks = split_text_by_token_budget(source, 32);
+        assert_eq!(chunks.concat(), source);
+        assert!(chunks.iter().any(|chunk| {
+            chunk.contains("```mermaid\nflowchart LR\n  A[输入] --> B[输出]\n```")
+        }));
+    }
+
+    #[test]
+    fn evidence_ranking_prefers_relevant_chunks_and_rejects_unscoped_noise() {
+        use crate::chat::note_pipeline::types::{
+            compile_plan, DeepNoteOutline, DeepNoteSection, DeepNoteSectionKind,
+        };
+        use crate::library::types::NotePipelineRun;
+
+        let section = DeepNoteSection {
+            id: "sec-1".to_string(),
+            heading: "SQLite 事务隔离".to_string(),
+            kind: DeepNoteSectionKind::Concept,
+            brief: "说明 SQLite 事务和 WAL".to_string(),
+            purpose: "理解数据库并发".to_string(),
+            depends_on: Vec::new(),
+            evidence_requirements: vec!["SQLite WAL 事务证据".to_string()],
+            success_criteria: vec!["说明事务".to_string()],
+            source_scope: Vec::new(),
+            target_depth: "standard".to_string(),
+            allow_ai_supplement: false,
+            needs_supplement: false,
+            source_message_ids: Vec::new(),
+        };
+        let outline = DeepNoteOutline {
+            title: "Evidence".to_string(),
+            sections: vec![section],
+            goal: String::new(),
+            audience: String::new(),
+            scope: String::new(),
+            summary: String::new(),
+            weak_points: Vec::new(),
+            hidden_questions: Vec::new(),
+            knowledge_gaps: Vec::new(),
+            misconceptions: Vec::new(),
+            causal_chains: Vec::new(),
+            visualization_opportunities: Vec::new(),
+            allow_ai_supplement: false,
+            evidence_policy: String::new(),
+            source_ids: Vec::new(),
+        };
+        let plan = compile_plan("run-1", 1, outline, "snapshot", "test").unwrap();
+        let run = NotePipelineRun {
+            id: "run-1".to_string(),
+            conversation_id: "conversation-1".to_string(),
+            note_id: None,
+            phase: NotePipelinePhase::Drafting,
+            outline_json: String::new(),
+            selected_section_ids: vec!["sec-1".to_string()],
+            provider_id: "provider-1".to_string(),
+            model_id: "model-1".to_string(),
+            max_output_tokens: 2_048,
+            thinking_enabled: false,
+            retry_attempts: 1,
+            input_snapshot_hash: "snapshot".to_string(),
+            current_plan_version: 1,
+            execution_version: 1,
+            state_version: 0,
+            runtime_instance_id: None,
+            heartbeat_at: None,
+            last_event_sequence: 0,
+            budget_json: "{}".to_string(),
+            preflight_json: "{}".to_string(),
+            sidecar_json: String::new(),
+            idempotency_key: "output-1".to_string(),
+            completed_section_ids: Vec::new(),
+            failed_section_ids: Vec::new(),
+            warnings: Vec::new(),
+            error_message: None,
+            abandoned: false,
+            created_at: 1,
+            updated_at: 1,
+        };
+        let relevant = DeepNoteSourceChunk {
+            chunk_id: "chunk-relevant".to_string(),
+            source_kind: DeepNoteSourceKind::Conversation,
+            source_id: "conversation-1".to_string(),
+            message_id: Some("message-1".to_string()),
+            attachment_id: None,
+            library_item_id: None,
+            location: "message-1".to_string(),
+            excerpt: "SQLite 在 WAL 模式下允许读写并发，事务仍需控制写锁。".to_string(),
+            content_hash: "relevant".to_string(),
+            ocr_confidence: None,
+        };
+        let noise = DeepNoteSourceChunk {
+            chunk_id: "chunk-noise".to_string(),
+            source_kind: DeepNoteSourceKind::Conversation,
+            source_id: "conversation-1".to_string(),
+            message_id: Some("message-2".to_string()),
+            attachment_id: None,
+            library_item_id: None,
+            location: "message-2".to_string(),
+            excerpt: "宠物窗口支持拖动与锁定。".to_string(),
+            content_hash: "noise".to_string(),
+            ocr_confidence: None,
+        };
+
+        let evidence = evidence_for_plan(&run, &plan, &[noise.clone(), relevant]);
+        assert_eq!(evidence[0].status, DeepNoteEvidenceStatus::Verified);
+        assert_eq!(evidence[0].source_chunk_ids, vec!["chunk-relevant"]);
+
+        let insufficient = evidence_for_plan(&run, &plan, &[noise]);
+        assert_eq!(insufficient[0].status, DeepNoteEvidenceStatus::Insufficient);
+        assert!(insufficient[0].source_chunk_ids.is_empty());
+    }
+
+    #[test]
+    fn global_validation_rejects_duplicate_sections_and_missing_evidence() {
+        use crate::chat::note_pipeline::types::{
+            DeepNoteOutline, DeepNoteSection, DeepNoteSectionKind,
+        };
+
+        let section = |id: &str, heading: &str| DeepNoteSection {
+            id: id.to_string(),
+            heading: heading.to_string(),
+            kind: DeepNoteSectionKind::Concept,
+            brief: "解释核心概念".to_string(),
+            purpose: "建立理解".to_string(),
+            depends_on: Vec::new(),
+            evidence_requirements: Vec::new(),
+            success_criteria: vec!["核心概念".to_string()],
+            source_scope: Vec::new(),
+            target_depth: "standard".to_string(),
+            allow_ai_supplement: false,
+            needs_supplement: false,
+            source_message_ids: Vec::new(),
+        };
+        let first = section("sec-1", "第一章");
+        let second = section("sec-2", "第二章");
+        let outline = DeepNoteOutline {
+            title: "Global".to_string(),
+            sections: vec![first.clone(), second.clone()],
+            goal: String::new(),
+            audience: String::new(),
+            scope: String::new(),
+            summary: String::new(),
+            weak_points: Vec::new(),
+            hidden_questions: Vec::new(),
+            knowledge_gaps: Vec::new(),
+            misconceptions: Vec::new(),
+            causal_chains: Vec::new(),
+            visualization_opportunities: Vec::new(),
+            allow_ai_supplement: false,
+            evidence_policy: String::new(),
+            source_ids: Vec::new(),
+        };
+        let shared_body = format!("## 第一章\n\n核心概念。{}", "用于验证的正文。".repeat(30));
+        let report = validate_global_drafts(
+            &outline,
+            &[
+                (first, shared_body.clone(), false),
+                (second, shared_body, false),
+            ],
+            &HashMap::new(),
+        );
+
+        assert!(!report.passed);
+        assert!(report
+            .errors
+            .iter()
+            .any(|error| error.contains("没有可验证 Evidence")));
+        assert!(report
+            .errors
+            .iter()
+            .any(|error| error.contains("正文完全重复")));
     }
 
     #[test]

@@ -639,6 +639,18 @@ pub struct NotePipelineSection {
 }
 
 #[derive(Debug, Clone)]
+pub struct NotePipelineChunkDigest {
+    pub chunk_id: String,
+    pub content_hash: String,
+    pub prompt_hash: String,
+    pub provider_id: String,
+    pub model_id: String,
+    pub digest_json: String,
+    pub semantic_calls: u32,
+    pub updated_at: u64,
+}
+
+#[derive(Debug, Clone)]
 pub struct NotePipelineSectionCreate {
     pub section_id: String,
     pub position: usize,

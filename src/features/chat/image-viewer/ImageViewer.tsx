@@ -1,4 +1,4 @@
-import { ArrowLeft, Image as ImageIcon, Minus, Plus, RotateCcw, X } from "lucide-react";
+import { ArrowLeft, Download, Image as ImageIcon, Minus, Plus, RotateCcw, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { ImageViewerItem } from "./types";
 import { loadChatAttachmentImage } from "../api/attachments";
@@ -75,6 +75,14 @@ export function ImageViewer({ item, onClose }: ImageViewerProps) {
 
   const title = item.title || item.alt || t("chat.image");
   const source = lifecycleState === "active" ? fullSrc ?? item.src : "";
+  const downloadImage = () => {
+    if (!source || !item.downloadFileName) return;
+    const anchor = document.createElement("a");
+    anchor.href = source;
+    anchor.download = item.downloadFileName;
+    anchor.rel = "noopener";
+    anchor.click();
+  };
 
   return (
     <div className="image-viewer" role="dialog" aria-modal="true" aria-label={t("chat.viewNamedImage", { name: title })}>
@@ -94,6 +102,11 @@ export function ImageViewer({ item, onClose }: ImageViewerProps) {
           <button type="button" className="image-viewer-icon-button" onClick={() => setZoom(1)} aria-label={t("chat.resetZoom")} title={t("chat.resetZoom")}>
             <RotateCcw size={14} />
           </button>
+          {item.downloadFileName ? (
+            <button type="button" className="image-viewer-icon-button" onClick={downloadImage} aria-label={t("chat.downloadImage")} title={t("chat.downloadImage")}>
+              <Download size={15} />
+            </button>
+          ) : null}
           <button type="button" className="image-viewer-icon-button" onClick={onClose} aria-label={t("chat.closeImage")} title={t("chat.closeImage")}>
             <X size={17} />
           </button>

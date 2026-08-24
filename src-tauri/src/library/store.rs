@@ -46,15 +46,15 @@ use super::{
         LibraryNote, LibraryNoteCreate, LibraryNoteGroup, LibraryNoteImportFailure,
         LibraryNoteImportResult, LibraryNoteRename, LibraryNoteSummary, LibraryNoteUpdate,
         LibraryReadingState, LibraryReadingStateUpdate, LibrarySort, LibraryView, NoteEditProposal,
-        NoteEditProposalCreate, NotePipelinePhase, NotePipelineRun, NotePipelineRunCreate,
-        NotePipelineSection, NotePipelineSectionCreate, NotePipelineSectionStatus, NoteSource,
-        NoteSourceCreate, NoteSourceOrigin, MAX_NOTE_IMPORT_BYTES, MAX_NOTE_IMPORT_FILES,
-        MAX_NOTE_PIPELINE_JSON_BYTES, MAX_NOTE_PIPELINE_SECTIONS, MAX_NOTE_SOURCES,
-        MAX_PDF_RANGE_BYTES,
+        NoteEditProposalCreate, NotePipelineChunkDigest, NotePipelinePhase, NotePipelineRun,
+        NotePipelineRunCreate, NotePipelineSection, NotePipelineSectionCreate,
+        NotePipelineSectionStatus, NoteSource, NoteSourceCreate, NoteSourceOrigin,
+        MAX_NOTE_IMPORT_BYTES, MAX_NOTE_IMPORT_FILES, MAX_NOTE_PIPELINE_JSON_BYTES,
+        MAX_NOTE_PIPELINE_SECTIONS, MAX_NOTE_SOURCES, MAX_PDF_RANGE_BYTES,
     },
 };
 
-const LIBRARY_SCHEMA_VERSION: i64 = 12;
+const LIBRARY_SCHEMA_VERSION: i64 = 13;
 const LIBRARY_DIRECTORY_NAME: &str = "library";
 const LIBRARY_DATABASE_NAME: &str = "library.sqlite3";
 const LIBRARY_FILES_DIRECTORY_NAME: &str = "files";
@@ -1903,6 +1903,15 @@ impl LibraryRepository {
                 .map_err(|error| format!("保存深度笔记来源分块失败：{error}"))?;
         }
         transaction
+            .execute(
+                "DELETE FROM note_pipeline_chunk_digests
+                 WHERE run_id = ? AND chunk_id NOT IN (
+                    SELECT chunk_id FROM note_pipeline_source_chunks WHERE run_id = ?
+                 )",
+                params![run_id, run_id],
+            )
+            .map_err(|error| format!("清理失效的深度笔记 Chunk 检查点失败：{error}"))?;
+        transaction
             .commit()
             .map_err(|error| format!("提交深度笔记来源分块失败：{error}"))
     }
@@ -1953,6 +1962,88 @@ impl LibraryRepository {
             })
         })
         .collect()
+    }
+
+    pub fn list_note_pipeline_chunk_digests(
+        &self,
+        run_id: &str,
+    ) -> Result<Vec<NotePipelineChunkDigest>, String> {
+        let run_id = normalize_identifier("任务 ID", run_id)?;
+        let connection = self.open_connection()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT chunk_id, content_hash, prompt_hash, provider_id, model_id,
+                        digest_json, semantic_calls, updated_at
+                 FROM note_pipeline_chunk_digests WHERE run_id = ?
+                 ORDER BY chunk_id ASC",
+            )
+            .map_err(|error| format!("准备深度笔记 Chunk 检查点查询失败：{error}"))?;
+        let rows = statement
+            .query_map(params![run_id], |row| {
+                Ok(NotePipelineChunkDigest {
+                    chunk_id: row.get(0)?,
+                    content_hash: row.get(1)?,
+                    prompt_hash: row.get(2)?,
+                    provider_id: row.get(3)?,
+                    model_id: row.get(4)?,
+                    digest_json: row.get(5)?,
+                    semantic_calls: u32::try_from(row.get::<_, i64>(6)?).unwrap_or_default(),
+                    updated_at: u64::try_from(row.get::<_, i64>(7)?).unwrap_or_default(),
+                })
+            })
+            .map_err(|error| format!("查询深度笔记 Chunk 检查点失败：{error}"))?;
+        rows.map(|row| row.map_err(|error| format!("读取深度笔记 Chunk 检查点失败：{error}")))
+            .collect()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn save_note_pipeline_chunk_digest(
+        &self,
+        run_id: &str,
+        chunk_id: &str,
+        content_hash: &str,
+        prompt_hash: &str,
+        provider_id: &str,
+        model_id: &str,
+        digest_json: &str,
+        semantic_calls: u32,
+    ) -> Result<(), String> {
+        let run_id = normalize_identifier("任务 ID", run_id)?;
+        let chunk_id = normalize_identifier("Chunk ID", chunk_id)?;
+        if digest_json.trim().is_empty() {
+            return Err("深度笔记 Chunk 摘要不能为空。".to_string());
+        }
+        let now = now_millis_i64();
+        let connection = self.open_connection()?;
+        connection
+            .execute(
+                "INSERT INTO note_pipeline_chunk_digests (
+                    run_id, chunk_id, content_hash, prompt_hash, provider_id, model_id,
+                    digest_json, semantic_calls, created_at, updated_at
+                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 ON CONFLICT(run_id, chunk_id) DO UPDATE SET
+                    content_hash = excluded.content_hash,
+                    prompt_hash = excluded.prompt_hash,
+                    provider_id = excluded.provider_id,
+                    model_id = excluded.model_id,
+                    digest_json = excluded.digest_json,
+                    semantic_calls = excluded.semantic_calls,
+                    updated_at = excluded.updated_at",
+                params![
+                    run_id,
+                    chunk_id,
+                    content_hash,
+                    prompt_hash,
+                    provider_id,
+                    model_id,
+                    digest_json,
+                    i64::from(semantic_calls),
+                    now,
+                    now,
+                ],
+            )
+            .map_err(|error| format!("保存深度笔记 Chunk 检查点失败：{error}"))?;
+        Ok(())
     }
 
     pub fn replace_note_pipeline_evidence(
@@ -5288,6 +5379,34 @@ fn migrate(connection: &Connection) -> Result<(), String> {
             )
             .map_err(|error| format!("升级 Chat Agent 状态机结构失败：{error}"))?;
     }
+    // v13：来源 Chunk 的独立摘要检查点。Chunk 内容、Prompt 或模型发生变化时，
+    // 旧摘要不会命中；应用中断后可以复用已经完成的 Chunk，而不依赖顺序前缀。
+    if version <= 12 {
+        connection
+            .execute_batch(
+                "BEGIN IMMEDIATE;
+                 CREATE TABLE IF NOT EXISTS note_pipeline_chunk_digests (
+                    run_id TEXT NOT NULL REFERENCES note_pipeline_runs(id) ON DELETE CASCADE,
+                    chunk_id TEXT NOT NULL,
+                    content_hash TEXT NOT NULL,
+                    prompt_hash TEXT NOT NULL,
+                    provider_id TEXT NOT NULL,
+                    model_id TEXT NOT NULL,
+                    digest_json TEXT NOT NULL,
+                    semantic_calls INTEGER NOT NULL DEFAULT 1,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    PRIMARY KEY (run_id, chunk_id)
+                 );
+                 CREATE INDEX IF NOT EXISTS note_pipeline_chunk_digest_cache
+                    ON note_pipeline_chunk_digests(
+                        run_id, content_hash, prompt_hash, provider_id, model_id
+                    );
+                 PRAGMA user_version = 13;
+                 COMMIT;",
+            )
+            .map_err(|error| format!("升级深度笔记 Chunk 检查点结构失败：{error}"))?;
+    }
     Ok(())
 }
 
@@ -6104,12 +6223,13 @@ mod tests {
 
     use rusqlite::Connection;
 
-    use super::LibraryRepository;
+    use super::{LibraryRepository, LIBRARY_SCHEMA_VERSION};
     use crate::chat::{
         agent::run_machine::{AgentRunEvent, AgentRunState, ToolCallEvent, ToolCallState},
         note_pipeline::types::{
-            DeepNoteCapabilities, DeepNoteInputSnapshot, DeepNoteModelSnapshot, DeepNoteSourceUnit,
-            DeepNoteSourceUnitKind, DeepNoteSourceUnitStatus,
+            DeepNoteCapabilities, DeepNoteInputSnapshot, DeepNoteModelSnapshot,
+            DeepNoteSourceChunk, DeepNoteSourceKind, DeepNoteSourceUnit, DeepNoteSourceUnitKind,
+            DeepNoteSourceUnitStatus,
         },
     };
     use crate::library::types::{
@@ -6496,7 +6616,7 @@ mod tests {
         let version: i64 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 12);
+        assert_eq!(version, LIBRARY_SCHEMA_VERSION);
         let event_parent: String = connection
             .query_row("PRAGMA foreign_key_list(note_pipeline_events)", [], |row| {
                 row.get(2)
@@ -6515,13 +6635,14 @@ mod tests {
                  WHERE type = 'table'
                    AND name IN (
                      'library_annotations', 'library_notes', 'library_note_groups', 'note_sources',
-                     'agent_runs', 'agent_tool_calls', 'agent_run_events'
+                     'agent_runs', 'agent_tool_calls', 'agent_run_events',
+                     'note_pipeline_chunk_digests'
                    )",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(tables, 7);
+        assert_eq!(tables, 8);
 
         let _ = fs::remove_dir_all(directory);
     }
@@ -6847,6 +6968,82 @@ mod tests {
                 idempotency_key: "output-3".to_string(),
             })
             .is_ok());
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn chunk_digest_checkpoints_survive_reopen_and_prune_removed_chunks() {
+        let directory = test_directory("note-pipeline-chunk-digests");
+        let repository = LibraryRepository::new(directory.clone());
+        let run = repository
+            .create_note_pipeline_run(NotePipelineRunCreate {
+                id: "digest-run".to_string(),
+                conversation_id: "conversation-digest".to_string(),
+                provider_id: "provider-1".to_string(),
+                model_id: "model-1".to_string(),
+                max_output_tokens: 4_096,
+                thinking_enabled: false,
+                retry_attempts: 2,
+                input_snapshot_hash: "snapshot-digest".to_string(),
+                budget_json: "{}".to_string(),
+                preflight_json: "{}".to_string(),
+                idempotency_key: "output-digest".to_string(),
+            })
+            .unwrap();
+        let chunk = |id: &str, content_hash: &str| DeepNoteSourceChunk {
+            chunk_id: id.to_string(),
+            source_kind: DeepNoteSourceKind::Conversation,
+            source_id: "conversation-digest".to_string(),
+            message_id: Some(format!("message-{id}")),
+            attachment_id: None,
+            library_item_id: None,
+            location: id.to_string(),
+            excerpt: format!("source for {id}"),
+            content_hash: content_hash.to_string(),
+            ocr_confidence: None,
+        };
+        let first = chunk("chunk-1", "content-1");
+        let second = chunk("chunk-2", "content-2");
+        repository
+            .replace_note_pipeline_source_chunks(&run.id, &[first.clone(), second])
+            .unwrap();
+        repository
+            .save_note_pipeline_chunk_digest(
+                &run.id,
+                "chunk-1",
+                "content-1",
+                "prompt-1",
+                "provider-1",
+                "model-1",
+                r#"{"summary":"one"}"#,
+                1,
+            )
+            .unwrap();
+        repository
+            .save_note_pipeline_chunk_digest(
+                &run.id,
+                "chunk-2",
+                "content-2",
+                "prompt-2",
+                "provider-1",
+                "model-1",
+                r#"{"summary":"two"}"#,
+                2,
+            )
+            .unwrap();
+
+        let reopened = LibraryRepository::new(directory.clone());
+        let checkpoints = reopened.list_note_pipeline_chunk_digests(&run.id).unwrap();
+        assert_eq!(checkpoints.len(), 2);
+        assert_eq!(checkpoints[0].semantic_calls, 1);
+        assert!(checkpoints[0].updated_at > 0);
+
+        reopened
+            .replace_note_pipeline_source_chunks(&run.id, &[first])
+            .unwrap();
+        let remaining = reopened.list_note_pipeline_chunk_digests(&run.id).unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].chunk_id, "chunk-1");
         let _ = fs::remove_dir_all(directory);
     }
 

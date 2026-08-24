@@ -166,6 +166,7 @@ export const zhTranslations = {
   "chat.zoomOut": "缩小",
   "chat.zoomIn": "放大",
   "chat.resetZoom": "重置缩放",
+  "chat.downloadImage": "下载图像",
   "chat.closeImage": "关闭图片",
   "chat.originalImageFailed": "原图读取失败，当前显示缩略图",
   "chat.documentOnly": "仅文档",

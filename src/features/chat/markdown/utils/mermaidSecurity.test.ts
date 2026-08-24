@@ -2,8 +2,11 @@ import { describe, expect, it, vi } from "vitest";
 import {
   extractMermaidSvgMetrics,
   measureMermaidViewerBudget,
+  mermaidThemeConfig,
   normalizeMermaidSvgForXml,
+  prepareMermaidSource,
   sanitizeMermaidSvg,
+  stabilizeMermaidSvgPaint,
 } from "./mermaidSecurity";
 
 describe("mermaidSecurity", () => {
@@ -13,6 +16,80 @@ describe("mermaidSecurity", () => {
     expect(normalizeMermaidSvgForXml(source)).toBe(
       '<svg><foreignObject><div xmlns="http://www.w3.org/1999/xhtml"><p>第一行<br />第二行<br class="gap" />第三行<br/></p><hr /><img src="#asset" /></div></foreignObject></svg>',
     );
+  });
+
+  it("makes flowchart edges stroke-only without rewriting Mermaid's widths", () => {
+    const createEdge = (classes: string[], inlineStyle = "") => {
+      const attributes = new Map<string, string>(inlineStyle ? [["style", inlineStyle]] : []);
+      const style = { setProperty: vi.fn() };
+      return {
+        attributes,
+        style,
+        classList: { contains: (name: string) => classes.includes(name) },
+        getAttribute: (name: string) => attributes.get(name) ?? null,
+        hasAttribute: (name: string) => attributes.has(name),
+        setAttribute: (name: string, value: string) => attributes.set(name, value),
+      };
+    };
+    const normal = createEdge(["flowchart-link", "edge-thickness-normal"]);
+    const authorStyled = createEdge(["flowchart-link", "edge-thickness-normal"], "stroke-width:4px");
+    const thick = createEdge(["flowchart-link", "edge-thickness-thick"]);
+    const rootAttributes = new Map<string, string>();
+    const root = {
+      querySelectorAll: () => [normal, authorStyled, thick],
+      setAttribute: (name: string, value: string) => rootAttributes.set(name, value),
+    } as unknown as Element;
+
+    expect(stabilizeMermaidSvgPaint(root)).toBe(3);
+    expect(normal.attributes.get("fill")).toBe("none");
+    expect(normal.attributes.get("stroke-width")).toBeUndefined();
+    expect(normal.style.setProperty).toHaveBeenCalledWith("fill", "none", "important");
+    expect(authorStyled.attributes.get("stroke-width")).toBeUndefined();
+    expect(thick.attributes.get("stroke-width")).toBeUndefined();
+    expect(rootAttributes.get("data-mnemora-edge-contract")).toBe("stable");
+  });
+
+  it("removes executable directives and click handlers before rendering", () => {
+    const source = `%%{init: {'theme': 'dark'}}%%
+flowchart TD
+  A[Line\\nTwo] --> B
+  click A "https://example.com"`;
+
+    expect(prepareMermaidSource(source)).toBe(`flowchart TD
+  A[Line<br/>Two] --> B`);
+  });
+
+  it("preserves only a validated sequence number color override", () => {
+    const source = `%%{init: {'themeVariables': {'sequenceNumberColor': '#abc'}}}%%
+sequenceDiagram
+  A->>B: hello`;
+
+    expect(prepareMermaidSource(source)).toContain('"sequenceNumberColor":"#abc"');
+    expect(prepareMermaidSource(source)).toContain("sequenceDiagram");
+  });
+
+  it("rejects attempts to lower Mermaid's security level", () => {
+    expect(() => prepareMermaidSource(`%%{init: {'securityLevel': 'loose'}}%%
+flowchart LR
+  A-->B`)).toThrow("安全级别");
+  });
+
+  it("uses Codex-style neo flowcharts with rounded SVG labels", () => {
+    const previousGetComputedStyle = globalThis.getComputedStyle;
+    try {
+      globalThis.getComputedStyle = (() => ({ getPropertyValue: () => "" })) as unknown as typeof getComputedStyle;
+      const host = {
+        closest: () => null,
+        getAttribute: () => null,
+      } as unknown as HTMLElement;
+      const config = mermaidThemeConfig(host, "flowchart LR\nA-->B");
+
+      expect(config.look).toBe("neo");
+      expect(config.htmlLabels).toBe(false);
+      expect(config.flowchart).toMatchObject({ curve: "rounded", htmlLabels: false });
+    } finally {
+      globalThis.getComputedStyle = previousGetComputedStyle;
+    }
   });
 
   it("passes normalized HTML labels to the strict XML sanitizer", () => {
@@ -113,12 +190,14 @@ describe("mermaidSecurity", () => {
     }
   });
 
-  it("makes SVG width adaptive while preserving its intrinsic max width", () => {
+  it("keeps presentation sizing out of the SVG security sanitizer", () => {
     const previousDomParser = globalThis.DOMParser;
     const previousDocument = globalThis.document;
     const previousSerializer = globalThis.XMLSerializer;
 
     try {
+      const setAttribute = vi.fn();
+      const setProperty = vi.fn();
       globalThis.DOMParser = class {
         parseFromString() {
           return {
@@ -128,31 +207,21 @@ describe("mermaidSecurity", () => {
               outerHTML: '<svg viewBox="0 0 617 1162"></svg>',
               getAttribute: (name: string) => name === "viewBox" ? "0 0 617 1162" : null,
               querySelectorAll: () => [],
-              setAttribute: vi.fn(),
+              setAttribute,
               removeAttribute: vi.fn(),
-              style: { removeProperty: vi.fn(), setProperty: vi.fn() },
+              style: { removeProperty: vi.fn(), setProperty },
             },
           };
         }
       } as unknown as typeof DOMParser;
       globalThis.document = {} as Document;
-      globalThis.XMLSerializer = class {
-        serializeToString(root: {
-          setAttribute: ReturnType<typeof vi.fn>;
-          style: { setProperty: ReturnType<typeof vi.fn> };
-        }) {
-          const attributes = Object.fromEntries(root.setAttribute.mock.calls);
-          const maxWidth = root.style.setProperty.mock.calls.find((call: unknown[]) => call[0] === "max-width")?.[1];
-          return `<svg width="${attributes.width}" max-width="${maxWidth}"></svg>`;
-        }
-      } as unknown as typeof XMLSerializer;
+      globalThis.XMLSerializer = class { serializeToString() { return '<svg viewBox="0 0 617 1162"></svg>'; } } as unknown as typeof XMLSerializer;
 
       const result = sanitizeMermaidSvg('<svg viewBox="0 0 617 1162"></svg>');
 
-      expect(result.svg).toContain('width="100%"');
-      // The cap must be Mermaid's measured width, not the container width;
-      // 100% here let narrow diagrams stretch and magnify their labels.
-      expect(result.svg).toContain('max-width="617px"');
+      expect(result.svg).toContain('viewBox="0 0 617 1162"');
+      expect(setAttribute).not.toHaveBeenCalledWith("width", expect.anything());
+      expect(setProperty).not.toHaveBeenCalledWith("max-width", expect.anything());
     } finally {
       globalThis.DOMParser = previousDomParser;
       globalThis.document = previousDocument;
@@ -216,6 +285,13 @@ describe("mermaidSecurity", () => {
     const metrics = measureMermaidViewerBudget(oversized);
 
     expect(metrics.foreignObjectCount).toBe(801);
+    expect(metrics.viewerSafe).toBe(false);
+  });
+
+  it("rejects pathological intrinsic dimensions without inventing a cropped viewBox", () => {
+    const metrics = measureMermaidViewerBudget('<svg viewBox="0 0 142 44138"><path /></svg>');
+
+    expect(metrics.height).toBe(44_138);
     expect(metrics.viewerSafe).toBe(false);
   });
 });

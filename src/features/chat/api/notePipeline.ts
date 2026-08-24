@@ -105,6 +105,7 @@ export interface DeepNoteBudget {
   replanLimit: number;
   replansUsed: number;
   maxParallelNodes: number;
+  maxParallelChunks?: number;
 }
 
 export interface DeepNoteContextBudget {

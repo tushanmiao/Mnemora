@@ -110,7 +110,7 @@ export function buildDeepNoteWorkflow(
       description: coverageComplete
         ? `${context?.processedMessageCount ?? 0}/${context?.totalMessageCount ?? 0} 条消息已纳入规划输入`
         : context && context.chunkCount > 0
-          ? `正在处理来源分块 ${context.processedChunkCount}/${context.chunkCount}`
+          ? `正在并行处理来源分块 ${context.processedChunkCount}/${context.chunkCount}（并发 ${detail?.budget.maxParallelChunks ?? 1}）`
           : "正在计算上下文预算与分块策略",
       status: status("context"),
     },
@@ -296,12 +296,22 @@ export function describeNotePipelineEvent(record: NotePipelineEventRecord): { la
     case "contextChunkCompleted":
       return {
         label: "来源分块完成",
-        detail: `分块 ${number(data.chunkIndex) ?? "-"}/${number(data.chunkCount) ?? "-"}，已覆盖 ${number(data.processedMessageCount) ?? 0} 条消息`,
+        detail: `分块 ${number(data.chunkIndex) ?? "-"}/${number(data.chunkCount) ?? "-"}，累计完成 ${number(data.completedChunkCount) ?? 0}，并发 ${number(data.parallelism) ?? 1}`,
       };
     case "contextCoverageCompleted":
       return {
         label: "规划输入准备完成",
         detail: `${number(data.processedMessageCount) ?? 0}/${number(data.totalMessageCount) ?? 0} 条消息已纳入；${data.mode === "chunked" ? "分块账本" : "直接规划"}`,
+      };
+    case "globalValidationFailed":
+      return {
+        label: "跨章节验证失败",
+        detail: `${Array.isArray(data.errors) ? data.errors.length : 0} 个错误，${Array.isArray(data.warnings) ? data.warnings.length : 0} 个警告`,
+      };
+    case "globalValidationCompleted":
+      return {
+        label: "跨章节验证完成",
+        detail: `${number(data.sectionCount) ?? 0} 个章节，${number(data.warningCount) ?? 0} 个警告`,
       };
     case "modelCallStarted":
       return {

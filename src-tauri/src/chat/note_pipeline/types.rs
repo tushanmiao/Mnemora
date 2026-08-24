@@ -708,6 +708,12 @@ pub struct DeepNoteBudget {
     pub replan_limit: u8,
     pub replans_used: u8,
     pub max_parallel_nodes: u8,
+    #[serde(default = "default_max_parallel_chunks")]
+    pub max_parallel_chunks: u8,
+}
+
+fn default_max_parallel_chunks() -> u8 {
+    2
 }
 
 impl DeepNoteBudget {
@@ -727,6 +733,7 @@ impl DeepNoteBudget {
             replan_limit: 4,
             replans_used: 0,
             max_parallel_nodes: 2,
+            max_parallel_chunks: default_max_parallel_chunks(),
         }
     }
 

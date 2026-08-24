@@ -74,6 +74,7 @@ function deepNoteDetail(): DeepNoteRunDetail {
       replanLimit: 5,
       replansUsed: 0,
       maxParallelNodes: 2,
+      maxParallelChunks: 2,
     },
     contextBudget: {
       contextWindowTokens: 128_000,

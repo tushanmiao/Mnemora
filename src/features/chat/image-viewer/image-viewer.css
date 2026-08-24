@@ -90,7 +90,6 @@
   background: var(--color-surface-raised);
   box-shadow: 0 12px 36px rgb(0 0 0 / 15%);
   object-fit: contain;
-  transition: width 120ms ease-out;
 }
 
 .image-viewer-notice {
@@ -109,8 +108,4 @@
   .image-viewer-body { padding: 12px; }
   .image-viewer-header { padding-inline: 8px; }
   .image-viewer-title { max-width: 36vw; }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .image-viewer-image { transition: none; }
 }

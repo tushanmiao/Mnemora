@@ -79,76 +79,36 @@
   background: transparent;
 }
 
-.markdown-mermaid-svg {
+.markdown-mermaid-surface {
+  --mermaid-surface-background: var(--color-surface-raised);
+  --radius-md: 5px;
+  display: flex;
   box-sizing: border-box;
   width: 100%;
+  min-width: 0;
   min-height: 100px;
   padding: 16px;
-  overflow: visible;
+  align-items: center;
+  overflow-x: auto;
+  overflow-y: visible;
   color: var(--color-text);
   background: var(--color-surface-raised);
-}
-
-.markdown-mermaid-surface {
-  position: relative;
-  width: 100%;
-  min-width: 0;
-  overflow: hidden;
-  background: var(--color-surface-raised);
-}
-
-.markdown-mermaid-viewport {
-  height: 100%;
-  max-height: none;
-  overflow: hidden;
-}
-
-.markdown-mermaid-surface-open {
-  position: relative;
-  height: clamp(420px, 72vh, 820px);
-  overflow: hidden;
-  background: var(--color-surface);
-  contain: layout style paint;
-}
-
-.markdown-mermaid-surface-open > .markdown-mermaid-svg {
-  position: absolute;
-  z-index: 1;
-  inset: 0;
-  height: 100%;
-  max-width: none;
-  padding: 16px;
-  pointer-events: none;
-  contain: layout style paint;
-}
-
-.markdown-mermaid-scrollport {
-  position: absolute;
-  z-index: 2;
-  inset: 0;
-  overflow: auto;
-  overscroll-behavior: contain;
   scrollbar-width: thin;
-  background: transparent;
 }
 
-.markdown-mermaid-scrollport:focus-visible {
+.markdown-mermaid-surface > svg {
+  display: block;
+  min-width: 0;
+  flex: 0 0 auto;
+  height: auto;
+  max-height: none;
+  margin: 0 auto;
+  text-align: start;
+}
+
+.markdown-mermaid-surface:focus-visible {
   outline: 2px solid var(--color-accent);
   outline-offset: -3px;
-}
-
-.markdown-mermaid-scroll-space {
-  pointer-events: none;
-  contain: strict;
-}
-
-.markdown-mermaid-budget-warning {
-  padding: 9px 12px;
-  border-top: 1px solid var(--color-border-soft);
-  color: var(--color-text-secondary);
-  background: var(--color-surface-raised);
-  font-size: 12px;
-  line-height: 1.55;
 }
 
 .markdown-enhanced-status,
@@ -402,9 +362,8 @@
 }
 
 @media (max-width: 620px) {
-  .markdown-mermaid-svg { padding: 10px; }
+  .markdown-mermaid-surface { padding: 10px; }
   .markdown-outline { max-width: 100%; }
-  .markdown-mermaid-surface-open { height: min(72vh, 620px); }
 }
 
 @media (prefers-reduced-motion: reduce) {
