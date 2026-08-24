@@ -60,9 +60,9 @@ export function MermaidBlock({ code, streaming = false }: MermaidBlockProps) {
       return () => { cancelled = true; };
     }
     if (!visible) {
-      setSvg("");
-      setOverflowed(false);
-      setStatus("source");
+      // IntersectionObserver is only a render trigger. Do not tear down an
+      // already mounted SVG when virtua briefly moves the item across the
+      // observation boundary while it is correcting message heights.
       return () => { cancelled = true; };
     }
     if (code.length > MARKDOWN_RENDER_LIMITS.maxMermaidChars) {
@@ -90,6 +90,9 @@ export function MermaidBlock({ code, streaming = false }: MermaidBlockProps) {
       return () => { cancelled = true; };
     }
 
+    // Keep the current diagram mounted while a replacement (for example after
+    // a theme change or an edit) is being rendered. This prevents the
+    // source/loading/SVG state changes from producing a visible blank frame.
     setStatus("loading");
     setError("");
     setOverflowed(false);
@@ -125,7 +128,7 @@ export function MermaidBlock({ code, streaming = false }: MermaidBlockProps) {
   useEffect(() => {
     const block = ref.current;
     const surface = surfaceRef.current;
-    if (showSource || status !== "ready" || !block || !surface || !svg) return;
+    if (showSource || !block || !surface || !svg) return;
 
     let mounted: SVGSVGElement;
     try {
@@ -155,7 +158,7 @@ export function MermaidBlock({ code, streaming = false }: MermaidBlockProps) {
       block.removeAttribute("data-mermaid-overflow");
       surface.replaceChildren();
     };
-  }, [ref, showSource, status, svg]);
+  }, [ref, showSource, svg]);
 
   const copySource = async () => {
     try {
@@ -219,12 +222,12 @@ export function MermaidBlock({ code, streaming = false }: MermaidBlockProps) {
       </div>
       {showSource || status === "source" || status === "loading" || status === "error" ? (
         <>
-          {status === "loading" && !showSource ? <div className="markdown-enhanced-status"><LoaderCircle className="message-spin" size={15} />正在生成图表…</div> : null}
+          {status === "loading" && !showSource && !svg ? <div className="markdown-enhanced-status"><LoaderCircle className="message-spin" size={15} />正在生成图表…</div> : null}
           {status === "error" && !showSource ? <div className="markdown-enhanced-error"><X size={15} /><span>{error}</span></div> : null}
-          {showSource || status === "source" || status === "error" ? <pre className="markdown-mermaid-source"><code>{code}</code></pre> : null}
+          {showSource || status === "source" || (status === "loading" && !svg) || status === "error" ? <pre className="markdown-mermaid-source"><code>{code}</code></pre> : null}
         </>
       ) : null}
-      {status === "ready" && !showSource ? (
+      {svg && !showSource ? (
         <div
           ref={surfaceRef}
           className="markdown-mermaid-surface"

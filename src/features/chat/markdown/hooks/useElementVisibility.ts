@@ -1,6 +1,14 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
 
-/** 只有内容接近可视区域时才启动 Mermaid、代码高亮和图片大图等增强能力。 */
+/**
+ * 只有内容接近可视区域时才启动 Mermaid、代码高亮和图片大图等增强能力。
+ *
+ * Once an enhancement has been activated it remains active for the lifetime of
+ * the mounted block. Virtualized message lists can move an item across the
+ * observer boundary while correcting measured heights; turning the enhancement
+ * off at that moment would replace a rendered diagram with source text and
+ * create a visible layout feedback loop.
+ */
 export function useElementVisibility<T extends HTMLElement>(
   rootMargin = "240px",
 ): { ref: RefObject<T | null>; visible: boolean } {
@@ -16,7 +24,9 @@ export function useElementVisibility<T extends HTMLElement>(
     }
 
     const observer = new IntersectionObserver(
-      ([entry]) => setVisible(entry.isIntersecting),
+      ([entry]) => {
+        if (entry.isIntersecting) setVisible(true);
+      },
       { rootMargin, threshold: 0.01 },
     );
     observer.observe(element);
