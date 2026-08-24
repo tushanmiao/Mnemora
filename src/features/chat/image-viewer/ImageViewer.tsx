@@ -17,19 +17,28 @@ type ImageViewerProps = {
   onClose: () => void;
 };
 
+type IntrinsicImageSize = {
+  width: number;
+  height: number;
+};
+
 export function ImageViewer({ item, onClose }: ImageViewerProps) {
   const { t } = useI18n();
   const [zoom, setZoom] = useState(1);
   const [fullSrc, setFullSrc] = useState<string | null>(null);
   const [loadError, setLoadError] = useState(false);
+  const [intrinsicSize, setIntrinsicSize] = useState<IntrinsicImageSize | null>(null);
   const decodeBudgetRef = useRef(new DecodedImageBudget(CHAT_VIEWER_DECODE_LIMIT_BYTES));
   const leaseRef = useRef<DecodedImageLease | null>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const imageRef = useRef<HTMLImageElement>(null);
   const lifecycleState = useWorkspaceLifecycle();
 
   useEffect(() => {
     setZoom(1);
     setFullSrc(null);
     setLoadError(false);
+    setIntrinsicSize(null);
     leaseRef.current?.release();
     leaseRef.current = null;
     if (lifecycleState !== "active" || !item.conversationId || !item.attachmentPath) return;
@@ -75,6 +84,47 @@ export function ImageViewer({ item, onClose }: ImageViewerProps) {
 
   const title = item.title || item.alt || t("chat.image");
   const source = lifecycleState === "active" ? fullSrc ?? item.src : "";
+  const isZoomed = zoom > 1;
+
+  const changeZoom = (nextZoom: number) => {
+    const next = Math.max(0.5, Math.min(3, nextZoom));
+    const body = bodyRef.current;
+    const image = imageRef.current;
+    if (!body || !image || image.getBoundingClientRect().width <= 0) {
+      setZoom(next);
+      return;
+    }
+
+    const bodyRect = body.getBoundingClientRect();
+    const imageRect = image.getBoundingClientRect();
+    const focusX = bodyRect.left + body.clientWidth / 2;
+    const focusY = bodyRect.top + body.clientHeight / 2;
+    const relativeX = (focusX - imageRect.left) / Math.max(1, imageRect.width);
+    const relativeY = (focusY - imageRect.top) / Math.max(1, imageRect.height);
+
+    setZoom(next);
+    window.requestAnimationFrame(() => {
+      const nextRect = image.getBoundingClientRect();
+      const nextBodyRect = body.getBoundingClientRect();
+      const nextFocusX = nextRect.left + relativeX * nextRect.width;
+      const nextFocusY = nextRect.top + relativeY * nextRect.height;
+      body.scrollLeft = Math.max(
+        0,
+        body.scrollLeft + nextFocusX - (nextBodyRect.left + body.clientWidth / 2),
+      );
+      body.scrollTop = Math.max(
+        0,
+        body.scrollTop + nextFocusY - (nextBodyRect.top + body.clientHeight / 2),
+      );
+    });
+  };
+
+  const scaledWidth = intrinsicSize && isZoomed
+    ? Math.max(1, Math.round(intrinsicSize.width * zoom))
+    : undefined;
+  const scaledHeight = intrinsicSize && isZoomed
+    ? Math.max(1, Math.round(intrinsicSize.height * zoom))
+    : undefined;
   const downloadImage = () => {
     if (!source || !item.downloadFileName) return;
     const anchor = document.createElement("a");
@@ -92,14 +142,14 @@ export function ImageViewer({ item, onClose }: ImageViewerProps) {
         </button>
         <span className="image-viewer-title"><ImageIcon size={16} />{title}</span>
         <div className="image-viewer-controls">
-          <button type="button" className="image-viewer-icon-button" onClick={() => setZoom((value) => Math.max(0.5, value - 0.25))} aria-label={t("chat.zoomOut")} title={t("chat.zoomOut")}>
+          <button type="button" className="image-viewer-icon-button" onClick={() => changeZoom(zoom - 0.25)} aria-label={t("chat.zoomOut")} title={t("chat.zoomOut")}>
             <Minus size={15} />
           </button>
           <span className="image-viewer-zoom">{Math.round(zoom * 100)}%</span>
-          <button type="button" className="image-viewer-icon-button" onClick={() => setZoom((value) => Math.min(3, value + 0.25))} aria-label={t("chat.zoomIn")} title={t("chat.zoomIn")}>
+          <button type="button" className="image-viewer-icon-button" onClick={() => changeZoom(zoom + 0.25)} aria-label={t("chat.zoomIn")} title={t("chat.zoomIn")}>
             <Plus size={15} />
           </button>
-          <button type="button" className="image-viewer-icon-button" onClick={() => setZoom(1)} aria-label={t("chat.resetZoom")} title={t("chat.resetZoom")}>
+          <button type="button" className="image-viewer-icon-button" onClick={() => changeZoom(1)} aria-label={t("chat.resetZoom")} title={t("chat.resetZoom")}>
             <RotateCcw size={14} />
           </button>
           {item.downloadFileName ? (
@@ -112,18 +162,26 @@ export function ImageViewer({ item, onClose }: ImageViewerProps) {
           </button>
         </div>
       </header>
-      <div className="image-viewer-body" onClick={onClose}>
-        <div className="image-viewer-canvas">
+      <div ref={bodyRef} className="image-viewer-body" onClick={onClose}>
+        <div className="image-viewer-canvas" data-zoomed={isZoomed ? "true" : "false"}>
           {source ? (
             <img
+              ref={imageRef}
               src={source}
               alt={item.alt}
               decoding="async"
               className="image-viewer-image"
               style={{
-                width: zoom <= 1 ? "auto" : `${zoom * 100}%`,
-                maxWidth: zoom <= 1 ? "100%" : "none",
-                maxHeight: zoom <= 1 ? "calc(100vh - 112px)" : "none",
+                width: scaledWidth ? `${scaledWidth}px` : "auto",
+                height: scaledHeight ? `${scaledHeight}px` : "auto",
+                maxWidth: isZoomed ? "none" : "100%",
+                maxHeight: isZoomed ? "none" : "calc(100vh - 112px)",
+              }}
+              onLoad={(event) => {
+                const image = event.currentTarget;
+                if (image.naturalWidth > 0 && image.naturalHeight > 0) {
+                  setIntrinsicSize({ width: image.naturalWidth, height: image.naturalHeight });
+                }
               }}
               onClick={(event) => event.stopPropagation()}
             />

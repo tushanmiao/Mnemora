@@ -75,12 +75,20 @@
 }
 
 .image-viewer-canvas {
+  position: relative;
   display: flex;
+  box-sizing: border-box;
+  width: 100%;
   min-height: 100%;
-  min-width: min-content;
+  min-width: 100%;
   align-items: center;
   justify-content: center;
-  position: relative;
+}
+
+.image-viewer-canvas[data-zoomed="true"] {
+  width: max-content;
+  align-items: flex-start;
+  justify-content: flex-start;
 }
 
 .image-viewer-image {
