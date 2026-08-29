@@ -1,16 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
-import { open } from "@tauri-apps/plugin-dialog";
 import { ArchiveRestore, FolderOpen, LoaderCircle, Plug, RotateCcw, ShieldAlert, Trash2 } from "lucide-react";
 import {
-  installPlugin,
   listPlugins,
   rollbackPlugin,
   setPluginEnabled,
   uninstallPlugin,
-  type PluginImportKind,
   type PluginOverview,
   type PluginSummary,
 } from "../api/plugins";
+import { pickAndInstallPlugin, type InstallMode } from "../api/installFlows";
 import "../styles/agent-capabilities-settings.css";
 
 type Props = { onSkillsChanged: () => Promise<unknown> | unknown };
@@ -52,27 +50,21 @@ export function PluginSettingsPanel({ onSkillsChanged }: Props) {
     }
   };
 
-  const chooseAndInstall = async (kind: PluginImportKind) => {
-    const path = await open(kind === "directory"
-      ? { title: "选择 Mnemora 插件目录", multiple: false, directory: true }
-      : { title: "选择 Mnemora 插件 ZIP", multiple: false, directory: false, filters: [{ name: "ZIP", extensions: ["zip"] }] });
-    if (typeof path !== "string") return;
-    if (!window.confirm("插件签名验证尚未接入可信发布者目录。继续安装会把此包视为未验证代码与配置。请只安装你信任来源的插件。")) return;
+  // 安装流程与 Chat 的 /install-plugin 共用 installFlows，
+  // 避免未签名警告和覆盖确认在两处各写一遍后逐渐不一致。
+  const chooseAndInstall = async (mode: InstallMode) => {
     setBusy("install");
     setError(null);
     setNotice(null);
     try {
-      try {
-        await installPlugin(path, kind, false, true);
-      } catch (cause) {
-        const message = errorText(cause);
-        if (!message.includes("already installed") || !window.confirm("该插件已安装。是否保存当前版本作为回滚副本并更新？")) throw cause;
-        await installPlugin(path, kind, true, true);
+      const outcome = await pickAndInstallPlugin(mode);
+      if (outcome.cancelled) return;
+      if (!outcome.ok) {
+        setError(outcome.message);
+        return;
       }
       await load();
-      setNotice("插件已安装但尚未启用。请核对权限后再启用。");
-    } catch (cause) {
-      setError(errorText(cause));
+      setNotice(outcome.message);
     } finally {
       setBusy(null);
     }

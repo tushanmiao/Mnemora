@@ -14,6 +14,12 @@ import "./styles/themes.css";
 import type { ModelSelectorGroup } from "./features/chat/components/ModelSelector";
 import { ChatWorkspace } from "./features/chat/components/ChatWorkspace";
 import type { LocalSlashCommand, SlashCommandExecutionResult } from "./features/chat/commands/slashCommands";
+import { buildLocalCommandHelp, parseInstallMode } from "./features/chat/commands/slashCommands";
+import {
+  pickAndInstallPet,
+  pickAndInstallPlugin,
+  pickAndInstallSkill,
+} from "./features/settings/api/installFlows";
 import { useChatRuntime } from "./features/chat/hooks/useChatRuntime";
 import { estimateConversationContext } from "./features/chat/utils/contextUsage";
 import { activeContextMessages, contextSummaryPrompt } from "./features/chat/utils/contextCompression";
@@ -319,10 +325,8 @@ function App() {
   ): Promise<SlashCommandExecutionResult> => {
     switch (command) {
       case "help":
-        return {
-          executed: true,
-          message: "可用命令：/new、/clear、/compact [重点]、/model、/settings、/skills、/memory、/attach。",
-        };
+        // 清单由命令表推导，新增命令自动出现在这里，不需要手动同步。
+        return { executed: true, message: buildLocalCommandHelp() };
       case "new":
         conversations.createNewConversation();
         return { executed: true };
@@ -351,8 +355,24 @@ function App() {
         return { executed: true };
       case "attach":
         return { executed: false, message: "附件命令由输入框处理。" };
+      case "installSkill": {
+        const outcome = await pickAndInstallSkill(parseInstallMode(argumentsValue));
+        // 新技能会带来新的 Slash 触发词，不刷新的话当前会话里用不到。
+        if (outcome.ok) await skills.refresh();
+        return { executed: outcome.ok, message: outcome.message };
+      }
+      case "installPlugin": {
+        const outcome = await pickAndInstallPlugin(parseInstallMode(argumentsValue));
+        // 插件可能贡献 Skill，同理需要刷新。
+        if (outcome.ok) await skills.refresh();
+        return { executed: outcome.ok, message: outcome.message };
+      }
+      case "installPet": {
+        const outcome = await pickAndInstallPet(parseInstallMode(argumentsValue));
+        return { executed: outcome.ok, message: outcome.message };
+      }
     }
-  }, [chatRuntime, conversations, openSettings]);
+  }, [chatRuntime, conversations, openSettings, skills]);
 
   const handlePermissionChange = useCallback((permissionMode: AiPermissionMode) => {
     conversations.updateCurrentConversation((conversation) => ({

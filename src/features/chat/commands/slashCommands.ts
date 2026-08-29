@@ -9,7 +9,10 @@ export type LocalSlashCommand =
   | "settings"
   | "skills"
   | "memory"
-  | "attach";
+  | "attach"
+  | "installSkill"
+  | "installPlugin"
+  | "installPet";
 
 export type SlashCommandExecutionResult = {
   executed: boolean;
@@ -41,9 +44,30 @@ const LOCAL_COMMANDS: Array<SlashSuggestion & { command: LocalSlashCommand }> = 
   { command: "skills", trigger: "/skills", title: "技能", description: "打开技能设置", kind: "local" },
   { command: "memory", trigger: "/memory", title: "记忆", description: "打开记忆设置", kind: "local" },
   { command: "attach", trigger: "/attach", title: "添加附件", description: "打开本地附件选择器", kind: "local" },
+  { command: "installSkill", trigger: "/install-skill", title: "安装技能", description: "从本地目录或 ZIP 安装 Skill；默认 ZIP，加 dir 选目录", kind: "local", argumentHint: "[dir]" },
+  { command: "installPlugin", trigger: "/install-plugin", title: "安装插件", description: "从本地目录或 ZIP 安装插件；安装后保持停用，需手动启用", kind: "local", argumentHint: "[dir]" },
+  { command: "installPet", trigger: "/install-pet", title: "安装宠物", description: "从本地 ZIP 或目录安装桌面宠物资源包", kind: "local", argumentHint: "[dir]" },
 ];
 
 export const RESERVED_SLASH_TRIGGERS = new Set(LOCAL_COMMANDS.map((item) => item.trigger));
+
+/**
+ * /help 的正文由命令表推导，而不是另写一份清单。
+ * 手写清单每加一个命令就要记得同步，漏一次就长期错下去——
+ * 这里让它结构上无法漂移。
+ */
+export function buildLocalCommandHelp() {
+  const entries = LOCAL_COMMANDS.map((item) => (
+    item.argumentHint ? `${item.trigger} ${item.argumentHint}` : item.trigger
+  ));
+  return `可用命令：${entries.join("、")}。`;
+}
+
+/** 安装类命令的可选参数：默认 zip，显式 dir/directory 才选目录。 */
+export function parseInstallMode(argumentsValue: string): "zip" | "directory" {
+  const token = argumentsValue.trim().toLocaleLowerCase("en-US");
+  return token === "dir" || token === "directory" ? "directory" : "zip";
+}
 
 function firstToken(value: string) {
   const end = value.search(/\s/);
