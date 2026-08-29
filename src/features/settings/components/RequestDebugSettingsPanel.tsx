@@ -90,14 +90,14 @@ export function RequestDebugSettingsPanel({ settings, onSave }: Props) {
         </div>
       </div>
 
-      <div className="debug-warning"><AlertTriangle size={17} /><span>调试记录仅保存在内存中，最多 30 条。认证信息会脱敏；请求正文仍可能包含你的对话内容。</span></div>
+      <div className="settings-callout settings-callout-warning"><AlertTriangle size={17} /><span>调试记录仅保存在内存中，最多 30 条。认证信息会脱敏；请求正文仍可能包含你的对话内容。</span></div>
       {error ? <div className="settings-feedback settings-feedback-error"><span>{error}</span></div> : null}
 
       <div className="debug-workspace">
         <div className="debug-record-list">
           {records.map((record) => (
             <button className={`debug-record-item${selected?.id === record.id ? " debug-record-item-active" : ""}`} type="button" key={record.id} onClick={() => setSelectedId(record.id)}>
-              <span className={`debug-record-status debug-record-status-${record.status}`} />
+              <span className={`settings-dot ${debugDotClass(record.status)}`} />
               <span><strong>{record.displayName}</strong><small>{formatTime(record.createdAtMs)} · {formatDuration(record.durationMs)}</small></span>
             </button>
           ))}
@@ -116,6 +116,13 @@ export function RequestDebugSettingsPanel({ settings, onSave }: Props) {
       </div>
     </section>
   );
+}
+
+/** "stopped" 保持中性——它既不是成功也不是失败。 */
+function debugDotClass(status: RequestDebugRecord["status"]) {
+  if (status === "success") return "settings-dot-success";
+  if (status === "error") return "settings-dot-danger";
+  return "";
 }
 
 function DebugBlock({ title, value, truncated }: { title: string; value: unknown; truncated: boolean }) {

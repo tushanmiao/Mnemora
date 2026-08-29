@@ -1,9 +1,9 @@
 .note-settings-content { padding-bottom: 24px; }
-.note-settings-scroll { min-height: 0; padding-right: 4px; overflow-y: auto; scrollbar-width: thin; }
+
+/* 预览用笔记自己的排版变量渲染，所见即将生效的正文样式 */
 .note-settings-preview {
   display: grid;
-  margin-top: 24px;
-  padding: 24px clamp(20px, 4vw, 48px) 30px;
+  padding: 22px clamp(20px, 4vw, 44px) 26px;
   gap: 8px;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-panel);
@@ -12,7 +12,19 @@
   font-size: var(--note-font-size);
   line-height: var(--note-line-height);
 }
-.note-settings-preview > span { color: var(--color-muted); font: 11px/1.4 var(--ui-font-family); }
-.note-settings-preview h3 { margin: 7px 0 3px; color: var(--color-text); font-size: 1.45em; }
+
+.note-settings-preview h4 {
+  margin: 7px 0 3px;
+  color: var(--color-text);
+  font-size: 1.45em;
+  font-weight: 680;
+}
+
 .note-settings-preview p { margin: 0; color: var(--color-text-secondary); }
-.note-settings-preview blockquote { margin: 8px 0 0; padding: 8px 12px; border-inline-start: 2px solid var(--color-accent); color: var(--color-muted); }
+
+.note-settings-preview blockquote {
+  margin: 8px 0 0;
+  padding: 8px 12px;
+  border-inline-start: 2px solid var(--color-accent);
+  color: var(--color-muted);
+}

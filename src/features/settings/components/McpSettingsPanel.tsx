@@ -100,6 +100,14 @@ function errorText(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** 状态点的语义色：就绪=成功，连接中=警告，失败/退避=危险，其余=中性。 */
+function statusDotClass(state: McpServerView["status"]["state"]) {
+  if (state === "ready" || state === "cached") return "settings-dot-success";
+  if (state === "connecting") return "settings-dot-warning";
+  if (state === "failed" || state === "backoff") return "settings-dot-danger";
+  return "";
+}
+
 export function McpSettingsPanel() {
   const [overview, setOverview] = useState<McpOverview>({ servers: [] });
   const [editor, setEditor] = useState<EditorState | null>(null);
@@ -189,7 +197,7 @@ export function McpSettingsPanel() {
         </button>
       </div>
 
-      <div className="agent-security-note">
+      <div className="settings-callout settings-callout-warning">
         <AlertTriangle size={17} />
         <div><strong>外部工具默认不受信任</strong><span>服务器返回的只读、幂等和破坏性标注仅用于展示，不会自动降低审批等级。只有精确加入“自动批准”列表的工具才会跳过敏感操作确认。</span></div>
       </div>
@@ -229,17 +237,17 @@ export function McpSettingsPanel() {
         </section>
       ) : null}
 
-      <div className="agent-card-list">
-        {overview.servers.length === 0 ? <div className="agent-empty-state"><Cable size={28} /><strong>尚未配置 MCP 服务器</strong><span>添加服务器后，启用并刷新工具目录，Agent 才能发现这些能力。</span></div> : overview.servers.map((server) => (
-          <section className="agent-capability-card" key={server.id}>
-            <header>
-              <div className="agent-card-title"><span className={`agent-status-dot agent-status-${server.status.state}`} /><div><strong>{server.name}</strong><span>{server.id} · {server.transport.type === "streamableHttp" ? "HTTP" : "stdio"}{server.pluginId ? ` · 插件 ${server.pluginId}` : ""}</span></div></div>
-              <label className="settings-switch-label"><input type="checkbox" checked={server.enabled} disabled={busy !== null} onChange={(event) => void toggle(server, event.target.checked)} />启用</label>
+      <div className="settings-card-list">
+        {overview.servers.length === 0 ? <div className="settings-empty"><Cable size={28} /><strong>尚未配置 MCP 服务器</strong><span>添加服务器后，启用并刷新工具目录，Agent 才能发现这些能力。</span></div> : overview.servers.map((server) => (
+          <section className="settings-card" key={server.id}>
+            <header className="settings-card-head">
+              <div className="settings-card-title"><span className={`settings-dot ${statusDotClass(server.status.state)}`} /><div><strong>{server.name}</strong><span>{server.id} · {server.transport.type === "streamableHttp" ? "HTTP" : "stdio"}{server.pluginId ? ` · 插件 ${server.pluginId}` : ""}</span></div></div>
+              <label className="settings-check settings-check-inline"><input type="checkbox" checked={server.enabled} disabled={busy !== null} onChange={(event) => void toggle(server, event.target.checked)} />启用</label>
             </header>
-            <div className="agent-card-meta"><span>状态：{server.status.state}</span><span>工具：{server.status.toolCount}</span>{server.status.lastSuccessAt ? <span>最近成功：{new Date(server.status.lastSuccessAt).toLocaleString()}</span> : null}</div>
+            <div className="agent-card-meta"><span className="settings-pill">状态：{server.status.state}</span><span className="settings-pill">工具：{server.status.toolCount}</span>{server.status.lastSuccessAt ? <span className="settings-pill">最近成功：{new Date(server.status.lastSuccessAt).toLocaleString()}</span> : null}</div>
             {server.status.lastError ? <div className="agent-card-error">{server.status.lastError}</div> : null}
             {server.tools.length > 0 ? <details className="agent-tool-list"><summary>查看 {server.tools.length} 个工具</summary>{server.tools.map((tool) => <div key={tool.wireName}><code>{tool.remoteName}</code><span>{tool.description}</span><small>{tool.readOnlyHint ? "声明只读" : "可能写入"} · {tool.autoApproved ? "已自动批准" : "调用前审批"}</small></div>)}</details> : null}
-            <footer>
+            <footer className="settings-card-foot">
               <button className="settings-button settings-button-secondary" type="button" disabled={!server.enabled || busy !== null} onClick={() => void mutate(`refresh:${server.id}`, () => refreshMcpServer(server.id), "工具目录已刷新。")}><RefreshCw size={14} />刷新</button>
               <button className="settings-button settings-button-secondary" type="button" disabled={busy !== null || Boolean(server.pluginId)} onClick={() => setEditor(editServer(server))}><Pencil size={14} />编辑</button>
               <button className="settings-button settings-button-secondary agent-danger-button" type="button" disabled={busy !== null || Boolean(server.pluginId)} onClick={() => { if (window.confirm(`移除 MCP 服务器“${server.name}”？`)) void mutate(`remove:${server.id}`, () => removeMcpServer(server.id), "服务器已移除。"); }}><Trash2 size={14} />移除</button>

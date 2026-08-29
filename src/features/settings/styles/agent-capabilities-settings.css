@@ -1,60 +1,31 @@
+/* MCP 与插件共用。卡片、提示条、徽标、空状态、状态点都走 settings-kit，
+   这里只留表单编辑器与工具列表。
+   原先 .agent-status-ready 用的 --color-success 从未定义（背景直接失效），
+   连接中状态又硬编码 #b7791f；现在统一到 status token。 */
+
 .agent-capabilities-settings {
   overflow-y: auto;
   overscroll-behavior: contain;
+  scrollbar-color: var(--color-border) transparent;
+  scrollbar-width: thin;
 }
 
-.agent-security-note {
-  display: flex;
-  padding: 12px 14px;
-  align-items: flex-start;
-  gap: 10px;
-  border: 1px solid color-mix(in srgb, #b7791f 35%, var(--color-border));
-  border-radius: 8px;
-  color: var(--color-text-secondary);
-  background: color-mix(in srgb, #b7791f 8%, var(--color-surface-raised));
-}
+.agent-capabilities-settings > * { max-width: var(--settings-measure); }
 
-.agent-security-note > svg {
-  flex: 0 0 auto;
-  margin-top: 2px;
-  color: #b7791f;
-}
-
-.agent-security-note > div,
-.agent-card-title > div {
-  display: grid;
-  min-width: 0;
-  gap: 3px;
-}
-
-.agent-security-note strong,
-.agent-security-note span {
-  font-size: 12px;
-  line-height: 1.55;
-}
-
-.agent-security-note span {
-  color: var(--color-muted);
-}
-
-.agent-editor-card,
-.agent-capability-card,
-.agent-empty-state {
-  border: 1px solid var(--color-border);
-  border-radius: 9px;
-  background: var(--color-surface-raised);
-}
+/* ---------- 编辑器 ---------- */
 
 .agent-editor-card {
   display: grid;
-  gap: 18px;
-  padding: 18px;
+  gap: 16px;
+  padding: 17px;
+  border: 1px solid var(--color-accent);
+  border-radius: var(--radius-panel);
+  background: var(--color-surface-raised);
+  box-shadow: var(--shadow-composer);
 }
 
 .agent-editor-card > header,
-.agent-capability-card > header,
-.agent-editor-card > footer,
-.agent-capability-card > footer {
+.agent-editor-card > footer {
   display: flex;
   min-width: 0;
   align-items: center;
@@ -64,23 +35,27 @@
 
 .agent-editor-card > header > div {
   display: grid;
+  min-width: 0;
   gap: 4px;
 }
 
 .agent-editor-card > header strong {
+  color: var(--color-text);
   font-size: 14px;
+  font-weight: 680;
 }
 
 .agent-editor-card > header span {
   color: var(--color-muted);
-  font-size: 11px;
-  line-height: 1.5;
+  font-size: var(--font-size-meta);
+  line-height: 1.55;
 }
 
-.agent-editor-card > footer,
-.agent-capability-card > footer {
+.agent-editor-card > footer {
   justify-content: flex-end;
   flex-wrap: wrap;
+  padding-top: 2px;
+  border-top: 1px solid var(--color-border-soft);
 }
 
 .agent-icon-button {
@@ -91,7 +66,7 @@
   padding: 0;
   place-items: center;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   color: var(--color-muted);
   background: transparent;
   cursor: pointer;
@@ -106,30 +81,30 @@
   display: grid;
   min-width: 0;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px;
+  gap: 13px;
 }
 
 .agent-form-grid > label {
   display: grid;
   min-width: 0;
   align-content: start;
-  gap: 7px;
+  gap: 6px;
   color: var(--color-text-secondary);
-  font-size: 12px;
-  font-weight: 650;
+  font-size: var(--font-size-label);
+  font-weight: 620;
 }
 
-.agent-form-grid .agent-form-wide {
-  grid-column: 1 / -1;
-}
+.agent-form-grid .agent-form-wide { grid-column: 1 / -1; }
 
 .agent-checkbox {
   display: flex !important;
   min-height: 38px;
   align-items: center;
   align-self: end;
+  gap: 8px;
   grid-auto-flow: column;
   justify-content: start;
+  cursor: pointer;
 }
 
 .agent-checkbox input {
@@ -142,15 +117,15 @@
 .agent-textarea {
   width: 100%;
   min-width: 0;
-  min-height: 82px;
+  min-height: 80px;
   padding: 9px 11px;
   resize: vertical;
   border: 1px solid var(--color-border);
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   outline: 0;
   color: var(--color-text);
   background: var(--color-surface);
-  font: 12px/1.5 var(--font-mono, monospace);
+  font: var(--font-size-label)/1.55 Consolas, "Courier New", monospace;
 }
 
 .agent-textarea:focus {
@@ -164,125 +139,66 @@
   gap: 8px;
 }
 
-.agent-card-list {
-  display: grid;
-  gap: 12px;
-}
-
-.agent-capability-card {
-  display: grid;
-  gap: 12px;
-  padding: 15px;
-}
-
-.agent-card-title {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 10px;
-}
-
-.agent-card-title strong {
-  overflow: hidden;
-  font-size: 13px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.agent-card-title strong small {
-  color: var(--color-muted);
-  font-size: 11px;
-  font-weight: 550;
-}
-
-.agent-card-title span,
-.agent-card-description {
-  color: var(--color-muted);
-  font-size: 11px;
-}
-
-.agent-status-dot {
-  width: 9px;
-  height: 9px;
-  flex: 0 0 auto;
-  border-radius: 50%;
-  background: var(--color-faint);
-}
-
-.agent-status-ready,
-.agent-status-cached {
-  background: var(--color-success);
-}
-
-.agent-status-connecting {
-  background: #b7791f;
-}
-
-.agent-status-failed,
-.agent-status-backoff {
-  background: var(--color-danger);
-}
+/* ---------- 服务器 / 插件卡片 ---------- */
 
 .agent-card-description {
   margin: 0;
+  color: var(--color-muted);
+  font-size: var(--font-size-meta);
   line-height: 1.6;
 }
 
 .agent-card-meta {
   display: flex;
   min-width: 0;
+  align-items: center;
   flex-wrap: wrap;
   gap: 6px;
 }
 
-.agent-card-meta span {
-  padding: 3px 8px;
-  border-radius: 999px;
-  color: var(--color-text-secondary);
-  background: var(--color-active);
-  font-size: 11px;
-}
-
 .agent-card-error {
   padding: 8px 10px;
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   color: var(--color-danger);
   background: var(--color-danger-soft);
-  font-size: 11px;
+  font-size: var(--font-size-meta);
   line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 .agent-tool-list {
   border-top: 1px solid var(--color-border-soft);
   color: var(--color-text-secondary);
-  font-size: 12px;
+  font-size: var(--font-size-label);
 }
 
 .agent-tool-list summary {
-  padding: 10px 0 2px;
+  padding: 9px 0 2px;
   cursor: pointer;
-  font-weight: 650;
+  font-weight: 620;
 }
 
 .agent-tool-list > div {
   display: grid;
   padding: 9px 0;
-  grid-template-columns: minmax(120px, .7fr) minmax(160px, 1.3fr) auto;
+  grid-template-columns: minmax(120px, 0.7fr) minmax(160px, 1.3fr) auto;
+  align-items: start;
   gap: 10px;
   border-bottom: 1px solid var(--color-border-soft);
-  align-items: start;
 }
 
+.agent-tool-list > div:last-child { border-bottom: 0; }
+
 .agent-tool-list code {
-  overflow-wrap: anywhere;
   color: var(--color-text);
-  font-size: 11px;
+  font-size: var(--font-size-meta);
+  overflow-wrap: anywhere;
 }
 
 .agent-tool-list span,
 .agent-tool-list small {
   color: var(--color-muted);
-  font-size: 11px;
+  font-size: var(--font-size-meta);
   line-height: 1.45;
 }
 
@@ -292,39 +208,8 @@
   background: var(--color-danger-soft);
 }
 
-.agent-empty-state {
-  display: grid;
-  min-height: 210px;
-  padding: 24px;
-  place-items: center;
-  align-content: center;
-  gap: 8px;
-  color: var(--color-muted);
-  text-align: center;
-}
-
-.agent-empty-state strong {
-  color: var(--color-text);
-  font-size: 13px;
-}
-
-.agent-empty-state span {
-  max-width: 480px;
-  font-size: 12px;
-  line-height: 1.6;
-}
-
 @media (max-width: 760px) {
-  .agent-form-grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .agent-form-grid .agent-form-wide {
-    grid-column: auto;
-  }
-
-  .agent-tool-list > div {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 4px;
-  }
+  .agent-form-grid { grid-template-columns: minmax(0, 1fr); }
+  .agent-form-grid .agent-form-wide { grid-column: auto; }
+  .agent-tool-list > div { grid-template-columns: minmax(0, 1fr); gap: 4px; }
 }

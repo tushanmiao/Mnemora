@@ -69,7 +69,7 @@
 .markdown-math-rendered .katex-error {
   display: block;
   color: var(--color-danger) !important;
-  font-family: var(--code-font-family, "Cascadia Code", "SFMono-Regular", Consolas, monospace);
+  font-family: var(--code-font-family);
   font-size: 14px;
   text-align: left;
   white-space: pre-wrap;
@@ -82,7 +82,7 @@
   overflow: auto;
   color: var(--color-text);
   background: var(--color-app);
-  font-family: var(--code-font-family, "Cascadia Code", "SFMono-Regular", Consolas, monospace);
+  font-family: var(--code-font-family);
   font-size: 14px;
   line-height: 1.6;
   white-space: pre;

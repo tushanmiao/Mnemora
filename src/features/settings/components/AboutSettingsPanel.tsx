@@ -249,7 +249,7 @@ export function AboutSettingsPanel({ settings, onSaveSettings }: AboutSettingsPa
         </div>
       </div>
 
-      <div className="about-settings-scroll">
+      <div className="settings-scroll settings-scroll-measure">
         <section className="about-hero" aria-labelledby="about-product-name">
           <div className="about-hero-icon" aria-hidden="true">
             <Sparkles size={25} />
@@ -263,12 +263,12 @@ export function AboutSettingsPanel({ settings, onSaveSettings }: AboutSettingsPa
           </div>
         </section>
 
-        <section className="about-settings-section" aria-labelledby="about-runtime-heading">
-          <div className="about-section-heading">
+        <section className="settings-section" aria-labelledby="about-runtime-heading">
+          <div className="settings-section-head">
             <Cpu size={16} />
             <h3 id="about-runtime-heading">运行环境</h3>
           </div>
-          <div className="about-metadata-grid">
+          <div className="settings-stat-grid">
             <MetadataItem label="应用版本" value={metadata.version} loading={metadataLoading} />
             <MetadataItem label="桌面核心" value={desktopCore} loading={metadataLoading} />
             <MetadataItem label="前端运行时" value="React 19 · TypeScript 5.8" />
@@ -279,18 +279,18 @@ export function AboutSettingsPanel({ settings, onSaveSettings }: AboutSettingsPa
           ) : null}
         </section>
 
-        <section className="about-settings-section" aria-labelledby="about-update-heading">
-          <div className="about-update-heading-row">
-            <div className="about-section-heading">
-              <RefreshCw size={16} />
-              <h3 id="about-update-heading">{t("about.updateTitle")}</h3>
+        <section className="settings-section" aria-labelledby="about-update-heading">
+          <div className="settings-section-head">
+            <RefreshCw size={16} />
+            <h3 id="about-update-heading">{t("about.updateTitle")}</h3>
+            <div className="settings-section-head-actions">
+              <button className="settings-button settings-button-secondary" type="button" disabled={updateBusy || !isTauri()} onClick={() => void checkUpdate()}>
+                {updateBusy ? <LoaderCircle className="settings-spin" size={15} /> : <RefreshCw size={15} />}
+                <span>{updateStatus === "checking" ? t("about.checkingUpdate") : t("about.checkUpdate")}</span>
+              </button>
             </div>
-            <button className="settings-button settings-button-secondary" type="button" disabled={updateBusy || !isTauri()} onClick={() => void checkUpdate()}>
-              {updateBusy ? <LoaderCircle className="settings-spin" size={15} /> : <RefreshCw size={15} />}
-              <span>{updateStatus === "checking" ? t("about.checkingUpdate") : t("about.checkUpdate")}</span>
-            </button>
           </div>
-          <p className="about-section-description">{t("about.updateDescription")}</p>
+          <p className="settings-section-note">{t("about.updateDescription")}</p>
           <div className="about-proxy-settings" aria-labelledby="about-proxy-heading">
             <div className="about-proxy-copy">
               <div className="about-proxy-title">
@@ -414,8 +414,8 @@ export function AboutSettingsPanel({ settings, onSaveSettings }: AboutSettingsPa
           ) : null}
         </section>
 
-        <section className="about-settings-section" aria-labelledby="about-capability-heading">
-          <div className="about-section-heading">
+        <section className="settings-section" aria-labelledby="about-capability-heading">
+          <div className="settings-section-head">
             <BookOpen size={16} />
             <h3 id="about-capability-heading">当前能力</h3>
           </div>
@@ -439,8 +439,8 @@ export function AboutSettingsPanel({ settings, onSaveSettings }: AboutSettingsPa
           </div>
         </section>
 
-        <section className="about-settings-section" aria-labelledby="about-security-heading">
-          <div className="about-section-heading">
+        <section className="settings-section" aria-labelledby="about-security-heading">
+          <div className="settings-section-head">
             <ShieldCheck size={16} />
             <h3 id="about-security-heading">数据与安全</h3>
           </div>
@@ -463,12 +463,12 @@ export function AboutSettingsPanel({ settings, onSaveSettings }: AboutSettingsPa
           </div>
         </section>
 
-        <section className="about-settings-section about-roadmap-section" aria-labelledby="about-roadmap-heading">
-          <div className="about-section-heading">
+        <section className="settings-section" aria-labelledby="about-roadmap-heading">
+          <div className="settings-section-head">
             <Sparkles size={16} />
             <h3 id="about-roadmap-heading">后续方向</h3>
           </div>
-          <p className="about-section-description">
+          <p className="settings-section-note">
             PDF 阅读、Zotero 类笔记与批注、Office 受控工具和对话导出正在规划中。当前 Agent 不提供任意 Shell 或桌面自动化权限。
           </p>
         </section>
@@ -542,9 +542,9 @@ function MetadataItem({
   loading?: boolean;
 }) {
   return (
-    <div className="about-metadata-item">
+    <div className="settings-stat">
       <span>{label}</span>
-      <strong>{loading ? "读取中..." : value}</strong>
+      <strong title={value}>{loading ? "读取中..." : value}</strong>
     </div>
   );
 }

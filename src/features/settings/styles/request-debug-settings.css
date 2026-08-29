@@ -1,20 +1,7 @@
-.debug-warning {
-  display: flex;
-  width: min(1120px, 100%);
-  min-height: 42px;
-  padding: 10px 12px;
-  align-items: flex-start;
-  gap: 9px;
-  border: 1px solid #d5ad62;
-  border-radius: 6px;
-  color: #7a5716;
-  background: #fff7e7;
-  font-size: 11px;
-  line-height: 1.6;
-}
+/* 提示条走 settings-kit（原先这里硬编码了一整套琥珀色，还要手写
+   深色主题覆盖；现在跟随 status token）。 */
 
-.app-shell[data-theme="dark"] .debug-warning { color: #e1bc75; border-color: #755f35; background: #332c20; }
-.debug-warning svg { flex: 0 0 auto; margin-top: 1px; }
+.debug-settings-content > .settings-callout { width: min(1120px, 100%); }
 
 .debug-enable-button {
   display: inline-flex;
@@ -23,14 +10,20 @@
   align-items: center;
   gap: 8px;
   border: 1px solid var(--color-border);
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   color: var(--color-text-secondary);
   background: var(--color-surface-raised);
   cursor: pointer;
-  font-size: 11px;
+  font-size: var(--font-size-meta);
 }
 
-.debug-enable-button > span { width: 8px; height: 8px; border-radius: 50%; background: var(--color-faint); }
+.debug-enable-button > span {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-faint);
+}
+
 .debug-enable-button-active { color: var(--color-accent); border-color: var(--color-accent); }
 .debug-enable-button-active > span { background: var(--color-accent); }
 
@@ -40,35 +33,32 @@
   min-height: 0;
   flex: 1;
   grid-template-columns: 240px minmax(0, 1fr);
-  border: 1px solid var(--color-border);
-  border-radius: 8px;
   overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-panel);
   background: var(--color-surface-raised);
 }
 
 .debug-record-list { min-height: 0; padding: 8px; overflow-y: auto; border-right: 1px solid var(--color-border); background: var(--color-sidebar); }
-.debug-record-item { display: grid; width: 100%; min-height: 54px; padding: 8px; grid-template-columns: 8px minmax(0, 1fr); align-items: center; gap: 9px; border: 0; border-radius: 6px; color: var(--color-text-secondary); background: transparent; cursor: pointer; text-align: left; }
+.debug-record-item { display: grid; width: 100%; min-height: 54px; padding: 8px; grid-template-columns: 8px minmax(0, 1fr); align-items: center; gap: 9px; border: 0; border-radius: var(--radius-control); color: var(--color-text-secondary); background: transparent; cursor: pointer; text-align: left; }
 .debug-record-item:hover, .debug-record-item-active { color: var(--color-text); background: var(--color-active); }
 .debug-record-item > span:last-child { display: grid; min-width: 0; gap: 3px; }
 .debug-record-item strong, .debug-record-item small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.debug-record-item strong { font-size: 12px; }
-.debug-record-item small { color: var(--color-muted); font-size: 10px; }
-.debug-record-status { width: 7px; height: 7px; border-radius: 50%; background: var(--color-faint); }
-.debug-record-status-success { background: var(--color-accent); }
-.debug-record-status-error { background: var(--color-danger); }
+.debug-record-item strong { font-size: var(--font-size-label); }
+.debug-record-item small { color: var(--color-muted); font-size: var(--font-size-micro); }
 
 .debug-record-detail { min-width: 0; min-height: 0; overflow-y: auto; }
 .debug-record-detail > header { position: sticky; top: 0; z-index: 1; display: flex; min-height: 58px; padding: 10px 14px; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--color-border); background: var(--color-surface-raised); }
 .debug-record-detail > header > div { display: grid; min-width: 0; gap: 3px; }
 .debug-record-detail > header strong, .debug-record-detail > header span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.debug-record-detail > header strong { font-size: 12px; }
-.debug-record-detail > header span { color: var(--color-muted); font-size: 10px; }
+.debug-record-detail > header strong { font-size: var(--font-size-label); }
+.debug-record-detail > header span { color: var(--color-muted); font-size: var(--font-size-micro); }
 .debug-json-block { padding: 14px; border-bottom: 1px solid var(--color-border-soft); }
 .debug-json-block > div { display: flex; margin-bottom: 8px; align-items: baseline; justify-content: space-between; gap: 12px; }
-.debug-json-block h3 { margin: 0; overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-.debug-json-block > div span { flex: 0 0 auto; color: #a97518; font-size: 10px; }
-.debug-json-block pre { max-height: 360px; margin: 0; padding: 12px; overflow: auto; border: 1px solid var(--color-border); border-radius: 6px; color: var(--color-text-secondary); background: var(--color-surface); font-family: Consolas, "Courier New", monospace; font-size: 10px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
-.debug-empty { display: grid; min-height: 120px; place-items: center; padding: 20px; color: var(--color-muted); font-size: 11px; text-align: center; }
+.debug-json-block h3 { margin: 0; overflow: hidden; font-size: var(--font-size-meta); text-overflow: ellipsis; white-space: nowrap; }
+.debug-json-block > div span { flex: 0 0 auto; color: var(--color-warning); font-size: var(--font-size-micro); }
+.debug-json-block pre { max-height: 360px; margin: 0; padding: 12px; overflow: auto; border: 1px solid var(--color-border); border-radius: var(--radius-control); color: var(--color-text-secondary); background: var(--color-surface); font-family: Consolas, "Courier New", monospace; font-size: var(--font-size-micro); line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
+.debug-empty { display: grid; min-height: 120px; place-items: center; padding: 20px; color: var(--color-muted); font-size: var(--font-size-meta); text-align: center; }
 
 @media (max-width: 850px) {
   .debug-workspace { grid-template-columns: 190px minmax(0, 1fr); }

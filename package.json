@@ -12,7 +12,8 @@
     "memory:compare": "node scripts/memory/compare-memory-report.mjs",
     "memory:isolation-review": "node scripts/memory/evaluate-isolation.mjs",
     "skills:provenance": "node scripts/skills/sync-provenance.mjs",
-    "skills:provenance:check": "node scripts/skills/sync-provenance.mjs --check"
+    "skills:provenance:check": "node scripts/skills/sync-provenance.mjs --check",
+    "settings:verify-css": "node scripts/verify-settings-classes.mjs"
   },
   "dependencies": {
     "@codemirror/commands": "^6.11.0",

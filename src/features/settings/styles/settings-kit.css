@@ -1,0 +1,664 @@
+/* 设置页共享primitives。
+ *
+ * 每个子设置页原先各自实现「分区 / 分区标题 / 设置行 / 开关 / 提示条」，
+ * 于是同一种东西有六套尺寸与颜色。这一层把它们收成一套：
+ *   .settings-section        平铺分区，靠分隔线而不是嵌套卡片建立层级
+ *   .settings-section-head   带强调色图标的分区标题
+ *   .settings-row            左说明 / 右控件
+ *   .settings-callout        唯一的提示条实现，按语义分色
+ * 卡片只留给「列表项」（供应商、插件、宠物）——需要独立边界的才是卡片。
+ *
+ * 半径与字号一律走 token：xuan / paper / highContrast 这些预设把
+ * --radius-* 调成近乎直角，硬编码 6px 会让它们失去材质性格。
+ *
+ * 此文件由 SettingsPage 直接 import，因此永远先于懒加载的子面板到位。
+ */
+
+.settings-page {
+  --settings-gutter: clamp(20px, 4vw, 52px);
+  --settings-measure: 920px;
+  --settings-row-gap: 24px;
+}
+
+/* ---------- 分区 ---------- */
+
+/* 分区用普通块级流，不用 grid gap。
+   设置行必须彼此贴合——它们靠 border-top 连成一条连续分隔线，
+   一旦被 gap 撑开，分隔线就断成一截截悬空的短线。
+   因此「间距」由各类非行元素自己的 margin 负责。 */
+.settings-section {
+  min-width: 0;
+  padding: 16px 0 20px;
+  border-top: 1px solid var(--color-border);
+}
+
+.settings-section:first-child {
+  border-top: 0;
+  padding-top: 4px;
+}
+
+/* 分区内除设置行以外的块级内容，彼此之间留出间距。
+   写成 :not(.settings-row) 而不是逐个列举类名，这样各页自己的
+   （.storage-usage-list、.settings-field、.pet-library-grid …）
+   不必回来登记一次。 */
+.settings-section > * + *:not(.settings-row):not(.settings-row-actions) {
+  margin-top: 12px;
+}
+
+/* 行与行、行与行动区之间保持贴合，让 border-top 连成整条分隔线 */
+.settings-section > .settings-row,
+.settings-section > .settings-row-actions {
+  margin-top: 0;
+}
+
+.settings-section-head {
+  display: flex;
+  min-width: 0;
+  margin-bottom: 12px;
+  align-items: center;
+  gap: 9px;
+}
+
+.settings-section-head > svg {
+  flex: 0 0 auto;
+  color: var(--color-accent);
+}
+
+.settings-section-head h3 {
+  margin: 0;
+  flex: 0 0 auto;
+  color: var(--color-text);
+  font-size: 13px;
+  font-weight: 680;
+  letter-spacing: -0.005em;
+}
+
+/* 提示挤在标题右侧，长文自动换行到下一行而不是把标题撑走 */
+.settings-section-head p {
+  margin: 0;
+  min-width: 0;
+  flex: 1 1 auto;
+  color: var(--color-muted);
+  font-size: var(--font-size-meta);
+  line-height: 1.55;
+}
+
+.settings-section-head-actions {
+  display: flex;
+  flex: 0 0 auto;
+  margin-left: auto;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.settings-section-note {
+  margin: 0;
+  max-width: 760px;
+  color: var(--color-muted);
+  font-size: var(--font-size-label);
+  line-height: 1.65;
+}
+
+/* ---------- 设置行 ---------- */
+
+.settings-row {
+  display: grid;
+  min-width: 0;
+  min-height: 52px;
+  padding: 9px 0;
+  grid-template-columns: minmax(200px, 1fr) minmax(0, auto);
+  align-items: center;
+  gap: var(--settings-row-gap);
+  border-top: 1px solid var(--color-border-soft);
+}
+
+/* 分区标题后的第一行不需要分隔线——标题本身已经是边界 */
+.settings-section-head + .settings-row,
+.settings-row:first-child {
+  border-top: 0;
+}
+
+.settings-row-stack {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+}
+
+.settings-row-copy {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.settings-row-copy strong {
+  color: var(--color-text);
+  font-size: var(--font-size-row);
+  font-weight: 620;
+}
+
+.settings-row-copy span {
+  color: var(--color-muted);
+  font-size: var(--font-size-meta);
+  line-height: 1.55;
+}
+
+.settings-row-control {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.settings-row-stack .settings-row-control {
+  justify-content: flex-start;
+}
+
+.settings-row-actions {
+  display: flex;
+  padding: 12px 0 2px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  border-top: 1px solid var(--color-border-soft);
+}
+
+/* ---------- 开关 ---------- */
+
+.settings-toggle {
+  position: relative;
+  display: block;
+  width: 38px;
+  height: 22px;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: var(--color-border);
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-out);
+}
+
+.settings-toggle > span {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 24%);
+  transition: transform var(--duration-fast) var(--ease-out);
+}
+
+.settings-toggle-active {
+  background: var(--color-accent);
+}
+
+.settings-toggle-active > span {
+  transform: translateX(16px);
+}
+
+.settings-toggle:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-toggle,
+  .settings-toggle > span {
+    transition: none;
+  }
+}
+
+/* ---------- 分段控件 ---------- */
+
+.settings-segmented {
+  display: inline-flex;
+  max-width: 100%;
+  padding: 2px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  background: var(--color-sidebar);
+}
+
+.settings-segmented button {
+  height: 28px;
+  min-width: 0;
+  padding: 0 11px;
+  border: 0;
+  border-radius: calc(var(--radius-control) - 1px);
+  color: var(--color-muted);
+  background: transparent;
+  cursor: pointer;
+  font-size: var(--font-size-meta);
+  white-space: nowrap;
+  transition: color var(--duration-fast) var(--ease-out);
+}
+
+.settings-segmented button:hover:not(:disabled) {
+  color: var(--color-text);
+}
+
+.settings-segmented .settings-segmented-active {
+  color: var(--color-text);
+  background: var(--color-surface-raised);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 10%);
+}
+
+.settings-segmented button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ---------- 勾选项 ---------- */
+
+.settings-check {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  gap: 9px;
+  cursor: pointer;
+}
+
+.settings-check > input {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+  margin: 1px 0 0;
+  accent-color: var(--color-accent);
+}
+
+.settings-check > span {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.settings-check strong {
+  color: var(--color-text);
+  font-size: var(--font-size-label);
+  font-weight: 620;
+}
+
+.settings-check small {
+  color: var(--color-muted);
+  font-size: var(--font-size-meta);
+  line-height: 1.5;
+}
+
+/* 单行紧凑变体：只有一句标签，不需要 grid 撑开 */
+.settings-check-inline {
+  min-height: 30px;
+  align-items: center;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-label);
+}
+
+.settings-check-inline > input {
+  margin-top: 0;
+}
+
+.settings-check:has(> input:disabled) {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ---------- 提示条 ----------
+   取代 .agent-security-note / .debug-warning / .storage-notice /
+   .sync-coming-soon / .sync-on-demand-note 五套各自硬编码的实现。 */
+
+.settings-callout {
+  display: flex;
+  min-width: 0;
+  padding: 11px 13px;
+  align-items: flex-start;
+  gap: 10px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: var(--radius-panel);
+  background: var(--color-surface-raised);
+}
+
+.settings-callout > svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: var(--color-muted);
+}
+
+.settings-callout > div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.settings-callout strong {
+  color: var(--color-text);
+  font-size: var(--font-size-label);
+  font-weight: 650;
+}
+
+.settings-callout span,
+.settings-callout p {
+  margin: 0;
+  color: var(--color-muted);
+  font-size: var(--font-size-label);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.settings-callout-info {
+  border-color: var(--color-info-border);
+  background: color-mix(in srgb, var(--color-info-soft) 55%, var(--color-surface-raised));
+}
+
+.settings-callout-info > svg { color: var(--color-info); }
+
+.settings-callout-warning {
+  border-color: var(--color-warning-border);
+  background: color-mix(in srgb, var(--color-warning-soft) 55%, var(--color-surface-raised));
+}
+
+.settings-callout-warning > svg { color: var(--color-warning); }
+
+.settings-callout-danger {
+  border-color: var(--color-danger-border);
+  background: color-mix(in srgb, var(--color-danger-soft) 55%, var(--color-surface-raised));
+}
+
+.settings-callout-danger > svg { color: var(--color-danger); }
+.settings-callout-danger strong { color: var(--color-danger); }
+
+.settings-callout-success {
+  border-color: var(--color-success-border);
+  background: color-mix(in srgb, var(--color-success-soft) 55%, var(--color-surface-raised));
+}
+
+.settings-callout-success > svg { color: var(--color-success); }
+.settings-callout-success strong { color: var(--color-success); }
+
+/* 强调色提示：用于「这里有条重要说明」而不带风险语义 */
+.settings-callout-accent {
+  border-color: color-mix(in srgb, var(--color-accent) 38%, var(--color-border));
+  background: var(--color-accent-soft);
+}
+
+.settings-callout-accent > svg { color: var(--color-accent); }
+
+/* ---------- 指标网格 ----------
+   与用量页 .usage-hero 同构：一圈边框内用细分隔线切分，
+   而不是给每个数字单独一张卡片。 */
+
+/* 分隔线 = 1px gap 透出容器底色，因此列数必须能把每一行填满：
+   auto-fit 一旦换行留下空格位，那片空位会直接显示分隔线的颜色，
+   看起来像一张没画完的表。列数因此显式给定，可按面板覆盖。 */
+.settings-stat-grid {
+  --settings-stat-columns: 4;
+
+  display: grid;
+  min-width: 0;
+  grid-template-columns: repeat(var(--settings-stat-columns), minmax(0, 1fr));
+  gap: 1px;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-panel);
+  background: var(--color-border-soft);
+}
+
+.settings-stat {
+  display: grid;
+  min-width: 0;
+  padding: 13px 15px;
+  align-content: start;
+  gap: 4px;
+  background: var(--color-surface-raised);
+}
+
+.settings-stat > span {
+  color: var(--color-muted);
+  font-size: var(--font-size-meta);
+}
+
+.settings-stat > strong {
+  overflow: hidden;
+  color: var(--color-text);
+  font-size: var(--font-size-row);
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------- 进度条 ---------- */
+
+.settings-meter {
+  width: 100%;
+  height: 5px;
+  overflow: hidden;
+  border-radius: var(--radius-pill);
+  background: var(--color-border-soft);
+}
+
+.settings-meter > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--color-accent);
+}
+
+/* ---------- 徽标 ---------- */
+
+.settings-pill {
+  display: inline-flex;
+  flex: 0 0 auto;
+  min-height: 22px;
+  padding: 2px 9px;
+  align-items: center;
+  border-radius: var(--radius-pill);
+  color: var(--color-text-secondary);
+  background: var(--color-active);
+  font-size: var(--font-size-meta);
+  font-style: normal;
+  white-space: nowrap;
+}
+
+.settings-pill-accent { color: var(--color-accent); background: var(--color-accent-soft); }
+.settings-pill-success { color: var(--color-success); background: var(--color-success-soft); }
+.settings-pill-warning { color: var(--color-warning); background: var(--color-warning-soft); }
+.settings-pill-danger { color: var(--color-danger); background: var(--color-danger-soft); }
+
+.settings-pill-outline {
+  color: var(--color-muted);
+  border: 1px solid var(--color-border-soft);
+  background: transparent;
+}
+
+/* ---------- 状态点 ---------- */
+
+.settings-dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--color-faint);
+}
+
+.settings-dot-accent { background: var(--color-accent); }
+.settings-dot-success { background: var(--color-success); }
+.settings-dot-warning { background: var(--color-warning); }
+.settings-dot-danger { background: var(--color-danger); }
+
+/* ---------- 卡片 ----------
+   只用于列表项：供应商、插件、MCP 服务器、宠物。 */
+
+.settings-card {
+  display: grid;
+  min-width: 0;
+  padding: 14px 15px;
+  gap: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-panel);
+  background: var(--color-surface-raised);
+}
+
+.settings-card-selected {
+  border-color: var(--color-accent);
+  box-shadow: inset 0 0 0 1px var(--color-accent);
+}
+
+.settings-card-list {
+  display: grid;
+  min-width: 0;
+  gap: 10px;
+}
+
+.settings-card-head {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.settings-card-title {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+}
+
+.settings-card-title > div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.settings-card-title strong {
+  overflow: hidden;
+  color: var(--color-text);
+  font-size: var(--font-size-row);
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-card-title strong small {
+  color: var(--color-muted);
+  font-size: var(--font-size-meta);
+  font-weight: 550;
+}
+
+.settings-card-title > div > span {
+  overflow: hidden;
+  color: var(--color-muted);
+  font-size: var(--font-size-meta);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-card-foot {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* ---------- 空状态 ---------- */
+
+.settings-empty {
+  display: grid;
+  min-height: 200px;
+  padding: 28px 24px;
+  place-items: center;
+  align-content: center;
+  gap: 9px;
+  border: 1px dashed var(--color-border);
+  border-radius: var(--radius-panel);
+  color: var(--color-muted);
+  background: var(--color-surface-raised);
+  text-align: center;
+}
+
+.settings-empty > svg { color: var(--color-faint); }
+
+.settings-empty strong {
+  color: var(--color-text);
+  font-size: var(--font-size-row);
+  font-weight: 650;
+}
+
+.settings-empty span {
+  max-width: 460px;
+  font-size: var(--font-size-label);
+  line-height: 1.6;
+}
+
+/* ---------- 等宽内容 ---------- */
+
+/* code 默认 inline，会缩成内容宽度、边框贴着文字——必须转成块级 */
+.settings-code {
+  display: block;
+  min-width: 0;
+  padding: 9px 11px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: var(--radius-control);
+  color: var(--color-text-secondary);
+  background: var(--color-surface);
+  font-family: Consolas, "Courier New", monospace;
+  font-size: var(--font-size-meta);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+/* ---------- 载入 ---------- */
+
+.settings-loading {
+  display: flex;
+  min-height: 160px;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  color: var(--color-muted);
+  font-size: var(--font-size-label);
+}
+
+/* ---------- 滚动区 ----------
+   子面板的滚动容器统一走这一条，不再各自写 scrollbar 属性。 */
+
+.settings-scroll {
+  width: 100%;
+  min-height: 0;
+  flex: 1;
+  padding-right: 4px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-color: var(--color-border) transparent;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+}
+
+/* 内容不该无限撑宽——设置项在超宽屏上排成一条长线很难读 */
+.settings-scroll-measure > * {
+  max-width: var(--settings-measure);
+}
+
+@media (max-width: 760px) {
+  .settings-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+  }
+
+  .settings-row-control {
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 900px) {
+  .settings-stat-grid { --settings-stat-columns: 2; }
+}
+
+@media (max-width: 520px) {
+  .settings-stat-grid { --settings-stat-columns: 1; }
+}

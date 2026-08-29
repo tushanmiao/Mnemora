@@ -1,14 +1,20 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
   AlertCircle,
+  Archive,
   CheckCircle2,
   Download,
   FolderOpen,
   ImageUp,
+  MessagesSquare,
+  Palette,
   RefreshCw,
   Save,
+  SlidersHorizontal,
+  Sparkles,
   Trash2,
   Upload,
+  UserRound,
 } from "lucide-react";
 import {
   chooseWorkingDirectory,
@@ -246,9 +252,12 @@ export function GeneralSettingsPanel({
         </button>
       </div>
 
-      <div className="general-settings-scroll">
-        <section className="general-settings-section">
-          <h3>{t("general.profile")}</h3>
+      <div className="settings-scroll settings-scroll-measure">
+        <section className="settings-section">
+          <div className="settings-section-head">
+            <UserRound size={16} />
+            <h3>{t("general.profile")}</h3>
+          </div>
           <SettingRow label={t("general.username")}>
             <input
               className="settings-input general-control"
@@ -286,8 +295,11 @@ export function GeneralSettingsPanel({
           </SettingRow>
         </section>
 
-        <section className="general-settings-section">
-          <h3>{t("general.appearance")}</h3>
+        <section className="settings-section">
+          <div className="settings-section-head">
+            <Palette size={16} />
+            <h3>{t("general.appearance")}</h3>
+          </div>
           <SettingRow label={t("general.interfaceLanguage")}>
             <select
               className="settings-input settings-select general-control"
@@ -464,7 +476,7 @@ export function GeneralSettingsPanel({
               </SettingRow>
             </>
           ) : null}
-          <div className="appearance-reset-row">
+          <div className="settings-row-actions">
             <button
               className="settings-button settings-button-secondary"
               type="button"
@@ -496,8 +508,11 @@ export function GeneralSettingsPanel({
           </div>
         </section>
 
-        <section className="general-settings-section">
-          <h3>{t("general.chatDefaults")}</h3>
+        <section className="settings-section">
+          <div className="settings-section-head">
+            <MessagesSquare size={16} />
+            <h3>{t("general.chatDefaults")}</h3>
+          </div>
           <SettingRow label={t("general.defaultModel")}>
             <select
               className="settings-input settings-select general-control"
@@ -582,8 +597,11 @@ export function GeneralSettingsPanel({
           </SettingRow>
         </section>
 
-        <section className="general-settings-section">
-          <h3>{t("general.response")}</h3>
+        <section className="settings-section">
+          <div className="settings-section-head">
+            <Sparkles size={16} />
+            <h3>{t("general.response")}</h3>
+          </div>
           <SettingRow label={t("general.streaming")}>
             <Toggle checked={draft.streamEnabled} onChange={(value) => updateDraft("streamEnabled", value)} />
           </SettingRow>
@@ -613,38 +631,40 @@ export function GeneralSettingsPanel({
           </SettingRow>
         </section>
 
-        <section className="general-settings-section">
-          <h3>{t("general.backup")}</h3>
-          <label className="backup-memory-option">
-            <input
-              type="checkbox"
-              checked={includeMemoryInBackup}
-              disabled={backupBusy}
-              onChange={(event) => setIncludeMemoryInBackup(event.target.checked)}
-            />
-            <span>
-              <strong>{t("general.includeMemory")}</strong>
-              <small>{t("general.includeMemoryDescription")}</small>
-            </span>
-          </label>
-          <div className="backup-settings-row">
-            <div>
-              <strong>{t("general.fullBackup")}</strong>
-              <span>{t("general.fullBackupDescription")}</span>
-            </div>
-            <div>
-              <button className="settings-button settings-button-secondary" type="button" disabled={backupBusy} onClick={() => void handleExport()}>
-                <Download size={15} /><span>{t("general.exportSettings")}</span>
-              </button>
-              <button className="settings-button settings-button-secondary" type="button" disabled={backupBusy} onClick={() => void handleImport()}>
-                <Upload size={15} /><span>{t("general.importSettings")}</span>
-              </button>
-            </div>
+        <section className="settings-section">
+          <div className="settings-section-head">
+            <Archive size={16} />
+            <h3>{t("general.backup")}</h3>
+          </div>
+          <SettingRow label={t("general.fullBackup")} description={t("general.fullBackupDescription")}>
+            <button className="settings-button settings-button-secondary" type="button" disabled={backupBusy} onClick={() => void handleExport()}>
+              <Download size={15} /><span>{t("general.exportSettings")}</span>
+            </button>
+            <button className="settings-button settings-button-secondary" type="button" disabled={backupBusy} onClick={() => void handleImport()}>
+              <Upload size={15} /><span>{t("general.importSettings")}</span>
+            </button>
+          </SettingRow>
+          <div className="settings-row settings-row-stack">
+            <label className="settings-check">
+              <input
+                type="checkbox"
+                checked={includeMemoryInBackup}
+                disabled={backupBusy}
+                onChange={(event) => setIncludeMemoryInBackup(event.target.checked)}
+              />
+              <span>
+                <strong>{t("general.includeMemory")}</strong>
+                <small>{t("general.includeMemoryDescription")}</small>
+              </span>
+            </label>
           </div>
         </section>
 
-        <section className="general-settings-section">
-          <h3>{t("general.behavior")}</h3>
+        <section className="settings-section">
+          <div className="settings-section-head">
+            <SlidersHorizontal size={16} />
+            <h3>{t("general.behavior")}</h3>
+          </div>
           <SettingRow label={t("general.retry")} description={t("general.retryDescription")}>
             <Toggle checked={draft.retryEnabled} onChange={(value) => updateDraft("retryEnabled", value)} />
           </SettingRow>
@@ -713,12 +733,12 @@ function SettingRow({
   children: React.ReactNode;
 }) {
   return (
-    <div className={`general-setting-row${stack ? " general-setting-row-stack" : ""}`}>
-      <div className="general-setting-copy">
+    <div className={`settings-row${stack ? " settings-row-stack" : ""}`}>
+      <div className="settings-row-copy">
         <strong>{label}</strong>
         {description ? <span>{description}</span> : null}
       </div>
-      <div className="general-setting-control">{children}</div>
+      <div className="settings-row-control">{children}</div>
     </div>
   );
 }

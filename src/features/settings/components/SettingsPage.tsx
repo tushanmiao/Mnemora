@@ -5,6 +5,7 @@ import type { AppSettings, SettingsBundle } from "../../../types/appSettings";
 import type { ModelSettings, ProviderApiKeyUpdate } from "../../../types/modelSettings";
 import type { useSkills } from "../../skills/hooks/useSkills";
 import { useI18n } from "../../../i18n/I18nProvider";
+import "../styles/settings-kit.css";
 import "../styles/settings-page.css";
 
 const GeneralSettingsPanel = lazy(() => import("./GeneralSettingsPanel").then((module) => ({ default: module.GeneralSettingsPanel })));

@@ -95,7 +95,7 @@ export function PluginSettingsPanel({ onSkillsChanged }: Props) {
         </div>
       </div>
 
-      <div className="agent-security-note">
+      <div className="settings-callout settings-callout-warning">
         <ShieldAlert size={17} />
         <div><strong>安装与启用分离</strong><span>插件安装后保持停用。启用时才物化 Skill 和 MCP 配置；插件声明的远程 MCP 服务器仍默认关闭，需要在 MCP 页面再次授权。当前仅支持声明式插件，禁止插件直接贡献本地可执行 stdio MCP。</span></div>
       </div>
@@ -104,17 +104,17 @@ export function PluginSettingsPanel({ onSkillsChanged }: Props) {
       {notice ? <div className="settings-feedback settings-feedback-success">{notice}</div> : null}
       {overview.warnings.map((warning) => <div className="settings-feedback settings-feedback-error" key={warning}>{warning}</div>)}
 
-      <div className="agent-card-list">
-        {overview.plugins.length === 0 ? <div className="agent-empty-state"><Plug size={28} /><strong>尚未安装插件</strong><span>插件包必须包含严格的 plugin.json v1 清单。目录和 ZIP 都会经过路径、大小、数量与哈希校验。</span></div> : overview.plugins.map((plugin) => (
-          <section className="agent-capability-card" key={plugin.id}>
-            <header>
-              <div className="agent-card-title"><span className={`agent-status-dot ${plugin.enabled ? "agent-status-ready" : "agent-status-disabled"}`} /><div><strong>{plugin.name} <small>v{plugin.version}</small></strong><span>{plugin.id} · {plugin.publisher}</span></div></div>
-              <label className="settings-switch-label"><input type="checkbox" checked={plugin.enabled} disabled={busy !== null} onChange={(event) => void toggle(plugin, event.target.checked)} />启用</label>
+      <div className="settings-card-list">
+        {overview.plugins.length === 0 ? <div className="settings-empty"><Plug size={28} /><strong>尚未安装插件</strong><span>插件包必须包含严格的 plugin.json v1 清单。目录和 ZIP 都会经过路径、大小、数量与哈希校验。</span></div> : overview.plugins.map((plugin) => (
+          <section className="settings-card" key={plugin.id}>
+            <header className="settings-card-head">
+              <div className="settings-card-title"><span className={`settings-dot${plugin.enabled ? " settings-dot-success" : ""}`} /><div><strong>{plugin.name} <small>v{plugin.version}</small></strong><span>{plugin.id} · {plugin.publisher}</span></div></div>
+              <label className="settings-check settings-check-inline"><input type="checkbox" checked={plugin.enabled} disabled={busy !== null} onChange={(event) => void toggle(plugin, event.target.checked)} />启用</label>
             </header>
             {plugin.description ? <p className="agent-card-description">{plugin.description}</p> : null}
-            <div className="agent-card-meta"><span>签名：{plugin.signatureStatus === "unsigned" ? "未签名" : "未验证"}</span><span>Skills：{plugin.skillIds.length}</span><span>MCP：{plugin.mcpServerIds.length}</span></div>
+            <div className="agent-card-meta"><span className={`settings-pill${plugin.signatureStatus === "unsigned" ? "" : " settings-pill-warning"}`}>签名：{plugin.signatureStatus === "unsigned" ? "未签名" : "未验证"}</span><span className="settings-pill">Skills：{plugin.skillIds.length}</span><span className="settings-pill">MCP：{plugin.mcpServerIds.length}</span></div>
             <details className="agent-tool-list"><summary>查看能力与权限</summary><div><code>Skills</code><span>{plugin.skillIds.join(", ") || "无"}</span></div><div><code>MCP servers</code><span>{plugin.mcpServerIds.join(", ") || "无"}</span></div><div><code>网络域名</code><span>{plugin.permissions.networkDomains.join(", ") || "无"}</span></div><div><code>秘密权限</code><span>{plugin.permissions.secrets.join(", ") || "无"}</span></div></details>
-            <footer>
+            <footer className="settings-card-foot">
               <button className="settings-button settings-button-secondary" type="button" disabled={plugin.enabled || !plugin.rollbackVersion || busy !== null} title={plugin.enabled ? "先停用插件" : plugin.rollbackVersion ? undefined : "没有回滚版本"} onClick={() => { if (window.confirm(`回滚“${plugin.name}”到 v${plugin.rollbackVersion}？`)) void mutate(`rollback:${plugin.id}`, () => rollbackPlugin(plugin.id), "插件已回滚，保持停用。", true); }}><RotateCcw size={14} />回滚{plugin.rollbackVersion ? `到 v${plugin.rollbackVersion}` : ""}</button>
               <button className="settings-button settings-button-secondary agent-danger-button" type="button" disabled={plugin.enabled || busy !== null} title={plugin.enabled ? "先停用插件" : undefined} onClick={() => { if (window.confirm(`卸载插件“${plugin.name}”？已保存的回滚副本也会被删除。`)) void mutate(`uninstall:${plugin.id}`, () => uninstallPlugin(plugin.id), "插件已卸载。", true); }}><Trash2 size={14} />卸载</button>
             </footer>

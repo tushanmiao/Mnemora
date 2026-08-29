@@ -5,6 +5,7 @@ import {
   Cloud,
   ExternalLink,
   FolderOpen,
+  Info,
   KeyRound,
   LoaderCircle,
   RefreshCw,
@@ -215,7 +216,7 @@ export function SyncSettingsPanel() {
         </button>
       </div>
 
-      <div className="sync-settings-scroll">
+      <div className="settings-scroll settings-scroll-measure">
         {feedback ? (
           <div className={`settings-feedback settings-feedback-${feedback.type}`}>
             {feedback.type === "success" ? <CheckCircle2 size={17} /> : <AlertCircle size={17} />}
@@ -223,26 +224,52 @@ export function SyncSettingsPanel() {
           </div>
         ) : null}
 
-        <section className="sync-section">
-          <div className="sync-section-heading"><div><Cloud size={17} /><h3>{t("sync.configuration")}</h3></div><span>{t("sync.manualOnly")}</span></div>
-          <label className="settings-switch-label sync-enable-row">
-            <input type="checkbox" checked={settings.enabled} onChange={(event) => patchSettings({ enabled: event.target.checked })} />
-            <span>{t("sync.enabled")}</span>
-          </label>
-          <div className="settings-segmented sync-targets" aria-label={t("sync.target")}>
-            <button className={settings.target === "feishu" ? "settings-segmented-active" : ""} type="button" onClick={() => selectTarget("feishu")}>{t("sync.feishu")}</button>
-            <button className={settings.target === "obsidian" ? "settings-segmented-active" : ""} type="button" onClick={() => selectTarget("obsidian")}>Obsidian</button>
-            <button className={settings.target === "notion" ? "settings-segmented-active" : ""} type="button" onClick={() => selectTarget("notion")}>Notion</button>
+        <section className="settings-section">
+          <div className="settings-section-head">
+            <Cloud size={16} />
+            <h3>{t("sync.configuration")}</h3>
+            <p>{t("sync.manualOnly")}</p>
           </div>
-          <div className="sync-options">
-            <label className="settings-switch-label"><input type="checkbox" checked={settings.includeMetadata} onChange={(event) => patchSettings({ includeMetadata: event.target.checked })} /><span>{t("sync.includeMetadata")}</span></label>
-            <label className="settings-switch-label"><input type="checkbox" checked={settings.includeAnnotations} onChange={(event) => patchSettings({ includeAnnotations: event.target.checked })} /><span>{t("sync.includeAnnotations")}</span></label>
+          <div className="settings-row">
+            <div className="settings-row-copy"><strong>{t("sync.enabled")}</strong></div>
+            <div className="settings-row-control">
+              <button
+                className={`settings-toggle${settings.enabled ? " settings-toggle-active" : ""}`}
+                type="button"
+                role="switch"
+                aria-checked={settings.enabled}
+                aria-label={t("sync.enabled")}
+                onClick={() => patchSettings({ enabled: !settings.enabled })}
+              >
+                <span />
+              </button>
+            </div>
+          </div>
+          <div className="settings-row">
+            <div className="settings-row-copy"><strong>{t("sync.target")}</strong></div>
+            <div className="settings-row-control">
+              <div className="settings-segmented" aria-label={t("sync.target")}>
+                <button className={settings.target === "feishu" ? "settings-segmented-active" : ""} type="button" onClick={() => selectTarget("feishu")}>{t("sync.feishu")}</button>
+                <button className={settings.target === "obsidian" ? "settings-segmented-active" : ""} type="button" onClick={() => selectTarget("obsidian")}>Obsidian</button>
+                <button className={settings.target === "notion" ? "settings-segmented-active" : ""} type="button" onClick={() => selectTarget("notion")}>Notion</button>
+              </div>
+            </div>
+          </div>
+          <div className="settings-row settings-row-stack">
+            <div className="sync-options">
+              <label className="settings-check settings-check-inline"><input type="checkbox" checked={settings.includeMetadata} onChange={(event) => patchSettings({ includeMetadata: event.target.checked })} /><span>{t("sync.includeMetadata")}</span></label>
+              <label className="settings-check settings-check-inline"><input type="checkbox" checked={settings.includeAnnotations} onChange={(event) => patchSettings({ includeAnnotations: event.target.checked })} /><span>{t("sync.includeAnnotations")}</span></label>
+            </div>
           </div>
         </section>
 
         {settings.target === "feishu" ? (
-          <section className="sync-section">
-            <div className="sync-section-heading"><div><Cloud size={17} /><h3>{t("sync.feishu")}</h3></div><span>{t("sync.preferred")}</span></div>
+          <section className="settings-section">
+            <div className="settings-section-head">
+              <Cloud size={16} />
+              <h3>{t("sync.feishu")}</h3>
+              <p>{t("sync.preferred")}</p>
+            </div>
             <div className="settings-field">
               <label htmlFor="sync-feishu-app-id">{t("sync.feishuAppId")}</label>
               <input
@@ -280,14 +307,21 @@ export function SyncSettingsPanel() {
               </div>
               <span className="sync-field-help">{t("sync.feishuSecretDescription")}</span>
             </div>
-            <div className="sync-on-demand-note">
-              <strong>{t("sync.feishuOnDemandTitle")}</strong>
-              <span>{t("sync.feishuOnDemandDescription")}</span>
+            <div className="settings-callout settings-callout-accent">
+              <Info size={17} />
+              <div>
+                <strong>{t("sync.feishuOnDemandTitle")}</strong>
+                <span>{t("sync.feishuOnDemandDescription")}</span>
+              </div>
             </div>
           </section>
         ) : settings.target === "obsidian" ? (
-          <section className="sync-section">
-            <div className="sync-section-heading"><div><FolderOpen size={17} /><h3>Obsidian</h3></div><span>{t("sync.obsidianDescription")}</span></div>
+          <section className="settings-section">
+            <div className="settings-section-head">
+              <FolderOpen size={16} />
+              <h3>Obsidian</h3>
+              <p>{t("sync.obsidianDescription")}</p>
+            </div>
             <div className="settings-field">
               <label htmlFor="sync-vault-path">{t("sync.vaultPath")}</label>
               <div className="sync-path-row">
@@ -302,8 +336,12 @@ export function SyncSettingsPanel() {
             </div>
           </section>
         ) : (
-          <section className="sync-section">
-            <div className="sync-section-heading"><div><ExternalLink size={17} /><h3>Notion</h3></div><span>{t("sync.notionDescription")}</span></div>
+          <section className="settings-section">
+            <div className="settings-section-head">
+              <ExternalLink size={16} />
+              <h3>Notion</h3>
+              <p>{t("sync.notionDescription")}</p>
+            </div>
             <div className="settings-field">
               <label htmlFor="sync-notion-parent">{t("sync.parentPageId")}</label>
               <input id="sync-notion-parent" className="settings-input" value={settings.notion.parentPageId} placeholder={t("sync.parentPagePlaceholder")} onChange={(event) => setSettings((current) => ({ ...current, notion: { ...current.notion, parentPageId: event.target.value } }))} />
@@ -321,24 +359,29 @@ export function SyncSettingsPanel() {
           </section>
         )}
 
-        <section className="sync-section sync-run-section">
-          <div><h3>{t("sync.manualTitle")}</h3><p>{t("sync.manualDescription")}</p></div>
-          <button className="settings-button settings-button-primary" type="button" disabled={loading || saving || syncing || !settings.enabled} onClick={() => void runSync()}>
-            {syncing ? <LoaderCircle className="settings-spin" size={15} /> : <RefreshCw size={15} />}
-            <span>{syncing ? t("sync.syncing") : t("sync.syncAll")}</span>
-          </button>
+        <section className="settings-section">
+          <div className="settings-section-head">
+            <RefreshCw size={16} />
+            <h3>{t("sync.manualTitle")}</h3>
+          </div>
+          <div className="sync-run-row">
+            <p>{t("sync.manualDescription")}</p>
+            <button className="settings-button settings-button-primary" type="button" disabled={loading || saving || syncing || !settings.enabled} onClick={() => void runSync()}>
+              {syncing ? <LoaderCircle className="settings-spin" size={15} /> : <RefreshCw size={15} />}
+              <span>{syncing ? t("sync.syncing") : t("sync.syncAll")}</span>
+            </button>
+          </div>
+          {result?.items.length ? (
+            <div className="sync-result-list" aria-label={t("sync.results")}>
+              {result.items.map((item) => (
+                <div className="sync-result-row" key={`${item.noteId}-${item.status}`}>
+                  <span className={`settings-dot ${syncDotClass(item.status)}`} />
+                  <div><strong>{item.title || item.noteId}</strong><span>{item.message}</span></div>
+                </div>
+              ))}
+            </div>
+          ) : null}
         </section>
-
-        {result?.items.length ? (
-          <section className="sync-result-list" aria-label={t("sync.results")}>
-            {result.items.map((item) => (
-              <div className="sync-result-row" key={`${item.noteId}-${item.status}`}>
-                <span className={`sync-result-status sync-result-${item.status}`} />
-                <div><strong>{item.title || item.noteId}</strong><span>{item.message}</span></div>
-              </div>
-            ))}
-          </section>
-        ) : null}
       </div>
     </section>
   );
@@ -346,4 +389,10 @@ export function SyncSettingsPanel() {
 
 function errorMessage(reason: unknown) {
   return reason instanceof Error ? reason.message : String(reason);
+}
+
+function syncDotClass(status: SyncResult["items"][number]["status"]) {
+  if (status === "succeeded") return "settings-dot-success";
+  if (status === "failed") return "settings-dot-danger";
+  return "";
 }

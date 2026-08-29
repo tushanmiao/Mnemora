@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { AlertCircle, FolderOpen, LoaderCircle, RefreshCw, Save, Trash2 } from "lucide-react";
+import { AlertCircle, FolderOpen, LoaderCircle, RefreshCw, Save, ShieldCheck, Trash2 } from "lucide-react";
 import type { AppSettings } from "../../../types/appSettings";
 import {
   clearMemory,
@@ -167,9 +167,14 @@ export function MemorySettingsPanel({ settings, onSaveSettings, onDirtyChange }:
         </button>
       </div>
 
-      <p className="memory-directory" title={directory}>{directory || "正在读取记忆文件位置..."}</p>
+      <code className="settings-code memory-directory" title={directory}>{directory || "正在读取记忆文件位置..."}</code>
 
-      <div className="memory-options">
+      <div className="settings-section">
+        <div className="settings-section-head">
+          <ShieldCheck size={16} />
+          <h3>权限</h3>
+          <p>写入默认关闭；读取也受当前会话的 AI 权限约束</p>
+        </div>
         <MemoryToggle label="启用记忆" description="允许当前应用使用 L1/L2 记忆能力" checked={settings.memory.enabled} disabled={saving} onChange={(value) => void updateMemorySetting("enabled", value)} />
         <MemoryToggle label="注入 L1" description="每次模型请求只注入最多 5,000 bytes 的在线记忆" checked={settings.memory.injectL1} disabled={saving || !settings.memory.enabled} onChange={(value) => void updateMemorySetting("injectL1", value)} />
         <MemoryToggle label="允许模型读取" description="允许 Agent 按权限读取或搜索记忆" checked={settings.memory.allowModelRead} disabled={saving || !settings.memory.enabled} onChange={(value) => void updateMemorySetting("allowModelRead", value)} />
@@ -183,7 +188,7 @@ export function MemorySettingsPanel({ settings, onSaveSettings, onDirtyChange }:
           <span>{bytes.toLocaleString()} / {LIMITS[activeLayer].toLocaleString()} bytes</span>
         </div>
         {loadingLayer === activeLayer ? (
-          <div className="memory-loading"><LoaderCircle className="settings-spin" size={18} />正在读取</div>
+          <div className="settings-loading"><LoaderCircle className="settings-spin" size={18} />正在读取</div>
         ) : (
           <textarea
             value={content}
@@ -207,10 +212,22 @@ export function MemorySettingsPanel({ settings, onSaveSettings, onDirtyChange }:
 
 function MemoryToggle({ label, description, checked, disabled, onChange }: { label: string; description: string; checked: boolean; disabled: boolean; onChange: (value: boolean) => void }) {
   return (
-    <label className="memory-option">
-      <span><strong>{label}</strong><small>{description}</small></span>
-      <input type="checkbox" checked={checked} disabled={disabled} onChange={(event) => onChange(event.target.checked)} />
-    </label>
+    <div className="settings-row">
+      <div className="settings-row-copy"><strong>{label}</strong><span>{description}</span></div>
+      <div className="settings-row-control">
+        <button
+          className={`settings-toggle${checked ? " settings-toggle-active" : ""}`}
+          type="button"
+          role="switch"
+          aria-checked={checked}
+          aria-label={label}
+          disabled={disabled}
+          onClick={() => onChange(!checked)}
+        >
+          <span />
+        </button>
+      </div>
+    </div>
   );
 }
 

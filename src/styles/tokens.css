@@ -26,6 +26,7 @@
   --font-size-row: 13px;
   --reading-font-family: var(--ui-font-family);
   --reading-font-size: 14px;
+  --code-font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
   --note-font-size: 16px;
   --note-line-height: 1.85;
   --note-font-family: var(--reading-font-family);

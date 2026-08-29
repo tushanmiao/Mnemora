@@ -896,6 +896,16 @@
   --color-on-accent: var(--on-accent);
   --color-danger: var(--status-danger);
   --color-danger-soft: var(--status-danger-soft);
+  --color-danger-border: var(--status-danger-border);
+  --color-success: var(--status-success);
+  --color-success-soft: var(--status-success-soft);
+  --color-success-border: var(--status-success-border);
+  --color-warning: var(--status-warning);
+  --color-warning-soft: var(--status-warning-soft);
+  --color-warning-border: var(--status-warning-border);
+  --color-info: var(--status-info);
+  --color-info-soft: var(--status-info-soft);
+  --color-info-border: var(--status-info-border);
   --color-user-bubble: color-mix(in srgb, var(--workspace-chat-soft) 70%, var(--surface-user));
   --app-font-size: var(--reading-font-size);
 }

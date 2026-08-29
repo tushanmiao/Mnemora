@@ -7,7 +7,7 @@
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-  background: var(--color-background);
+  background: var(--color-surface-layer);
   color: var(--color-text);
 }
 
@@ -46,7 +46,7 @@
   border-left: 1px solid var(--color-border-soft);
   background: var(--color-surface);
   overscroll-behavior: contain;
-  scrollbar-color: var(--color-border) var(--color-surface-soft);
+  scrollbar-color: var(--color-border) transparent;
   scrollbar-gutter: stable;
   scrollbar-width: thin;
 }
@@ -56,7 +56,7 @@
 }
 
 .deep-note-run-pane::-webkit-scrollbar-track {
-  background: var(--color-surface-soft);
+  background: transparent;
 }
 
 .deep-note-run-pane::-webkit-scrollbar-thumb {
@@ -103,7 +103,7 @@
 .deep-note-progress-overview[data-tone="success"] { border-color: color-mix(in srgb, var(--color-success) 45%, var(--color-border-soft)); background: color-mix(in srgb, var(--color-success) 7%, var(--color-surface)); }
 .deep-note-progress-overview[data-tone="warning"] { border-color: color-mix(in srgb, var(--color-warning) 45%, var(--color-border-soft)); background: color-mix(in srgb, var(--color-warning) 8%, var(--color-surface)); }
 .deep-note-progress-overview[data-tone="danger"] { border-color: color-mix(in srgb, var(--color-danger) 45%, var(--color-border-soft)); background: color-mix(in srgb, var(--color-danger) 7%, var(--color-surface)); }
-.deep-note-progress-overview[data-tone="muted"] { border-color: var(--color-border-soft); background: var(--color-surface-soft); }
+.deep-note-progress-overview[data-tone="muted"] { border-color: var(--color-border-soft); background: var(--color-app); }
 .deep-note-progress-icon { display: grid; place-items: center; align-self: start; width: 28px; height: 28px; color: var(--color-accent); }
 .deep-note-progress-overview[data-tone="success"] .deep-note-progress-icon { color: var(--color-success); }
 .deep-note-progress-overview[data-tone="warning"] .deep-note-progress-icon { color: var(--color-warning); }
@@ -207,12 +207,12 @@
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
-  scrollbar-color: var(--color-border) var(--color-surface-soft);
+  scrollbar-color: var(--color-border) transparent;
   scrollbar-gutter: stable;
   scrollbar-width: thin;
 }
 .deep-note-plan-content::-webkit-scrollbar { width: 10px; }
-.deep-note-plan-content::-webkit-scrollbar-track { background: var(--color-surface-soft); }
+.deep-note-plan-content::-webkit-scrollbar-track { background: transparent; }
 .deep-note-plan-content::-webkit-scrollbar-thumb {
   border: 2px solid transparent;
   border-radius: 5px;
@@ -228,7 +228,7 @@
   border-top: 1px solid var(--color-border-soft);
 }
 .deep-note-plan-section { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 10px; padding: 12px 4px; border-bottom: 1px solid var(--color-border-soft); cursor: pointer; }
-.deep-note-plan-section:hover { background: var(--color-surface-soft); }
+.deep-note-plan-section:hover { background: var(--color-hover); }
 .deep-note-plan-section-copy { display: grid; min-width: 0; gap: 4px; }
 .deep-note-plan-section-copy strong { font-size: 14px; }
 .deep-note-plan-section-copy small { color: var(--color-muted); font-size: 12px; line-height: 1.5; }
@@ -291,14 +291,14 @@
   max-height: min(55vh, 520px);
   overflow: auto;
   border-top: 1px solid var(--color-border-soft);
-  background: color-mix(in srgb, var(--color-surface) 82%, var(--color-surface-soft));
+  background: color-mix(in srgb, var(--color-surface) 82%, var(--color-app));
   overscroll-behavior: contain;
-  scrollbar-color: var(--color-border) var(--color-surface-soft);
+  scrollbar-color: var(--color-border) transparent;
   scrollbar-gutter: stable;
   scrollbar-width: thin;
 }
 .deep-note-preview-content::-webkit-scrollbar { width: 10px; }
-.deep-note-preview-content::-webkit-scrollbar-track { background: var(--color-surface-soft); }
+.deep-note-preview-content::-webkit-scrollbar-track { background: transparent; }
 .deep-note-preview-content::-webkit-scrollbar-thumb {
   border: 2px solid transparent;
   border-radius: 5px;
@@ -309,11 +309,14 @@
   background: var(--color-muted);
   background-clip: padding-box;
 }
+/* 字族跟随「笔记」设置里的排版选择——这里显示的就是笔记正文，
+   选了宋体就该看到宋体。字号保持 12px 紧凑：这是侧栏预览，
+   不是阅读视图，跟随 --note-font-size（16px）会让可见内容大幅减少。 */
 .deep-note-preview pre {
   margin: 0;
   padding: 14px 16px 18px;
   color: var(--color-text);
-  font: 12px/1.65 var(--content-font, sans-serif);
+  font: 12px/1.65 var(--note-font-family);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -353,7 +356,9 @@
 .deep-note-budget-meter { height: 5px; overflow: hidden; border-radius: 5px; background: var(--color-border-soft); }
 .deep-note-budget-meter span { display: block; height: 100%; background: var(--color-accent); }
 .deep-note-budget-meter.is-task span { background: var(--color-success); }
-.deep-note-budget-meter.is-context span { background: var(--color-literature, var(--color-accent)); }
+/* 三条预算条要能互相区分：默认走 accent（= notes 身份色），
+   任务用 success，上下文用文献库（work）的身份色。 */
+.deep-note-budget-meter.is-context span { background: var(--workspace-work); }
 .deep-note-run-pane > p { margin: 7px 0 12px; color: var(--color-muted); font-size: 12px; }
 .deep-note-pane-note { margin: -3px 0 9px !important; color: var(--color-muted); font-size: 12px !important; line-height: 1.5; }
 .deep-note-model-recovery { margin-top: 22px; padding-top: 16px; border-top: 1px solid color-mix(in srgb, var(--color-danger) 35%, var(--color-border-soft)); }
@@ -401,7 +406,7 @@
 .deep-note-node-list div[data-status="interrupted"] > span,
 .deep-note-node-list div[data-status="needsReview"] > span,
 .deep-note-node-list div[data-status="needsRevision"] > span { background: var(--color-warning); }
-.deep-note-node-list div[data-status="superseded"] > span { background: var(--color-text-tertiary); }
+.deep-note-node-list div[data-status="superseded"] > span { background: var(--color-faint); }
 .deep-note-node-list small { overflow: hidden; color: var(--color-muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 
 @media (max-width: 1080px) {

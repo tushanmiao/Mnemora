@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
-import { RotateCcw, Save } from "lucide-react";
+import { Eye, RotateCcw, Save, Type } from "lucide-react";
 import type {
   AppSettings,
   ChineseFontFamily,
@@ -85,15 +85,18 @@ export function NoteSettingsPanel({
         </button>
       </div>
 
-      <div className="note-settings-scroll">
+      <div className="settings-scroll settings-scroll-measure">
         {feedback ? (
           <div className={`settings-feedback settings-feedback-${feedback.kind}`} role={feedback.kind === "error" ? "alert" : "status"}>
             {feedback.message}
           </div>
         ) : null}
 
-        <section className="general-settings-section">
-          <h3>{t("notesSettings.typography")}</h3>
+        <section className="settings-section">
+          <div className="settings-section-head">
+            <Type size={16} />
+            <h3>{t("notesSettings.typography")}</h3>
+          </div>
           <SettingRow label={t("notesSettings.fontSize")} description={t("notesSettings.fontSizeDescription")}>
             <EditableRangeControl
               value={draft.noteFontSize}
@@ -161,31 +164,35 @@ export function NoteSettingsPanel({
               </SettingRow>
             </>
           ) : null}
+          <div className="settings-row-actions">
+            <button
+              className="settings-button settings-button-secondary"
+              type="button"
+              onClick={() => preview({
+                ...draft,
+                noteFontSize: 16,
+                noteLineHeight: 1.85,
+                noteFontPreset: "system",
+                noteChineseFontFamily: "system",
+                noteLatinFontFamily: "system",
+              })}
+            >
+              <RotateCcw size={15} />{t("notesSettings.reset")}
+            </button>
+          </div>
         </section>
 
-        <section className="note-settings-preview" aria-label={t("notesSettings.preview")}>
-          <span>{t("notesSettings.preview")}</span>
-          <h3>{t("notesSettings.previewTitle")}</h3>
-          <p>{t("notesSettings.previewBody")}</p>
-          <blockquote>{t("notesSettings.previewQuote")}</blockquote>
+        <section className="settings-section">
+          <div className="settings-section-head">
+            <Eye size={16} />
+            <h3>{t("notesSettings.preview")}</h3>
+          </div>
+          <div className="note-settings-preview">
+            <h4>{t("notesSettings.previewTitle")}</h4>
+            <p>{t("notesSettings.previewBody")}</p>
+            <blockquote>{t("notesSettings.previewQuote")}</blockquote>
+          </div>
         </section>
-
-        <div className="appearance-reset-row">
-          <button
-            className="settings-button settings-button-secondary"
-            type="button"
-            onClick={() => preview({
-              ...draft,
-              noteFontSize: 16,
-              noteLineHeight: 1.85,
-              noteFontPreset: "system",
-              noteChineseFontFamily: "system",
-              noteLatinFontFamily: "system",
-            })}
-          >
-            <RotateCcw size={15} />{t("notesSettings.reset")}
-          </button>
-        </div>
       </div>
     </form>
   );
@@ -201,9 +208,9 @@ function SettingRow({
   children: ReactNode;
 }) {
   return (
-    <div className="general-setting-row">
-      <div className="general-setting-copy"><strong>{label}</strong>{description ? <span>{description}</span> : null}</div>
-      <div className="general-setting-control">{children}</div>
+    <div className="settings-row">
+      <div className="settings-row-copy"><strong>{label}</strong>{description ? <span>{description}</span> : null}</div>
+      <div className="settings-row-control">{children}</div>
     </div>
   );
 }

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { AlertCircle, Check, CheckCircle2, Download, FolderInput, FolderOpen, MapPinOff, RefreshCw, Save, Trash2 } from "lucide-react";
+import { AlertCircle, Check, CheckCircle2, Download, FolderInput, FolderOpen, MapPinOff, Monitor, PawPrint, RefreshCw, Save, Sparkles, Trash2 } from "lucide-react";
 import type { AppSettings, PetSettings } from "../../../types/appSettings";
 import { deletePet, importCodexPets, importPetPackage, installPetArchive, listPets, openPetDirectory } from "../../pet/api";
 import { PetMascot } from "../../pet/PetMascot";
@@ -185,14 +185,16 @@ export function PetSettingsPanel({
           </div>
           <div className="pet-preview-copy">
             <h3>本地宠物，不扩大 AI 权限</h3>
-            <p>宠物包只包含 `pet.json` 和透明 WebP Sprite。可直接安装 hatch-pet 生成的 ZIP 或目录，不要求安装 Codex；导入时不会执行脚本或加载网络资源。</p>
+            <p>宠物包只包含 <code>pet.json</code> 和透明 WebP Sprite。可直接安装 hatch-pet 生成的 ZIP 或目录，不要求安装 Codex；导入时不会执行脚本或加载网络资源。</p>
           </div>
         </section>
 
-        <section className="pet-settings-section pet-library-section">
-          <div className="pet-library-heading">
-            <div><h3>选择宠物</h3><span>直接安装 hatch-pet / Codex 兼容资源包</span></div>
-            <div>
+        <section className="settings-section">
+          <div className="settings-section-head">
+            <PawPrint size={16} />
+            <h3>选择宠物</h3>
+            <p>直接安装 hatch-pet / Codex 兼容资源包</p>
+            <div className="settings-section-head-actions">
               <button className="settings-button settings-button-secondary" type="button" disabled={petBusy} onClick={() => void refreshPets()}><RefreshCw size={14} /><span>刷新</span></button>
               <button className="settings-button settings-button-secondary" type="button" disabled={petBusy} onClick={() => void openPetDirectory()}><FolderOpen size={14} /><span>打开目录</span></button>
               <button className="settings-button settings-button-primary" type="button" disabled={petBusy} onClick={() => void installPet()}><Download size={14} /><span>安装宠物包</span></button>
@@ -224,8 +226,11 @@ export function PetSettingsPanel({
           </div>
         </section>
 
-        <section className="pet-settings-section">
-          <h3>显示</h3>
+        <section className="settings-section">
+          <div className="settings-section-head">
+            <Monitor size={16} />
+            <h3>显示</h3>
+          </div>
           <PetRow label="启用桌面宠物" description="保存后创建独立透明窗口；拖动宠物主体即可移动，关闭主窗口时一并销毁。"><Toggle checked={draft.enabled} onChange={(value) => update("enabled", value)} /></PetRow>
           <PetRow label="开机启动时显示" description="只有应用开机自启且宠物已启用时生效。"><Toggle checked={draft.showOnStartup} onChange={(value) => update("showOnStartup", value)} /></PetRow>
           <PetRow label="始终置顶"><Toggle checked={draft.alwaysOnTop} onChange={(value) => update("alwaysOnTop", value)} /></PetRow>
@@ -234,13 +239,16 @@ export function PetSettingsPanel({
           <PetRow label="显示状态气泡"><Toggle checked={draft.speechBubbles} onChange={(value) => update("speechBubbles", value)} /></PetRow>
         </section>
 
-        <section className="pet-settings-section">
-          <h3>外观与动态</h3>
+        <section className="settings-section">
+          <div className="settings-section-head">
+            <Sparkles size={16} />
+            <h3>外观与动态</h3>
+          </div>
           <PetRow label="宠物尺寸" description="窗口资源随尺寸调整，范围 120–280 px。"><Range value={draft.size} min={120} max={280} unit="px" onChange={(value) => update("size", value)} /></PetRow>
           <PetRow label="透明度"><Range value={draft.opacity} min={40} max={100} unit="%" onChange={(value) => update("opacity", value)} /></PetRow>
           <PetRow label="减少动态" description="使用 Sprite 第一帧或静态状态颜色。"><Toggle checked={draft.reducedMotion} onChange={(value) => update("reducedMotion", value)} /></PetRow>
           <PetRow label="跟随任务事件" description="只接收脱敏状态：思考、工具、等待、完成和失败。"><Toggle checked={draft.taskEvents} onChange={(value) => update("taskEvents", value)} /></PetRow>
-          <div className="pet-position-reset"><button className="settings-button settings-button-secondary" type="button" onClick={() => setDraft((current) => ({ ...current, positionX: null, positionY: null }))}><MapPinOff size={15} /><span>下次居中显示</span></button></div>
+          <div className="settings-row-actions"><button className="settings-button settings-button-secondary" type="button" onClick={() => setDraft((current) => ({ ...current, positionX: null, positionY: null }))}><MapPinOff size={15} /><span>下次居中显示</span></button></div>
         </section>
       </div>
 
@@ -250,7 +258,12 @@ export function PetSettingsPanel({
 }
 
 function PetRow({ label, description, children }: { label: string; description?: string; children: React.ReactNode }) {
-  return <div className="pet-setting-row"><div><strong>{label}</strong>{description ? <span>{description}</span> : null}</div>{children}</div>;
+  return (
+    <div className="settings-row">
+      <div className="settings-row-copy"><strong>{label}</strong>{description ? <span>{description}</span> : null}</div>
+      <div className="settings-row-control">{children}</div>
+    </div>
+  );
 }
 
 function Toggle({ checked, onChange }: { checked: boolean; onChange: (checked: boolean) => void }) {

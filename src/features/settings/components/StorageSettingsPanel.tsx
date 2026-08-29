@@ -92,20 +92,20 @@ export function StorageSettingsPanel() {
         </button>
       </div>
 
-      <div className="storage-settings-scroll">
+      <div className="settings-scroll settings-scroll-measure">
         {error ? (
-          <div className="storage-notice storage-notice-error" role="alert" aria-live="polite">
+          <div className="settings-callout settings-callout-danger" role="alert" aria-live="polite">
             <AlertTriangle size={17} />
             <div><strong>{t("storage.operationFailed")}</strong><span>{error}</span></div>
           </div>
         ) : null}
 
         {loading && !status ? (
-          <div className="storage-loading" role="status"><LoaderCircle className="settings-spin" size={20} />{t("storage.loading")}</div>
+          <div className="settings-loading" role="status"><LoaderCircle className="settings-spin" size={20} />{t("storage.loading")}</div>
         ) : status ? (
           <>
             {!status.available ? (
-              <div className="storage-notice storage-notice-error" role="alert" aria-live="polite">
+              <div className="settings-callout settings-callout-danger" role="alert" aria-live="polite">
                 <AlertTriangle size={18} />
                 <div>
                   <strong>{t("storage.unavailable")}</strong>
@@ -116,7 +116,7 @@ export function StorageSettingsPanel() {
 
             {status.lastMigration ? (
               <div
-                className={`storage-notice ${status.lastMigration.succeeded ? "storage-notice-success" : "storage-notice-error"}`}
+                className={`settings-callout ${status.lastMigration.succeeded ? "settings-callout-success" : "settings-callout-danger"}`}
                 role={status.lastMigration.succeeded ? "status" : "alert"}
               >
                 {status.lastMigration.succeeded ? <ArchiveRestore size={17} /> : <AlertTriangle size={17} />}
@@ -127,17 +127,18 @@ export function StorageSettingsPanel() {
               </div>
             ) : null}
 
-            <section className="storage-location-section">
-              <div className="storage-section-heading">
-                <div><h3>{t("storage.location")}</h3><span>{t("storage.locationDescription")}</span></div>
-                <span className={`storage-location-mode ${status.isCustom ? "storage-location-mode-custom" : ""}`}>
-                  {status.isCustom ? t("storage.customLocation") : t("storage.defaultLocation")}
-                </span>
+            <section className="settings-section">
+              <div className="settings-section-head">
+                <HardDrive size={16} />
+                <h3>{t("storage.location")}</h3>
+                <p>{t("storage.locationDescription")}</p>
+                <div className="settings-section-head-actions">
+                  <span className={`settings-pill${status.isCustom ? " settings-pill-accent" : ""}`}>
+                    {status.isCustom ? t("storage.customLocation") : t("storage.defaultLocation")}
+                  </span>
+                </div>
               </div>
-              <div className="storage-path-row">
-                <HardDrive size={18} />
-                <code title={status.currentPath}>{status.currentPath}</code>
-              </div>
+              <code className="settings-code" title={status.currentPath}>{status.currentPath}</code>
               <div className="storage-actions">
                 <button className="settings-button settings-button-secondary" type="button" disabled={!status.available || busy} onClick={() => void openStorageDirectory().catch((openError) => setError(openError instanceof Error ? openError.message : String(openError)))}>
                   <FolderOpen size={15} /><span>{t("storage.openDirectory")}</span>
@@ -152,14 +153,18 @@ export function StorageSettingsPanel() {
                   </button>
                 ) : null}
               </div>
-              <p className="storage-migration-note">{t("storage.migrationDescription")}</p>
-              <p className="storage-migration-note">{t("storage.configurationDescription")}</p>
+              <p className="settings-section-note">{t("storage.migrationDescription")}</p>
+              <p className="settings-section-note">{t("storage.configurationDescription")}</p>
             </section>
 
-            <section className="storage-usage-section">
-              <div className="storage-section-heading">
-                <div><h3>{t("storage.usage")}</h3><span>{t("storage.usageDescription")}</span></div>
-                <strong className="storage-total">{formatBytes(status.totalBytes)}</strong>
+            <section className="settings-section">
+              <div className="settings-section-head">
+                <Database size={16} />
+                <h3>{t("storage.usage")}</h3>
+                <p>{t("storage.usageDescription")}</p>
+                <div className="settings-section-head-actions">
+                  <strong className="storage-total">{formatBytes(status.totalBytes)}</strong>
+                </div>
               </div>
               <div className="storage-usage-list">
                 {categories.map((category) => {
@@ -170,7 +175,7 @@ export function StorageSettingsPanel() {
                       <Icon size={16} />
                       <div className="storage-usage-copy">
                         <div><span>{t(`storage.category.${category.id}`)}</span><strong>{formatBytes(category.bytes)}</strong></div>
-                        <div className="storage-usage-track" aria-hidden="true"><span style={{ width: `${ratio}%` }} /></div>
+                        <div className="settings-meter" aria-hidden="true"><span style={{ width: `${ratio}%` }} /></div>
                       </div>
                     </div>
                   );
@@ -179,10 +184,13 @@ export function StorageSettingsPanel() {
             </section>
 
             {status.previousPath ? (
-              <section className="storage-previous-section">
-                <h3>{t("storage.previousCopy")}</h3>
-                <p>{t("storage.previousCopyDescription")}</p>
-                <code title={status.previousPath}>{status.previousPath}</code>
+              <section className="settings-section">
+                <div className="settings-section-head">
+                  <ArchiveRestore size={16} />
+                  <h3>{t("storage.previousCopy")}</h3>
+                </div>
+                <p className="settings-section-note">{t("storage.previousCopyDescription")}</p>
+                <code className="settings-code" title={status.previousPath}>{status.previousPath}</code>
               </section>
             ) : null}
           </>

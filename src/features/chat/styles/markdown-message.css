@@ -112,7 +112,7 @@
   border: 1px solid var(--color-border-soft);
   border-radius: 4px;
   background: var(--color-hover);
-  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-family: var(--code-font-family);
   letter-spacing: 0;
   font-size: 0.9em;
 }

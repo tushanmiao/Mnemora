@@ -49,14 +49,14 @@
 
 .deep-note-section-list { display: grid; gap: 8px; padding: 16px 22px; }
 .deep-note-section-item { display: grid; grid-template-columns: 18px 1fr; gap: 10px; padding: 12px; border: 1px solid var(--color-border-soft); border-radius: 12px; cursor: pointer; }
-.deep-note-section-item:hover { border-color: var(--color-border); background: var(--color-surface-soft); }
+.deep-note-section-item:hover { border-color: var(--color-border); background: var(--color-hover); }
 .deep-note-section-item span { display: grid; gap: 4px; }
 .deep-note-section-item strong { font-size: 14px; }
 .deep-note-section-item small { color: var(--color-muted); line-height: 1.5; }
 .deep-note-section-item em { color: var(--color-accent); font-size: 11px; font-style: normal; }
 
 .deep-note-requirement { display: grid; gap: 7px; padding: 0 22px 18px; font-size: 12px; font-weight: 600; }
-.deep-note-requirement textarea { min-height: 78px; resize: vertical; padding: 10px 12px; border: 1px solid var(--color-border); border-radius: 10px; background: var(--color-surface-soft); color: var(--color-text); font: inherit; font-weight: 400; line-height: 1.5; }
+.deep-note-requirement textarea { min-height: 78px; resize: vertical; padding: 10px 12px; border: 1px solid var(--color-border); border-radius: 10px; background: var(--color-app); color: var(--color-text); font: inherit; font-weight: 400; line-height: 1.5; }
 .deep-note-dialog-footer { align-items: center; border-top: 1px solid var(--color-border-soft); color: var(--color-muted); font-size: 12px; }
 .deep-note-dialog-footer > div { display: flex; gap: 9px; }
 
@@ -77,17 +77,17 @@
 .note-edit-dialog { width: min(860px, 100%); }
 .note-edit-target-list { display: grid; gap: 7px; max-height: 310px; overflow: auto; padding: 16px 22px; }
 .note-edit-target { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 10px; padding: 11px 12px; border: 1px solid var(--color-border-soft); border-radius: 8px; cursor: pointer; }
-.note-edit-target:has(input:checked) { border-color: var(--color-accent); background: var(--color-surface-soft); }
+.note-edit-target:has(input:checked) { border-color: var(--color-accent); background: var(--color-accent-soft); }
 .note-edit-target span { display: grid; min-width: 0; gap: 4px; }
 .note-edit-target strong,
 .note-edit-target small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .note-edit-target small { color: var(--color-muted); font-size: 12px; }
 .note-edit-fixed-target { display: flex; align-items: baseline; gap: 12px; padding: 16px 22px 0; }
 .note-edit-fixed-target span { color: var(--color-muted); font-size: 12px; }
-.note-edit-selection { display: grid; gap: 6px; max-height: 150px; overflow: auto; margin: 16px 22px 0; padding: 12px 14px; border-left: 3px solid var(--color-accent); background: var(--color-surface-soft); color: var(--color-muted); font-size: 12px; line-height: 1.55; }
+.note-edit-selection { display: grid; gap: 6px; max-height: 150px; overflow: auto; margin: 16px 22px 0; padding: 12px 14px; border-left: 3px solid var(--color-accent); background: var(--color-app); color: var(--color-muted); font-size: 12px; line-height: 1.55; }
 .note-edit-selection strong { color: var(--color-text); }
 .note-edit-requirement { padding-top: 16px; }
-.note-edit-diff { max-height: min(560px, calc(100vh - 260px)); overflow: auto; margin: 0; padding: 18px 22px; background: var(--color-surface-soft); color: var(--color-text); font: 12px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.note-edit-diff { max-height: min(560px, calc(100vh - 260px)); overflow: auto; margin: 0; padding: 18px 22px; background: var(--color-app); color: var(--color-text); font: 12px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 .note-edit-diff-toolbar {
   display: flex;
   min-height: 42px;
@@ -119,14 +119,14 @@
   gap: 9px;
   border: 1px solid var(--color-border);
   border-radius: 8px;
-  background: var(--color-surface-soft);
+  background: var(--color-app);
   cursor: pointer;
 }
 .note-edit-title-hunk.is-selected { border-color: var(--color-accent); background: var(--color-accent-soft); }
 .note-edit-title-hunk span { display: grid; gap: 3px; min-width: 0; }
 .note-edit-title-hunk small { overflow-wrap: anywhere; color: var(--color-muted); }
 .note-edit-hunk-list { display: grid; gap: 10px; max-height: min(520px, calc(100vh - 360px)); overflow: auto; padding: 14px 22px; }
-.note-edit-hunk { display: grid; gap: 8px; padding: 10px; border: 1px solid var(--color-border-soft); border-radius: 8px; background: var(--color-surface-soft); cursor: pointer; }
+.note-edit-hunk { display: grid; gap: 8px; padding: 10px; border: 1px solid var(--color-border-soft); border-radius: 8px; background: var(--color-app); cursor: pointer; }
 .note-edit-hunk.is-selected { border-color: var(--color-accent); }
 .note-edit-hunk-heading { display: flex; align-items: center; gap: 8px; color: var(--color-text-secondary); font-size: 11px; }
 .note-edit-hunk-heading span { margin-left: auto; color: var(--color-muted); font-variant-numeric: tabular-nums; }

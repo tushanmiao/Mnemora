@@ -2,133 +2,17 @@
   padding-bottom: 24px;
 }
 
-.general-settings-scroll {
-  width: 100%;
-  min-height: 0;
-  padding-right: 4px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  scrollbar-color: var(--color-border) transparent;
-  scrollbar-width: thin;
-}
-
-.general-settings-section {
-  border-top: 1px solid var(--color-border);
-}
-
-.general-settings-section:last-child {
-  border-bottom: 1px solid var(--color-border);
-}
-
-.general-settings-section h3 {
-  margin: 0;
-  padding: 16px 0 8px;
-  color: var(--color-muted);
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.general-setting-row {
-  display: grid;
-  min-height: 58px;
-  padding: 10px 0;
-  grid-template-columns: minmax(180px, 1fr) minmax(220px, auto);
-  align-items: center;
-  gap: 24px;
-  border-top: 1px solid var(--color-border-soft);
-}
-
-.general-setting-row-stack {
-  grid-template-columns: minmax(0, 1fr);
-  gap: 10px;
-}
-
-.general-setting-copy {
-  display: grid;
-  min-width: 0;
-  gap: 3px;
-}
-
-.general-setting-copy strong {
-  font-size: 13px;
-  font-weight: 620;
-}
-
-.general-setting-copy span {
-  color: var(--color-muted);
-  font-size: 11px;
-  line-height: 1.5;
-}
-
-.general-setting-control {
-  min-width: 0;
-}
+/* 分区、设置行、开关、分段控件已移入 settings-kit.css；
+   这里只保留通用设置页真正独有的控件。 */
 
 .general-control {
   width: 220px;
+  max-width: 100%;
 }
 
 .general-number-input {
   width: 84px;
   text-align: center;
-}
-
-.settings-toggle {
-  position: relative;
-  display: block;
-  width: 38px;
-  height: 22px;
-  padding: 0;
-  border: 0;
-  border-radius: 11px;
-  background: var(--color-border);
-  cursor: pointer;
-  transition: background 0.16s ease;
-}
-
-.settings-toggle span {
-  position: absolute;
-  top: 3px;
-  left: 3px;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: #ffffff;
-  box-shadow: 0 1px 3px rgb(0 0 0 / 20%);
-  transition: transform 0.16s ease;
-}
-
-.settings-toggle-active {
-  background: var(--color-accent);
-}
-
-.settings-toggle-active span {
-  transform: translateX(16px);
-}
-
-.settings-segmented {
-  display: inline-flex;
-  padding: 2px;
-  border: 1px solid var(--color-border);
-  border-radius: 6px;
-  background: var(--color-sidebar);
-}
-
-.settings-segmented button {
-  height: 28px;
-  padding: 0 11px;
-  border: 0;
-  border-radius: 4px;
-  color: var(--color-muted);
-  background: transparent;
-  cursor: pointer;
-  font-size: 11px;
-}
-
-.settings-segmented .settings-segmented-active {
-  color: var(--color-text);
-  background: var(--color-surface-raised);
-  box-shadow: 0 1px 2px rgb(0 0 0 / 8%);
 }
 
 .theme-preset-group {
@@ -163,12 +47,13 @@
   align-items: center;
   gap: 10px;
   border: 1px solid var(--color-border);
-  border-radius: 7px;
+  border-radius: var(--radius-panel);
   color: var(--color-text-secondary);
   background: var(--color-surface-raised);
   cursor: pointer;
-  font-size: 11px;
+  font-size: var(--font-size-meta);
   text-align: left;
+  transition: border-color var(--duration-fast) var(--ease-out);
 }
 
 .theme-preset-option:hover,
@@ -302,7 +187,7 @@
   justify-content: flex-end;
   gap: 4px;
   color: var(--color-text-secondary);
-  font-size: 11px;
+  font-size: var(--font-size-meta);
 }
 
 .editable-range-value input {
@@ -310,7 +195,7 @@
   height: 30px;
   padding: 0 6px;
   border: 1px solid var(--color-accent);
-  border-radius: 5px;
+  border-radius: var(--radius-control);
   outline: 0;
   color: var(--color-text);
   background: var(--color-surface-raised);
@@ -326,7 +211,7 @@
 
 .font-size-control output {
   color: var(--color-text-secondary);
-  font-size: 12px;
+  font-size: var(--font-size-label);
   font-variant-numeric: tabular-nums;
   text-align: right;
 }
@@ -344,11 +229,11 @@
   padding: 10px 11px;
   resize: vertical;
   border: 1px solid var(--color-border);
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   outline: 0;
   color: var(--color-text);
   background: var(--color-surface-raised);
-  font: 11px/1.55 Consolas, "Courier New", monospace;
+  font: var(--font-size-meta)/1.55 Consolas, "Courier New", monospace;
 }
 
 .theme-background-input:focus {
@@ -364,26 +249,19 @@
   width: 168px;
   min-height: 82px;
   border: 1px solid var(--color-border);
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   box-shadow: inset 0 0 0 1px rgb(255 255 255 / 28%);
 }
 
 .theme-background-error {
   grid-column: 1 / -1;
   color: var(--color-danger);
-  font-size: 11px;
+  font-size: var(--font-size-meta);
   line-height: 1.45;
 }
 
 .theme-opacity-control {
   width: min(300px, 100%);
-}
-
-.appearance-reset-row {
-  display: flex;
-  padding: 12px 0;
-  justify-content: flex-end;
-  border-top: 1px solid var(--color-border-soft);
 }
 
 .profile-avatar-row,
@@ -405,7 +283,7 @@
   border-radius: 50%;
   color: var(--color-text-secondary);
   background: var(--color-sidebar);
-  font-size: 12px;
+  font-size: var(--font-size-label);
   font-weight: 700;
 }
 
@@ -444,12 +322,12 @@
   padding: 10px 11px;
   resize: vertical;
   border: 1px solid var(--color-border);
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   outline: 0;
   color: var(--color-text);
   background: var(--color-surface);
   font: inherit;
-  font-size: 12px;
+  font-size: var(--font-size-label);
   line-height: 1.6;
 }
 
@@ -458,60 +336,12 @@
   box-shadow: 0 0 0 2px var(--color-accent-soft);
 }
 
-.backup-settings-row {
-  display: flex;
-  min-height: 72px;
-  padding: 12px 0;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  border-top: 1px solid var(--color-border-soft);
-}
-
-.backup-memory-option {
-  display: flex;
-  padding: 10px 0 14px;
-  align-items: flex-start;
-  gap: 9px;
-  cursor: pointer;
-}
-
-.backup-memory-option input {
-  width: 16px;
-  height: 16px;
-  margin: 1px 0 0;
-  accent-color: var(--color-accent);
-}
-
-.backup-memory-option span {
-  display: grid;
-  gap: 3px;
-}
-
-.backup-memory-option strong { font-size: 13px; }
-.backup-memory-option small { color: var(--color-muted); font-size: 11px; line-height: 1.45; }
-
-.backup-settings-row > div:first-child {
-  display: grid;
-  gap: 4px;
-}
-
-.backup-settings-row strong { font-size: 13px; }
-.backup-settings-row span { color: var(--color-muted); font-size: 11px; }
-.backup-settings-row > div:last-child { display: flex; gap: 8px; }
-
 @media (max-width: 760px) {
-  .general-setting-row {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 9px;
-  }
-
   .general-control {
     width: 100%;
   }
 
-  .working-directory-row,
-  .backup-settings-row {
+  .working-directory-row {
     align-items: stretch;
     flex-direction: column;
   }
