@@ -54,7 +54,7 @@ use super::{
     },
 };
 
-const LIBRARY_SCHEMA_VERSION: i64 = 14;
+const LIBRARY_SCHEMA_VERSION: i64 = 15;
 const LIBRARY_DIRECTORY_NAME: &str = "library";
 const LIBRARY_DATABASE_NAME: &str = "library.sqlite3";
 const LIBRARY_FILES_DIRECTORY_NAME: &str = "files";
@@ -3347,7 +3347,8 @@ impl LibraryRepository {
         let mut statement = connection
             .prepare(
                 "SELECT call_id, name, state, state_version, execution_version,
-                        approval_id, risk, result_preview, error_kind, expires_at, updated_at
+                        approval_id, risk, source_json, catalog_revision,
+                        result_preview, error_kind, expires_at, updated_at
                  FROM agent_tool_calls WHERE run_id = ? ORDER BY created_at ASC, call_id ASC",
             )
             .map_err(|error| format!("准备 Agent Tool Call 快照查询失败：{error}"))?;
@@ -3362,9 +3363,11 @@ impl LibraryRepository {
                     row.get::<_, Option<String>>(5)?,
                     row.get::<_, String>(6)?,
                     row.get::<_, String>(7)?,
-                    row.get::<_, Option<String>>(8)?,
-                    row.get::<_, Option<i64>>(9)?,
-                    row.get::<_, i64>(10)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, String>(9)?,
+                    row.get::<_, Option<String>>(10)?,
+                    row.get::<_, Option<i64>>(11)?,
+                    row.get::<_, i64>(12)?,
                 ))
             })
             .map_err(|error| format!("查询 Agent Tool Call 快照失败：{error}"))?;
@@ -3381,10 +3384,13 @@ impl LibraryRepository {
                     .map_err(|_| "Tool Call 执行版本无效。".to_string())?,
                 approval_id: row.5,
                 risk: row.6,
-                result_preview: row.7,
-                error_kind: row.8,
-                expires_at: row.9.map(i64_to_u64),
-                updated_at: i64_to_u64(row.10),
+                source: serde_json::from_str(&row.7)
+                    .unwrap_or_else(|_| serde_json::json!({ "type": "unknown" })),
+                catalog_revision: row.8,
+                result_preview: row.9,
+                error_kind: row.10,
+                expires_at: row.11.map(i64_to_u64),
+                updated_at: i64_to_u64(row.12),
             });
         }
         Ok(Some(AgentRunSnapshot {
@@ -3508,6 +3514,8 @@ impl LibraryRepository {
         name: &str,
         risk: &str,
         arguments_hash: &str,
+        source_json: &str,
+        catalog_revision: &str,
         approval_id: Option<&str>,
         expires_at: Option<u64>,
     ) -> Result<(ToolCallState, u32, u32), String> {
@@ -3544,8 +3552,9 @@ impl LibraryRepository {
             .execute(
                 "INSERT INTO agent_tool_calls (
                     call_id, run_id, name, state, state_version, execution_version,
-                    approval_id, risk, arguments_hash, expires_at, created_at, updated_at
-                 ) VALUES (?, ?, ?, 'proposed', 0, ?, ?, ?, ?, ?, ?, ?)",
+                    approval_id, risk, arguments_hash, source_json, catalog_revision,
+                    expires_at, created_at, updated_at
+                 ) VALUES (?, ?, ?, 'proposed', 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 params![
                     call_id,
                     run_id,
@@ -3554,6 +3563,8 @@ impl LibraryRepository {
                     approval_id,
                     risk,
                     arguments_hash,
+                    source_json,
+                    catalog_revision,
                     expires_at.map(u64_to_i64).transpose()?,
                     now,
                     now,
@@ -5432,6 +5443,20 @@ fn migrate(connection: &Connection) -> Result<(), String> {
                  COMMIT;",
             )
             .map_err(|error| format!("升级本地面试会话结构失败：{error}"))?;
+    }
+    // v15: persist the resolved capability source and catalog revision for tool-call audit.
+    if version <= 14 {
+        connection
+            .execute_batch(
+                "BEGIN IMMEDIATE;
+                 ALTER TABLE agent_tool_calls
+                    ADD COLUMN source_json TEXT NOT NULL DEFAULT '{\"type\":\"builtin\"}';
+                 ALTER TABLE agent_tool_calls
+                    ADD COLUMN catalog_revision TEXT NOT NULL DEFAULT '';
+                 PRAGMA user_version = 15;
+                 COMMIT;",
+            )
+            .map_err(|error| format!("Failed to upgrade Agent tool provenance schema: {error}"))?;
     }
     Ok(())
 }
@@ -7764,6 +7789,8 @@ mod tests {
                 "memory_write",
                 "MemoryWrite",
                 "sha256:test",
+                r#"{"type":"builtin"}"#,
+                "builtin:test",
                 Some("approval-1"),
                 Some(u64::MAX / 2),
             )
@@ -7868,6 +7895,8 @@ mod tests {
                 "note_write",
                 "NoteWrite",
                 "sha256:test",
+                r#"{"type":"builtin"}"#,
+                "builtin:test",
                 Some("approval-recovery"),
                 Some(u64::MAX / 2),
             )

@@ -7,8 +7,10 @@ mod diagnostics;
 mod english;
 mod html_preview;
 mod library;
+mod mcp;
 mod memory;
 mod network;
+mod plugins;
 mod request_debug;
 mod settings;
 mod skills;
@@ -167,6 +169,7 @@ pub fn run() {
             commands::conversations::list_conversations,
             commands::conversations::load_conversation,
             commands::conversations::save_conversation,
+            commands::conversations::rename_conversation,
             commands::conversations::delete_conversation,
             commands::conversations::clear_conversations,
             commands::conversations::export_conversation,
@@ -240,6 +243,11 @@ pub fn run() {
             commands::memory::memory_clear,
             commands::memory::memory_get_directory,
             commands::memory::memory_open_directory,
+            commands::mcp::mcp_list_servers,
+            commands::mcp::mcp_upsert_server,
+            commands::mcp::mcp_set_server_enabled,
+            commands::mcp::mcp_refresh_server,
+            commands::mcp::mcp_remove_server,
             commands::note_pipeline::note_pipeline_start,
             commands::note_pipeline::note_pipeline_inspect_start,
             commands::note_pipeline::note_pipeline_adjust,
@@ -268,6 +276,11 @@ pub fn run() {
             commands::pet::pet_import_codex,
             commands::pet::pet_delete,
             commands::pet::pet_open_directory,
+            commands::plugins::plugins_list,
+            commands::plugins::plugins_install,
+            commands::plugins::plugins_set_enabled,
+            commands::plugins::plugins_rollback,
+            commands::plugins::plugins_uninstall,
             commands::providers::fetch_provider_models,
             commands::providers::test_provider_connection,
             commands::settings::load_model_settings,

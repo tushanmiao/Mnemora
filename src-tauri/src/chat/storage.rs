@@ -107,6 +107,25 @@ impl ConversationRepository {
         Ok(item)
     }
 
+    pub fn rename(
+        &self,
+        conversation_id: &str,
+        title: &str,
+    ) -> Result<ConversationListItem, String> {
+        validate_conversation_id("Conversation ID", conversation_id)?;
+        let title = title.trim();
+        if title.is_empty() || title.chars().count() > 500 {
+            return Err("Conversation title must contain 1 to 500 characters".to_string());
+        }
+        let mut conversation = self.load(conversation_id)?;
+        conversation.title = title.to_string();
+        conversation.updated_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        self.save(&conversation)
+    }
+
     pub fn delete(&self, conversation_id: &str) -> Result<bool, String> {
         validate_conversation_id("Conversation ID", conversation_id)?;
         self.ensure_directory()?;
@@ -456,6 +475,26 @@ mod tests {
         repository.clear().unwrap();
         assert!(repository.list().unwrap().is_empty());
         assert!(!remaining_attachments.exists());
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn rename_updates_both_conversation_and_sidebar_index() {
+        let directory = test_directory("rename");
+        let repository = ConversationRepository::new(directory.clone());
+        repository
+            .save(&conversation("conversation-rename", 10))
+            .unwrap();
+        let summary = repository
+            .rename("conversation-rename", "  Renamed chat  ")
+            .unwrap();
+        assert_eq!(summary.title, "Renamed chat");
+        assert_eq!(
+            repository.load("conversation-rename").unwrap().title,
+            "Renamed chat"
+        );
+        assert_eq!(repository.list().unwrap()[0].title, "Renamed chat");
+        assert!(repository.rename("conversation-rename", "   ").is_err());
         let _ = fs::remove_dir_all(directory);
     }
 

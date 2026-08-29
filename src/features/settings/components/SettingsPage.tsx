@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useState } from "react";
-import { ArrowLeft, BarChart3, Bot, Brain, Bug, Cloud, Database, Info, NotebookPen, PawPrint, SlidersHorizontal, Sparkles } from "lucide-react";
+import { ArrowLeft, BarChart3, Bot, Brain, Bug, Cable, Cloud, Database, Info, NotebookPen, PawPrint, Plug, SlidersHorizontal, Sparkles } from "lucide-react";
 import { RootErrorBoundary } from "../../../bootstrap/RootErrorBoundary";
 import type { AppSettings, SettingsBundle } from "../../../types/appSettings";
 import type { ModelSettings, ProviderApiKeyUpdate } from "../../../types/modelSettings";
@@ -14,6 +14,12 @@ const ModelSettingsPanel = lazy(() => import("./ModelSettingsPanel").then((modul
 const SkillSettingsPanel = lazy(() => import("./SkillSettingsPanel").then((module) => ({
   default: module.SkillSettingsPanel,
 })));
+const McpSettingsPanel = lazy(() => import("./McpSettingsPanel").then((module) => ({
+  default: module.McpSettingsPanel,
+})));
+const PluginSettingsPanel = lazy(() => import("./PluginSettingsPanel").then((module) => ({
+  default: module.PluginSettingsPanel,
+})));
 const MemorySettingsPanel = lazy(() => import("./MemorySettingsPanel").then((module) => ({
   default: module.MemorySettingsPanel,
 })));
@@ -25,14 +31,16 @@ const StorageSettingsPanel = lazy(() => import("./StorageSettingsPanel").then((m
 const RequestDebugSettingsPanel = lazy(() => import("./RequestDebugSettingsPanel").then((module) => ({ default: module.RequestDebugSettingsPanel })));
 const AboutSettingsPanel = lazy(() => import("./AboutSettingsPanel").then((module) => ({ default: module.AboutSettingsPanel })));
 
-export type SettingsCategory = "general" | "pet" | "notes" | "models" | "skills" | "memory" | "storage" | "sync" | "usage" | "debug" | "about";
+export type SettingsCategory = "general" | "pet" | "notes" | "models" | "skills" | "mcp" | "plugins" | "memory" | "storage" | "sync" | "usage" | "debug" | "about";
 
-const CATEGORY_KEYS: Record<SettingsCategory, "settings.general" | "settings.pet" | "settings.notes" | "settings.models" | "settings.skills" | "settings.memory" | "settings.storage" | "settings.sync" | "settings.usage" | "settings.debug" | "settings.about"> = {
+const CATEGORY_KEYS: Record<SettingsCategory, "settings.general" | "settings.pet" | "settings.notes" | "settings.models" | "settings.skills" | "settings.mcp" | "settings.plugins" | "settings.memory" | "settings.storage" | "settings.sync" | "settings.usage" | "settings.debug" | "settings.about"> = {
   general: "settings.general",
   pet: "settings.pet",
   notes: "settings.notes",
   models: "settings.models",
   skills: "settings.skills",
+  mcp: "settings.mcp",
+  plugins: "settings.plugins",
   memory: "settings.memory",
   storage: "settings.storage",
   sync: "settings.sync",
@@ -93,6 +101,8 @@ export function SettingsPage(props: SettingsPageProps) {
     { id: "notes", label: t("settings.notes"), icon: NotebookPen },
     { id: "models", label: t("settings.models"), icon: Bot },
     { id: "skills", label: t("settings.skills"), icon: Sparkles },
+    { id: "mcp", label: t("settings.mcp"), icon: Cable },
+    { id: "plugins", label: t("settings.plugins"), icon: Plug },
     { id: "memory", label: t("settings.memory"), icon: Brain },
     { id: "storage", label: t("settings.storage"), icon: Database },
     { id: "sync", label: t("settings.sync"), icon: Cloud },
@@ -159,6 +169,10 @@ export function SettingsPage(props: SettingsPageProps) {
               <ModelSettingsPanel settings={props.settings} initialError={props.initialError} onSave={props.onSave} />
             ) : activeCategory === "skills" ? (
               <SkillSettingsPanel state={props.skillState} />
+            ) : activeCategory === "mcp" ? (
+              <McpSettingsPanel />
+            ) : activeCategory === "plugins" ? (
+              <PluginSettingsPanel onSkillsChanged={props.skillState.refresh} />
             ) : activeCategory === "memory" ? (
               <MemorySettingsPanel
                 settings={props.appSettings}

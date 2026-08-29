@@ -3,10 +3,13 @@
 //! 注册表只保存轻量元数据，不持有附件内容、Skill 正文或 MCP 连接。一次请求结束后，
 //! ToolRuntimeContext 释放，注册表本身不会造成随会话增长的内存占用。
 
+use std::{collections::BTreeMap, sync::Arc};
+
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::ai::types::ModelTool;
+use crate::mcp::McpToolSnapshot;
 
 use super::types::ToolRisk;
 
@@ -24,6 +27,7 @@ pub enum ToolNamespace {
     Artifact,
     Note,
     Interview,
+    Mcp,
 }
 
 impl ToolNamespace {
@@ -40,6 +44,7 @@ impl ToolNamespace {
             Self::Artifact => "artifact",
             Self::Note => "note",
             Self::Interview => "interview",
+            Self::Mcp => "mcp",
         }
     }
 }
@@ -97,6 +102,136 @@ pub enum ToolApprovalPolicy {
     ReadOnly,
     MemoryRead,
     Sensitive,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum CapabilitySource {
+    Builtin,
+    Mcp {
+        server_id: String,
+        server_name: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        plugin_id: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CapabilityRoute {
+    Builtin(ToolHandler),
+    Mcp {
+        server_id: String,
+        remote_name: String,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct CapabilityDescriptor {
+    pub name: String,
+    pub description: String,
+    pub input_schema: Value,
+    pub namespace: ToolNamespace,
+    pub route: CapabilityRoute,
+    pub risk: ToolRisk,
+    pub read_only: bool,
+    pub parallel_safe: bool,
+    pub approval: ToolApprovalPolicy,
+    pub resource_cost: ToolResourceCost,
+    pub max_output_chars: usize,
+    pub source: CapabilitySource,
+    pub catalog_revision: String,
+}
+
+impl CapabilityDescriptor {
+    pub fn model_tool(&self) -> ModelTool {
+        ModelTool {
+            name: self.name.clone(),
+            description: self.description.clone(),
+            input_schema: self.input_schema.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CapabilityRegistry {
+    entries: Arc<BTreeMap<String, CapabilityDescriptor>>,
+}
+
+impl CapabilityRegistry {
+    pub fn new(mcp_tools: Vec<McpToolSnapshot>) -> Self {
+        let mut entries = BTreeMap::new();
+        for entry in TOOL_ENTRIES {
+            entries.insert(
+                entry.name.to_string(),
+                CapabilityDescriptor {
+                    name: entry.name.to_string(),
+                    description: entry.description.to_string(),
+                    input_schema: (entry.input_schema)(),
+                    namespace: entry.namespace,
+                    route: CapabilityRoute::Builtin(entry.handler),
+                    risk: entry.risk,
+                    read_only: entry.read_only,
+                    parallel_safe: entry.parallel_safe,
+                    approval: entry.approval,
+                    resource_cost: entry.resource_cost,
+                    max_output_chars: entry.max_output_chars,
+                    source: CapabilitySource::Builtin,
+                    catalog_revision: format!("builtin:{}", env!("CARGO_PKG_VERSION")),
+                },
+            );
+        }
+        for tool in mcp_tools {
+            if entries.contains_key(&tool.wire_name) {
+                continue;
+            }
+            entries.insert(
+                tool.wire_name.clone(),
+                CapabilityDescriptor {
+                    name: tool.wire_name,
+                    description: tool.description,
+                    input_schema: tool.input_schema,
+                    namespace: ToolNamespace::Mcp,
+                    route: CapabilityRoute::Mcp {
+                        server_id: tool.server_id.clone(),
+                        remote_name: tool.remote_name,
+                    },
+                    // Server annotations are untrusted hints. External tools remain sensitive
+                    // unless the user explicitly grants this exact remote tool.
+                    risk: ToolRisk::ExternalTool,
+                    read_only: tool.read_only_hint,
+                    parallel_safe: false,
+                    approval: if tool.auto_approved {
+                        ToolApprovalPolicy::Never
+                    } else {
+                        ToolApprovalPolicy::Sensitive
+                    },
+                    resource_cost: ToolResourceCost::Medium,
+                    max_output_chars: tool.max_output_chars,
+                    source: CapabilitySource::Mcp {
+                        server_id: tool.server_id,
+                        server_name: tool.server_name,
+                        plugin_id: tool.plugin_id,
+                    },
+                    catalog_revision: tool.catalog_revision,
+                },
+            );
+        }
+        Self {
+            entries: Arc::new(entries),
+        }
+    }
+
+    pub fn builtin_only() -> Self {
+        Self::new(Vec::new())
+    }
+
+    pub fn find(&self, name: &str) -> Option<&CapabilityDescriptor> {
+        self.entries.get(name)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &CapabilityDescriptor> {
+        self.entries.values()
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1050,6 +1185,7 @@ pub fn assert_valid_registry() {
                 | ToolNamespace::Artifact
                 | ToolNamespace::Note
                 | ToolNamespace::Interview
+                | ToolNamespace::Mcp
         ) && matches!(
             entry.resource_cost,
             ToolResourceCost::Low | ToolResourceCost::Medium | ToolResourceCost::High

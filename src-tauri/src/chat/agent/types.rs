@@ -11,6 +11,7 @@ pub enum ToolRisk {
     MemoryRead,
     MemoryWrite,
     NoteWrite,
+    ExternalTool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -87,6 +88,8 @@ pub struct AgentToolCallSnapshot {
     pub execution_version: u32,
     pub approval_id: Option<String>,
     pub risk: String,
+    pub source: serde_json::Value,
+    pub catalog_revision: String,
     pub result_preview: String,
     pub error_kind: Option<String>,
     pub expires_at: Option<u64>,

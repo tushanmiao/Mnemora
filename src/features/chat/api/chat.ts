@@ -95,6 +95,8 @@ export type AgentToolCallSnapshot = {
   executionVersion: number;
   approvalId: string | null;
   risk: string;
+  source: Record<string, unknown>;
+  catalogRevision: string;
   resultPreview: string;
   errorKind: string | null;
   expiresAt: number | null;

@@ -15,7 +15,9 @@ use tokio_util::sync::CancellationToken;
 use crate::chat::storage::ConversationRepository;
 use crate::english::{learning::EnglishLearningRepository, EnglishRepository};
 use crate::library::LibraryRepository;
+use crate::mcp::McpManager;
 use crate::memory::MemoryRepository;
+use crate::plugins::PluginManager;
 use crate::request_debug::RequestDebugRecord;
 use crate::settings::{
     app_repository::AppSettingsRepository, app_types::AppSettings,
@@ -64,6 +66,9 @@ pub struct AppState {
     pub pending_signed_update: Mutex<Option<tauri_plugin_updater::Update>>,
     pub skill_repository: SkillRepository,
     pub memory_repository: MemoryRepository,
+    pub mcp_manager: McpManager,
+    pub plugin_manager: PluginManager,
+    pub plugin_operations: Mutex<()>,
     pub skill_operations: Mutex<()>,
     pub usage_dir: PathBuf,
     pub usage_operations: Mutex<()>,
@@ -144,6 +149,7 @@ impl AppState {
             }
         };
         let sync_mapping_repository = SyncMappingRepository::new(app_data_dir.clone());
+        let mcp_manager = McpManager::new(config_dir.clone(), app_data_dir.clone())?;
         let model_settings_repository = ModelSettingsRepository::new(config_dir);
         let usage_dir = crate::usage::usage_dir(&app_data_dir);
         let skill_repository =
@@ -157,6 +163,11 @@ impl AppState {
             eprintln!("Failed to recover stale Agent runs: {error}");
         }
         let conversation_repository = ConversationRepository::new(app_data_dir.clone());
+        let plugin_manager = PluginManager::new(
+            app_data_dir.clone(),
+            skill_repository.clone(),
+            mcp_manager.clone(),
+        );
         let english_learning_repository = EnglishLearningRepository::new(app_data_dir.clone());
         let english_repository = EnglishRepository::new(app_data_dir, resource_dir.clone());
         if let Err(error) = crate::chat::attachments::cleanup_staged_attachments_older_than(
@@ -213,6 +224,9 @@ impl AppState {
             pending_signed_update: Mutex::new(None),
             skill_repository,
             memory_repository,
+            mcp_manager,
+            plugin_manager,
+            plugin_operations: Mutex::new(()),
             skill_operations: Mutex::new(()),
             usage_dir,
             usage_operations: Mutex::new(()),

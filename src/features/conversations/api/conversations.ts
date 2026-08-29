@@ -28,6 +28,11 @@ export function persistConversation(conversation: Conversation) {
   return invoke<ConversationListItem>("save_conversation", { conversation });
 }
 
+export function renameStoredConversation(conversationId: string, title: string) {
+  if (!isTauri()) return Promise.resolve<ConversationListItem | null>(null);
+  return invoke<ConversationListItem>("rename_conversation", { conversationId, title });
+}
+
 export function removeStoredConversation(conversationId: string) {
   if (!isTauri()) return Promise.resolve(false);
   return invoke<boolean>("delete_conversation", { conversationId });

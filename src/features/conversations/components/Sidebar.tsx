@@ -56,6 +56,7 @@ type SidebarProps = {
   onCreateConversation: () => void;
   onSelectConversation: (conversationId: string) => void;
   onDeleteConversation: (conversationId: string) => void;
+  onRenameConversation: (conversationId: string, title: string) => Promise<boolean>;
   onExportConversation: (conversationId: string, format: "markdown" | "json") => void;
   onSaveConversationAsNote: (conversationId: string) => void;
   onSummarizeConversationToNote: (conversationId: string) => void;
@@ -64,6 +65,7 @@ type SidebarProps = {
   onClearConversations: () => void;
   onLoadMoreConversations: () => void;
   onOpenSkills: () => void;
+  onOpenPlugins: () => void;
   onWorkLibraryViewChange: (view: WorkLibraryView) => void;
   onWorkSearchQueryChange: (query: string) => void;
   onWorkCollectionSelect: (collectionId: string) => void;
@@ -94,6 +96,7 @@ export function Sidebar({
   onCreateConversation,
   onSelectConversation,
   onDeleteConversation,
+  onRenameConversation,
   onExportConversation,
   onSaveConversationAsNote,
   onSummarizeConversationToNote,
@@ -102,6 +105,7 @@ export function Sidebar({
   onClearConversations,
   onLoadMoreConversations,
   onOpenSkills,
+  onOpenPlugins,
   onWorkLibraryViewChange,
   onWorkSearchQueryChange,
   onWorkCollectionSelect,
@@ -282,6 +286,14 @@ export function Sidebar({
         closeSidebarPopover();
         onExportConversation(conversationId, format);
       }}
+      onRename={(conversation) => {
+        const title = window.prompt(t("sidebar.rename"), conversation.title);
+        if (title === null || title.trim() === conversation.title) return;
+        closeSidebarPopover();
+        void onRenameConversation(conversation.id, title).catch((error) => {
+          window.alert(error instanceof Error ? error.message : String(error));
+        });
+      }}
       onSaveAsNote={(conversationId) => {
         closeSidebarPopover();
         onSaveConversationAsNote(conversationId);
@@ -395,6 +407,10 @@ export function Sidebar({
                     closeSidebarPopover();
                     onOpenSkills();
                   }}
+                  onOpenPlugins={() => {
+                    closeSidebarPopover();
+                    onOpenPlugins();
+                  }}
                 />
               ) : null}
             </div>
@@ -406,10 +422,11 @@ export function Sidebar({
                     className="extension-item"
                     type="button"
                     key={id}
-                    disabled={id !== "skills"}
-                    onClick={id === "skills" ? () => {
+                    disabled={id === "knowledge"}
+                    onClick={id !== "knowledge" ? () => {
                       setExtensionsOpen(false);
-                      onOpenSkills();
+                      if (id === "skills") onOpenSkills();
+                      if (id === "plugins") onOpenPlugins();
                     } : undefined}
                   >
                     <Icon size={15} />
@@ -552,6 +569,14 @@ export function Sidebar({
 
                   {conversationMenu === conversation.id ? (
                     <ConversationMenu t={t}
+                      onRename={() => {
+                        setConversationMenu(null);
+                        const title = window.prompt(t("sidebar.rename"), conversation.title);
+                        if (title === null || title.trim() === conversation.title) return;
+                        void onRenameConversation(conversation.id, title).catch((error) => {
+                          window.alert(error instanceof Error ? error.message : String(error));
+                        });
+                      }}
                       onExport={(format) => {
                         setConversationMenu(null);
                         onExportConversation(conversation.id, format);
@@ -667,9 +692,11 @@ type ExtensionPickerItem = {
 function ExtensionPicker({
   items,
   onOpenSkills,
+  onOpenPlugins,
 }: {
   items: ExtensionPickerItem[];
   onOpenSkills: () => void;
+  onOpenPlugins: () => void;
 }) {
   const { t } = useI18n();
   return (
@@ -689,12 +716,12 @@ function ExtensionPicker({
           <button
             type="button"
             key={id}
-            disabled={id !== "skills"}
-            onClick={id === "skills" ? onOpenSkills : undefined}
+            disabled={id === "knowledge"}
+            onClick={id === "skills" ? onOpenSkills : id === "plugins" ? onOpenPlugins : undefined}
           >
             <Icon size={17} />
             <span>{label}</span>
-            {id !== "skills" ? <small>{t("sidebar.comingSoon")}</small> : null}
+            {id === "knowledge" ? <small>{t("sidebar.comingSoon")}</small> : null}
           </button>
         ))}
       </div>
@@ -719,6 +746,7 @@ type ConversationPickerProps = {
   onOpenConversationMenu: (conversationId: string, anchor: HTMLButtonElement) => void;
   onCloseConversationMenu: () => void;
   onExport: (conversationId: string, format: "markdown" | "json") => void;
+  onRename: (conversation: ConversationListItem) => void;
   onSaveAsNote: (conversationId: string) => void;
   onSummarizeToNote: (conversationId: string) => void;
   onGenerateDeepNote: (conversationId: string) => void;
@@ -743,6 +771,7 @@ function ConversationPicker({
   onOpenConversationMenu,
   onCloseConversationMenu,
   onExport,
+  onRename,
   onSaveAsNote,
   onSummarizeToNote,
   onGenerateDeepNote,
@@ -792,6 +821,7 @@ function ConversationPicker({
         {openConversationMenu === conversation.id ? (
           <ConversationMenu
             t={t}
+            onRename={() => onRename(conversation)}
             onExport={(format) => onExport(conversation.id, format)}
             onSaveAsNote={() => onSaveAsNote(conversation.id)}
             onSummarizeToNote={() => onSummarizeToNote(conversation.id)}
@@ -897,6 +927,7 @@ type ConversationMenuProps = {
   className?: string;
   style?: CSSProperties;
   onExport: (format: "markdown" | "json") => void;
+  onRename: () => void;
   onSaveAsNote: () => void;
   onSummarizeToNote: () => void;
   onGenerateDeepNote: () => void;
@@ -909,6 +940,7 @@ function ConversationMenu({
   className,
   style,
   onExport,
+  onRename,
   onSaveAsNote,
   onSummarizeToNote,
   onGenerateDeepNote,
@@ -921,7 +953,7 @@ function ConversationMenu({
       role="menu"
       style={style}
     >
-      <button className="sidebar-menu-item" type="button" role="menuitem">
+      <button className="sidebar-menu-item" type="button" role="menuitem" onClick={onRename}>
         <Pencil size={16} />
         <span>{t("sidebar.rename")}</span>
       </button>

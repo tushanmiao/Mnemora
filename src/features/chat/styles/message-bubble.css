@@ -354,6 +354,12 @@
   margin-right: 12px;
 }
 
+.message-speech-error {
+  flex-basis: 100%;
+  color: var(--color-danger);
+  font-size: 11px;
+}
+
 @keyframes message-spin {
   to {
     transform: rotate(360deg);
@@ -376,9 +382,11 @@
   display: inline-flex;
   position: absolute;
   z-index: 12;
+  max-width: min(320px, calc(100% - 12px));
   padding: 3px;
   align-items: center;
   gap: 2px;
+  flex-wrap: wrap;
   transform: translateX(-50%);
   border: 1px solid var(--color-border);
   border-radius: 999px;
@@ -386,7 +394,7 @@
   box-shadow: 0 4px 14px rgb(0 0 0 / 0.13);
   font-size: 12px;
   line-height: 1.4;
-  white-space: nowrap;
+  white-space: normal;
 }
 
 .message-quote-fab button {

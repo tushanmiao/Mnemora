@@ -1,4 +1,4 @@
-export type SkillSource = "builtin" | "user";
+export type SkillSource = "builtin" | "user" | "plugin";
 export type SkillFileKind = "skillMd" | "reference" | "script" | "asset" | "other";
 export type SkillMode = "chat" | "work" | "notes";
 export type SkillRisk = "low" | "medium" | "high";

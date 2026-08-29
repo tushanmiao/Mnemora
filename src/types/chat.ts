@@ -83,7 +83,8 @@ export interface ToolTrace {
     | "networkRead"
     | "memoryRead"
     | "memoryWrite"
-    | "noteWrite";
+    | "noteWrite"
+    | "externalTool";
   argumentSummary: string;
   preview?: string;
   durationMs?: number;

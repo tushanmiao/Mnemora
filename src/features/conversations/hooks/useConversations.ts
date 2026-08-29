@@ -7,6 +7,7 @@ import {
   listStoredConversations,
   loadStoredConversation,
   persistConversation,
+  renameStoredConversation,
   removeStoredConversation,
 } from "../api/conversations";
 import { trimConversationCache } from "../utils/conversationCache";
@@ -452,6 +453,34 @@ export function useConversations(onNavigateToChat: () => void) {
     updateConversationListTotal,
   ]);
 
+  const renameConversation = useCallback(async (conversationId: string, nextTitle: string) => {
+    const title = nextTitle.trim();
+    if (!title || title.length > 500) return false;
+    const pendingWrite = pendingConversationSavesRef.current.get(conversationId)?.promise;
+    if (pendingWrite) await pendingWrite;
+    const cached = conversationsRef.current.find((item) => item.id === conversationId);
+    const now = Date.now();
+    const summary = STARTS_IN_TAURI
+      ? await renameStoredConversation(conversationId, title)
+      : cached
+        ? toConversationListItem({ ...cached, title, updatedAt: now })
+        : null;
+    const nextCache = conversationsRef.current.map((conversation) => (
+      conversation.id === conversationId
+        ? { ...conversation, title, updatedAt: summary?.updatedAt ?? now }
+        : conversation
+    ));
+    conversationsRef.current = nextCache;
+    setConversations(nextCache);
+    if (summary) {
+      upsertConversationListItem(summary);
+    } else {
+      const current = conversationListItemsRef.current.find((item) => item.id === conversationId);
+      if (current) upsertConversationListItem({ ...current, title, updatedAt: now });
+    }
+    return true;
+  }, [upsertConversationListItem]);
+
   const clearConversations = useCallback(() => {
     if (requestInFlightRef.current) return;
     selectionVersionRef.current += 1;
@@ -547,6 +576,7 @@ export function useConversations(onNavigateToChat: () => void) {
     createNewConversation,
     selectConversation,
     deleteConversation,
+    renameConversation,
     clearConversations,
     deleteCurrentConversationPermanently,
     updateCurrentConversation,

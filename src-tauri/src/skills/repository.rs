@@ -28,6 +28,7 @@ const MAX_MODEL_RESOURCE_LINES: usize = 2_000;
 pub struct SkillRepository {
     pub(crate) builtin_dir: PathBuf,
     pub(crate) user_dir: PathBuf,
+    pub(crate) plugin_dir: PathBuf,
     pub(crate) staging_dir: PathBuf,
     pub(crate) state_path: PathBuf,
 }
@@ -37,6 +38,7 @@ impl SkillRepository {
         Self {
             builtin_dir,
             user_dir: root_dir.join("user"),
+            plugin_dir: root_dir.join("plugin"),
             staging_dir: root_dir.join("staging"),
             state_path: root_dir.join("state.json"),
         }
@@ -57,6 +59,13 @@ impl SkillRepository {
         self.scan_source(
             &self.user_dir,
             SkillSource::User,
+            &state,
+            &mut ids,
+            &mut result,
+        )?;
+        self.scan_source(
+            &self.plugin_dir,
+            SkillSource::Plugin,
             &state,
             &mut ids,
             &mut result,
@@ -305,6 +314,8 @@ impl SkillRepository {
     pub(crate) fn ensure_user_directories(&self) -> Result<(), String> {
         fs::create_dir_all(&self.user_dir)
             .map_err(|error| format!("创建用户技能目录失败：{error}"))?;
+        fs::create_dir_all(&self.plugin_dir)
+            .map_err(|error| format!("创建插件技能目录失败：{error}"))?;
         fs::create_dir_all(&self.staging_dir)
             .map_err(|error| format!("创建技能临时目录失败：{error}"))
     }
@@ -338,6 +349,7 @@ impl SkillRepository {
         for (source, root) in [
             (SkillSource::Builtin, &self.builtin_dir),
             (SkillSource::User, &self.user_dir),
+            (SkillSource::Plugin, &self.plugin_dir),
         ] {
             let direct = root.join(skill_id);
             if direct.join("SKILL.md").is_file() {
@@ -371,6 +383,102 @@ impl SkillRepository {
             }
         }
         Err(format!("找不到技能：{skill_id}"))
+    }
+
+    pub fn inspect_plugin_skill(&self, directory: &Path) -> Result<SkillSummary, String> {
+        Ok(parse_skill(directory, SkillSource::Plugin, true)?.summary)
+    }
+
+    pub fn install_plugin_skill(
+        &self,
+        plugin_id: &str,
+        source: &Path,
+    ) -> Result<SkillSummary, String> {
+        validate_skill_id(plugin_id)?;
+        self.ensure_user_directories()?;
+        let preview = parse_skill(source, SkillSource::Plugin, true)?;
+        let destination = self.plugin_dir.join(&preview.summary.id);
+        if let Ok(existing) = self.load_record(&preview.summary.id) {
+            if existing.summary.source != SkillSource::Plugin {
+                return Err(format!(
+                    "插件技能 ID 与现有技能冲突：{}",
+                    preview.summary.id
+                ));
+            }
+            let owner =
+                fs::read_to_string(destination.join(".mnemora-plugin-owner")).unwrap_or_default();
+            if owner.trim() != plugin_id {
+                return Err(format!(
+                    "插件技能 ID 与另一个插件冲突：{}",
+                    preview.summary.id
+                ));
+            }
+        }
+        let staging = self
+            .staging_dir
+            .join(format!("plugin-{}", uuid::Uuid::new_v4()));
+        super::stage_package_source(source, super::types::SkillImportKind::Directory, &staging)?;
+        fs::write(staging.join(".mnemora-plugin-owner"), plugin_id)
+            .map_err(|error| format!("写入插件技能所有者失败：{error}"))?;
+        let backup = self
+            .staging_dir
+            .join(format!("plugin-backup-{}", uuid::Uuid::new_v4()));
+        let had_previous = destination.exists();
+        if had_previous {
+            fs::rename(&destination, &backup)
+                .map_err(|error| format!("备份插件技能失败：{error}"))?;
+        }
+        if let Err(error) = fs::rename(&staging, &destination) {
+            if had_previous {
+                let _ = fs::rename(&backup, &destination);
+            }
+            return Err(format!("启用插件技能失败：{error}"));
+        }
+        if had_previous {
+            let _ = fs::remove_dir_all(&backup);
+        }
+        let mut state = self.read_state()?;
+        state.skills.insert(
+            preview.summary.id.clone(),
+            SkillStateEntry { enabled: true },
+        );
+        self.write_state(&state)?;
+        Ok(parse_skill(&destination, SkillSource::Plugin, true)?.summary)
+    }
+
+    pub fn remove_plugin_skills(&self, plugin_id: &str) -> Result<Vec<String>, String> {
+        validate_skill_id(plugin_id)?;
+        self.ensure_user_directories()?;
+        let mut removed = Vec::new();
+        for directory in child_directories(&self.plugin_dir)? {
+            let owner =
+                fs::read_to_string(directory.join(".mnemora-plugin-owner")).unwrap_or_default();
+            if owner.trim() != plugin_id {
+                continue;
+            }
+            let record = parse_skill(&directory, SkillSource::Plugin, true)?;
+            let canonical_root = self
+                .plugin_dir
+                .canonicalize()
+                .map_err(|error| format!("读取插件技能根目录失败：{error}"))?;
+            let canonical_directory = directory
+                .canonicalize()
+                .map_err(|error| format!("读取插件技能目录失败：{error}"))?;
+            if canonical_directory.parent() != Some(canonical_root.as_path()) {
+                return Err("插件技能目录越界，已拒绝删除".to_string());
+            }
+            fs::remove_dir_all(&canonical_directory)
+                .map_err(|error| format!("移除插件技能失败：{error}"))?;
+            removed.push(record.summary.id);
+        }
+        if !removed.is_empty() {
+            let mut state = self.read_state()?;
+            for id in &removed {
+                state.skills.remove(id);
+            }
+            self.write_state(&state)?;
+        }
+        Ok(removed)
     }
 
     fn scan_source(
@@ -627,6 +735,7 @@ fn source_order(source: SkillSource) -> u8 {
     match source {
         SkillSource::Builtin => 0,
         SkillSource::User => 1,
+        SkillSource::Plugin => 2,
     }
 }
 

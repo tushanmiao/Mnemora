@@ -53,6 +53,7 @@ import { clearAttachmentPreviewCache } from "./features/chat/api/attachments";
 import { releaseBackgroundResources } from "./runtime/resources/ResourceRegistry";
 import { initializeWorkspaceLifecycle, subscribeWorkspaceLifecycle } from "./runtime/resources/WorkspaceLifecycle";
 import { nextPetStateExpiry, projectPetState } from "./features/pet/petState";
+import { speechController } from "./features/chat/speech/speechController";
 function App() {
   const appShellRef = useRef<HTMLElement>(null);
   const navigation = useWorkspaceNavigation();
@@ -97,6 +98,7 @@ function App() {
   useEffect(() => {
     const disposeLifecycle = initializeWorkspaceLifecycle();
     const unsubscribe = subscribeWorkspaceLifecycle((state) => {
+      if (state === "disposed") speechController.stop();
       if (state === "active") return;
       clearAttachmentPreviewCache();
       releaseBackgroundResources();
@@ -762,6 +764,7 @@ function App() {
           if (!window.confirm("确定删除这个对话吗？未完成的深度笔记任务将被遗弃终止且不能恢复；已生成笔记不会删除，但部分来源跳转将失效。")) return;
           conversations.deleteConversation(conversationId);
         }}
+        onRenameConversation={conversations.renameConversation}
         onExportConversation={(conversationId, format) => {
           const item = conversations.conversationListItems.find((conversation) => conversation.id === conversationId);
           void exportStoredConversation(conversationId, item?.title ?? "Mnemora 会话", format)
@@ -786,6 +789,7 @@ function App() {
         }}
         onLoadMoreConversations={conversations.loadMoreConversations}
         onOpenSkills={() => openSettings("skills")}
+        onOpenPlugins={() => openSettings("plugins")}
         onWorkLibraryViewChange={changeWorkLibraryView}
         onWorkSearchQueryChange={setWorkSearchQuery}
         onWorkCollectionSelect={changeWorkCollection}

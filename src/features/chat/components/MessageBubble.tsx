@@ -10,11 +10,15 @@ import {
   FileText,
   LoaderCircle,
   NotebookPen,
+  Pause,
   Pencil,
+  Play,
   Quote,
   RefreshCcw,
+  Square,
   Trash2,
   UserRound,
+  Volume2,
   X,
 } from "lucide-react";
 import type { ChatMessage, LiteratureReference } from "../../../types/chat";
@@ -24,6 +28,8 @@ import { useStreamingMessage } from "../stores/streamingStore";
 import { useI18n } from "../../../i18n/I18nProvider";
 import { AgentWorkflow } from "../agent/components/AgentWorkflow";
 import { agentWorkflowNeedsAttention, hasAgentActivity } from "../agent/projections/workflowProjection";
+import { extractSpeakableText, normalizeSelectedSpeechText } from "../speech/speechText";
+import { useSpeechPlayback } from "../speech/useSpeechPlayback";
 import "../styles/message-bubble.css";
 
 const LONG_USER_MESSAGE_CHARACTERS = 420;
@@ -132,6 +138,20 @@ export const MessageBubble = memo(function MessageBubble({
     text: string;
   } | null>(null);
   const [referencesOpen, setReferencesOpen] = useState(false);
+  const speech = useSpeechPlayback();
+  const activeSpeechForMessage = speech.target?.messageId === message.id;
+  const selectionSpeechTarget = speech.target?.messageId === message.id
+    && speech.target.source === "selection"
+    && speech.target.text === normalizeSelectedSpeechText(quoteAnchor?.text ?? "");
+  const speechActive = speech.status === "preparing"
+    || speech.status === "speaking"
+    || speech.status === "paused";
+
+  useEffect(() => {
+    // A streaming answer can replace the text currently being read. Stop the
+    // stale utterance so it never continues over the newly generated answer.
+    if (isAssistant && isStreaming && activeSpeechForMessage) speech.stop();
+  }, [activeSpeechForMessage, isAssistant, isStreaming, speech.stop]);
 
   // 选中助手回答的部分文本后，在选区附近显示轻量操作条。
   const handleQuoteMouseUp = () => {
@@ -207,6 +227,7 @@ export const MessageBubble = memo(function MessageBubble({
   };
 
   const beginEditing = () => {
+    if (activeSpeechForMessage) speech.stop();
     onUiStateChange(message.id, { editing: true, editDraft: message.content });
   };
 
@@ -224,10 +245,41 @@ export const MessageBubble = memo(function MessageBubble({
     noteResetTimerRef.current = window.setTimeout(() => setNoteState("idle"), 1_500);
   };
 
+  const toggleMessageSpeech = () => {
+    if (activeSpeechForMessage && speech.target) {
+      speech.toggle(speech.target);
+      return;
+    }
+    if (!hasContent) return;
+    speech.toggle({
+      messageId: message.id,
+      source: "message",
+      text: extractSpeakableText(displayedContent),
+    });
+  };
+
+  const toggleSelectionSpeech = () => {
+    if (!quoteAnchor) return;
+    speech.toggle({
+      messageId: message.id,
+      source: "selection",
+      text: normalizeSelectedSpeechText(quoteAnchor.text),
+    });
+    setQuoteAnchor(null);
+    window.getSelection()?.removeAllRanges();
+  };
+
+  const speechActionLabel = (isTarget: boolean) => {
+    if (isTarget && speech.status === "paused") return t("chat.resumeReading");
+    if (isTarget && speech.status === "speaking") return t("chat.pauseReading");
+    return t("chat.readAloud");
+  };
+
   const submitEdit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const content = editDraft.trim();
     if ((!content && !hasAttachments && !hasLiteratureReferences && !hasNoteReferences) || actionsDisabled) return;
+    if (activeSpeechForMessage) speech.stop();
     onUiStateChange(message.id, {
       editing: false,
       editDraft: content,
@@ -375,6 +427,15 @@ export const MessageBubble = memo(function MessageBubble({
                         </button>
                         <button
                           type="button"
+                          title={speechActionLabel(selectionSpeechTarget)}
+                          aria-label={speechActionLabel(selectionSpeechTarget)}
+                          onClick={toggleSelectionSpeech}
+                        >
+                          {selectionSpeechTarget && speech.status === "speaking" ? <Pause size={13} /> : selectionSpeechTarget && speech.status === "paused" ? <Play size={13} /> : <Volume2 size={13} />}
+                          <span>{speechActionLabel(selectionSpeechTarget)}</span>
+                        </button>
+                        <button
+                          type="button"
                           onClick={() => {
                             const text = quoteAnchor.text.length > MAX_QUOTE_CHARACTERS
                               ? `${quoteAnchor.text.slice(0, MAX_QUOTE_CHARACTERS)}…`
@@ -444,6 +505,31 @@ export const MessageBubble = memo(function MessageBubble({
               >
                 {copied ? <Check size={15} /> : <Copy size={15} />}
               </button>
+              {isAssistant ? (
+                <>
+                  <button
+                    className="message-action"
+                    type="button"
+                    title={speechActionLabel(activeSpeechForMessage)}
+                    aria-label={speechActionLabel(activeSpeechForMessage)}
+                    disabled={!hasContent}
+                    onClick={toggleMessageSpeech}
+                  >
+                    {activeSpeechForMessage && speech.status === "speaking" ? <Pause size={15} /> : activeSpeechForMessage && speech.status === "paused" ? <Play size={15} /> : <Volume2 size={15} />}
+                  </button>
+                  {activeSpeechForMessage && speechActive ? (
+                    <button
+                      className="message-action"
+                      type="button"
+                      title={t("chat.stopReading")}
+                      aria-label={t("chat.stopReading")}
+                      onClick={speech.stop}
+                    >
+                      <Square size={14} />
+                    </button>
+                  ) : null}
+                </>
+              ) : null}
               {isAssistant && onSaveAsNote ? (
                 <button
                   className="message-action"
@@ -473,7 +559,10 @@ export const MessageBubble = memo(function MessageBubble({
                   title={t("chat.regenerate")}
                   aria-label={t("chat.regenerate")}
                   disabled={actionsDisabled || !canRegenerate}
-                  onClick={() => onRegenerate(message.id)}
+                  onClick={() => {
+                    if (activeSpeechForMessage) speech.stop();
+                    onRegenerate(message.id);
+                  }}
                 >
                   <RefreshCcw size={15} />
                 </button>
@@ -484,7 +573,10 @@ export const MessageBubble = memo(function MessageBubble({
                 title={t("common.delete")}
                 aria-label={t("chat.deleteMessage")}
                 disabled={actionsDisabled}
-                onClick={() => onDelete(message.id)}
+                onClick={() => {
+                  if (activeSpeechForMessage) speech.stop();
+                  onDelete(message.id);
+                }}
               >
                 <Trash2 size={15} />
               </button>
@@ -493,6 +585,9 @@ export const MessageBubble = memo(function MessageBubble({
               <div className="message-usage" title={usageTitle}>
                 {usageParts.map((part) => <span key={part}>{part}</span>)}
               </div>
+            ) : null}
+            {activeSpeechForMessage && speech.status === "error" && speech.error ? (
+              <span className="message-speech-error" role="status">{speech.error}</span>
             ) : null}
           </footer>
         ) : null}

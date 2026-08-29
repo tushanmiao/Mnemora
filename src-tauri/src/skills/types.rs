@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 pub enum SkillSource {
     Builtin,
     User,
+    Plugin,
 }
 
 /// Skill 可以出现在哪些工作模式中。模式只影响目录暴露，不代表 Skill 已经被加载。

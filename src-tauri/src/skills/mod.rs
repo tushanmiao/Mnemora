@@ -10,5 +10,6 @@ mod parser;
 mod repository;
 pub mod types;
 
+pub(crate) use installer::stage_package_source;
 pub(crate) use parser::validate_skill_id;
 pub use repository::SkillRepository;

@@ -244,6 +244,26 @@ fn extract_zip(source: &Path, destination: &Path) -> Result<(), String> {
     Ok(())
 }
 
+pub(crate) fn stage_package_source(
+    source: &Path,
+    kind: SkillImportKind,
+    destination: &Path,
+) -> Result<(), String> {
+    match kind {
+        SkillImportKind::Directory => {
+            let metadata = fs::symlink_metadata(source)
+                .map_err(|error| format!("Failed to inspect package directory: {error}"))?;
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                return Err("Package source must be a regular directory".to_string());
+            }
+            fs::create_dir(destination)
+                .map_err(|error| format!("Failed to create package staging directory: {error}"))?;
+            copy_directory(source, destination, 0, &mut CopyBudget::default())
+        }
+        SkillImportKind::Zip => extract_zip(source, destination),
+    }
+}
+
 fn consume_budget(budget: &mut CopyBudget, size: u64) -> Result<(), String> {
     if size > MAX_SINGLE_FILE_BYTES {
         return Err("技能中的单个文件不能超过 10 MB。".to_string());

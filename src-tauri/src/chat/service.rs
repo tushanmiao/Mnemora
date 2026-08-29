@@ -483,8 +483,7 @@ async fn execute_parallel_safe_tools(
         .iter()
         .enumerate()
         .filter(|(_, call)| {
-            agent::parallel_safe(&call.name)
-                && !agent::requires_approval(context.permission_mode, call)
+            agent::parallel_safe(context, &call.name) && !agent::requires_approval(context, call)
         })
         .map(|(index, call)| (index, call.clone()));
     let mut results = vec![None; calls.len()];
@@ -496,6 +495,7 @@ async fn execute_parallel_safe_tools(
         let memory = state.memory_repository.clone();
         let library = state.library_repository.clone();
         let library_operations = state.library_operations.clone();
+        let mcp = state.mcp_manager.clone();
         let mut skill_cache = run_cache.clone();
         let cancellation = cancellation.clone();
         let persisted_run_id = persisted_run_id.map(str::to_string);
@@ -506,12 +506,15 @@ async fn execute_parallel_safe_tools(
                     "{:x}",
                     Sha256::digest(call.arguments.to_string().as_bytes())
                 );
+                let (source_json, catalog_revision) = agent::tool_provenance(&context, &call.name);
                 match library.create_agent_tool_call(
                     run_id,
                     &call.id,
                     &call.name,
-                    &format!("{:?}", agent::tool_risk(&call)),
+                    &format!("{:?}", agent::tool_risk(&context, &call)),
                     &arguments_hash,
+                    &source_json,
+                    &catalog_revision,
                     None,
                     None,
                 ) {
@@ -564,6 +567,7 @@ async fn execute_parallel_safe_tools(
                     &memory,
                     &library,
                     &library_operations,
+                    &mcp,
                     &mut skill_cache,
                     &cancellation,
                 )
@@ -819,7 +823,7 @@ async fn run_agent_complete(
                 result
             } else {
                 let started = Instant::now();
-                let execution = if agent::requires_approval(tool_context.permission_mode, &call) {
+                let execution = if agent::requires_approval(tool_context, &call) {
                     agent::ToolExecution {
                         content: "当前为非流式请求，无法显示工具审批；本次敏感工具调用已拒绝。"
                             .to_string(),
@@ -841,6 +845,7 @@ async fn run_agent_complete(
                         &state.memory_repository,
                         &state.library_repository,
                         &state.library_operations,
+                        &state.mcp_manager,
                         &mut skill_cache,
                         execution.cancellation,
                     )
@@ -868,7 +873,7 @@ async fn run_agent_complete(
                 } else {
                     ToolTraceStatus::Completed
                 },
-                risk: agent::tool_risk(&call),
+                risk: agent::tool_risk(tool_context, &call),
                 argument_summary: agent::argument_summary(&call),
                 preview: Some(execution.preview.clone()),
                 duration_ms: Some(result.duration_ms),
@@ -882,7 +887,7 @@ async fn run_agent_complete(
                     activated_skill_ids.push(skill_id.clone());
                 }
             }
-            agent::apply_tool_disclosures(&mut request, &call, &execution);
+            agent::apply_tool_disclosures(&mut request, &call, &execution, tool_context);
             request.messages.push(ModelMessage {
                 role: ModelRole::Tool,
                 content: String::new(),
@@ -1128,8 +1133,8 @@ async fn run_agent_stream(
             tool_result: None,
         });
         for call in tool_calls.iter().filter(|call| {
-            agent::parallel_safe(&call.name)
-                && !agent::requires_approval(tool_context.permission_mode, call)
+            agent::parallel_safe(tool_context, &call.name)
+                && !agent::requires_approval(tool_context, call)
         }) {
             emit_tool_trace(
                 on_event,
@@ -1140,7 +1145,7 @@ async fn run_agent_stream(
                     call_id: call.id.clone(),
                     name: call.name.clone(),
                     status: ToolTraceStatus::Running,
-                    risk: agent::tool_risk(call),
+                    risk: agent::tool_risk(tool_context, call),
                     argument_summary: agent::argument_summary(call),
                     preview: None,
                     duration_ms: None,
@@ -1175,7 +1180,7 @@ async fn run_agent_stream(
                         } else {
                             ToolTraceStatus::Completed
                         },
-                        risk: agent::tool_risk(&call),
+                        risk: agent::tool_risk(tool_context, &call),
                         argument_summary: agent::argument_summary(&call),
                         preview: Some(result.execution.preview.clone()),
                         duration_ms: Some(result.duration_ms),
@@ -1213,7 +1218,7 @@ async fn run_agent_stream(
                     )?;
                 }
             }
-            agent::apply_tool_disclosures(&mut request, &call, &result);
+            agent::apply_tool_disclosures(&mut request, &call, &result, tool_context);
             request.messages.push(ModelMessage {
                 role: ModelRole::Tool,
                 content: String::new(),
@@ -1258,9 +1263,9 @@ async fn execute_agent_tool(
     message_id: &str,
     call: &ModelToolCall,
 ) -> agent::ToolExecution {
-    let risk = agent::tool_risk(call);
+    let risk = agent::tool_risk(context, call);
     let argument_summary = agent::argument_summary(call);
-    let approval_required = agent::requires_approval(context.permission_mode, call);
+    let approval_required = agent::requires_approval(context, call);
     let approval_id = approval_required.then(|| uuid::Uuid::new_v4().to_string());
     let expires_at_ms = approval_required
         .then(|| usage::now_ms().saturating_add(TOOL_APPROVAL_TIMEOUT.as_millis() as u64));
@@ -1268,6 +1273,7 @@ async fn execute_agent_tool(
         "{:x}",
         Sha256::digest(call.arguments.to_string().as_bytes())
     );
+    let (source_json, catalog_revision) = agent::tool_provenance(context, &call.name);
     let (_, execution_version, mut tool_state_version) =
         match state.library_repository.create_agent_tool_call(
             run_id,
@@ -1275,6 +1281,8 @@ async fn execute_agent_tool(
             &call.name,
             &format!("{risk:?}"),
             &arguments_hash,
+            &source_json,
+            &catalog_revision,
             approval_id.as_deref(),
             expires_at_ms,
         ) {
@@ -1537,6 +1545,7 @@ async fn execute_agent_tool(
         &state.memory_repository,
         &state.library_repository,
         &state.library_operations,
+        &state.mcp_manager,
         skill_cache,
         cancellation,
     )
@@ -1962,6 +1971,7 @@ async fn prepare_call(
         agent::build_runtime_context(
             &request,
             &state.skill_repository,
+            &state.mcp_manager,
             memory_settings,
             &working_directory,
             proxy_settings,

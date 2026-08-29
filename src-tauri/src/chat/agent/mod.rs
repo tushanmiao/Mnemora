@@ -19,6 +19,7 @@ mod workspace;
 pub use registry::{
     apply_tool_disclosures, argument_summary, build_runtime_context, configure_model_request,
     execute_bounded_attachment_reader, execute_bounded_text_window, execute_tool, parallel_safe,
-    requires_approval, tool_risk, validate_disclosed_tool_calls, SkillRunCache, ToolRuntimeContext,
+    requires_approval, tool_provenance, tool_risk, validate_disclosed_tool_calls, SkillRunCache,
+    ToolRuntimeContext,
 };
 pub use types::{ToolExecution, ToolTraceSnapshot, ToolTraceStatus};

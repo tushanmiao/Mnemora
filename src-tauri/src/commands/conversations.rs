@@ -94,6 +94,19 @@ pub async fn save_conversation(
 }
 
 #[tauri::command]
+pub async fn rename_conversation(
+    state: State<'_, AppState>,
+    conversation_id: String,
+    title: String,
+) -> Result<ConversationListItem, String> {
+    let _write_guard = state.conversation_writes.lock().await;
+    let repository = state.conversation_repository.clone();
+    tauri::async_runtime::spawn_blocking(move || repository.rename(&conversation_id, &title))
+        .await
+        .map_err(join_error)?
+}
+
+#[tauri::command]
 pub async fn delete_conversation(
     app: AppHandle,
     state: State<'_, AppState>,
