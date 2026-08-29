@@ -92,6 +92,9 @@ export function NoteSettingsPanel({
           </div>
         ) : null}
 
+        {/* 左控件 / 右预览：这页只有三四个设置项，纵向堆叠会空掉大半屏；
+            并排还解决了一个实际问题——预览原先在很下面，拖滑块时看不见效果。 */}
+        <div className="note-settings-layout">
         <section className="settings-section">
           <div className="settings-section-head">
             <Type size={16} />
@@ -182,17 +185,27 @@ export function NoteSettingsPanel({
           </div>
         </section>
 
-        <section className="settings-section">
+        <aside className="note-preview-pane" aria-label={t("notesSettings.preview")}>
           <div className="settings-section-head">
             <Eye size={16} />
             <h3>{t("notesSettings.preview")}</h3>
           </div>
+          {/* 预览要覆盖真正会受影响的元素：标题层级、正文、列表、引用、行内代码。
+              只放一段正文的话，字号和行高对层级关系的影响根本看不出来。 */}
           <div className="note-settings-preview">
             <h4>{t("notesSettings.previewTitle")}</h4>
             <p>{t("notesSettings.previewBody")}</p>
+            <ul>
+              <li>{t("notesSettings.previewListOne")}</li>
+              <li>{t("notesSettings.previewListTwo")}</li>
+            </ul>
             <blockquote>{t("notesSettings.previewQuote")}</blockquote>
+            <p className="note-preview-meta">
+              {draft.noteFontSize} px · {t("notesSettings.lineHeight")} {draft.noteLineHeight.toFixed(2)}
+            </p>
           </div>
-        </section>
+        </aside>
+        </div>
       </div>
     </form>
   );

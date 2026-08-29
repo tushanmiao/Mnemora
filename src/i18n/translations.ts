@@ -307,6 +307,8 @@ export const zhTranslations = {
   "notesSettings.preview": "实时预览",
   "notesSettings.previewTitle": "知识如何形成可复用的笔记",
   "notesSettings.previewBody": "清晰的标题层次、舒适的字号与稳定的行宽，会直接影响长文阅读和内容修改效率。",
+  "notesSettings.previewListOne": "标题与正文的字号差决定层级是否一眼可辨。",
+  "notesSettings.previewListTwo": "行高影响长文的回行准确度，也决定一屏能读多少。",
   "notesSettings.previewQuote": "设置会同步应用到普通笔记、PDF 阅读中打开的笔记以及 Markdown 预览。",
   "notesSettings.reset": "恢复笔记排版默认值",
   "storage.title": "数据与存储",

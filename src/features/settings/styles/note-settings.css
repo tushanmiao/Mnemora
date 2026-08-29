@@ -1,10 +1,34 @@
 .note-settings-content { padding-bottom: 24px; }
 
+/* 左控件 / 右预览。这页设置项少，单栏堆叠会让控件贴在最右、下方空出一大片；
+   并排后预览始终在视野内，拖滑块时能立刻看到结果。 */
+.note-settings-layout {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr) minmax(340px, 0.85fr);
+  align-items: start;
+  gap: clamp(20px, 3vw, 44px);
+}
+
+.note-settings-layout > .settings-section {
+  padding-top: 4px;
+  border-top: 0;
+}
+
+.note-preview-pane {
+  position: sticky;
+  top: 0;
+  display: grid;
+  min-width: 0;
+  padding-top: 4px;
+  gap: 0;
+}
+
 /* 预览用笔记自己的排版变量渲染，所见即将生效的正文样式 */
 .note-settings-preview {
   display: grid;
-  padding: 22px clamp(20px, 4vw, 44px) 26px;
-  gap: 8px;
+  padding: 20px clamp(18px, 2vw, 26px) 22px;
+  gap: 10px;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-panel);
   background: var(--color-surface-raised);
@@ -14,17 +38,48 @@
 }
 
 .note-settings-preview h4 {
-  margin: 7px 0 3px;
+  margin: 0;
   color: var(--color-text);
   font-size: 1.45em;
   font-weight: 680;
+  line-height: 1.25;
 }
 
 .note-settings-preview p { margin: 0; color: var(--color-text-secondary); }
 
+.note-settings-preview ul {
+  margin: 0;
+  padding-inline-start: 1.4em;
+  color: var(--color-text-secondary);
+}
+
+.note-settings-preview li + li { margin-top: 0.3em; }
+
 .note-settings-preview blockquote {
-  margin: 8px 0 0;
-  padding: 8px 12px;
+  margin: 2px 0 0;
+  padding: 8px 14px;
   border-inline-start: 2px solid var(--color-accent);
   color: var(--color-muted);
+}
+
+/* 当前数值回读：拖动滑块时不用把视线移回左栏去确认数字 */
+.note-preview-meta {
+  margin: 4px 0 0 !important;
+  padding-top: 10px;
+  border-top: 1px solid var(--color-border-soft);
+  color: var(--color-faint) !important;
+  font-family: var(--ui-font-family);
+  font-size: var(--font-size-meta);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.5;
+}
+
+@media (max-width: 1020px) {
+  .note-settings-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .note-preview-pane {
+    position: static;
+  }
 }

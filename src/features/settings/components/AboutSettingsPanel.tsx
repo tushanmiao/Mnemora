@@ -10,6 +10,7 @@ import {
   FileText,
   Gauge,
   LoaderCircle,
+  MessagesSquare,
   RefreshCw,
   Save,
   ShieldCheck,
@@ -414,83 +415,52 @@ export function AboutSettingsPanel({ settings, onSaveSettings }: AboutSettingsPa
           ) : null}
         </section>
 
+        {/* 「当前能力」与「数据与安全」原先是两个分区、两套内部布局，
+            但它们是同一种东西：图标 + 标题 + 一句说明。合成一个分区、
+            一套卡片网格，页面从八条横带收敛到三组，也不再需要读者
+            在两种排版之间切换视觉模式。 */}
         <section className="settings-section" aria-labelledby="about-capability-heading">
           <div className="settings-section-head">
             <BookOpen size={16} />
-            <h3 id="about-capability-heading">当前能力</h3>
+            <h3 id="about-capability-heading">能力与边界</h3>
+            <p>能做什么，以及数据留在哪里</p>
           </div>
-          <div className="about-capability-list">
-            <CapabilityItem
-              title="多供应商对话"
-              description="支持四种模型协议、自定义中转站、Display Name 映射和手动连接测试。"
-            />
-            <CapabilityItem
-              title="流式与长对话"
-              description="流式思考、块级 Markdown、上下文用量提示和接近 90% 时的自动压缩。"
-            />
-            <CapabilityItem
-              title="Skill 与记忆"
-              description="支持来源可追溯的 Skill、L1/L2 记忆和受权限控制的工具循环。"
-            />
-            <CapabilityItem
-              title="附件与安全预览"
-              description="支持常见文本、图片、PDF、DOCX、XLSX 附件及受限 HTML 预览。"
-            />
+          <div className="about-fact-grid">
+            <FactItem icon={<MessagesSquare size={15} />} title="多供应商对话" text="支持四种模型协议、自定义中转站、Display Name 映射和手动连接测试。" />
+            <FactItem icon={<Gauge size={15} />} title="流式与长对话" text="流式思考、块级 Markdown、上下文用量提示和接近 90% 时的自动压缩。" />
+            <FactItem icon={<Sparkles size={15} />} title="Skill 与记忆" text="支持来源可追溯的 Skill、L1/L2 记忆和受权限控制的工具循环。" />
+            <FactItem icon={<FileText size={15} />} title="附件与安全预览" text="支持常见文本、图片、PDF、DOCX、XLSX 附件及受限 HTML 预览。" />
+            <FactItem icon={<Database size={15} />} title="本地优先" text="会话、记忆和用量保存在本地文件；不使用远程同步数据库。" tone="guard" />
+            <FactItem icon={<ShieldCheck size={15} />} title="凭据隔离" text="API Key 使用系统凭据存储，普通设置读取只返回凭据是否存在。" tone="guard" />
+          </div>
+          <div className="settings-callout">
+            <Sparkles size={17} />
+            <div>
+              <strong>后续方向</strong>
+              <span>PDF 阅读、Zotero 类笔记与批注、Office 受控工具和对话导出正在规划中。当前 Agent 不提供任意 Shell 或桌面自动化权限。</span>
+            </div>
           </div>
         </section>
 
-        <section className="settings-section" aria-labelledby="about-security-heading">
-          <div className="settings-section-head">
-            <ShieldCheck size={16} />
-            <h3 id="about-security-heading">数据与安全</h3>
+        <section className="settings-section about-footer">
+          <div className="about-link-row" aria-label="项目链接">
+            <button type="button" className="settings-button settings-button-secondary" onClick={() => void openExternal(PROJECT_URL)}>
+              <ExternalLink size={15} />
+              <span>项目主页</span>
+            </button>
+            <button type="button" className="settings-button settings-button-secondary" onClick={() => void openExternal(RELEASE_URL)}>
+              <ExternalLink size={15} />
+              <span>下载与版本</span>
+            </button>
+            <button type="button" className="settings-button settings-button-secondary" onClick={() => void openExternal(ISSUES_URL)}>
+              <ExternalLink size={15} />
+              <span>反馈问题</span>
+            </button>
           </div>
-          <div className="about-fact-list">
-            <FactItem
-              icon={<Database size={15} />}
-              title="本地优先"
-              text="会话、记忆和用量保存在本地文件；不使用远程同步数据库。"
-            />
-            <FactItem
-              icon={<ShieldCheck size={15} />}
-              title="凭据隔离"
-              text="API Key 使用系统凭据存储，普通设置读取只返回凭据是否存在。"
-            />
-            <FactItem
-              icon={<FileText size={15} />}
-              title="预览受限"
-              text="HTML 预览经过清洗和 CSP 限制，关闭窗口后立即销毁临时内容。"
-            />
-          </div>
-        </section>
-
-        <section className="settings-section" aria-labelledby="about-roadmap-heading">
-          <div className="settings-section-head">
-            <Sparkles size={16} />
-            <h3 id="about-roadmap-heading">后续方向</h3>
-          </div>
-          <p className="settings-section-note">
-            PDF 阅读、Zotero 类笔记与批注、Office 受控工具和对话导出正在规划中。当前 Agent 不提供任意 Shell 或桌面自动化权限。
+          <p className="about-footer-note">
+            Mnemora 当前为测试版本。导出的设置备份可能包含 API Key，请勿公开分享。
           </p>
         </section>
-
-        <div className="about-link-row" aria-label="项目链接">
-          <button type="button" className="settings-button settings-button-secondary" onClick={() => void openExternal(PROJECT_URL)}>
-            <ExternalLink size={15} />
-            <span>项目主页</span>
-          </button>
-          <button type="button" className="settings-button settings-button-secondary" onClick={() => void openExternal(RELEASE_URL)}>
-            <ExternalLink size={15} />
-            <span>下载与版本</span>
-          </button>
-          <button type="button" className="settings-button settings-button-secondary" onClick={() => void openExternal(ISSUES_URL)}>
-            <ExternalLink size={15} />
-            <span>反馈问题</span>
-          </button>
-        </div>
-
-        <p className="about-footer-note">
-          Mnemora 当前为测试版本。导出的设置备份可能包含 API Key，请勿公开分享。
-        </p>
       </div>
     </section>
   );
@@ -549,29 +519,20 @@ function MetadataItem({
   );
 }
 
-function CapabilityItem({ title, description }: { title: string; description: string }) {
-  return (
-    <div className="about-capability-item">
-      <CheckCircle2 size={15} />
-      <div>
-        <strong>{title}</strong>
-        <span>{description}</span>
-      </div>
-    </div>
-  );
-}
-
+/** tone="guard" 用于「数据边界」类条目，图标换成成功色以区别于能力条目。 */
 function FactItem({
   icon,
   title,
   text,
+  tone,
 }: {
   icon: React.ReactNode;
   title: string;
   text: string;
+  tone?: "guard";
 }) {
   return (
-    <div className="about-fact-item">
+    <div className="about-fact-item" data-tone={tone}>
       <span className="about-fact-icon">{icon}</span>
       <div>
         <strong>{title}</strong>
