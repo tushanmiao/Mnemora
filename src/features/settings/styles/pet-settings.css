@@ -22,80 +22,131 @@
 
 .pet-preview-card {
   display: grid;
-  min-height: 240px;
+  min-height: 216px;
   margin-bottom: 6px;
-  grid-template-columns: minmax(230px, 0.8fr) minmax(280px, 1.2fr);
+  grid-template-columns: 300px minmax(0, 1fr);
   overflow: hidden;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-panel);
   background:
-    radial-gradient(circle at 20% 24%, color-mix(in srgb, var(--color-accent) 22%, transparent), transparent 38%),
+    radial-gradient(circle at 22% 30%, color-mix(in srgb, var(--color-accent) 18%, transparent), transparent 42%),
     linear-gradient(135deg,
       color-mix(in srgb, var(--workspace-accent-soft) 70%, var(--color-surface-raised)),
       var(--color-surface-raised) 62%,
       color-mix(in srgb, var(--workspace-english-soft) 55%, var(--color-surface-raised)));
 }
 
+/* 形象居中而不是贴底：贴底会让不同行列数的 sprite 各自偏移，
+   看起来像没对齐；气泡改为跟在形象上方的常规流，不再绝对定位压住形象。 */
 .pet-preview-scene {
-  position: relative;
   display: grid;
-  min-height: 240px;
-  padding: 62px 22px 8px;
-  place-items: end center;
+  min-height: 216px;
+  padding: 18px 20px;
+  align-content: center;
+  justify-items: center;
+  gap: 10px;
 }
 
 .pet-preview-character {
   display: grid;
-  width: 176px;
-  height: 176px;
+  width: 168px;
+  height: 168px;
+  overflow: hidden;
   place-items: center;
 }
 
 .pet-preview-character .pet-mascot,
-.pet-preview-character .pet-sprite { height: 100%; }
-.pet-preview-character .pet-mascot { width: 100%; }
+.pet-preview-character .pet-sprite {
+  width: 100%;
+  height: 100%;
+}
 
 .pet-preview-bubble {
-  position: absolute;
-  top: 20px;
-  left: 22px;
   display: grid;
-  max-width: 224px;
+  width: 100%;
+  max-width: 260px;
   padding: 9px 12px;
-  gap: 2px;
+  gap: 3px;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-panel) var(--radius-panel) var(--radius-panel) 4px;
   color: var(--color-text);
   background: var(--color-surface-raised);
   box-shadow: var(--shadow-composer);
+  text-align: left;
 }
 
-.pet-preview-bubble strong { font-size: var(--font-size-label); font-weight: 650; }
-.pet-preview-bubble span { color: var(--color-muted); font-size: var(--font-size-micro); line-height: 1.45; }
+.pet-preview-bubble strong {
+  overflow: hidden;
+  font-size: var(--font-size-label);
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 宠物包的 description 长度不可控，限高避免把整张卡撑变形 */
+.pet-preview-bubble span {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  color: var(--color-muted);
+  font-size: var(--font-size-meta);
+  line-height: 1.5;
+}
 
 .pet-preview-copy {
   display: grid;
-  padding: 36px clamp(24px, 4vw, 52px);
+  padding: 28px clamp(24px, 4vw, 44px);
   align-content: center;
-  gap: 10px;
+  gap: 12px;
   background: color-mix(in srgb, var(--color-surface-raised) 82%, transparent);
 }
 
 .pet-preview-copy h3 {
-  max-width: 420px;
   margin: 0;
   color: var(--color-text);
-  font-size: clamp(19px, 2.4vw, 27px);
+  font-size: clamp(19px, 2vw, 25px);
   font-weight: 700;
-  line-height: 1.15;
+  line-height: 1.2;
 }
 
+/* 限制在约 62ch：整行 800 多像素的正文一行放三十多个字，眼睛回行会找不到位置 */
 .pet-preview-copy p {
-  max-width: 500px;
+  max-width: 62ch;
   margin: 0;
   color: var(--color-text-secondary);
   font-size: var(--font-size-label);
   line-height: 1.7;
+}
+
+.pet-preview-facts {
+  display: grid;
+  margin: 4px 0 0;
+  padding: 12px 0 0;
+  grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
+  gap: 12px 20px;
+  border-top: 1px solid var(--color-border);
+}
+
+.pet-preview-facts > div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.pet-preview-facts dt {
+  color: var(--color-muted);
+  font-size: var(--font-size-meta);
+}
+
+.pet-preview-facts dd {
+  margin: 0;
+  overflow: hidden;
+  color: var(--color-text);
+  font-size: var(--font-size-label);
+  font-weight: 620;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .pet-preview-copy code {
@@ -108,10 +159,18 @@
 
 /* ---------- 宠物库 ---------- */
 
+/* 用 flex 而非 auto-fill 栅格：auto-fill 会保留空轨道，
+   宠物只有两三个时卡片不会长大，右侧凭空空出几百像素。
+   flex-grow 让现有卡片分掉整行，max-width 防止单个宠物时被拉成横幅。 */
 .pet-library-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(214px, 1fr));
+  display: flex;
+  flex-wrap: wrap;
   gap: 10px;
+}
+
+.pet-library-grid > .pet-library-item {
+  flex: 1 1 214px;
+  max-width: 340px;
 }
 
 .pet-library-item {
@@ -135,11 +194,11 @@
   display: grid;
   width: 100%;
   min-width: 0;
-  min-height: 96px;
-  padding: 10px 34px 10px 10px;
-  grid-template-columns: 68px minmax(0, 1fr);
+  min-height: 92px;
+  padding: 12px 34px 12px 12px;
+  grid-template-columns: 64px minmax(0, 1fr);
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   border: 0;
   color: var(--color-text);
   background: transparent;
@@ -156,16 +215,21 @@
   color: var(--color-accent);
 }
 
+/* 形象槽位必须自己裁剪：sprite 图集尺寸由 pet.json 的行列数决定，
+   槽位不设边界的话，超出的帧会盖住右侧文字和下方的兼容性说明。 */
 .pet-library-preview {
   display: grid;
-  width: 68px;
-  height: 74px;
+  width: 64px;
+  height: 70px;
+  overflow: hidden;
   place-items: center;
 }
 
 .pet-library-preview .pet-mascot,
-.pet-library-preview .pet-sprite { height: 100%; }
-.pet-library-preview .pet-mascot { width: 100%; }
+.pet-library-preview .pet-sprite {
+  width: 100%;
+  height: 100%;
+}
 
 .pet-library-copy { display: grid; min-width: 0; gap: 4px; }
 
@@ -179,12 +243,13 @@
 .pet-library-copy strong { font-size: var(--font-size-row); font-weight: 650; }
 .pet-library-copy small { color: var(--color-muted); font-size: var(--font-size-micro); }
 
+/* 右侧留出 40px 给绝对定位的删除按钮，否则长文案会被压在按钮底下 */
 .pet-library-item > p {
   margin: 0;
-  padding: 0 10px 10px;
+  padding: 0 40px 11px 12px;
   color: var(--color-warning);
-  font-size: var(--font-size-micro);
-  line-height: 1.45;
+  font-size: var(--font-size-meta);
+  line-height: 1.5;
 }
 
 .pet-library-delete {

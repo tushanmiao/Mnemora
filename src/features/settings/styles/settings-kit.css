@@ -16,7 +16,9 @@
 
 .settings-page {
   --settings-gutter: clamp(20px, 4vw, 52px);
-  --settings-measure: 920px;
+  /* 内容宽度上限。只用来防止在超宽屏上把「左标签 / 右控件」拉成一条
+     难以对读的长线，不该在常见窗口宽度下就留出空白——1280 之前一律铺满。 */
+  --settings-measure: 1280px;
   --settings-row-gap: 24px;
 }
 
@@ -150,8 +152,12 @@
   gap: 8px;
 }
 
+/* 堆叠行的控件区必须是块级并铺满：flex 子项默认按内容收缩，
+   里面用 width: 100% 的栅格（主题预设、背景编辑器）会参照一个
+   被压扁的父容器，直接坍缩成单列，右侧留下大片空白。 */
 .settings-row-stack .settings-row-control {
-  justify-content: flex-start;
+  display: block;
+  width: 100%;
 }
 
 .settings-row-actions {

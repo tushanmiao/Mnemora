@@ -31,11 +31,20 @@
   letter-spacing: 0.06em;
 }
 
+/* 用 flex 而不是 auto-fit 栅格：每个家族只有 3–4 个预设，
+   auto-fit 在宽屏会按最小列宽切出 6 列，分组填不满就在右侧空出列位。
+   flex-grow 让本组卡片自己分掉整行，max-width 防止「无障碍」这种
+   单项分组被拉成一张横贯全宽的巨卡。 */
 .theme-preset-options {
-  display: grid;
-  width: min(920px, 100%);
-  grid-template-columns: repeat(auto-fit, minmax(184px, 1fr));
+  display: flex;
+  width: 100%;
+  flex-wrap: wrap;
   gap: 8px;
+}
+
+.theme-preset-options > .theme-preset-option {
+  flex: 1 1 200px;
+  max-width: 400px;
 }
 
 .theme-preset-option {
@@ -218,8 +227,8 @@
 
 .theme-background-editor {
   display: grid;
-  width: min(760px, 100%);
-  grid-template-columns: minmax(0, 1fr) 168px;
+  width: 100%;
+  grid-template-columns: minmax(0, 1fr) 220px;
   gap: 10px;
 }
 
@@ -246,7 +255,7 @@
 }
 
 .theme-background-preview {
-  width: 168px;
+  width: 220px;
   min-height: 82px;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-control);

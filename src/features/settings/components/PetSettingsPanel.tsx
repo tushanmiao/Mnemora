@@ -175,7 +175,7 @@ export function PetSettingsPanel({
               <strong>{selectedPet?.displayName ?? "Mimo"}</strong>
               <span>{selectedPet?.description ?? "只投影状态，不读取屏幕和麦克风"}</span>
             </div>
-            <div className="pet-preview-character">
+            <div className="pet-preview-character" data-has-sprite={selectedPet?.spritesheetUrl ? "true" : "false"}>
               {selectedPet?.spritesheetUrl ? (
                 <PetSprite pet={selectedPet} state={draft.taskEvents ? "thinking" : "idle"} reducedMotion={draft.reducedMotion} />
               ) : (
@@ -186,6 +186,13 @@ export function PetSettingsPanel({
           <div className="pet-preview-copy">
             <h3>本地宠物，不扩大 AI 权限</h3>
             <p>宠物包只包含 <code>pet.json</code> 和透明 WebP Sprite。可直接安装 hatch-pet 生成的 ZIP 或目录，不要求安装 Codex；导入时不会执行脚本或加载网络资源。</p>
+            {/* 这一行既填掉了右栏原本大片的留白，也把「当前选中的是什么」讲清楚 */}
+            <dl className="pet-preview-facts">
+              <div><dt>来源</dt><dd>{selectedPet ? (selectedPet.source === "builtin" ? "内置" : "本地导入") : "内置"}</dd></div>
+              <div><dt>类型</dt><dd>{selectedPet?.kind ?? "mascot"}</dd></div>
+              <div><dt>形象</dt><dd>{selectedPet?.spritesheetUrl ? `Sprite ${selectedPet.columns ?? 8}×${selectedPet.rows ?? 9}` : "内置矢量"}</dd></div>
+              <div><dt>兼容性</dt><dd>{selectedPet && !selectedPet.compatible ? "不兼容" : "可用"}</dd></div>
+            </dl>
           </div>
         </section>
 

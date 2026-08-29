@@ -820,56 +820,78 @@
   gap: 8px;
 }
 
-.storage-usage-list {
+/* 空间占用：环形图表达「部分与整体」，图例承载具体数字。
+   左图右例并排，正好把整行宽度用满。 */
+.storage-usage-chart {
   display: grid;
   min-width: 0;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  overflow: hidden;
+  padding: 18px 20px;
+  grid-template-columns: 168px minmax(0, 1fr);
+  align-items: center;
+  gap: clamp(20px, 4vw, 48px);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-panel);
   background: var(--color-surface-raised);
 }
 
-.storage-usage-row {
+.storage-donut {
+  position: relative;
+  width: 168px;
+  height: 168px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+}
+
+/* 中心挖空成环：实心饼里塞不进总量数字，而总量是这里最该先读到的数 */
+.storage-donut-hole {
+  position: absolute;
+  inset: 25%;
+  display: grid;
+  place-content: center;
+  gap: 2px;
+  border-radius: 50%;
+  background: var(--color-surface-raised);
+  text-align: center;
+}
+
+.storage-donut-hole strong {
+  color: var(--color-text);
+  font-size: 17px;
+  font-weight: 680;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+.storage-donut-hole span {
+  color: var(--color-muted);
+  font-size: var(--font-size-meta);
+}
+
+.storage-usage-legend {
   display: grid;
   min-width: 0;
-  min-height: 62px;
-  padding: 10px 13px;
-  grid-template-columns: 18px minmax(0, 1fr);
+  margin: 0;
+  padding: 0;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 2px 28px;
+  list-style: none;
+}
+
+.storage-usage-legend li {
+  display: grid;
+  min-width: 0;
+  min-height: 34px;
+  grid-template-columns: 15px minmax(0, 1fr) auto 50px;
   align-items: center;
   gap: 10px;
   border-bottom: 1px solid var(--color-border-soft);
 }
 
-/* 右列去掉右边框，最后一行去掉下边框——避免双线与悬空线头 */
-.storage-usage-row:nth-child(odd) {
-  border-right: 1px solid var(--color-border-soft);
-}
+.storage-usage-legend li:last-child { border-bottom: 0; }
 
-.storage-usage-row:last-child,
-.storage-usage-row:nth-last-child(2):nth-child(odd) {
-  border-bottom: 0;
-}
+.storage-usage-legend svg { flex: 0 0 auto; }
 
-.storage-usage-row > svg {
-  color: var(--color-accent);
-}
-
-.storage-usage-copy {
-  display: grid;
-  min-width: 0;
-  gap: 7px;
-}
-
-.storage-usage-copy > div:first-child {
-  display: flex;
-  min-width: 0;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.storage-usage-copy span {
+.storage-usage-legend span {
   min-width: 0;
   overflow: hidden;
   color: var(--color-text-secondary);
@@ -878,11 +900,24 @@
   white-space: nowrap;
 }
 
-.storage-usage-copy strong {
-  flex: 0 0 auto;
+.storage-usage-legend b {
   color: var(--color-text);
   font-size: var(--font-size-label);
   font-variant-numeric: tabular-nums;
+}
+
+.storage-usage-legend em {
+  color: var(--color-faint);
+  font-size: var(--font-size-meta);
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.storage-usage-empty {
+  grid-column: 1 / -1;
+  color: var(--color-faint);
+  font-size: var(--font-size-label);
 }
 
 .storage-total {
@@ -1006,20 +1041,14 @@
     grid-row: 5;
   }
 
-  .storage-usage-list {
+  /* 窄屏把环形图收到图例上方，避免 168px 的图挤掉图例的可读宽度 */
+  .storage-usage-chart {
     grid-template-columns: minmax(0, 1fr);
+    justify-items: center;
+    gap: 20px;
   }
 
-  /* 单列时 :nth-child(odd) 的右边框会画在容器边上，成为一条多余竖线 */
-  .storage-usage-row:nth-child(odd) {
-    border-right: 0;
-  }
-
-  .storage-usage-row:nth-last-child(2):nth-child(odd) {
-    border-bottom: 1px solid var(--color-border-soft);
-  }
-
-  .storage-usage-row:last-child {
-    border-bottom: 0;
+  .storage-usage-legend {
+    width: 100%;
   }
 }

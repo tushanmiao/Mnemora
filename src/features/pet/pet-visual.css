@@ -1,0 +1,104 @@
+/* 宠物「形象本身」的样式：PetMascot 与 PetSprite 在哪里渲染都需要它。
+ *
+ * 与 pet.css 的分工：pet.css 属于**独立宠物窗口**，带 :root / html / body
+ * 全局规则（背景透明、min-width: 0），把它引进主应用会污染整个界面。
+ * 因此凡是组件级的规则都放这里，由组件自己 import；pet.css 再 import 本文件，
+ * 独立窗口仍拿到全套。
+ *
+ * --pet-* 变量必须挂在组件根上，不能只挂 .pet-window-shell：
+ * 设置页里组件脱离外壳渲染，否则所有 SVG 填充都会失效。
+ */
+
+.pet-mascot,
+.pet-sprite {
+  --pet-ink: #28324b;
+  --pet-paper: #f7f5ec;
+  --pet-leaf: #78ad83;
+  --pet-amber: #efb45d;
+  --pet-danger: #d96562;
+}
+
+.pet-mascot {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  transform-origin: 50% 88%;
+  animation: pet-breathe 2.6s ease-in-out infinite;
+}
+
+.pet-mascot svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+/* 图集是 columns×rows 倍尺寸的大图，靠这里的 overflow: hidden 裁出单帧；
+   缺了这条规则整张图会以 800% 尺寸铺开并盖住周围内容。 */
+.pet-sprite {
+  position: relative;
+  width: 92.3077%;
+  height: 100%;
+  overflow: hidden;
+  aspect-ratio: 12 / 13;
+  image-rendering: auto;
+}
+
+.pet-sprite-atlas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: block;
+  max-width: none;
+  pointer-events: none;
+  transform-origin: top left;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.pet-shadow { fill: rgb(40 50 75 / 18%); }
+.pet-body, .pet-ear { fill: var(--pet-ink); stroke: #1d2437; stroke-width: 3; stroke-linejoin: round; }
+.pet-face { fill: var(--pet-paper); stroke: var(--pet-ink); stroke-width: 3; }
+.pet-tail { fill: var(--pet-leaf); stroke: var(--pet-ink); stroke-width: 3; }
+.pet-eye { fill: var(--pet-ink); transform-origin: center; animation: pet-blink 4.8s infinite; }
+.pet-mouth { fill: none; stroke: var(--pet-ink); stroke-width: 3; stroke-linecap: round; }
+.pet-page { fill: #fffdf5; stroke: var(--pet-ink); stroke-width: 3; }
+.pet-page-line { fill: none; stroke: #a98856; stroke-width: 3; stroke-linecap: round; }
+.pet-sprout { fill: var(--pet-leaf); stroke: var(--pet-ink); stroke-width: 2.5; }
+.pet-tool { fill: var(--pet-amber); stroke: var(--pet-ink); stroke-width: 2.5; opacity: 0; }
+
+.pet-seed {
+  position: absolute;
+  z-index: 2;
+  width: 9px;
+  height: 9px;
+  border: 2px solid var(--pet-ink);
+  border-radius: 50%;
+  background: var(--pet-amber);
+  opacity: 0;
+}
+
+.pet-seed-one { left: 16%; top: 28%; }
+.pet-seed-two { right: 12%; top: 18%; background: var(--pet-leaf); }
+.pet-seed-three { right: 8%; top: 48%; background: var(--pet-paper); }
+
+@keyframes pet-breathe {
+  50% { transform: translateY(-3px) scale(1.015); }
+}
+
+@keyframes pet-blink {
+  0%, 46%, 52%, 100% { transform: scaleY(1); }
+  49% { transform: scaleY(0.08); }
+}
+
+.pet-mascot[data-reduced-motion="true"],
+.pet-mascot[data-reduced-motion="true"] .pet-eye,
+.pet-mascot[data-reduced-motion="true"] .pet-seed,
+.pet-mascot[data-reduced-motion="true"] .pet-tool { animation: none !important; }
+
+@media (prefers-reduced-motion: reduce) {
+  .pet-mascot,
+  .pet-eye,
+  .pet-seed,
+  .pet-tool { animation: none !important; }
+}

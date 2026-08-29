@@ -1,7 +1,7 @@
 /* 提示条走 settings-kit（原先这里硬编码了一整套琥珀色，还要手写
    深色主题覆盖；现在跟随 status token）。 */
 
-.debug-settings-content > .settings-callout { width: min(1120px, 100%); }
+.debug-settings-content > .settings-callout { width: min(var(--settings-measure), 100%); }
 
 .debug-enable-button {
   display: inline-flex;
@@ -29,7 +29,7 @@
 
 .debug-workspace {
   display: grid;
-  width: min(1120px, 100%);
+  width: min(var(--settings-measure), 100%);
   min-height: 0;
   flex: 1;
   grid-template-columns: 240px minmax(0, 1fr);

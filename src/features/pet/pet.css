@@ -1,3 +1,7 @@
+/* 独立宠物窗口专用。含 :root / html / body 全局规则，只能由 PetWindow 引入；
+   主应用（设置页预览等）请引 pet-visual.css。形象本身的样式在那里。 */
+@import "./pet-visual.css";
+
 :root {
   color: #28324b;
   background: transparent;
@@ -53,61 +57,9 @@ button { font: inherit; }
 .pet-window-shell[data-locked="true"] .pet-character-button { cursor: default; }
 .pet-character-button:focus-visible { outline: 2px solid var(--pet-amber); border-radius: 42%; }
 
-.pet-mascot {
-  position: relative;
-  width: 100%;
-  height: 100%;
-  transform-origin: 50% 88%;
-  animation: pet-breathe 2.6s ease-in-out infinite;
-}
+/* .pet-mascot / .pet-sprite / .pet-sprite-atlas 已移入 pet-visual.css */
 
-.pet-sprite {
-  position: relative;
-  width: 92.3077%;
-  height: 100%;
-  overflow: hidden;
-  aspect-ratio: 12 / 13;
-  image-rendering: auto;
-}
-
-.pet-sprite-atlas {
-  position: absolute;
-  top: 0;
-  left: 0;
-  display: block;
-  max-width: none;
-  pointer-events: none;
-  transform-origin: top left;
-  user-select: none;
-  -webkit-user-drag: none;
-}
-
-.pet-mascot svg { display: block; width: 100%; height: 100%; overflow: visible; }
-.pet-shadow { fill: rgb(40 50 75 / 18%); }
-.pet-body, .pet-ear { fill: var(--pet-ink); stroke: #1d2437; stroke-width: 3; stroke-linejoin: round; }
-.pet-face { fill: var(--pet-paper); stroke: var(--pet-ink); stroke-width: 3; }
-.pet-tail { fill: var(--pet-leaf); stroke: var(--pet-ink); stroke-width: 3; }
-.pet-eye { fill: var(--pet-ink); transform-origin: center; animation: pet-blink 4.8s infinite; }
-.pet-mouth { fill: none; stroke: var(--pet-ink); stroke-width: 3; stroke-linecap: round; }
-.pet-page { fill: #fffdf5; stroke: var(--pet-ink); stroke-width: 3; }
-.pet-page-line { fill: none; stroke: #a98856; stroke-width: 3; stroke-linecap: round; }
-.pet-sprout { fill: var(--pet-leaf); stroke: var(--pet-ink); stroke-width: 2.5; }
-.pet-tool { fill: var(--pet-amber); stroke: var(--pet-ink); stroke-width: 2.5; opacity: 0; }
-
-.pet-seed {
-  position: absolute;
-  z-index: 2;
-  width: 9px;
-  height: 9px;
-  border: 2px solid var(--pet-ink);
-  border-radius: 50%;
-  background: var(--pet-amber);
-  opacity: 0;
-}
-
-.pet-seed-one { left: 16%; top: 28%; }
-.pet-seed-two { right: 12%; top: 18%; background: var(--pet-leaf); }
-.pet-seed-three { right: 8%; top: 48%; background: var(--pet-paper); }
+/* SVG 各部件填充与 .pet-seed 已移入 pet-visual.css */
 
 .pet-window-shell[data-state="thinking"] .pet-seed,
 .pet-window-shell[data-state="tooling"] .pet-seed {
@@ -195,13 +147,7 @@ button { font: inherit; }
 .pet-lock:focus-visible,
 .pet-close:focus-visible { opacity: 1; }
 
-@keyframes pet-breathe {
-  50% { transform: translateY(-3px) scale(1.015); }
-}
-@keyframes pet-blink {
-  0%, 46%, 52%, 100% { transform: scaleY(1); }
-  49% { transform: scaleY(0.08); }
-}
+/* pet-breathe / pet-blink 随组件规则一并移入 pet-visual.css */
 @keyframes pet-orbit {
   to { transform: translate(7px, -9px) scale(1.12); }
 }
@@ -216,16 +162,8 @@ button { font: inherit; }
   75% { transform: translateY(-3px) rotate(3deg); }
 }
 
+/* 组件级的 reduced-motion 规则在 pet-visual.css；这里只管窗口自身的控件 */
 @media (prefers-reduced-motion: reduce) {
-  .pet-mascot,
-  .pet-eye,
-  .pet-seed,
-  .pet-tool { animation: none !important; }
   .pet-lock,
   .pet-close { transition: none; }
 }
-
-.pet-mascot[data-reduced-motion="true"],
-.pet-mascot[data-reduced-motion="true"] .pet-eye,
-.pet-mascot[data-reduced-motion="true"] .pet-seed,
-.pet-mascot[data-reduced-motion="true"] .pet-tool { animation: none !important; }

@@ -1,5 +1,11 @@
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import type { PetDescriptor, PetState } from "./types";
+// 样式必须跟着组件走：图集是 800%×900% 的大图，靠 .pet-sprite 的
+// overflow: hidden 裁出单帧。设置页此前只引 pet-settings.css，
+// 于是 sprite 以 8 倍尺寸失控铺开、压住相邻文字。
+// 只引 pet-visual.css——pet.css 还带着独立宠物窗口的全局规则
+// （body 透明、min-width: 0），引进主应用会污染整个界面。
+import "./pet-visual.css";
 
 const ROWS: Record<PetState, { row: number; durations: number[] }> = {
   idle: { row: 0, durations: [280, 110, 110, 140, 140, 320] },

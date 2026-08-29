@@ -1,4 +1,5 @@
 import type { PetState } from "./types";
+import "./pet-visual.css";
 
 export function PetMascot({
   state,
