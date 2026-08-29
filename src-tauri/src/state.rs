@@ -77,6 +77,11 @@ pub struct AppState {
     pub task_diagnostic_log: TaskDiagnosticLog,
     pub storage: StorageManager,
     pub storage_operations: Mutex<()>,
+    /// 远端资源包下载的暂存目录。放在应用数据目录而非系统 temp，
+    /// 这样它跟随用户配置的存储位置，也能被确定性地清理。
+    pub package_downloads_dir: PathBuf,
+    /// token → 已下载待确认的资源包。前端只持有 token，拿不到也传不了真实路径。
+    pub package_staging: crate::packages::StagingArea,
 }
 
 pub struct ActiveNotePipelineRun {
@@ -169,6 +174,7 @@ impl AppState {
             mcp_manager.clone(),
         );
         let english_learning_repository = EnglishLearningRepository::new(app_data_dir.clone());
+        let package_downloads_dir = app_data_dir.join("package-downloads");
         let english_repository = EnglishRepository::new(app_data_dir, resource_dir.clone());
         if let Err(error) = crate::chat::attachments::cleanup_staged_attachments_older_than(
             crate::chat::attachments::STAGED_ATTACHMENT_MAX_AGE,
@@ -235,6 +241,8 @@ impl AppState {
             task_diagnostic_log: TaskDiagnosticLog::new(log_dir),
             storage,
             storage_operations: Mutex::new(()),
+            package_downloads_dir,
+            package_staging: crate::packages::StagingArea::default(),
         })
     }
 

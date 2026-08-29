@@ -576,6 +576,33 @@ pub async fn pet_import_archive(
     result
 }
 
+/// 从一个已经落到本地的目录安装宠物，返回显示名。
+///
+/// 供远端资源包安装复用：下载与解压由 packages 模块完成，
+/// 但「校验 pet.json、拷入宠物根目录、更新选中项与窗口」这套逻辑
+/// 必须与本地导入完全一致，因此共用 copy_pet_package 等内部函数。
+pub(crate) fn install_pet_from_directory(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    directory: &Path,
+) -> Result<String, String> {
+    let source = resolve_import_directory(directory)?;
+    let root = ensure_pet_root(app)?;
+    let manifest = copy_pet_package(&source, &root)?;
+    let settings = save_pet_settings(state, |settings| {
+        settings.pet.selected_pet_id = manifest.id.clone()
+    })?;
+    let _ = app.emit_to("main", "mnemora://app-settings-updated", &settings);
+    if settings.pet.enabled {
+        window_lifecycle::update_pet_window_runtime(app, &settings.pet)?;
+    }
+    Ok(if manifest.display_name.is_empty() {
+        manifest.id
+    } else {
+        manifest.display_name
+    })
+}
+
 #[tauri::command]
 pub async fn pet_import_codex(
     app: AppHandle,

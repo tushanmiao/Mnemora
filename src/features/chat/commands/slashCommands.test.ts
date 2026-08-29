@@ -5,6 +5,7 @@ import {
   buildLocalCommandHelp,
   buildSlashSuggestions,
   parseInstallMode,
+  parseInstallTarget,
   parseSlashInput,
 } from "./slashCommands";
 
@@ -55,6 +56,26 @@ describe("slash commands", () => {
     expect(parseInstallMode("nonsense")).toBe("zip");
   });
 
+  it("routes install arguments to local or github", () => {
+    expect(parseInstallTarget("")).toEqual({ source: "local", mode: "zip" });
+    expect(parseInstallTarget("dir")).toEqual({ source: "local", mode: "directory" });
+    expect(parseInstallTarget("directory")).toEqual({ source: "local", mode: "directory" });
+
+    expect(parseInstallTarget("github")).toEqual({ source: "github", query: "" });
+    expect(parseInstallTarget("gh")).toEqual({ source: "github", query: "" });
+    expect(parseInstallTarget("github weather")).toEqual({ source: "github", query: "weather" });
+    expect(parseInstallTarget("GitHub  多个 关键词")).toEqual({ source: "github", query: "多个 关键词" });
+
+    // 裸 owner/repo 是「我已经知道装哪个」，直接带进对话框
+    expect(parseInstallTarget("someone/weather-skill")).toEqual({
+      source: "github",
+      query: "someone/weather-skill",
+    });
+
+    // 其余关键词也走远端搜索，比静默弹本地选择器更符合预期
+    expect(parseInstallTarget("天气")).toEqual({ source: "github", query: "天气" });
+  });
+
   /**
    * 这条守的是「/help 与命令表同步」这个约束本身：
    * 只要有人加了命令却没让它进 /help，这里就会失败。
@@ -65,7 +86,7 @@ describe("slash commands", () => {
       expect(help).toContain(trigger);
     }
     expect(help).toContain("/compact [重点]");
-    expect(help).toContain("/install-plugin [dir]");
+    expect(help).toContain("/install-plugin [dir|github 关键词]");
   });
 
   it("keeps install triggers reserved so a skill cannot shadow them", () => {

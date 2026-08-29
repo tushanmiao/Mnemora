@@ -10,6 +10,7 @@ mod library;
 mod mcp;
 mod memory;
 mod network;
+mod packages;
 mod plugins;
 mod request_debug;
 mod settings;
@@ -278,6 +279,9 @@ pub fn run() {
             commands::pet::pet_open_directory,
             commands::plugins::plugins_list,
             commands::plugins::plugins_install,
+            commands::packages::packages_search_remote,
+            commands::packages::packages_fetch_remote,
+            commands::packages::packages_install_remote,
             commands::plugins::plugins_set_enabled,
             commands::plugins::plugins_rollback,
             commands::plugins::plugins_uninstall,

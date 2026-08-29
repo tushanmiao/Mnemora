@@ -44,9 +44,9 @@ const LOCAL_COMMANDS: Array<SlashSuggestion & { command: LocalSlashCommand }> = 
   { command: "skills", trigger: "/skills", title: "技能", description: "打开技能设置", kind: "local" },
   { command: "memory", trigger: "/memory", title: "记忆", description: "打开记忆设置", kind: "local" },
   { command: "attach", trigger: "/attach", title: "添加附件", description: "打开本地附件选择器", kind: "local" },
-  { command: "installSkill", trigger: "/install-skill", title: "安装技能", description: "从本地目录或 ZIP 安装 Skill；默认 ZIP，加 dir 选目录", kind: "local", argumentHint: "[dir]" },
-  { command: "installPlugin", trigger: "/install-plugin", title: "安装插件", description: "从本地目录或 ZIP 安装插件；安装后保持停用，需手动启用", kind: "local", argumentHint: "[dir]" },
-  { command: "installPet", trigger: "/install-pet", title: "安装宠物", description: "从本地 ZIP 或目录安装桌面宠物资源包", kind: "local", argumentHint: "[dir]" },
+  { command: "installSkill", trigger: "/install-skill", title: "安装技能", description: "本地 ZIP / dir 目录，或 github 关键词从 GitHub 搜索安装", kind: "local", argumentHint: "[dir|github 关键词]" },
+  { command: "installPlugin", trigger: "/install-plugin", title: "安装插件", description: "本地或 GitHub 安装插件；装完保持停用，需手动启用", kind: "local", argumentHint: "[dir|github 关键词]" },
+  { command: "installPet", trigger: "/install-pet", title: "安装宠物", description: "本地或 GitHub 安装桌面宠物资源包", kind: "local", argumentHint: "[dir|github 关键词]" },
 ];
 
 export const RESERVED_SLASH_TRIGGERS = new Set(LOCAL_COMMANDS.map((item) => item.trigger));
@@ -67,6 +67,42 @@ export function buildLocalCommandHelp() {
 export function parseInstallMode(argumentsValue: string): "zip" | "directory" {
   const token = argumentsValue.trim().toLocaleLowerCase("en-US");
   return token === "dir" || token === "directory" ? "directory" : "zip";
+}
+
+export type InstallCommandTarget =
+  | { source: "local"; mode: "zip" | "directory" }
+  | { source: "github"; query: string };
+
+/**
+ * 解析安装命令的参数，区分本地与 GitHub 两条路径。
+ *
+ *   （空）/ dir / directory  → 本地文件选择器
+ *   github [关键词]          → 打开 GitHub 搜索安装对话框
+ *   owner/repo               → 同上，但把仓库名直接带进去
+ *
+ * 注意「owner/repo 直接带入」并不等于跳过确认：对话框仍会先下载、
+ * 解析清单、展示权限，等用户勾选确认才安装。
+ */
+export function parseInstallTarget(argumentsValue: string): InstallCommandTarget {
+  const trimmed = argumentsValue.trim();
+  if (!trimmed) return { source: "local", mode: "zip" };
+
+  const lower = trimmed.toLocaleLowerCase("en-US");
+  if (lower === "dir" || lower === "directory") {
+    return { source: "local", mode: "directory" };
+  }
+  if (lower === "github" || lower === "gh") {
+    return { source: "github", query: "" };
+  }
+  const remote = /^(?:github|gh)\s+(.+)$/i.exec(trimmed);
+  if (remote) return { source: "github", query: remote[1].trim() };
+
+  // 裸 owner/repo 也走远端：这是「我已经知道要装哪个」的常见输入。
+  if (/^[\w.-]+\/[\w.-]+$/.test(trimmed)) {
+    return { source: "github", query: trimmed };
+  }
+  // 其余当作 GitHub 搜索关键词，比静默走本地选择器更符合预期。
+  return { source: "github", query: trimmed };
 }
 
 function firstToken(value: string) {

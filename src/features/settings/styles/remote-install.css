@@ -1,0 +1,266 @@
+/* 从 GitHub 安装资源包的对话框。分区、提示条、指标网格、徽标都走 settings-kit。 */
+
+.remote-install-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: grid;
+  padding: 28px;
+  place-items: center;
+  background: rgb(12 16 24 / 52%);
+  backdrop-filter: blur(4px);
+}
+
+.remote-install-dialog {
+  display: grid;
+  width: min(860px, 100%);
+  max-height: min(760px, calc(100vh - 56px));
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-panel);
+  color: var(--color-text);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-menu);
+}
+
+.remote-install-header {
+  display: flex;
+  min-width: 0;
+  padding: 16px 18px;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  border-bottom: 1px solid var(--color-border-soft);
+}
+
+.remote-install-header > div {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.remote-install-header h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 680;
+}
+
+.remote-install-header span {
+  color: var(--color-muted);
+  font-size: var(--font-size-label);
+  line-height: 1.55;
+}
+
+/* 自带关闭按钮样式，而不是复用 .agent-icon-button——
+   那会为了一个按钮把整个 MCP/插件样式表拉进这条懒加载路径。 */
+.remote-install-close {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: var(--radius-control);
+  color: var(--color-muted);
+  background: transparent;
+  cursor: pointer;
+}
+
+.remote-install-close:hover:not(:disabled) {
+  color: var(--color-text);
+  background: var(--color-hover);
+}
+
+.remote-install-close:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.remote-install-body {
+  display: grid;
+  min-height: 0;
+  padding: 16px 18px 18px;
+  align-content: start;
+  gap: 12px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-color: var(--color-border) transparent;
+  scrollbar-width: thin;
+}
+
+.remote-install-search {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+/* ---------- 候选列表 ---------- */
+
+.remote-candidate-list {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  gap: 8px;
+  list-style: none;
+}
+
+.remote-candidate-list li {
+  display: grid;
+  min-width: 0;
+  padding: 12px 13px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: var(--radius-panel);
+  background: var(--color-surface-raised);
+}
+
+.remote-candidate-main {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+
+.remote-candidate-title {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.remote-candidate-title strong {
+  overflow: hidden;
+  color: var(--color-text);
+  font-size: var(--font-size-row);
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.remote-candidate-main p {
+  display: -webkit-box;
+  margin: 0;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  color: var(--color-muted);
+  font-size: var(--font-size-meta);
+  line-height: 1.55;
+}
+
+.remote-candidate-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  color: var(--color-faint);
+  font-size: var(--font-size-meta);
+}
+
+.remote-candidate-meta span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-variant-numeric: tabular-nums;
+}
+
+.remote-candidate-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ---------- 确认清单 ---------- */
+
+.remote-preview-stats {
+  --settings-stat-columns: 4;
+}
+
+.remote-preview-source {
+  display: grid;
+  margin: 0;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px 20px;
+}
+
+.remote-preview-source > div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.remote-preview-source dt {
+  color: var(--color-muted);
+  font-size: var(--font-size-meta);
+}
+
+.remote-preview-source dd {
+  margin: 0;
+  overflow: hidden;
+  color: var(--color-text);
+  font-family: Consolas, "Courier New", monospace;
+  font-size: var(--font-size-label);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.remote-preview-caps {
+  display: grid;
+  min-width: 0;
+  padding: 12px 14px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px 20px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: var(--radius-panel);
+  background: var(--color-surface-raised);
+}
+
+.remote-preview-caps > div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.remote-preview-caps span {
+  color: var(--color-muted);
+  font-size: var(--font-size-meta);
+}
+
+.remote-preview-caps strong {
+  color: var(--color-text);
+  font-size: var(--font-size-label);
+  font-weight: 620;
+  overflow-wrap: anywhere;
+}
+
+.remote-preview-ack {
+  padding: 12px 14px;
+  border: 1px solid var(--color-warning-border);
+  border-radius: var(--radius-panel);
+  background: color-mix(in srgb, var(--color-warning-soft) 45%, var(--color-surface-raised));
+}
+
+.remote-install-footer {
+  display: flex;
+  padding-top: 4px;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+@media (max-width: 720px) {
+  .remote-install-backdrop { padding: 12px; }
+
+  .remote-candidate-list li,
+  .remote-install-search {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .remote-candidate-actions { justify-content: flex-end; }
+}

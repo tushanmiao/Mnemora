@@ -11,6 +11,7 @@ pub mod mcp;
 pub mod memory;
 pub mod network;
 pub mod note_pipeline;
+pub mod packages;
 pub mod pet;
 pub mod plugins;
 pub mod providers;

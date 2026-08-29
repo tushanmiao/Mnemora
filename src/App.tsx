@@ -1,4 +1,6 @@
 import {
+  Suspense,
+  lazy,
   useCallback,
   useEffect,
   useMemo,
@@ -14,12 +16,16 @@ import "./styles/themes.css";
 import type { ModelSelectorGroup } from "./features/chat/components/ModelSelector";
 import { ChatWorkspace } from "./features/chat/components/ChatWorkspace";
 import type { LocalSlashCommand, SlashCommandExecutionResult } from "./features/chat/commands/slashCommands";
-import { buildLocalCommandHelp, parseInstallMode } from "./features/chat/commands/slashCommands";
+import { buildLocalCommandHelp, parseInstallTarget } from "./features/chat/commands/slashCommands";
 import {
   pickAndInstallPet,
   pickAndInstallPlugin,
   pickAndInstallSkill,
 } from "./features/settings/api/installFlows";
+import type { RemotePackageKind } from "./features/settings/api/remotePackages";
+
+// 只在真正要从 GitHub 安装时才加载：这条路径不常走，不该进主包。
+const RemoteInstallDialog = lazy(() => import("./features/settings/components/RemoteInstallDialog"));
 import { useChatRuntime } from "./features/chat/hooks/useChatRuntime";
 import { estimateConversationContext } from "./features/chat/utils/contextUsage";
 import { activeContextMessages, contextSummaryPrompt } from "./features/chat/utils/contextCompression";
@@ -91,6 +97,9 @@ function App() {
     openSettings,
   } = navigation;
   const [modelMenuRequest, setModelMenuRequest] = useState(0);
+  /** 远端安装对话框；null 表示未打开。 */
+  const [remoteInstall, setRemoteInstall] = useState<{ kind: RemotePackageKind; query: string } | null>(null);
+  const [remoteInstallResult, setRemoteInstallResult] = useState<string | null>(null);
   const [composerFocusRequest, setComposerFocusRequest] = useState(0);
   const [activeWorkNoteContext, setActiveWorkNoteContext] = useState<ActiveWorkNoteContext | null>(null);
   const requestComposerFocus = useCallback((delayMs = 0) => {
@@ -355,20 +364,23 @@ function App() {
         return { executed: true };
       case "attach":
         return { executed: false, message: "附件命令由输入框处理。" };
-      case "installSkill": {
-        const outcome = await pickAndInstallSkill(parseInstallMode(argumentsValue));
-        // 新技能会带来新的 Slash 触发词，不刷新的话当前会话里用不到。
-        if (outcome.ok) await skills.refresh();
-        return { executed: outcome.ok, message: outcome.message };
-      }
-      case "installPlugin": {
-        const outcome = await pickAndInstallPlugin(parseInstallMode(argumentsValue));
-        // 插件可能贡献 Skill，同理需要刷新。
-        if (outcome.ok) await skills.refresh();
-        return { executed: outcome.ok, message: outcome.message };
-      }
+      case "installSkill":
+      case "installPlugin":
       case "installPet": {
-        const outcome = await pickAndInstallPet(parseInstallMode(argumentsValue));
+        const kind = command === "installSkill" ? "skill" : command === "installPlugin" ? "plugin" : "pet";
+        const target = parseInstallTarget(argumentsValue);
+        if (target.source === "github") {
+          // 远端安装需要用户在对话框里看清单并确认，因此这里只负责打开它。
+          setRemoteInstall({ kind, query: target.query });
+          return { executed: true };
+        }
+        const outcome = kind === "skill"
+          ? await pickAndInstallSkill(target.mode)
+          : kind === "plugin"
+            ? await pickAndInstallPlugin(target.mode)
+            : await pickAndInstallPet(target.mode);
+        // Skill 与插件都可能带来新的 Slash 触发词，不刷新当前会话里用不到。
+        if (outcome.ok && kind !== "pet") await skills.refresh();
         return { executed: outcome.ok, message: outcome.message };
       }
     }
@@ -937,6 +949,30 @@ function App() {
           {noteActions.feedback.kind === "progress" && noteActions.deepNoteActive ? (
             <button className="app-toast-cancel" type="button" onClick={noteActions.cancelDeepNote}>取消</button>
           ) : null}
+        </div>
+      ) : null}
+
+      {remoteInstall ? (
+        <Suspense fallback={null}>
+          <RemoteInstallDialog
+            kind={remoteInstall.kind}
+            initialQuery={remoteInstall.query}
+            onClose={() => setRemoteInstall(null)}
+            onInstalled={(message) => {
+              setRemoteInstallResult(message);
+              // 远端装进来的 Skill / 插件同样可能带新触发词。
+              if (remoteInstall.kind !== "pet") void skills.refresh();
+            }}
+          />
+        </Suspense>
+      ) : null}
+
+      {remoteInstallResult ? (
+        <div className="app-toast" role="status" aria-live="polite">
+          <span>{remoteInstallResult}</span>
+          <button className="app-toast-cancel" type="button" onClick={() => setRemoteInstallResult(null)}>
+            知道了
+          </button>
         </div>
       ) : null}
     </main>
