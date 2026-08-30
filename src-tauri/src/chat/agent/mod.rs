@@ -10,6 +10,7 @@ mod documents;
 mod interview;
 mod knowledge;
 mod notes;
+mod packages;
 pub mod registry;
 pub mod run_machine;
 pub mod types;

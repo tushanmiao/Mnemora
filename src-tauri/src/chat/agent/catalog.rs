@@ -81,6 +81,7 @@ pub enum ToolHandler {
     KnowledgeRead,
     WebSearch,
     WebFetch,
+    SearchRemotePackages,
     PresentArtifact,
     NoteList,
     NoteRead,
@@ -433,6 +434,18 @@ fn knowledge_read_schema() -> Value {
             }
         },
         "required": ["kind", "id"],
+        "additionalProperties": false
+    })
+}
+
+fn search_remote_packages_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "kind": { "type": "string", "enum": ["skill", "plugin", "pet"] },
+            "query": { "type": "string", "minLength": 1, "maxLength": 200 }
+        },
+        "required": ["kind", "query"],
         "additionalProperties": false
     })
 }
@@ -993,6 +1006,22 @@ pub static TOOL_ENTRIES: &[ToolEntry] = &[
         max_output_chars: 40_000,
     },
     ToolEntry {
+        name: "search_remote_packages",
+        // 描述在 search_tools 里同时充当检索索引：打分按空白切词后做子串匹配，
+        // 中文没有词边界，因此「安装插件」「安装技能」这类连写说法必须原样出现，
+        // 英文关键词也要带上，否则 install plugin / marketplace 之类查询会全部落空。
+        description: "在 GitHub 上搜索可安装的资源包：安装插件、安装技能、安装宠物、install plugin、install skill、marketplace 仓库检索。返回候选仓库及星数、最近更新、归档状态与许可证。只负责发现：安装必须由用户在确认对话框中查看清单与权限后自行批准，本工具无法安装任何内容。",
+        input_schema: search_remote_packages_schema,
+        namespace: ToolNamespace::Web,
+        handler: ToolHandler::SearchRemotePackages,
+        risk: ToolRisk::NetworkRead,
+        read_only: true,
+        parallel_safe: true,
+        approval: ToolApprovalPolicy::ReadOnly,
+        resource_cost: ToolResourceCost::Medium,
+        max_output_chars: 16_000,
+    },
+    ToolEntry {
         name: "present_artifact",
         description: "把 Markdown、代码、JSON、Mermaid、HTML 或纯文本整理为本轮结构化交付；不会自动写入磁盘。",
         input_schema: present_artifact_schema,
@@ -1227,6 +1256,28 @@ mod tests {
 
         assert_eq!(find_tool("web_search").unwrap().risk, ToolRisk::NetworkRead);
         assert_eq!(find_tool("web_fetch").unwrap().risk, ToolRisk::NetworkRead);
+        assert_eq!(
+            find_tool("search_remote_packages").unwrap().risk,
+            ToolRisk::NetworkRead
+        );
+    }
+
+    /// 资源包发现工具必须保持只读。
+    ///
+    /// 这条守的是一个安全边界而不是实现细节：插件可贡献 Skill，Skill 正文
+    /// 会随 activate_skill（审批策略 Never）进入模型上下文，因此恶意包的风险
+    /// 是带持久性的提示注入；同时插件签名验证尚未接入可信发布者目录。
+    /// 一旦有人给这个工具加上安装能力，「装哪个仓库」的信任判断就从用户
+    /// 转移到了一个会被搜索结果影响的对象身上——那必须是一次显式的、
+    /// 有意识的决定，不能靠改一行代码悄悄发生。
+    #[test]
+    fn remote_package_discovery_stays_read_only() {
+        let entry = find_tool("search_remote_packages").unwrap();
+        assert!(entry.read_only, "资源包发现工具不得具备写入/安装能力");
+        assert!(
+            entry.description.contains("无法安装"),
+            "工具描述必须明确告知模型它不能安装，避免它向用户承诺自己会完成安装"
+        );
     }
 
     #[test]
@@ -1235,5 +1286,60 @@ mod tests {
 
         assert_eq!(find_tool("note_create").unwrap().risk, ToolRisk::NoteWrite);
         assert_eq!(find_tool("note_update").unwrap().risk, ToolRisk::NoteWrite);
+    }
+}
+
+#[cfg(test)]
+mod discovery {
+    use super::{find_tool, TOOL_ENTRIES};
+
+    /// 模拟 search_tools 的打分：确认常见说法能命中这个工具。
+    fn hits(query: &str) -> Vec<&'static str> {
+        let q = query.trim().to_lowercase();
+        let terms: Vec<&str> = q
+            .split(|c: char| c.is_whitespace() || ",，;；/|".contains(c))
+            .filter(|t| !t.is_empty())
+            .collect();
+        let mut ranked: Vec<(usize, &'static str)> = TOOL_ENTRIES
+            .iter()
+            .map(|e| {
+                let hay =
+                    format!("{} {} {:?}", e.name, e.description, e.namespace).to_lowercase();
+                let score = if hay.contains(&q) {
+                    terms.len() + 2
+                } else {
+                    terms.iter().filter(|t| hay.contains(**t)).count()
+                };
+                (score, e.name)
+            })
+            .filter(|(score, _)| *score > 0)
+            .collect();
+        ranked.sort_by(|a, b| b.0.cmp(&a.0));
+        ranked.into_iter().take(6).map(|(_, n)| n).collect()
+    }
+
+    /// search_tools 的打分按空白切词后做子串匹配，中文没有词边界，
+    /// 于是「安装插件」这类连写查询必须在描述里原样出现才命中；
+    /// 纯中文描述也会让 install plugin 之类英文查询全部落空。
+    /// 这条测试锁住这些实际会被输入的说法，避免有人「精简」描述时
+    /// 悄悄让这个工具重新变得搜不到——那等于功能不存在。
+    #[test]
+    fn remote_package_tool_is_discoverable_by_common_phrasings() {
+        assert!(find_tool("search_remote_packages").is_some());
+        for query in [
+            "安装插件",
+            "安装技能",
+            "安装宠物",
+            "github 插件",
+            "宠物 资源包",
+            "install plugin",
+            "install skill",
+        ] {
+            assert!(
+                hits(query).contains(&"search_remote_packages"),
+                "查询「{query}」应当能发现 search_remote_packages，实际命中：{:?}",
+                hits(query)
+            );
+        }
     }
 }

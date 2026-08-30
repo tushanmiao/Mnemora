@@ -16,7 +16,11 @@ import "./styles/themes.css";
 import type { ModelSelectorGroup } from "./features/chat/components/ModelSelector";
 import { ChatWorkspace } from "./features/chat/components/ChatWorkspace";
 import type { LocalSlashCommand, SlashCommandExecutionResult } from "./features/chat/commands/slashCommands";
-import { buildLocalCommandHelp, parseInstallTarget } from "./features/chat/commands/slashCommands";
+import {
+  buildInstallUsage,
+  buildLocalCommandHelp,
+  parseInstallTarget,
+} from "./features/chat/commands/slashCommands";
 import {
   pickAndInstallPet,
   pickAndInstallPlugin,
@@ -364,23 +368,23 @@ function App() {
         return { executed: true };
       case "attach":
         return { executed: false, message: "附件命令由输入框处理。" };
-      case "installSkill":
-      case "installPlugin":
-      case "installPet": {
-        const kind = command === "installSkill" ? "skill" : command === "installPlugin" ? "plugin" : "pet";
+      case "install": {
         const target = parseInstallTarget(argumentsValue);
+        if (target.kind === null) {
+          return { executed: false, message: buildInstallUsage(target) };
+        }
         if (target.source === "github") {
-          // 远端安装需要用户在对话框里看清单并确认，因此这里只负责打开它。
-          setRemoteInstall({ kind, query: target.query });
+          // 远端安装在对话框里自动推进到确认页，因此这里只负责打开它。
+          setRemoteInstall({ kind: target.kind, query: target.query });
           return { executed: true };
         }
-        const outcome = kind === "skill"
+        const outcome = target.kind === "skill"
           ? await pickAndInstallSkill(target.mode)
-          : kind === "plugin"
+          : target.kind === "plugin"
             ? await pickAndInstallPlugin(target.mode)
             : await pickAndInstallPet(target.mode);
         // Skill 与插件都可能带来新的 Slash 触发词，不刷新当前会话里用不到。
-        if (outcome.ok && kind !== "pet") await skills.refresh();
+        if (outcome.ok && target.kind !== "pet") await skills.refresh();
         return { executed: outcome.ok, message: outcome.message };
       }
     }

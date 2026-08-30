@@ -10,9 +10,7 @@ export type LocalSlashCommand =
   | "skills"
   | "memory"
   | "attach"
-  | "installSkill"
-  | "installPlugin"
-  | "installPet";
+  | "install";
 
 export type SlashCommandExecutionResult = {
   executed: boolean;
@@ -44,9 +42,7 @@ const LOCAL_COMMANDS: Array<SlashSuggestion & { command: LocalSlashCommand }> = 
   { command: "skills", trigger: "/skills", title: "技能", description: "打开技能设置", kind: "local" },
   { command: "memory", trigger: "/memory", title: "记忆", description: "打开记忆设置", kind: "local" },
   { command: "attach", trigger: "/attach", title: "添加附件", description: "打开本地附件选择器", kind: "local" },
-  { command: "installSkill", trigger: "/install-skill", title: "安装技能", description: "本地 ZIP / dir 目录，或 github 关键词从 GitHub 搜索安装", kind: "local", argumentHint: "[dir|github 关键词]" },
-  { command: "installPlugin", trigger: "/install-plugin", title: "安装插件", description: "本地或 GitHub 安装插件；装完保持停用，需手动启用", kind: "local", argumentHint: "[dir|github 关键词]" },
-  { command: "installPet", trigger: "/install-pet", title: "安装宠物", description: "本地或 GitHub 安装桌面宠物资源包", kind: "local", argumentHint: "[dir|github 关键词]" },
+  { command: "install", trigger: "/install", title: "安装资源包", description: "安装插件、技能或宠物：/install plugin 天气；不写名称则打开本地文件选择器", kind: "local", argumentHint: "<plugin|skill|pet> [名称]" },
 ];
 
 export const RESERVED_SLASH_TRIGGERS = new Set(LOCAL_COMMANDS.map((item) => item.trigger));
@@ -63,46 +59,84 @@ export function buildLocalCommandHelp() {
   return `可用命令：${entries.join("、")}。`;
 }
 
-/** 安装类命令的可选参数：默认 zip，显式 dir/directory 才选目录。 */
-export function parseInstallMode(argumentsValue: string): "zip" | "directory" {
-  const token = argumentsValue.trim().toLocaleLowerCase("en-US");
-  return token === "dir" || token === "directory" ? "directory" : "zip";
+/** 可安装的资源包类型。与后端 RemotePackageKind 的取值保持一致。 */
+export type InstallKind = "plugin" | "skill" | "pet";
+
+export const INSTALL_KINDS: readonly InstallKind[] = ["plugin", "skill", "pet"];
+
+const INSTALL_KIND_LABEL: Record<InstallKind, string> = {
+  plugin: "插件",
+  skill: "技能",
+  pet: "宠物",
+};
+
+export function installKindLabel(kind: InstallKind) {
+  return INSTALL_KIND_LABEL[kind];
 }
 
 export type InstallCommandTarget =
-  | { source: "local"; mode: "zip" | "directory" }
-  | { source: "github"; query: string };
+  /** 类型缺失或拼错：回一条用法说明，不猜测用户想装什么。 */
+  | { kind: null; reason: "missing" | "unknown"; token: string }
+  /** 显式要求本地文件：local / dir。 */
+  | { kind: InstallKind; source: "local"; mode: "zip" | "directory" }
+  /**
+   * 其余一律走远端。query 可能是名称，也可能是一句功能描述——
+   * 两者都直接交给搜索，不在这里区分。
+   */
+  | { kind: InstallKind; source: "github"; query: string };
 
 /**
- * 解析安装命令的参数，区分本地与 GitHub 两条路径。
+ * 解析 `/install <类型> [描述或名称]`。
  *
- *   （空）/ dir / directory  → 本地文件选择器
- *   github [关键词]          → 打开 GitHub 搜索安装对话框
- *   owner/repo               → 同上，但把仓库名直接带进去
+ * 类型必填。缺失或无法识别时返回 kind: null，由调用方回一条用法说明——
+ * 不猜类型：装错类型意味着往系统里塞进了一个你没打算装的东西。
  *
- * 注意「owner/repo 直接带入」并不等于跳过确认：对话框仍会先下载、
- * 解析清单、展示权限，等用户勾选确认才安装。
+ *   /install                      → missing
+ *   /install foo                  → unknown
+ *   /install plugin               → 只表达意图，打开对话框等你输入
+ *   /install plugin 天气           → 按描述搜索
+ *   /install plugin 查天气并出摘要   → 同上，一整句描述也可以
+ *   /install plugin owner/repo    → 已知仓库，直接取回
+ *   /install plugin local         → 本地 ZIP 选择器
+ *   /install plugin dir           → 本地目录选择器
+ *
+ * 描述和名称不做区分：GitHub 搜索本身就是全文匹配，把「查天气并出摘要」
+ * 丢进去和把「weather」丢进去走的是同一条路，只是命中质量不同。
+ * 硬要在客户端猜「这是名称还是描述」只会猜错。
  */
 export function parseInstallTarget(argumentsValue: string): InstallCommandTarget {
   const trimmed = argumentsValue.trim();
-  if (!trimmed) return { source: "local", mode: "zip" };
+  if (!trimmed) return { kind: null, reason: "missing", token: "" };
 
-  const lower = trimmed.toLocaleLowerCase("en-US");
-  if (lower === "dir" || lower === "directory") {
-    return { source: "local", mode: "directory" };
-  }
-  if (lower === "github" || lower === "gh") {
-    return { source: "github", query: "" };
-  }
-  const remote = /^(?:github|gh)\s+(.+)$/i.exec(trimmed);
-  if (remote) return { source: "github", query: remote[1].trim() };
+  const firstSpace = trimmed.search(/\s/);
+  const kindToken = (firstSpace < 0 ? trimmed : trimmed.slice(0, firstSpace))
+    .toLocaleLowerCase("en-US");
+  const rest = firstSpace < 0 ? "" : trimmed.slice(firstSpace).trim();
 
-  // 裸 owner/repo 也走远端：这是「我已经知道要装哪个」的常见输入。
-  if (/^[\w.-]+\/[\w.-]+$/.test(trimmed)) {
-    return { source: "github", query: trimmed };
+  const kind = INSTALL_KINDS.find((item) => item === kindToken);
+  if (!kind) return { kind: null, reason: "unknown", token: kindToken };
+
+  // 本地安装现在需要显式要求：默认路径是「说一句需求就自动找」。
+  const restLower = rest.toLocaleLowerCase("en-US");
+  if (restLower === "local" || restLower === "zip") {
+    return { kind, source: "local", mode: "zip" };
   }
-  // 其余当作 GitHub 搜索关键词，比静默走本地选择器更符合预期。
-  return { source: "github", query: trimmed };
+  if (restLower === "dir" || restLower === "directory") {
+    return { kind, source: "local", mode: "directory" };
+  }
+
+  return { kind, source: "github", query: rest };
+}
+
+/** `/install` 缺类型或类型无效时回的用法说明。 */
+export function buildInstallUsage(target: Extract<InstallCommandTarget, { kind: null }>) {
+  const forms = INSTALL_KINDS
+    .map((kind) => `/install ${kind}（${INSTALL_KIND_LABEL[kind]}）`)
+    .join("、");
+  const prefix = target.reason === "unknown"
+    ? `无法识别的安装类型「${target.token}」。`
+    : "请指定要安装的类型。";
+  return `${prefix}可用形式：${forms}。后面可以直接说想要什么功能，例如 /install plugin 查天气并生成摘要；已知仓库可写 /install plugin owner/repo；想从本地文件安装则用 /install plugin local 或 /install plugin dir。`;
 }
 
 function firstToken(value: string) {

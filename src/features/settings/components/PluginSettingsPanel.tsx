@@ -50,7 +50,7 @@ export function PluginSettingsPanel({ onSkillsChanged }: Props) {
     }
   };
 
-  // 安装流程与 Chat 的 /install-plugin 共用 installFlows，
+  // 安装流程与 Chat 的 /install plugin 共用 installFlows，
   // 避免未签名警告和覆盖确认在两处各写一遍后逐渐不一致。
   const chooseAndInstall = async (mode: InstallMode) => {
     setBusy("install");

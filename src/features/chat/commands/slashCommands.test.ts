@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 import type { SkillSummary } from "../../../types/skill";
 import {
   RESERVED_SLASH_TRIGGERS,
+  buildInstallUsage,
   buildLocalCommandHelp,
   buildSlashSuggestions,
-  parseInstallMode,
   parseInstallTarget,
   parseSlashInput,
 } from "./slashCommands";
@@ -39,41 +39,57 @@ describe("slash commands", () => {
     expect(parseSlashInput("/review paper", skills)?.kind).toBe("conflict");
   });
 
-  it("parses the three install commands", () => {
-    expect(parseSlashInput("/install-skill", [])).toMatchObject({ kind: "local", command: "installSkill" });
-    expect(parseSlashInput("/install-plugin", [])).toMatchObject({ kind: "local", command: "installPlugin" });
-    expect(parseSlashInput("/install-pet", [])).toMatchObject({ kind: "local", command: "installPet" });
-  });
-
-  it("passes the install mode through as an argument", () => {
-    expect(parseSlashInput("/install-skill dir", [])).toMatchObject({ arguments: "dir" });
-    expect(parseInstallMode("")).toBe("zip");
-    expect(parseInstallMode("dir")).toBe("directory");
-    expect(parseInstallMode("directory")).toBe("directory");
-    expect(parseInstallMode("  DIR  ")).toBe("directory");
-    // 无法识别的参数退回默认值，而不是报错——安装本身还会弹文件选择器。
-    expect(parseInstallMode("zip")).toBe("zip");
-    expect(parseInstallMode("nonsense")).toBe("zip");
-  });
-
-  it("routes install arguments to local or github", () => {
-    expect(parseInstallTarget("")).toEqual({ source: "local", mode: "zip" });
-    expect(parseInstallTarget("dir")).toEqual({ source: "local", mode: "directory" });
-    expect(parseInstallTarget("directory")).toEqual({ source: "local", mode: "directory" });
-
-    expect(parseInstallTarget("github")).toEqual({ source: "github", query: "" });
-    expect(parseInstallTarget("gh")).toEqual({ source: "github", query: "" });
-    expect(parseInstallTarget("github weather")).toEqual({ source: "github", query: "weather" });
-    expect(parseInstallTarget("GitHub  多个 关键词")).toEqual({ source: "github", query: "多个 关键词" });
-
-    // 裸 owner/repo 是「我已经知道装哪个」，直接带进对话框
-    expect(parseInstallTarget("someone/weather-skill")).toEqual({
-      source: "github",
-      query: "someone/weather-skill",
+  it("exposes a single install command", () => {
+    expect(parseSlashInput("/install", [])).toMatchObject({ kind: "local", command: "install" });
+    expect(parseSlashInput("/install plugin 天气", [])).toMatchObject({
+      kind: "local",
+      command: "install",
+      arguments: "plugin 天气",
     });
+    // 旧的分开命令不再存在
+    expect(parseSlashInput("/install-plugin", [])).toMatchObject({ kind: "unknown" });
+  });
 
-    // 其余关键词也走远端搜索，比静默弹本地选择器更符合预期
-    expect(parseInstallTarget("天气")).toEqual({ source: "github", query: "天气" });
+  it("requires an install kind and never guesses one", () => {
+    expect(parseInstallTarget("")).toEqual({ kind: null, reason: "missing", token: "" });
+    expect(parseInstallTarget("   ")).toEqual({ kind: null, reason: "missing", token: "" });
+    expect(parseInstallTarget("天气")).toEqual({ kind: null, reason: "unknown", token: "天气" });
+    expect(parseInstallTarget("plugins")).toEqual({ kind: null, reason: "unknown", token: "plugins" });
+  });
+
+  it("treats a bare kind as intent and everything after it as a query", () => {
+    // 只表达意图：进远端流程但查询为空，对话框会停下来等用户描述需求。
+    // 这里不能回落到本地文件选择器——用户说「我要装插件」时，
+    // 更可能是还不知道装哪个，而不是手上已经有个 ZIP。
+    expect(parseInstallTarget("plugin")).toEqual({ kind: "plugin", source: "github", query: "" });
+    expect(parseInstallTarget("PLUGIN")).toEqual({ kind: "plugin", source: "github", query: "" });
+
+    // 一个词、一整句描述、仓库名，都原样交给搜索——不在客户端猜是哪种
+    expect(parseInstallTarget("plugin 天气")).toEqual({
+      kind: "plugin", source: "github", query: "天气",
+    });
+    expect(parseInstallTarget("skill 查天气并生成结构化摘要")).toEqual({
+      kind: "skill", source: "github", query: "查天气并生成结构化摘要",
+    });
+    expect(parseInstallTarget("pet  someone/cat-pet ")).toEqual({
+      kind: "pet", source: "github", query: "someone/cat-pet",
+    });
+  });
+
+  it("keeps an explicit escape hatch for local files", () => {
+    expect(parseInstallTarget("plugin local")).toEqual({ kind: "plugin", source: "local", mode: "zip" });
+    expect(parseInstallTarget("plugin zip")).toEqual({ kind: "plugin", source: "local", mode: "zip" });
+    expect(parseInstallTarget("skill dir")).toEqual({ kind: "skill", source: "local", mode: "directory" });
+    expect(parseInstallTarget("pet DIRECTORY")).toEqual({ kind: "pet", source: "local", mode: "directory" });
+  });
+
+  it("explains every valid form when the kind is missing or wrong", () => {
+    const missing = buildInstallUsage({ kind: null, reason: "missing", token: "" });
+    for (const kind of ["plugin", "skill", "pet"]) {
+      expect(missing).toContain(`/install ${kind}`);
+    }
+    const unknown = buildInstallUsage({ kind: null, reason: "unknown", token: "plugins" });
+    expect(unknown).toContain("plugins");
   });
 
   /**
@@ -86,14 +102,14 @@ describe("slash commands", () => {
       expect(help).toContain(trigger);
     }
     expect(help).toContain("/compact [重点]");
-    expect(help).toContain("/install-plugin [dir|github 关键词]");
+    expect(help).toContain("/install <plugin|skill|pet> [名称]");
   });
 
-  it("keeps install triggers reserved so a skill cannot shadow them", () => {
-    const hijacker = [skill("evil", "/install-plugin")];
-    expect(parseSlashInput("/install-plugin", hijacker)).toMatchObject({
+  it("keeps the install trigger reserved so a skill cannot shadow it", () => {
+    const hijacker = [skill("evil", "/install")];
+    expect(parseSlashInput("/install plugin 天气", hijacker)).toMatchObject({
       kind: "local",
-      command: "installPlugin",
+      command: "install",
     });
     expect(buildSlashSuggestions("/install", hijacker).filter((item) => item.kind === "skill")).toHaveLength(0);
   });

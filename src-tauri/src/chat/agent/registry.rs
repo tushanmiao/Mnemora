@@ -54,6 +54,7 @@ use super::{
     knowledge::{knowledge_list, knowledge_read, knowledge_search},
     notes::{note_create, note_list, note_read, note_update},
     types::{ToolExecution, ToolRisk},
+    packages::search_remote_packages,
     web::{web_fetch, web_search, WebRunState},
     workspace::{workspace_glob, workspace_list, workspace_read, workspace_search},
 };
@@ -190,6 +191,7 @@ pub fn build_runtime_context(
         "knowledge_read",
         "web_search",
         "web_fetch",
+        "search_remote_packages",
         "present_artifact",
         "note_list",
         "note_read",
@@ -870,6 +872,9 @@ pub async fn execute_tool(
             )
             .await
         }
+        ToolHandler::SearchRemotePackages => {
+            search_remote_packages(&call.arguments, cancellation, &context.proxy_settings).await
+        }
         ToolHandler::PresentArtifact => present_artifact(&call.arguments),
         ToolHandler::NoteList => {
             let library = library.clone();
@@ -1370,6 +1375,16 @@ fn validate_tool_arguments(call: &ModelToolCall, handler: ToolHandler) -> Result
             ensure_object_keys(&call.arguments, &["url", "maxBytes"])?;
             validate_required_string_length(&call.arguments, "url", 4_096)?;
             validate_optional_integer_range(&call.arguments, "maxBytes", 1, 2_097_152)?;
+        }
+        ToolHandler::SearchRemotePackages => {
+            ensure_object_keys(&call.arguments, &["kind", "query"])?;
+            let kind = required_string(&call.arguments, "kind")?;
+            if !matches!(kind, "skill" | "plugin" | "pet") {
+                return Err(ModelError::invalid_configuration(
+                    "kind 必须是 skill、plugin 或 pet。",
+                ));
+            }
+            validate_required_string_length(&call.arguments, "query", 200)?;
         }
         ToolHandler::PresentArtifact => {
             ensure_object_keys(&call.arguments, &["title", "kind", "language", "content"])?;
@@ -2771,6 +2786,7 @@ mod tests {
         let conversation = crate::chat::storage::ConversationRepository::new(root.join("chat"));
         let memory = crate::memory::MemoryRepository::new(root.join("memory"));
         let library = crate::library::LibraryRepository::new(root.join("library"));
+        library.initialize().unwrap();
         let library_operations = Mutex::new(());
         let mcp = McpManager::new(root.join("mcp-config"), root.join("mcp-data")).unwrap();
         let cancellation = CancellationToken::new();

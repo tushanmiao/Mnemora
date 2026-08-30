@@ -21,7 +21,7 @@ import {
   type RemoteSearchResult,
 } from "../api/remotePackages";
 // 这个对话框由 App 直接渲染，不在 SettingsPage 内，因此必须自己带上依赖的
-// 样式：用户可能从未打开过设置页就在 Chat 里敲 /install-plugin github …，
+// 样式：用户可能从未打开过设置页就在 Chat 里敲 /install plugin …，
 // 那时 settings-kit / settings-page 都还没被加载，控件会退化成无样式原生元素。
 import "../styles/settings-kit.css";
 import "../styles/settings-page.css";
@@ -38,6 +38,36 @@ const KIND_TOPIC: Record<RemotePackageKind, string> = {
   plugin: "mnemora-plugin",
   pet: "mnemora-pet",
 };
+
+/**
+ * 判断能否跳过候选列表直接取回。
+ *
+ * 只在「几乎不可能选错」时才自动推进：
+ *   1. 用户直接写了 owner/repo 且命中它 —— 那就是他指名要的
+ *   2. 只有一个候选 —— 没有可选错的余地
+ *   3. 首个候选的星数明显领先（≥5 倍且 ≥20）—— 社区共识足够强
+ *
+ * 其余情况一律把列表摆出来让人选。星数接近时自动挑第一个是危险的：
+ * 那正是仿冒包能钻进来的缝隙，而排序只反映流行度、不反映「是你要的那个」。
+ */
+/** owner/repo 形式：用户指名要某个仓库，而不是描述功能。 */
+function looksLikeRepository(value: string) {
+  return /^[\w.-]+\/[\w.-]+$/.test(value.trim());
+}
+
+function pickAutoCandidate(candidates: RemoteCandidate[], query: string): RemoteCandidate | null {
+  if (candidates.length === 0) return null;
+
+  const normalized = query.trim().toLocaleLowerCase("en-US");
+  const exact = candidates.find((item) => item.fullName.toLocaleLowerCase("en-US") === normalized);
+  if (exact) return exact;
+
+  if (candidates.length === 1) return candidates[0];
+
+  const [first, second] = candidates;
+  const dominant = first.stars >= 20 && first.stars >= second.stars * 5;
+  return dominant && !first.archived ? first : null;
+}
 
 type Props = {
   kind: RemotePackageKind;
@@ -79,28 +109,88 @@ export function RemoteInstallDialog({ kind, initialQuery = "", onClose, onInstal
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [busy, onClose]);
 
+  /** 按 owner/repo 直接取回，不经过搜索。 */
+  const fetchByFullName = useCallback(async (fullName: string) => {
+    setBusy("fetch");
+    setError(null);
+    try {
+      const fetched = await fetchRemotePackage(kind, fullName);
+      setPreview(fetched);
+      setAcknowledged(false);
+      setStage("confirm");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(null);
+    }
+  }, [kind]);
+
   const runSearch = useCallback(async () => {
-    if (!query.trim()) return;
+    const seed = query.trim();
+    if (!seed) return;
+    // 搜索框里输入 owner/repo 同样走直取，与命令参数行为一致。
+    if (looksLikeRepository(seed)) {
+      await fetchByFullName(seed);
+      return;
+    }
     setBusy("search");
     setError(null);
     try {
-      setResult(await searchRemotePackages(kind, query));
+      setResult(await searchRemotePackages(kind, seed));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
       setResult(null);
     } finally {
       setBusy(null);
     }
-  }, [kind, query]);
+  }, [fetchByFullName, kind, query]);
 
-  // 初始关键词来自 Slash 命令参数，直接跑一次搜索省一步。
+  /**
+   * 带了描述/名称时一路推进到确认页：搜索 → 取回最匹配的一个 → 展示清单。
+   *
+   * 这是「说一句需求就装好」体验的关键。仍然停在确认页而不是直接落盘，
+   * 因为搜索结果来自 GitHub 全文匹配、无人审核，而排第一的仓库并不等于
+   * 你想要的那个——真正的风险是装进一个名字相似的包，它贡献的 Skill
+   * 正文会进入模型上下文（activate_skill 的审批策略是 Never）。
+   * 自动化到确认页为止，是这条链路上唯一说得过去的停点。
+   */
   useEffect(() => {
-    if (initialQuery.trim()) void runSearch();
-    // 只在挂载时自动搜一次
+    const seed = initialQuery.trim();
+    if (!seed) return;
+    let cancelled = false;
+    void (async () => {
+      // 写成 owner/repo 就是指名要它，跳过搜索直接取回：
+      // 该仓库可能没打 topic 标签，搜索反而找不到。
+      if (looksLikeRepository(seed)) {
+        await fetchByFullName(seed);
+        return;
+      }
+      setBusy("search");
+      setError(null);
+      try {
+        const found = await searchRemotePackages(kind, seed);
+        if (cancelled) return;
+        setResult(found);
+        const auto = pickAutoCandidate(found.candidates, seed);
+        if (auto) {
+          setBusy(null);
+          await choose(auto);
+          return;
+        }
+      } catch (reason) {
+        if (!cancelled) {
+          setError(reason instanceof Error ? reason.message : String(reason));
+          setResult(null);
+        }
+      }
+      if (!cancelled) setBusy(null);
+    })();
+    return () => { cancelled = true; };
+    // 只在挂载时按初始查询推进一次
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const choose = async (candidate: RemoteCandidate) => {
+  const choose = useCallback(async (candidate: RemoteCandidate) => {
     setBusy("fetch");
     setError(null);
     try {
@@ -113,7 +203,7 @@ export function RemoteInstallDialog({ kind, initialQuery = "", onClose, onInstal
     } finally {
       setBusy(null);
     }
-  };
+  }, [kind]);
 
   const confirmInstall = async () => {
     if (!preview) return;
@@ -149,7 +239,7 @@ export function RemoteInstallDialog({ kind, initialQuery = "", onClose, onInstal
             <h2 id="remote-install-title">从 GitHub 安装{KIND_LABEL[kind]}</h2>
             <span>
               {stage === "search"
-                ? `按关键词搜索带 ${KIND_TOPIC[kind]} 标签的仓库，由你决定安装哪一个`
+                ? `说出你想要的功能即可，在带 ${KIND_TOPIC[kind]} 标签的仓库中查找`
                 : "确认清单内容与权限声明后再安装"}
             </span>
           </div>
@@ -179,8 +269,8 @@ export function RemoteInstallDialog({ kind, initialQuery = "", onClose, onInstal
                   ref={searchInputRef}
                   className="settings-input"
                   value={query}
-                  placeholder={`搜索${KIND_LABEL[kind]}关键词，例如 weather`}
-                  aria-label="搜索关键词"
+                  placeholder={`描述你想要的${KIND_LABEL[kind]}功能，或填 owner/repo`}
+                  aria-label={`描述你想要的${KIND_LABEL[kind]}`}
                   onChange={(event) => setQuery(event.target.value)}
                 />
                 <button className="settings-button settings-button-primary" type="submit" disabled={busy !== null || !query.trim()}>
