@@ -108,10 +108,24 @@ export interface LibraryNote {
   itemTitle: string | null;
   title: string;
   content: string;
+  directoryPath: string | null;
+  contentHash: string | null;
+  attachments: LibraryNoteAttachment[];
   /** 所属分组名；null 表示未分类。分组只作用于独立笔记。 */
   groupName: string | null;
   createdAt: number;
   updatedAt: number;
+}
+
+export interface LibraryNoteAttachment {
+  id: string;
+  noteId: string;
+  relativePath: string;
+  originalName: string;
+  contentHash: string;
+  byteSize: number;
+  mimeType: string | null;
+  createdAt: number;
 }
 
 export interface LibraryNoteSummary {

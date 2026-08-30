@@ -98,8 +98,12 @@ export interface DeepNotePreflight {
 }
 
 export interface DeepNoteBudget {
+  /** 逻辑调用规划值，仅用于诊断节点层放大。 */
   semanticCallLimit: number;
   semanticCallsUsed: number;
+  /** 真正发到 provider 的物理 HTTP 请求预算。 */
+  upstreamRequestLimit: number;
+  upstreamRequestsUsed: number;
   nodeAttemptLimit: number;
   sectionRevisionLimit: number;
   replanLimit: number;
@@ -117,6 +121,10 @@ export interface DeepNoteContextBudget {
   usableInputTokens: number;
   directInputLimitTokens: number;
   chunkTargetTokens: number;
+  adaptiveChunkLimitTokens: number;
+  adaptiveRouteKey: string;
+  adaptiveRouteState: string;
+  adaptiveProfileSamples: number;
   chunkCount: number;
   processedChunkCount: number;
   totalMessageCount: number;

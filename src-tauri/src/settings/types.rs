@@ -10,7 +10,7 @@ use std::collections::HashSet;
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 
-pub const CURRENT_MODEL_SETTINGS_VERSION: u32 = 6;
+pub const CURRENT_MODEL_SETTINGS_VERSION: u32 = 7;
 const MAX_PROVIDERS: usize = 100;
 const MAX_MODELS_PER_PROVIDER: usize = 2_000;
 
@@ -118,6 +118,10 @@ pub struct ProviderConfig {
     pub protocol: ApiProtocol,
     pub auth_scheme: AuthScheme,
     pub base_url: String,
+    /// API Key 不进入普通设置，因此只持久化一个非敏感代际。
+    /// 每次显式写入或删除凭据都递增，避免新账户错误继承旧账户的容量状态。
+    #[serde(default)]
+    pub credential_revision: u64,
     #[serde(default, skip_deserializing)]
     pub has_api_key: bool,
     pub enabled: bool,
@@ -158,6 +162,7 @@ impl Default for ModelSettings {
                     protocol: ApiProtocol::OpenAiResponses,
                     auth_scheme: AuthScheme::ProtocolDefault,
                     base_url: "https://api.openai.com/v1".to_string(),
+                    credential_revision: 0,
                     has_api_key: false,
                     enabled: true,
                     models: Vec::new(),
@@ -169,6 +174,7 @@ impl Default for ModelSettings {
                     protocol: ApiProtocol::AnthropicMessages,
                     auth_scheme: AuthScheme::ProtocolDefault,
                     base_url: "https://api.anthropic.com/v1".to_string(),
+                    credential_revision: 0,
                     has_api_key: false,
                     enabled: true,
                     models: Vec::new(),
@@ -180,6 +186,7 @@ impl Default for ModelSettings {
                     protocol: ApiProtocol::GeminiGenerateContent,
                     auth_scheme: AuthScheme::ProtocolDefault,
                     base_url: "https://generativelanguage.googleapis.com/v1beta".to_string(),
+                    credential_revision: 0,
                     has_api_key: false,
                     enabled: true,
                     models: Vec::new(),

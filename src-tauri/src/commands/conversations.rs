@@ -13,7 +13,7 @@ use tauri::{AppHandle, State};
 
 use crate::{
     ai::types::ModelRole,
-    chat::note_pipeline,
+    chat::note_pipeline::{self, MAX_DEEP_NOTE_SOURCE_CHUNKS},
     chat::{
         attachments::import_note_source_files,
         conversation_types::{
@@ -212,8 +212,10 @@ pub async fn prepare_local_note_source(
     state: State<'_, AppState>,
     paths: Vec<String>,
 ) -> Result<LocalNoteSourceResult, String> {
-    if paths.is_empty() || paths.len() > 100 {
-        return Err("一次请选择 1 到 100 个本地文件。".to_string());
+    if paths.is_empty() || paths.len() > MAX_DEEP_NOTE_SOURCE_CHUNKS {
+        return Err(format!(
+            "一次请选择 1 到 {MAX_DEEP_NOTE_SOURCE_CHUNKS} 个本地文件。"
+        ));
     }
     let conversation_id = Uuid::new_v4().to_string();
     let now = SystemTime::now()

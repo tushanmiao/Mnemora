@@ -13,6 +13,7 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use crate::chat::storage::ConversationRepository;
+use crate::ai::concurrency::ProviderConcurrencyPool;
 use crate::english::{learning::EnglishLearningRepository, EnglishRepository};
 use crate::library::LibraryRepository;
 use crate::mcp::McpManager;
@@ -34,6 +35,7 @@ use crate::task_diagnostics::TaskDiagnosticLog;
 /** Tauri 全局共享状态。HTTP Client、设置快照和仓库在整个应用生命周期内复用。 */
 pub struct AppState {
     pub http: Client,
+    pub provider_concurrency: ProviderConcurrencyPool,
     pub app_settings: RwLock<AppSettings>,
     pub app_settings_repository: AppSettingsRepository,
     pub model_settings: RwLock<ModelSettings>,
@@ -128,10 +130,21 @@ impl AppState {
     ) -> Result<Self, String> {
         let http = Client::builder()
             .connect_timeout(Duration::from_secs(30))
-            // 中转站可能在长时间无首字节时仍保持连接；普通 Chat 的单次
-            // HTTP 请求上限从 600 秒提高到 900 秒。深度笔记各阶段仍使用
-            // 自己更细的 attempt timeout，不共享这个全局上限。
+            // 全局请求上限。**深度笔记也走这同一个 Client**，并不豁免于此 ——
+            // 它只是因为自己的 attempt 超时（各档位全部 ≤420 秒）总是先触发，
+            // 所以这里的 900 秒实际从未生效。改动任一侧时要一起看：把 attempt
+            // 超时提到 900 秒以上，就会变成这里先切断，错误也随之从「可识别的
+            // 超时」变成一个更难归因的传输层错误。
             .timeout(Duration::from_secs(900))
+            // 空闲连接的存活上限。中转站常在网关侧静默关闭空闲连接，本地却仍
+            // 认为它可用，于是下一次请求复用到一条死连接、立刻失败。让本地比
+            // 网关更早回收，把这类「第一次请求必失败」挡掉。
+            .pool_idle_timeout(Duration::from_secs(60))
+            // TCP keepalive 与上面的请求超时解决的是两类不同的问题：请求超时
+            // 管的是「等太久」，keepalive 管的是「对端已经没了但我们不知道」。
+            // 长文生成期间非流式请求完全静默，没有 keepalive 时一条已经断掉的
+            // 连接会一直挂到 900 秒上限才被发现。
+            .tcp_keepalive(Duration::from_secs(30))
             .user_agent(concat!("Mnemora/", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|error| format!("Failed to create HTTP client: {error}"))?;
@@ -161,6 +174,12 @@ impl AppState {
             SkillRepository::new(resource_dir.join("skills"), app_data_dir.join("skills"));
         let memory_repository = MemoryRepository::new(app_data_dir.clone());
         let library_repository = LibraryRepository::new(app_data_dir.clone());
+        // schema 迁移只在启动时跑一次。以前它挂在 `open_connection` 上，127 个数据
+        // 访问点每次都要付两次 `create_dir_all` + 一次 pragma 读，读路径也在付。
+        //
+        // 这里必须硬失败：迁移没成功就继续跑，后面每一次查询都会撞在缺失的表上，
+        // 报出来的错误还完全指不到真正的原因。
+        library_repository.initialize()?;
         if let Err(error) = library_repository.recover_stale_cancelling_runs() {
             eprintln!("Failed to recover stale cancelling note tasks: {error}");
         }
@@ -195,9 +214,15 @@ impl AppState {
                 provider.has_api_key = false;
             }
         }
+        if let Err(error) =
+            library_repository.reconcile_deep_note_route_profiles(&model_settings)
+        {
+            eprintln!("Failed to reconcile DeepNote route profiles: {error}");
+        }
 
         Ok(Self {
             http,
+            provider_concurrency: ProviderConcurrencyPool::default(),
             app_settings: RwLock::new(app_settings),
             app_settings_repository,
             model_settings: RwLock::new(model_settings),

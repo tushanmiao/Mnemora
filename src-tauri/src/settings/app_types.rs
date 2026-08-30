@@ -286,6 +286,16 @@ pub struct AppSettings {
     pub working_directory: String,
     #[serde(default = "default_true")]
     pub stream_enabled: bool,
+    /// 深度笔记的模型调用是否走流式。
+    ///
+    /// 与 `stream_enabled` 无关：后者只被前端用来决定调哪个聊天命令（为了 UI 逐字），
+    /// 后端从不读它。这个开关的目的是**保活** —— 非流式请求在生成期间连接静默，
+    /// 中转站的 idle 超时通常远短于长文生成，会导致主动撞上 504。
+    ///
+    /// 默认开启。个别中转站对流式与非流式的路由策略不同、少数上游不支持流式，
+    /// 因此保留这个关闭入口；运行期若流式失败也会自动回落非流式并记一次告警。
+    #[serde(default = "default_true")]
+    pub deep_note_stream_keepalive: bool,
     #[serde(default)]
     pub thinking_enabled: bool,
     #[serde(default = "default_max_output_tokens")]
@@ -382,6 +392,7 @@ impl Default for AppSettings {
             user_avatar: String::new(),
             working_directory: String::new(),
             stream_enabled: true,
+            deep_note_stream_keepalive: true,
             thinking_enabled: false,
             max_output_tokens: 32_768,
             response_language: ResponseLanguage::FollowInput,
@@ -688,6 +699,8 @@ mod tests {
         assert_eq!(settings.theme, ThemeMode::System);
         assert_eq!(settings.theme_preset, ThemePreset::Mnemora);
         assert!(settings.stream_enabled);
+        // 流式保活默认开启：中转站的 idle 超时是深度笔记 504 的主要来源。
+        assert!(settings.deep_note_stream_keepalive);
         assert!(!settings.request_debug_enabled);
         assert!(settings.show_chat_task_progress);
         assert!(!settings.pet.enabled);
@@ -794,6 +807,9 @@ mod tests {
         assert_eq!(settings.theme_preset, ThemePreset::Mnemora);
         assert!(!settings.theme_background.enabled);
         assert_eq!(settings.theme_background.surface_opacity, 92);
+        // 旧配置文件里没有这个键，反序列化必须落到 true 而不是 false，
+        // 否则老用户升级后拿不到流式保活。
+        assert!(settings.deep_note_stream_keepalive);
     }
 
     #[test]

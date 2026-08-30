@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -8,6 +8,10 @@ use crate::library::types::{
 };
 
 pub const MAX_DEEP_NOTE_SEMANTIC_CALLS: u32 = 640;
+pub const MAX_DEEP_NOTE_UPSTREAM_REQUESTS: u32 = 640;
+/// 单次 DeepNote 可以完整覆盖的来源 Chunk 上限；批量文件入口必须与它对齐，
+/// 不能先接受 100 个文件、再在第 97 个处失败或丢弃。
+pub const MAX_DEEP_NOTE_SOURCE_CHUNKS: usize = 96;
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -566,6 +570,15 @@ pub struct DeepNoteContextBudget {
     pub usable_input_tokens: u64,
     pub direct_input_limit_tokens: u64,
     pub chunk_target_tokens: u64,
+    /// 当前路由控制器施加的单次输入上限；与上下文窗口和静态安全上限三重取最小。
+    #[serde(default)]
+    pub adaptive_chunk_limit_tokens: u64,
+    #[serde(default)]
+    pub adaptive_route_key: String,
+    #[serde(default)]
+    pub adaptive_route_state: String,
+    #[serde(default)]
+    pub adaptive_profile_samples: u64,
     pub chunk_count: usize,
     pub processed_chunk_count: usize,
     pub total_message_count: usize,
@@ -591,49 +604,11 @@ pub enum DeepNoteNodeType {
     PersistNote,
 }
 
-impl DeepNoteNodeType {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::AnalyzeInput => "analyzeInput",
-            Self::ReconSource => "reconSource",
-            Self::ExtractEvidence => "extractEvidence",
-            Self::BuildLedger => "buildLedger",
-            Self::DraftSection => "draftSection",
-            Self::ValidateSection => "validateSection",
-            Self::ReviewSection => "reviewSection",
-            Self::ReviseSection => "reviseSection",
-            Self::ValidateGlobal => "validateGlobal",
-            Self::ApplyPatch => "applyPatch",
-            Self::AssembleNote => "assembleNote",
-            Self::PersistNote => "persistNote",
-        }
-    }
-
-    pub fn parse(value: &str) -> Result<Self, String> {
-        match value {
-            "analyzeInput" => Ok(Self::AnalyzeInput),
-            "reconSource" => Ok(Self::ReconSource),
-            "extractEvidence" => Ok(Self::ExtractEvidence),
-            "buildLedger" => Ok(Self::BuildLedger),
-            "draftSection" => Ok(Self::DraftSection),
-            "validateSection" => Ok(Self::ValidateSection),
-            "reviewSection" => Ok(Self::ReviewSection),
-            "reviseSection" => Ok(Self::ReviseSection),
-            "validateGlobal" => Ok(Self::ValidateGlobal),
-            "applyPatch" => Ok(Self::ApplyPatch),
-            "assembleNote" => Ok(Self::AssembleNote),
-            "persistNote" => Ok(Self::PersistNote),
-            _ => Err(format!("未知的深度笔记执行节点类型：{value}")),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum DeepNoteNodeStatus {
     Pending,
     Ready,
-    Leased,
     InProgress,
     Completed,
     NeedsReview,
@@ -650,7 +625,6 @@ impl DeepNoteNodeStatus {
         match self {
             Self::Pending => "pending",
             Self::Ready => "ready",
-            Self::Leased => "leased",
             Self::InProgress => "inProgress",
             Self::Completed => "completed",
             Self::NeedsReview => "needsReview",
@@ -667,7 +641,6 @@ impl DeepNoteNodeStatus {
         match value {
             "pending" => Ok(Self::Pending),
             "ready" => Ok(Self::Ready),
-            "leased" => Ok(Self::Leased),
             "inProgress" | "in_progress" => Ok(Self::InProgress),
             "completed" => Ok(Self::Completed),
             "needsReview" | "needs_review" => Ok(Self::NeedsReview),
@@ -701,8 +674,18 @@ pub struct DeepNoteDagNode {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct DeepNoteBudget {
+    /// 逻辑模型调用的规划估算，只用于诊断节点/修订是否异常放大。
+    ///
+    /// P1 起不再把它当成 provider 预算：一次逻辑调用可能包含普通重试与流式回落，
+    /// 中转站实际承受的请求数由 `upstream_request_*` 两个字段约束。
     pub semantic_call_limit: u32,
     pub semantic_calls_used: u32,
+    /// 真正发到 provider 的物理 HTTP 请求上限。
+    #[serde(default = "default_upstream_request_limit")]
+    pub upstream_request_limit: u32,
+    /// 已原子放行的物理 HTTP 请求数。权威来源是 `modelAttemptStarted` 事件。
+    #[serde(default)]
+    pub upstream_requests_used: u32,
     pub node_attempt_limit: u8,
     pub section_revision_limit: u8,
     pub replan_limit: u8,
@@ -710,10 +693,54 @@ pub struct DeepNoteBudget {
     pub max_parallel_nodes: u8,
     #[serde(default = "default_max_parallel_chunks")]
     pub max_parallel_chunks: u8,
+    /// 单个 section 的累计墙钟上限（毫秒）。
+    ///
+    /// 与 `semantic_call_limit` 是两个维度，缺一不可：请求数管住「调用了多少次」，
+    /// 墙钟管住「花了多少时间」。中转站慢下来的时候请求数远没到上限，但时间已经
+    /// 烧完了，只看请求数的预算模型此时完全失效。
+    #[serde(default = "default_section_wall_clock_ms")]
+    pub section_wall_clock_ms: u64,
+    /// 整个 run 的累计墙钟上限（毫秒）。
+    ///
+    /// 到点做**部分交付**而不是整体失败：已完成的 section 是有价值的产出，
+    /// 把它们连同未完成标记一起交出去，比丢掉全部重来对用户更有用。
+    #[serde(default = "default_run_wall_clock_ms")]
+    pub run_wall_clock_ms: u64,
+    /// 已累计的上游等待时长（毫秒），从事件表里各次调用的 `durationMs` **求和**。
+    ///
+    /// 注意这是「累计调用耗时」而非真实经过时间：并发为 2 时，两路各 5 分钟会被
+    /// 算成 10 分钟。所以 `run_wall_clock_ms` 的 90 分钟在满并发下约等于 45 分钟
+    /// 真实时长 —— 这是刻意的，预算要管住的是**上游总消耗**，并发越高单位时间
+    /// 烧掉的上游配额越多。
+    ///
+    /// 不用 `now - created_at` 代替：run 可以被暂停、可以排队等并发位，那些时间
+    /// 不是上游造成的，算进来会让预算在系统空闲时也被吃掉。
+    #[serde(default)]
+    pub upstream_wall_clock_ms: u64,
 }
 
 fn default_max_parallel_chunks() -> u8 {
     2
+}
+
+fn default_upstream_request_limit() -> u32 {
+    MAX_DEEP_NOTE_UPSTREAM_REQUESTS
+}
+
+/// 单 section 15 分钟。
+///
+/// 这个值刻意**小于** `node_attempt_limit`（5）乘单次 attempt 超时（起草档 7 分钟）
+/// 的乘积（35 分钟）。也就是说上游一旦变慢，是墙钟先响而不是尝试次数先耗尽 ——
+/// 这正是想要的：次数管的是「反复失败」，时间管的是「反复变慢」，后者在中转站
+/// 场景下才是常态。上游正常时一个 section 三五次调用远用不到 15 分钟，闸门不会误伤。
+fn default_section_wall_clock_ms() -> u64 {
+    15 * 60 * 1000
+}
+
+/// 整个 run 90 分钟。超过这个时长用户早就离开了界面，继续跑下去的价值低于
+/// 立刻交付已完成部分。
+fn default_run_wall_clock_ms() -> u64 {
+    90 * 60 * 1000
 }
 
 impl DeepNoteBudget {
@@ -728,27 +755,57 @@ impl DeepNoteBudget {
             semantic_call_limit: (4 + section_count as u32 * per_section_calls)
                 .min(MAX_DEEP_NOTE_SEMANTIC_CALLS),
             semantic_calls_used: 0,
+            upstream_request_limit: default_upstream_request_limit(),
+            upstream_requests_used: 0,
             node_attempt_limit,
             section_revision_limit,
             replan_limit: 4,
             replans_used: 0,
             max_parallel_nodes: 2,
             max_parallel_chunks: default_max_parallel_chunks(),
+            section_wall_clock_ms: default_section_wall_clock_ms(),
+            run_wall_clock_ms: default_run_wall_clock_ms(),
+            upstream_wall_clock_ms: 0,
         }
     }
 
-    pub fn reserve_semantic_calls(&mut self, additional_calls: u32) {
-        self.semantic_call_limit = self.semantic_call_limit.max(
-            self.semantic_calls_used
-                .saturating_add(additional_calls)
-                .min(MAX_DEEP_NOTE_SEMANTIC_CALLS),
-        );
+    /// 累加一次上游等待时长。
+    ///
+    /// 生产路径不走这里 —— 真实通路是从事件表汇总后整体赋值（见
+    /// `service::refresh_run_budget`），因为并行 section 持有的是 runtime 快照
+    /// 而非 `&mut`，增量只能落在事件表里。保留这个方法是为了让预算的耗尽语义
+    /// 能被单测独立验证，不必拼一个 AppState 和一张事件表。
+    ///
+    /// 饱和加法：墙钟只用来判断「是否超预算」，溢出回绕会让一个已经严重超时的 run
+    /// 看起来毫无消耗，那是最坏的失效方向。
+    #[allow(dead_code)]
+    pub fn record_upstream_wall_clock(&mut self, elapsed_ms: u64) {
+        self.upstream_wall_clock_ms = self.upstream_wall_clock_ms.saturating_add(elapsed_ms);
+    }
+
+    /// run 级墙钟是否已耗尽。
+    ///
+    /// 取 `>=`：正好等于上限就该停了，再放一次调用进去必然超。
+    pub fn run_wall_clock_exhausted(&self) -> bool {
+        self.upstream_wall_clock_ms >= self.run_wall_clock_ms
+    }
+
+    /// 某个 section 的累计墙钟是否已耗尽。
+    ///
+    /// section 的起始时刻由 `DeepNoteRuntimeState::section_started_at` 记录，
+    /// 这里只做纯比较，方便单测不依赖系统时钟。
+    pub fn section_wall_clock_exhausted(&self, section_elapsed_ms: u64) -> bool {
+        section_elapsed_ms >= self.section_wall_clock_ms
+    }
+
+    pub fn upstream_request_exhausted(&self) -> bool {
+        self.upstream_requests_used >= self.upstream_request_limit
     }
 }
 
 #[cfg(test)]
 mod budget_tests {
-    use super::{DeepNoteBudget, MAX_DEEP_NOTE_SEMANTIC_CALLS};
+    use super::{DeepNoteBudget, MAX_DEEP_NOTE_UPSTREAM_REQUESTS};
 
     #[test]
     fn drafting_budget_covers_every_bounded_attempt_and_revision() {
@@ -759,15 +816,93 @@ mod budget_tests {
     }
 
     #[test]
-    fn semantic_reservation_is_relative_to_calls_already_used() {
+    fn upstream_request_limit_is_consumed_instead_of_raised() {
         let mut budget = DeepNoteBudget::for_section_count(1);
-        budget.semantic_calls_used = 50;
-        budget.reserve_semantic_calls(24);
-        assert_eq!(budget.semantic_call_limit, 74);
+        assert_eq!(
+            budget.upstream_request_limit,
+            MAX_DEEP_NOTE_UPSTREAM_REQUESTS
+        );
+        budget.upstream_requests_used = budget.upstream_request_limit - 1;
+        assert!(!budget.upstream_request_exhausted());
+        budget.upstream_requests_used += 1;
+        assert!(budget.upstream_request_exhausted());
+        assert_eq!(
+            budget.upstream_request_limit, MAX_DEEP_NOTE_UPSTREAM_REQUESTS,
+            "消耗预算不能反过来抬高上限"
+        );
+    }
 
-        budget.semantic_calls_used = MAX_DEEP_NOTE_SEMANTIC_CALLS - 2;
-        budget.reserve_semantic_calls(24);
-        assert_eq!(budget.semantic_call_limit, MAX_DEEP_NOTE_SEMANTIC_CALLS);
+    /// 墙钟和请求数是两个独立维度。中转站慢下来的时候请求数远没到上限、时间已经
+    /// 烧完了，只看请求数的预算模型此时完全失效 —— 这个测试锁住「请求数充足也能
+    /// 因为墙钟耗尽而停下」。
+    #[test]
+    fn wall_clock_is_budgeted_independently_of_request_count() {
+        let mut budget = DeepNoteBudget::for_section_count(4);
+        assert!(!budget.run_wall_clock_exhausted());
+        budget.record_upstream_wall_clock(budget.run_wall_clock_ms - 1);
+        assert!(
+            !budget.run_wall_clock_exhausted(),
+            "还差 1 毫秒不该判定耗尽"
+        );
+        budget.record_upstream_wall_clock(1);
+        assert!(
+            budget.run_wall_clock_exhausted(),
+            "正好达到上限就该停：再放一次调用进去必然超"
+        );
+        assert_eq!(
+            budget.semantic_calls_used, 0,
+            "墙钟耗尽与请求数用量无关，两者不应互相影响"
+        );
+    }
+
+    /// 累加用饱和加法：溢出回绕会让一个严重超时的 run 看起来毫无消耗，
+    /// 那是最坏的失效方向。
+    #[test]
+    fn wall_clock_accumulation_saturates_instead_of_wrapping() {
+        let mut budget = DeepNoteBudget::for_section_count(1);
+        budget.record_upstream_wall_clock(u64::MAX);
+        budget.record_upstream_wall_clock(1_000);
+        assert_eq!(budget.upstream_wall_clock_ms, u64::MAX);
+        assert!(budget.run_wall_clock_exhausted());
+    }
+
+    #[test]
+    fn section_wall_clock_uses_elapsed_time_not_call_count() {
+        let budget = DeepNoteBudget::for_section_count(3);
+        assert!(!budget.section_wall_clock_exhausted(0));
+        assert!(!budget.section_wall_clock_exhausted(budget.section_wall_clock_ms - 1));
+        assert!(budget.section_wall_clock_exhausted(budget.section_wall_clock_ms));
+        assert!(
+            budget.section_wall_clock_ms < budget.run_wall_clock_ms,
+            "单个 section 的预算必须小于整个 run，否则 section 闸永远不会先响"
+        );
+    }
+
+    /// 存量运行时 JSON 没有这几个字段，反序列化必须落到默认值而不是报错 ——
+    /// 否则升级后所有在途 run 都读不回来。
+    #[test]
+    fn existing_runtime_json_deserializes_without_wall_clock_fields() {
+        let json = serde_json::json!({
+            "semanticCallLimit": 100,
+            "semanticCallsUsed": 7,
+            "nodeAttemptLimit": 5,
+            "sectionRevisionLimit": 5,
+            "replanLimit": 4,
+            "replansUsed": 1,
+            "maxParallelNodes": 2,
+        })
+        .to_string();
+        let budget: DeepNoteBudget =
+            serde_json::from_str(&json).expect("缺少墙钟字段的存量预算必须能反序列化");
+        assert_eq!(budget.semantic_calls_used, 7);
+        assert_eq!(
+            budget.upstream_request_limit,
+            MAX_DEEP_NOTE_UPSTREAM_REQUESTS
+        );
+        assert_eq!(budget.upstream_requests_used, 0);
+        assert_eq!(budget.upstream_wall_clock_ms, 0);
+        assert!(budget.run_wall_clock_ms > 0, "默认值必须是可用的正数上限");
+        assert!(budget.section_wall_clock_ms > 0);
     }
 }
 
@@ -881,6 +1016,16 @@ pub struct DeepNoteRuntimeState {
     pub context_budget: DeepNoteContextBudget,
     #[serde(default)]
     pub force_rebuild: bool,
+    /// section id → 该 section 首次开始起草的 Unix 毫秒时刻。
+    ///
+    /// 独立于 `DeepNoteDagNode`：节点没有任何计时字段，而给节点加字段要动
+    /// 计划快照的结构；放在 runtime state 里带 `#[serde(default)]` 就能让存量
+    /// 运行时 JSON 直接反序列化成空表，不需要迁移。
+    ///
+    /// 只记首次：section 的墙钟预算管的是「这个 section 总共耗了多久」，
+    /// 重试刷新起点会让一个反复重试的 section 永远撞不到上限。
+    #[serde(default)]
+    pub section_started_at: BTreeMap<String, u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]

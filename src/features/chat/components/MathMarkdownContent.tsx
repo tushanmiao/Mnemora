@@ -1,4 +1,5 @@
 import ReactMarkdown, { type Components } from "react-markdown";
+import type { ComponentProps } from "react";
 import rehypeKatex from "rehype-katex";
 import remarkMath from "remark-math";
 import "katex/dist/katex.min.css";
@@ -14,10 +15,11 @@ type MathMarkdownContentProps = {
   components: Components;
   messageId?: string;
   literatureReferences?: readonly LiteratureReference[];
+  urlTransform?: ComponentProps<typeof ReactMarkdown>["urlTransform"];
 };
 
 /** 公式消息才动态加载本模块，避免 KaTeX 进入普通 Chat 的常驻执行包。 */
-export function MathMarkdownContent({ content, components, messageId = "message", literatureReferences = [] }: MathMarkdownContentProps) {
+export function MathMarkdownContent({ content, components, messageId = "message", literatureReferences = [], urlTransform }: MathMarkdownContentProps) {
   const mathComponents: Components = {
     ...components,
     div({ node, ...props }) {
@@ -34,7 +36,7 @@ export function MathMarkdownContent({ content, components, messageId = "message"
       remarkPlugins={[...createMarkdownRemarkPlugins(literatureReferences), remarkMath]}
       rehypePlugins={[...createMarkdownRehypePlugins(messageId), rehypeWrapMathBlocks, rehypeKatex]}
       components={mathComponents}
-      urlTransform={safeMarkdownContentUrlTransform}
+      urlTransform={urlTransform ?? safeMarkdownContentUrlTransform}
     >
       {content}
     </ReactMarkdown>

@@ -6,6 +6,14 @@
 
 use std::fmt;
 
+/// 转移失败的原因。
+///
+/// `#[allow(dead_code)]`：`Stale` 目前没有构造点。它对应 CAS 事务里的版本冲突
+/// （读到的 `state_version` 与写入时的不一致），而现有各域状态机都在同一把锁内
+/// 完成读—判—写，还没有真正并发的 CAS 写入方。保留它是因为本模块的契约就是
+/// 「转移是一个纯决策，可以在 CAS 事务产生副作用之前先校验」—— 版本冲突是那个
+/// 契约里的一等错误，而不是某个调用方的实现细节。
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TransitionError {
     Invalid {

@@ -7,6 +7,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ComponentProps,
   type ComponentPropsWithoutRef,
   type MouseEvent as ReactMouseEvent,
 } from "react";
@@ -38,6 +39,7 @@ type MarkdownMessageProps = {
   content: string;
   streaming?: boolean;
   messageId?: string;
+  urlTransform?: ComponentProps<typeof ReactMarkdown>["urlTransform"];
   literatureReferences?: readonly LiteratureReference[];
   onLiteratureReferenceOpen?: (reference: LiteratureReference) => void;
 };
@@ -272,6 +274,7 @@ type MarkdownBlockProps = {
   messageId: string;
   literatureReferences: readonly LiteratureReference[];
   mermaidBudget: number;
+  urlTransform?: ComponentProps<typeof ReactMarkdown>["urlTransform"];
   onLiteratureReferenceOpen?: (reference: LiteratureReference) => void;
 };
 
@@ -281,6 +284,7 @@ const MarkdownBlock = memo(function MarkdownBlock({
   messageId,
   literatureReferences,
   mermaidBudget,
+  urlTransform,
   onLiteratureReferenceOpen,
 }: MarkdownBlockProps) {
   const content = renderableStreamingBlock(block);
@@ -310,6 +314,7 @@ const MarkdownBlock = memo(function MarkdownBlock({
           components={components}
           messageId={messageId}
           literatureReferences={literatureReferences}
+          urlTransform={urlTransform}
         />
       </Suspense>
     );
@@ -319,7 +324,7 @@ const MarkdownBlock = memo(function MarkdownBlock({
       remarkPlugins={remarkPlugins}
       rehypePlugins={rehypePlugins}
       components={isStreamingTail ? streamingComponents : components}
-      urlTransform={isStreamingTail ? safeMarkdownUrlTransform : safeMarkdownContentUrlTransform}
+      urlTransform={urlTransform ?? (isStreamingTail ? safeMarkdownUrlTransform : safeMarkdownContentUrlTransform)}
     >
       {content}
     </ReactMarkdown>
@@ -330,6 +335,7 @@ export const MarkdownMessage = memo(function MarkdownMessage({
   content,
   streaming = false,
   messageId = "message",
+  urlTransform,
   literatureReferences = [],
   onLiteratureReferenceOpen,
 }: MarkdownMessageProps) {
@@ -364,12 +370,13 @@ export const MarkdownMessage = memo(function MarkdownMessage({
             messageId={messageId}
             literatureReferences={literatureReferences}
             mermaidBudget={mermaidBudgets[index] ?? 0}
+            urlTransform={urlTransform}
             onLiteratureReferenceOpen={onLiteratureReferenceOpen}
           />
         </RenderFallback>
       )) : (
         <RenderFallback fallback={<pre className="markdown-streaming-code">{content}</pre>}>
-          <MarkdownBlock block={blocks[0]} isStreamingTail={false} messageId={messageId} literatureReferences={literatureReferences} mermaidBudget={mermaidBudgets[0] ?? 0} onLiteratureReferenceOpen={onLiteratureReferenceOpen} />
+          <MarkdownBlock block={blocks[0]} isStreamingTail={false} messageId={messageId} literatureReferences={literatureReferences} mermaidBudget={mermaidBudgets[0] ?? 0} urlTransform={urlTransform} onLiteratureReferenceOpen={onLiteratureReferenceOpen} />
         </RenderFallback>
       )}
     </div>

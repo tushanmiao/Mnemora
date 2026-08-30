@@ -144,6 +144,10 @@ export function getLibraryNote(noteId: string) {
   return invoke<LibraryNote>("library_get_note", { noteId });
 }
 
+export function exportLibraryNote(noteId: string, destinationParent: string) {
+  return invoke<string>("library_export_note", { noteId, destinationParent });
+}
+
 export function createLibraryNote(create: LibraryNoteCreate) {
   return invoke<LibraryNote>("library_create_note", { create });
 }

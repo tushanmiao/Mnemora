@@ -17,6 +17,20 @@ const MIGRATION_RESULT_FILE_NAME: &str = "storage-migration-result.json";
 const STORAGE_MARKER_FILE_NAME: &str = ".mnemora-storage.json";
 const BLOCKED_RUNTIME_FILE_NAME: &str = "storage-unavailable.block";
 
+/// 受管 SQLite 数据库在数据目录下的相对路径。
+///
+/// 集中一处而不是在校验函数里各写一遍：迁移的检查点、完整性校验、伴生文件清理
+/// 必须覆盖同一批库，任何一处漏掉就是一个静默的数据风险。
+const MANAGED_DATABASES: &[&str] = &["library/library.sqlite3", "english/learning.sqlite3"];
+
+/// WAL 模式下 SQLite 产生的伴生文件后缀。
+///
+/// 这两个文件必须与主库同进同退：
+/// - 复制时只拷主库会丢掉还在 WAL 里的已提交事务；
+/// - 恢复时把**陈旧**的 `-wal` 留在原地，SQLite 打开时会重放它，静默把刚恢复的
+///   数据覆盖回旧状态 —— 这种失败没有任何报错，最难查。
+const SQLITE_SIDECAR_SUFFIXES: &[&str] = &["-wal", "-shm"];
+
 const MANAGED_DIRECTORIES: &[(&str, &str)] = &[
     ("conversations", "conversations"),
     ("library", "library"),
@@ -299,6 +313,13 @@ fn execute_pending_migration(
         format!("Failed to create storage migration staging directory: {error}")
     })?;
 
+    // 复制前先把源库的 WAL 落盘并清空。
+    //
+    // `copy_tree` 是逐文件 `fs::copy`，主库和 `-wal` 是两个不同时刻的快照；WAL 开着
+    // 的时候，中间只要落进一次写，拷出来的就是一份撕裂的三件套 —— 恢复出来的库要么
+    // 少事务，要么 `quick_check` 直接失败。先 TRUNCATE 检查点，主库就是自洽的，
+    // `-wal` 是空的，逐文件复制才重新变得安全。
+    checkpoint_managed_databases(&pending.source)?;
     for entry in &pending.entries {
         copy_tree(&pending.source.join(entry), &pending.staging.join(entry))?;
     }
@@ -389,8 +410,46 @@ fn verify_migration_copy(pending: &PendingMigration) -> Result<(), String> {
                 .to_string(),
         );
     }
-    verify_sqlite_database(&pending.staging.join("library").join("library.sqlite3"))?;
-    verify_sqlite_database(&pending.staging.join("english").join("learning.sqlite3"))
+    // 指纹比对必须在打开数据库**之前**完成：打开一个带 WAL 的库会触发恢复，
+    // 那会改写暂存副本，比对就永远对不上了。
+    for relative in MANAGED_DATABASES {
+        verify_sqlite_database(&pending.staging.join(relative))?;
+    }
+    Ok(())
+}
+
+/// 对源目录里的每个受管库做 TRUNCATE 检查点。
+///
+/// 单个库失败不阻断整次迁移：库可能不存在（首次启动）、可能被别的进程占用。
+/// 这一步是**优化复制的一致性**，不是正确性的唯一依赖 —— 伴生文件本身也会被
+/// `copy_tree` 一起拷走，所以退化情况下仍有兜底。
+fn checkpoint_managed_databases(root: &Path) -> Result<(), String> {
+    for relative in MANAGED_DATABASES {
+        let path = root.join(relative);
+        if !path.is_file() {
+            continue;
+        }
+        let Ok(connection) = Connection::open(&path) else {
+            continue;
+        };
+        // 忽略返回值：非 WAL 模式下这条 PRAGMA 是空操作，报错也无需中断迁移。
+        let _ = connection.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
+    }
+    Ok(())
+}
+
+/// 删除某个库残留的 `-wal` / `-shm`。
+///
+/// 用在「已经确认主库自洽」之后：留着陈旧伴生文件，SQLite 下次打开会重放它们，
+/// 把刚装好的数据静默回滚。
+fn remove_sqlite_sidecars(database_path: &Path) -> Result<(), String> {
+    let Some(name) = database_path.file_name().and_then(|name| name.to_str()) else {
+        return Ok(());
+    };
+    for suffix in SQLITE_SIDECAR_SUFFIXES {
+        remove_path_if_exists(&database_path.with_file_name(format!("{name}{suffix}")))?;
+    }
+    Ok(())
 }
 
 fn verify_sqlite_database(path: &Path) -> Result<(), String> {
@@ -411,14 +470,24 @@ fn verify_sqlite_database(path: &Path) -> Result<(), String> {
                 path.display()
             )
         })?;
-    if result.eq_ignore_ascii_case("ok") {
-        Ok(())
-    } else {
-        Err(format!(
+    if !result.eq_ignore_ascii_case("ok") {
+        return Err(format!(
             "Migrated database {} failed integrity verification: {result}",
             path.display()
-        ))
+        ));
     }
+    // 这三步的顺序是有依赖的，不能重排：
+    //
+    // 1. 上面的 `Connection::open` 已经让 SQLite 重放了副本里的 `-wal`（如果源库
+    //    检查点没做成、WAL 里还有真实事务，恢复发生在这一步）；
+    // 2. 这里的 TRUNCATE 检查点把重放后的内容全部折进主库文件；
+    // 3. 于是伴生文件此刻确定是空的，删掉不丢任何数据。
+    //
+    // 反过来先删再检查点，就会真的丢事务。删除它们的理由是：陈旧的 `-wal` 被带进
+    // 目标目录后，下次打开会被重放，静默把刚装好的数据回滚。
+    let _ = connection.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
+    drop(connection);
+    remove_sqlite_sidecars(path)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -953,6 +1022,13 @@ mod tests {
             b"conversation",
         )
         .unwrap();
+        fs::create_dir_all(data.join("library/notes/note-1/attachments")).unwrap();
+        fs::write(data.join("library/notes/note-1/note.md"), b"# note").unwrap();
+        fs::write(
+            data.join("library/notes/note-1/attachments/chart.png"),
+            b"chart",
+        )
+        .unwrap();
 
         let manager = StorageManager::bootstrap(config.clone(), data.clone()).unwrap();
         manager.prepare_migration(custom.clone()).unwrap();
@@ -966,6 +1042,14 @@ mod tests {
         );
         assert!(custom.join(STORAGE_MARKER_FILE_NAME).is_file());
         assert!(data.join("conversations").join("conv.json").is_file());
+        assert_eq!(
+            fs::read(custom.join("library/notes/note-1/note.md")).unwrap(),
+            b"# note"
+        );
+        assert_eq!(
+            fs::read(custom.join("library/notes/note-1/attachments/chart.png")).unwrap(),
+            b"chart"
+        );
         let _ = fs::remove_dir_all(root);
     }
 
@@ -1176,6 +1260,127 @@ mod tests {
         assert!(!unavailable.is_available());
         assert!(paths_equal(unavailable.current_data_dir(), &custom));
         assert!(unavailable.runtime_data_dir().is_file());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// 在 WAL 模式下写入并**不主动检查点**，让最近的已提交事务只存在于 `-wal` 里，
+    /// 然后走一次完整迁移，断言数据在目标库中完好。
+    ///
+    /// 这正是「只开 WAL 不改备份」会产出的坏备份：主库文件里没有那几行。
+    #[test]
+    fn migration_preserves_transactions_that_still_live_in_the_wal() {
+        let root = test_root("wal-migration");
+        let config = root.join("config");
+        let data = root.join("data");
+        let custom = root.join("custom");
+        let library_dir = data.join("library");
+        fs::create_dir_all(&library_dir).unwrap();
+
+        let database = library_dir.join("library.sqlite3");
+        // 连接必须**跨过迁移继续存活**。SQLite 在最后一条连接关闭时会自动做检查点并
+        // 删掉 `-wal`，那样「已提交事务只活在 WAL 里」这个前提就不成立了，测试也就
+        // 证伪不了「不做检查点会丢事务」。
+        let writer = Connection::open(&database).unwrap();
+        let mode: String = writer
+            .query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(mode.to_lowercase(), "wal", "测试前提是库确实在 WAL 模式");
+        writer
+            .execute_batch(
+                "CREATE TABLE probe (id INTEGER PRIMARY KEY, value TEXT NOT NULL);
+                 INSERT INTO probe (value) VALUES ('committed-into-wal');",
+            )
+            .unwrap();
+        // 刻意不做检查点：让事务停留在 `-wal` 里。
+        assert!(
+            database.with_file_name("library.sqlite3-wal").exists(),
+            "前提校验：此刻 -wal 必须存在，否则这个测试没有在测它想测的东西"
+        );
+
+        let manager = StorageManager::bootstrap(config.clone(), data.clone()).unwrap();
+        manager.prepare_migration(custom.clone()).unwrap();
+        // `prepare_migration` 只写迁移日志，真正执行迁移的是下一次 bootstrap。
+        let migrated = StorageManager::bootstrap(config, data.clone()).unwrap();
+        assert!(migrated.is_available());
+        drop(writer);
+
+        let migrated_database = custom.join("library").join("library.sqlite3");
+        assert!(migrated_database.is_file(), "迁移后的库文件必须存在");
+        let connection = Connection::open(&migrated_database).unwrap();
+        let value: String = connection
+            .query_row("SELECT value FROM probe", [], |row| row.get(0))
+            .expect("只存在于 WAL 里的已提交事务必须随迁移一起到达目标库");
+        assert_eq!(value, "committed-into-wal");
+        drop(connection);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// 装进目标目录的库不应带着伴生文件。
+    ///
+    /// 陈旧的 `-wal` 被带过去后，下次打开会被 SQLite 重放，静默把刚装好的数据
+    /// 回滚 —— 这种失效完全没有报错。
+    #[test]
+    fn migrated_databases_carry_no_stale_sqlite_sidecars() {
+        let root = test_root("wal-sidecars");
+        let config = root.join("config");
+        let data = root.join("data");
+        let custom = root.join("custom");
+        let library_dir = data.join("library");
+        fs::create_dir_all(&library_dir).unwrap();
+
+        let database = library_dir.join("library.sqlite3");
+        // 同上：连接跨过迁移存活，源目录才会真的带着 `-wal` 进入复制环节。
+        let writer = Connection::open(&database).unwrap();
+        writer
+            .query_row("PRAGMA journal_mode = WAL", [], |row| {
+                row.get::<_, String>(0)
+            })
+            .unwrap();
+        writer
+            .execute_batch("CREATE TABLE probe (id INTEGER PRIMARY KEY);")
+            .unwrap();
+        assert!(
+            database.with_file_name("library.sqlite3-wal").exists(),
+            "前提校验：源目录此刻必须有 -wal 可供带走"
+        );
+
+        let manager = StorageManager::bootstrap(config.clone(), data.clone()).unwrap();
+        manager.prepare_migration(custom.clone()).unwrap();
+        // 真正执行迁移的是这一次 bootstrap，不是 prepare_migration。
+        let migrated = StorageManager::bootstrap(config, data.clone()).unwrap();
+        assert!(migrated.is_available());
+        drop(writer);
+
+        let migrated = custom.join("library").join("library.sqlite3");
+        assert!(migrated.is_file(), "迁移后的库文件必须存在");
+        for suffix in SQLITE_SIDECAR_SUFFIXES {
+            let sidecar = migrated.with_file_name(format!("library.sqlite3{suffix}"));
+            assert!(
+                !sidecar.exists(),
+                "目标目录残留了 {suffix}，下次打开会重放它并回滚已恢复的数据"
+            );
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sidecar_removal_covers_every_known_suffix_and_tolerates_absence() {
+        let root = test_root("sidecar-removal");
+        fs::create_dir_all(&root).unwrap();
+        let database = root.join("library.sqlite3");
+        fs::write(&database, b"main").unwrap();
+        for suffix in SQLITE_SIDECAR_SUFFIXES {
+            fs::write(root.join(format!("library.sqlite3{suffix}")), b"sidecar").unwrap();
+        }
+
+        remove_sqlite_sidecars(&database).unwrap();
+
+        for suffix in SQLITE_SIDECAR_SUFFIXES {
+            assert!(!root.join(format!("library.sqlite3{suffix}")).exists());
+        }
+        assert!(database.is_file(), "只清伴生文件，主库不能动");
+        // 再来一次：文件已经不存在，不应报错。
+        remove_sqlite_sidecars(&database).unwrap();
         let _ = fs::remove_dir_all(root);
     }
 }

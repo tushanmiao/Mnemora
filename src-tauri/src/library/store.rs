@@ -4,6 +4,7 @@
 //! 串行化。数据库不保存 PDF 二进制，只保存应用内快照文件名和校验信息。
 
 use std::{
+    collections::{HashMap, HashSet},
     fs,
     io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
@@ -23,11 +24,16 @@ use crate::chat::{
     },
     agent::types::{AgentRunSnapshot, AgentToolCallSnapshot},
     note_pipeline::{
-        node_machine::{DagNodeEvent, DagNodeMachine},
+        adaptive_volume::{
+            provider_config_epoch, AdaptiveVolumeOutcome, AdaptiveVolumeProfile,
+            DeepNoteRouteIdentity, RouteAvailability, INITIAL_ADAPTIVE_CHUNK_TOKENS,
+        },
+        node_machine::DagNodeMachine,
         run_machine::DeepNoteRunMachine,
         types::{
-            DeepNoteEvidenceArtifact, DeepNoteEvidenceStatus, DeepNoteInputSnapshot,
-            DeepNoteLedger, DeepNoteNodeStatus, DeepNoteSourceChunk, DeepNoteSourceKind,
+            DeepNoteDagNode, DeepNoteEvidenceArtifact, DeepNoteEvidenceStatus,
+            DeepNoteInputSnapshot, DeepNoteLedger, DeepNoteNodeStatus, DeepNoteSourceChunk,
+            DeepNoteSourceKind,
             DeepNoteSourceUnit, DeepNoteSourceUnitKind, DeepNoteSourceUnitStatus,
             DeepNoteSupportLevel,
         },
@@ -38,13 +44,19 @@ use crate::task_runtime::StateMachine;
 
 use super::{
     import::{import_pdf, ImportOutcome},
+    note_files::{
+        collect_orphan_note_directories, content_hash as note_content_hash, export_note_bundle,
+        prepare_note_directory, refresh_note_directory, resolve_note_directory,
+        NoteAttachmentSource, NOTE_DIRECTORY_NAME,
+    },
     types::{
         normalize_collection_name, normalize_identifier, normalize_note_group_name,
         LibraryAnnotation, LibraryAnnotationColor, LibraryAnnotationCreate, LibraryAnnotationKind,
         LibraryAnnotationRect, LibraryAnnotationUpdate, LibraryCollection, LibraryImportFailure,
         LibraryImportResult, LibraryItem, LibraryItemUpdate, LibraryListPage, LibraryListRequest,
-        LibraryNote, LibraryNoteCreate, LibraryNoteGroup, LibraryNoteImportFailure,
-        LibraryNoteImportResult, LibraryNoteRename, LibraryNoteSummary, LibraryNoteUpdate,
+        LibraryNote, LibraryNoteAttachment, LibraryNoteCreate, LibraryNoteGroup,
+        LibraryNoteImportFailure, LibraryNoteImportResult, LibraryNoteRename, LibraryNoteSummary,
+        LibraryNoteUpdate,
         LibraryReadingState, LibraryReadingStateUpdate, LibrarySort, LibraryView, NoteEditProposal,
         NoteEditProposalCreate, NotePipelineChunkDigest, NotePipelinePhase, NotePipelineRun,
         NotePipelineRunCreate, NotePipelineSection, NotePipelineSectionCreate,
@@ -54,7 +66,14 @@ use super::{
     },
 };
 
-const LIBRARY_SCHEMA_VERSION: i64 = 15;
+/// 同一份输入允许的深度笔记重生成次数上限。设这个上限只为防止 `next_free_idempotency_key`
+/// 在数据异常时退化成无界扫描；正常使用远达不到。
+const MAX_IDEMPOTENCY_GENERATIONS: u32 = 512;
+
+const LIBRARY_SCHEMA_VERSION: i64 = 18;
+const NOTE_DIGEST_CACHE_TTL_MS: i64 = 30 * 24 * 60 * 60 * 1_000;
+const NOTE_DIGEST_CACHE_MAX_ENTRIES: i64 = 4_096;
+const NOTE_DIGEST_CACHE_MAX_LOOKUPS: usize = 256;
 const LIBRARY_DIRECTORY_NAME: &str = "library";
 const LIBRARY_DATABASE_NAME: &str = "library.sqlite3";
 const LIBRARY_FILES_DIRECTORY_NAME: &str = "files";
@@ -110,6 +129,217 @@ struct RawLibraryItem {
     file_created_at: i64,
 }
 
+fn note_pipeline_upstream_request_count(
+    connection: &Connection,
+    run_id: &str,
+) -> Result<u32, String> {
+    let mut statement = connection
+        .prepare(
+            "SELECT event_type, payload_json FROM note_pipeline_events
+             WHERE run_id = ? AND event_type IN (
+                 'modelAttemptStarted', 'modelCallCompleted', 'modelCallFailed'
+             )",
+        )
+        .map_err(|error| format!("准备深度笔记上游请求计数失败：{error}"))?;
+    let rows = statement
+        .query_map(params![run_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|error| format!("查询深度笔记上游请求计数失败：{error}"))?;
+    let mut physical_attempts = 0u32;
+    let mut instrumented_call_ids = HashSet::new();
+    let mut terminal_calls = HashMap::<String, u32>::new();
+    for row in rows {
+        let (event_type, payload_json) =
+            row.map_err(|error| format!("读取深度笔记上游请求计数失败：{error}"))?;
+        let payload = serde_json::from_str::<serde_json::Value>(&payload_json).ok();
+        let is_mock = payload
+            .as_ref()
+            .and_then(|value| value.get("mock"))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let call_id = payload.as_ref().and_then(|value| {
+            value
+                .get("callId")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        });
+        if event_type == "modelAttemptStarted" {
+            // 即使一条新事件载荷损坏，它仍代表已经放行过一个物理请求，必须计入；
+            // 少算会让预算沿最危险的方向失效。
+            physical_attempts = physical_attempts.saturating_add(1);
+            if let Some(call_id) = call_id {
+                instrumented_call_ids.insert(call_id);
+            }
+        } else if !is_mock {
+            let Some(call_id) = call_id else {
+                continue;
+            };
+            let attempts = payload
+                .as_ref()
+                .and_then(|value| value.get("actualAttemptCount"))
+                .and_then(serde_json::Value::as_u64)
+                .map(|value| value.min(u64::from(u32::MAX)) as u32)
+                // 升级前没有该字段；终态事件至少证明发出过一次请求。
+                .unwrap_or(1);
+            terminal_calls
+                .entry(call_id)
+                .and_modify(|current| *current = (*current).max(attempts))
+                .or_insert(attempts);
+        }
+    }
+    // 升级前的 run 没有 modelAttemptStarted。每个旧的终态事件至少代表一个真实请求；
+    // 已有 attempt 事件的调用不能再按终态事件重复计数。
+    let legacy_calls = terminal_calls
+        .into_iter()
+        .filter(|(call_id, _)| !instrumented_call_ids.contains(call_id))
+        .fold(0u32, |total, (_, attempts)| total.saturating_add(attempts));
+    Ok(physical_attempts.saturating_add(legacy_calls))
+}
+
+fn set_upstream_request_usage(
+    budget_json: &str,
+    runtime_json: &str,
+    used: u32,
+) -> Result<(String, String), String> {
+    let mut budget = serde_json::from_str::<serde_json::Value>(budget_json)
+        .map_err(|error| format!("解析深度笔记预算失败：{error}"))?;
+    let budget_object = budget
+        .as_object_mut()
+        .ok_or_else(|| "深度笔记预算必须是 JSON 对象。".to_string())?;
+    budget_object.insert("upstreamRequestsUsed".to_string(), serde_json::json!(used));
+
+    let mut runtime = serde_json::from_str::<serde_json::Value>(runtime_json)
+        .map_err(|error| format!("解析深度笔记运行状态失败：{error}"))?;
+    let runtime_object = runtime
+        .as_object_mut()
+        .ok_or_else(|| "深度笔记运行状态必须是 JSON 对象。".to_string())?;
+    let runtime_budget = runtime_object
+        .entry("budget".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    let runtime_budget_object = runtime_budget
+        .as_object_mut()
+        .ok_or_else(|| "深度笔记运行状态中的预算必须是 JSON 对象。".to_string())?;
+    runtime_budget_object.insert("upstreamRequestsUsed".to_string(), serde_json::json!(used));
+    Ok((budget.to_string(), runtime.to_string()))
+}
+
+fn conservative_route_prior(profiles: &[AdaptiveVolumeProfile]) -> u64 {
+    if profiles.is_empty() {
+        return INITIAL_ADAPTIVE_CHUNK_TOKENS;
+    }
+    let mut targets = profiles
+        .iter()
+        .map(|profile| profile.effective_target_tokens(crate::usage::now_ms()))
+        .collect::<Vec<_>>();
+    targets.sort_unstable();
+    // 新路由继承低四分位，而不是均值：冷启动宁可多一个 Chunk，也不要把少数
+    // 高容量路由的包线误投到未知中转站。
+    targets[targets.len().saturating_sub(1) / 4]
+}
+
+fn load_route_profile(
+    connection: &Connection,
+    route_key: &str,
+) -> Result<Option<AdaptiveVolumeProfile>, String> {
+    let profile_json = connection
+        .query_row(
+            "SELECT profile_json FROM deep_note_route_profiles WHERE route_key = ?",
+            params![route_key],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| format!("读取深度笔记路由容量状态失败：{error}"))?;
+    profile_json
+        .map(|json| {
+            serde_json::from_str::<AdaptiveVolumeProfile>(&json)
+                .map_err(|error| format!("解析深度笔记路由容量状态失败：{error}"))
+        })
+        .transpose()
+}
+
+fn route_profile_prior(
+    connection: &Connection,
+    identity: &DeepNoteRouteIdentity,
+) -> Result<u64, String> {
+    let mut statement = connection
+        .prepare(
+            "SELECT profile_json FROM deep_note_route_profiles
+             WHERE route_key <> ? AND state NOT IN ('disabled', 'tombstoned')",
+        )
+        .map_err(|error| format!("准备深度笔记路由先验查询失败：{error}"))?;
+    let rows = statement
+        .query_map(params![identity.route_key], |row| row.get::<_, String>(0))
+        .map_err(|error| format!("查询深度笔记路由先验失败：{error}"))?;
+    let mut same_model_route = Vec::new();
+    let mut same_provider = Vec::new();
+    let mut same_protocol_model = Vec::new();
+    for row in rows {
+        let json = row.map_err(|error| format!("读取深度笔记路由先验失败：{error}"))?;
+        let Ok(profile) = serde_json::from_str::<AdaptiveVolumeProfile>(&json) else {
+            // 非当前路由的旧记录损坏不应阻止冷启动；它只是不再具备先验价值。
+            continue;
+        };
+        if profile.identity.provider_config_epoch == identity.provider_config_epoch
+            && profile.identity.model_id == identity.model_id
+        {
+            same_model_route.push(profile);
+        } else if profile.identity.provider_config_epoch == identity.provider_config_epoch {
+            same_provider.push(profile);
+        } else if profile.identity.protocol == identity.protocol
+            && profile.identity.api_model == identity.api_model
+        {
+            same_protocol_model.push(profile);
+        }
+    }
+    Ok(if !same_model_route.is_empty() {
+        conservative_route_prior(&same_model_route)
+    } else if !same_provider.is_empty() {
+        conservative_route_prior(&same_provider)
+    } else if !same_protocol_model.is_empty() {
+        conservative_route_prior(&same_protocol_model)
+    } else {
+        INITIAL_ADAPTIVE_CHUNK_TOKENS
+    })
+}
+
+fn load_or_create_route_profile(
+    connection: &Connection,
+    identity: &DeepNoteRouteIdentity,
+    now_ms: u64,
+) -> Result<AdaptiveVolumeProfile, String> {
+    if let Some(profile) = load_route_profile(connection, &identity.route_key)? {
+        return Ok(profile);
+    }
+    let prior = route_profile_prior(connection, identity)?;
+    let profile = AdaptiveVolumeProfile::new(identity.clone(), prior, now_ms);
+    let profile_json = serde_json::to_string(&profile)
+        .map_err(|error| format!("序列化深度笔记路由容量状态失败：{error}"))?;
+    connection
+        .execute(
+            "INSERT OR IGNORE INTO deep_note_route_profiles (
+                route_key, provider_id, provider_config_epoch, model_id, api_model,
+                protocol, transport_mode, state, profile_json, created_at, updated_at
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            params![
+                identity.route_key,
+                identity.provider_id,
+                identity.provider_config_epoch,
+                identity.model_id,
+                identity.api_model,
+                identity.protocol,
+                identity.transport_mode,
+                profile.availability.as_str(),
+                profile_json,
+                now_ms as i64,
+                now_ms as i64,
+            ],
+        )
+        .map_err(|error| format!("创建深度笔记路由容量状态失败：{error}"))?;
+    load_route_profile(connection, &identity.route_key)?
+        .ok_or_else(|| "创建后无法读取深度笔记路由容量状态。".to_string())
+}
+
 impl LibraryRepository {
     pub fn new(app_data_dir: PathBuf) -> Self {
         let root_directory = app_data_dir.join(LIBRARY_DIRECTORY_NAME);
@@ -118,6 +348,137 @@ impl LibraryRepository {
             files_directory: root_directory.join(LIBRARY_FILES_DIRECTORY_NAME),
             root_directory,
         }
+    }
+
+    pub fn get_or_create_deep_note_route_profile(
+        &self,
+        identity: &DeepNoteRouteIdentity,
+    ) -> Result<AdaptiveVolumeProfile, String> {
+        let mut connection = self.open_connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| format!("开始读取深度笔记路由容量状态失败：{error}"))?;
+        let profile =
+            load_or_create_route_profile(&transaction, identity, crate::usage::now_ms())?;
+        transaction
+            .commit()
+            .map_err(|error| format!("提交深度笔记路由容量状态失败：{error}"))?;
+        Ok(profile)
+    }
+
+    pub fn record_deep_note_route_outcome(
+        &self,
+        identity: &DeepNoteRouteIdentity,
+        outcome: &AdaptiveVolumeOutcome,
+    ) -> Result<AdaptiveVolumeProfile, String> {
+        let mut connection = self.open_connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| format!("开始更新深度笔记路由容量状态失败：{error}"))?;
+        let now_ms = crate::usage::now_ms();
+        let mut profile = load_or_create_route_profile(&transaction, identity, now_ms)?;
+        profile.apply_outcome(outcome, now_ms);
+        let profile_json = serde_json::to_string(&profile)
+            .map_err(|error| format!("序列化深度笔记路由容量状态失败：{error}"))?;
+        transaction
+            .execute(
+                "UPDATE deep_note_route_profiles
+                 SET state = ?, profile_json = ?, updated_at = ? WHERE route_key = ?",
+                params![
+                    profile.availability.as_str(),
+                    profile_json,
+                    now_ms as i64,
+                    identity.route_key,
+                ],
+            )
+            .map_err(|error| format!("更新深度笔记路由容量状态失败：{error}"))?;
+        transaction
+            .commit()
+            .map_err(|error| format!("提交深度笔记路由容量状态失败：{error}"))?;
+        Ok(profile)
+    }
+
+    pub fn reconcile_deep_note_route_profiles(
+        &self,
+        settings: &crate::settings::types::ModelSettings,
+    ) -> Result<(), String> {
+        let mut connection = self.open_connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| format!("开始对账深度笔记路由状态失败：{error}"))?;
+        let mut statement = transaction
+            .prepare("SELECT route_key, profile_json FROM deep_note_route_profiles")
+            .map_err(|error| format!("准备深度笔记路由对账失败：{error}"))?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|error| format!("查询深度笔记路由对账失败：{error}"))?;
+        let mut profiles = Vec::new();
+        for row in rows {
+            let (route_key, profile_json) =
+                row.map_err(|error| format!("读取深度笔记路由对账失败：{error}"))?;
+            if let Ok(profile) = serde_json::from_str::<AdaptiveVolumeProfile>(&profile_json) {
+                profiles.push((route_key, profile));
+            }
+        }
+        drop(statement);
+        let now_ms = crate::usage::now_ms();
+        for (route_key, mut profile) in profiles {
+            let next = match settings
+                .providers
+                .iter()
+                .find(|provider| provider.id == profile.identity.provider_id)
+            {
+                None => RouteAvailability::Tombstoned,
+                Some(provider)
+                    if provider_config_epoch(provider)
+                        != profile.identity.provider_config_epoch =>
+                {
+                    RouteAvailability::Tombstoned
+                }
+                Some(provider) if !provider.enabled => RouteAvailability::Disabled,
+                Some(provider) => match provider
+                    .models
+                    .iter()
+                    .find(|model| model.id == profile.identity.model_id)
+                {
+                    None => RouteAvailability::Tombstoned,
+                    Some(model) if !model.enabled => RouteAvailability::Disabled,
+                    Some(_) if matches!(
+                        profile.availability,
+                        RouteAvailability::Disabled | RouteAvailability::Tombstoned
+                    ) => RouteAvailability::Unknown,
+                    Some(_) => profile.availability,
+                },
+            };
+            if next == profile.availability {
+                continue;
+            }
+            profile.availability = next;
+            profile.retry_after_until_ms = None;
+            profile.updated_at_ms = now_ms;
+            let profile_json = serde_json::to_string(&profile)
+                .map_err(|error| format!("序列化深度笔记路由对账状态失败：{error}"))?;
+            transaction
+                .execute(
+                    "UPDATE deep_note_route_profiles
+                     SET state = ?, profile_json = ?, updated_at = ? WHERE route_key = ?",
+                    params![next.as_str(), profile_json, now_ms as i64, route_key],
+                )
+                .map_err(|error| format!("写入深度笔记路由对账状态失败：{error}"))?;
+        }
+        let tombstone_cutoff = now_ms.saturating_sub(30 * 24 * 60 * 60 * 1_000) as i64;
+        transaction
+            .execute(
+                "DELETE FROM deep_note_route_profiles
+                 WHERE state = 'tombstoned' AND updated_at < ?",
+                params![tombstone_cutoff],
+            )
+            .map_err(|error| format!("清理过期深度笔记路由状态失败：{error}"))?;
+        transaction
+            .commit()
+            .map_err(|error| format!("提交深度笔记路由对账失败：{error}"))
     }
 
     pub fn list_items(&self, request: LibraryListRequest) -> Result<LibraryListPage, String> {
@@ -700,6 +1061,188 @@ impl LibraryRepository {
             .ok_or_else(|| "笔记不存在或所属文献位于回收站。".to_string())
     }
 
+    pub fn export_note(&self, note_id: &str, destination_parent: &str) -> Result<PathBuf, String> {
+        let note_id = normalize_identifier("笔记 ID", note_id)?;
+        let connection = self.open_connection()?;
+        let note = connection
+            .query_row(
+                "SELECT title, content, directory_path FROM library_notes WHERE id = ?",
+                params![note_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|error| format!("读取待导出笔记失败：{error}"))?
+            .ok_or_else(|| "待导出笔记不存在。".to_string())?;
+        export_note_bundle(
+            &self.root_directory,
+            note.2.as_deref(),
+            &note.0,
+            &note.1,
+            Path::new(destination_parent),
+        )
+    }
+
+    /// 分批把 v17 之前仅存于数据库的笔记补写为目录。
+    ///
+    /// 数据库仍是影子写阶段的权威源；即使上一次在文件落地后、登记目录前崩溃，
+    /// 再次运行也会用数据库内容修复同名目录并完成 CAS 登记。
+    pub fn migrate_legacy_note_directories(&self, limit: usize) -> Result<usize, String> {
+        let limit = limit.clamp(1, 100);
+        let connection = self.open_connection()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT id, title, content, updated_at
+                 FROM library_notes
+                 WHERE directory_path IS NULL
+                 ORDER BY updated_at DESC, id ASC
+                 LIMIT ?",
+            )
+            .map_err(|error| format!("准备旧笔记目录迁移失败：{error}"))?;
+        let rows = statement
+            .query_map(params![i64::try_from(limit).unwrap_or(100)], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            })
+            .map_err(|error| format!("查询旧笔记目录迁移队列失败：{error}"))?;
+        let mut notes = Vec::new();
+        for row in rows {
+            notes.push(row.map_err(|error| format!("读取旧笔记目录迁移队列失败：{error}"))?);
+        }
+        drop(statement);
+
+        let mut migrated = 0usize;
+        for (id, title, content, updated_at) in notes {
+            let expected_directory = format!("{NOTE_DIRECTORY_NAME}/{id}");
+            let prepared = refresh_note_directory(
+                &self.root_directory,
+                Some(&expected_directory),
+                &id,
+                &title,
+                &content,
+                i64_to_u64(updated_at),
+            )?;
+            let changed = connection
+                .execute(
+                    "UPDATE library_notes
+                     SET directory_path = ?, content_hash = ?
+                     WHERE id = ? AND directory_path IS NULL",
+                    params![prepared.relative_directory, prepared.content_hash, id],
+                )
+                .map_err(|error| format!("登记旧笔记目录失败：{error}"))?;
+            migrated = migrated.saturating_add(changed);
+        }
+        Ok(migrated)
+    }
+
+    /// 扫描阶段 2 影子文件并持久化一次对账汇总，供真相源翻转门禁取数。
+    /// 返回 `(已检查, 内容不一致, 文件缺失)`；任何非零异常都必须阻止阶段 3。
+    pub fn reconcile_note_directory_shadows(&self) -> Result<(usize, usize, usize), String> {
+        let connection = self.open_connection()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT id, content, directory_path, content_hash
+                 FROM library_notes
+                 WHERE directory_path IS NOT NULL AND content_hash IS NOT NULL",
+            )
+            .map_err(|error| format!("准备笔记影子文件对账失败：{error}"))?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })
+            .map_err(|error| format!("查询笔记影子文件对账失败：{error}"))?;
+        let mut notes = Vec::new();
+        for row in rows {
+            notes.push(row.map_err(|error| format!("读取笔记影子文件对账失败：{error}"))?);
+        }
+        drop(statement);
+
+        let mut mismatched = 0usize;
+        let mut missing = 0usize;
+        for (id, db_content, stored_directory, expected_hash) in &notes {
+            let file_content = resolve_note_directory(&self.root_directory, stored_directory)
+                .and_then(|directory| {
+                    fs::read_to_string(directory.join("note.md"))
+                        .map_err(|error| format!("读取 note.md 失败：{error}"))
+                });
+            match file_content {
+                Ok(file_content)
+                    if note_content_hash(&file_content) == *expected_hash
+                        && note_content_hash(db_content) == *expected_hash => {}
+                Ok(_) => {
+                    mismatched = mismatched.saturating_add(1);
+                    eprintln!(
+                        "DeepNote shadow reconciliation mismatch for note {id}; DB content remains authoritative"
+                    );
+                }
+                Err(error) => {
+                    missing = missing.saturating_add(1);
+                    eprintln!(
+                        "DeepNote shadow reconciliation missing file for note {id}: {error}; DB content remains authoritative"
+                    );
+                }
+            }
+        }
+        let now = now_millis_i64();
+        connection
+            .execute(
+                "INSERT INTO note_shadow_reconciliation_runs (
+                    id, checked_count, matched_count, mismatch_count, missing_count, created_at
+                 ) VALUES (?, ?, ?, ?, ?, ?)",
+                params![
+                    Uuid::new_v4().to_string(),
+                    i64::try_from(notes.len()).unwrap_or(i64::MAX),
+                    i64::try_from(notes.len().saturating_sub(mismatched).saturating_sub(missing))
+                        .unwrap_or(i64::MAX),
+                    i64::try_from(mismatched).unwrap_or(i64::MAX),
+                    i64::try_from(missing).unwrap_or(i64::MAX),
+                    now,
+                ],
+            )
+            .map_err(|error| format!("保存笔记影子文件对账汇总失败：{error}"))?;
+        connection
+            .execute(
+                "DELETE FROM note_shadow_reconciliation_runs
+                 WHERE created_at < ?",
+                params![now.saturating_sub(90 * 24 * 60 * 60 * 1_000)],
+            )
+            .map_err(|error| format!("清理旧笔记影子文件对账汇总失败：{error}"))?;
+        Ok((notes.len(), mismatched, missing))
+    }
+
+    pub fn collect_orphan_note_directories(&self) -> Result<usize, String> {
+        let connection = self.open_connection()?;
+        let mut statement = connection
+            .prepare("SELECT id FROM library_notes")
+            .map_err(|error| format!("准备笔记目录对账失败：{error}"))?;
+        let rows = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|error| format!("查询笔记目录对账失败：{error}"))?;
+        let mut live_ids = HashSet::new();
+        for row in rows {
+            live_ids.insert(row.map_err(|error| format!("读取笔记目录对账失败：{error}"))?);
+        }
+        collect_orphan_note_directories(
+            &self.root_directory,
+            &live_ids,
+            Duration::from_secs(60 * 60),
+        )
+    }
+
     pub fn create_note(&self, create: LibraryNoteCreate) -> Result<LibraryNote, String> {
         let create = create.normalize_and_validate()?;
         let connection = self.open_connection()?;
@@ -708,14 +1251,35 @@ impl LibraryRepository {
         }
         let id = Uuid::new_v4().to_string();
         let now = now_millis_i64();
+        let prepared = prepare_note_directory(
+            &self.root_directory,
+            &id,
+            &create.title,
+            &create.content,
+            None,
+            &[],
+            i64_to_u64(now),
+        )?;
         if let Some(group_name) = create.group_name.as_deref() {
             register_note_group(&connection, group_name, now)?;
         }
         connection
             .execute(
-                "INSERT INTO library_notes (id, item_id, title, content, group_name, created_at, updated_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)",
-                params![id, create.item_id, create.title, create.content, create.group_name, now, now],
+                "INSERT INTO library_notes (
+                    id, item_id, title, content, group_name, directory_path, content_hash,
+                    created_at, updated_at
+                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                params![
+                    id,
+                    create.item_id,
+                    create.title,
+                    prepared.content,
+                    create.group_name,
+                    prepared.relative_directory,
+                    prepared.content_hash,
+                    now,
+                    now
+                ],
             )
             .map_err(|error| format!("创建文献笔记失败：{error}"))?;
         self.get_note_with_connection(&connection, &id)?
@@ -736,6 +1300,15 @@ impl LibraryRepository {
         }
         let id = Uuid::new_v4().to_string();
         let now = now_millis_i64();
+        let prepared = prepare_note_directory(
+            &self.root_directory,
+            &id,
+            &create.title,
+            &create.content,
+            None,
+            &[],
+            i64_to_u64(now),
+        )?;
         let transaction = connection
             .transaction()
             .map_err(|error| format!("开始创建深度笔记失败：{error}"))?;
@@ -744,11 +1317,24 @@ impl LibraryRepository {
         }
         transaction
             .execute(
-                "INSERT INTO library_notes (id, item_id, title, content, group_name, created_at, updated_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)",
-                params![id, create.item_id, create.title, create.content, create.group_name, now, now],
+                "INSERT INTO library_notes (
+                    id, item_id, title, content, group_name, directory_path, content_hash,
+                    created_at, updated_at
+                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                params![
+                    id,
+                    create.item_id,
+                    create.title,
+                    prepared.content,
+                    create.group_name,
+                    prepared.relative_directory,
+                    prepared.content_hash,
+                    now,
+                    now
+                ],
             )
             .map_err(|error| format!("创建深度笔记失败：{error}"))?;
+        insert_note_attachments(&transaction, &prepared.attachments)?;
         insert_note_sources(&transaction, &id, sources, now)?;
         transaction
             .commit()
@@ -759,6 +1345,12 @@ impl LibraryRepository {
 
     /// 原子创建深度笔记、章节来源和覆盖快照。覆盖快照保存逐消息与附件内容 Hash，
     /// 后续增量更新前必须先验证它，避免把已编辑、删除或重排的旧来源混入新笔记。
+    ///
+    /// `#[allow(dead_code)]`：深度笔记管线已改走 `commit_deep_note_and_complete_run`
+    /// （P0-1 把笔记写入、`note_id` 回填、相位推进收进单事务），这里只剩测试引用。
+    /// 保留是因为它仍是「建笔记 + 写来源 + 写覆盖快照」这组约束的最小可测单元 ——
+    /// 来源校验与覆盖快照的行为由它单独锁定，不必拼一整条管线。
+    #[allow(dead_code)]
     pub fn create_note_with_sources_and_coverage(
         &self,
         create: LibraryNoteCreate,
@@ -776,6 +1368,15 @@ impl LibraryRepository {
         }
         let id = Uuid::new_v4().to_string();
         let now = now_millis_i64();
+        let prepared = prepare_note_directory(
+            &self.root_directory,
+            &id,
+            &create.title,
+            &create.content,
+            None,
+            &[],
+            i64_to_u64(now),
+        )?;
         let transaction = connection
             .transaction()
             .map_err(|error| format!("开始创建深度笔记失败：{error}"))?;
@@ -784,11 +1385,24 @@ impl LibraryRepository {
         }
         transaction
             .execute(
-                "INSERT INTO library_notes (id, item_id, title, content, group_name, created_at, updated_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)",
-                params![id, create.item_id, create.title, create.content, create.group_name, now, now],
+                "INSERT INTO library_notes (
+                    id, item_id, title, content, group_name, directory_path, content_hash,
+                    created_at, updated_at
+                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                params![
+                    id,
+                    create.item_id,
+                    create.title,
+                    prepared.content,
+                    create.group_name,
+                    prepared.relative_directory,
+                    prepared.content_hash,
+                    now,
+                    now
+                ],
             )
             .map_err(|error| format!("创建深度笔记失败：{error}"))?;
+        insert_note_attachments(&transaction, &prepared.attachments)?;
         insert_note_sources(&transaction, &id, sources, now)?;
         upsert_deep_note_coverage_snapshot(
             &transaction,
@@ -810,6 +1424,11 @@ impl LibraryRepository {
     /// update target for this conversation. Older notes keep their historical
     /// message-level citations; only the moving summarized-until anchor is
     /// cleared so future update inspection cannot select the stale generation.
+    ///
+    /// `#[allow(dead_code)]`：同上，生产路径已由
+    /// `commit_deep_note_and_complete_run` 覆盖（重建走 `force_rebuild` 参数）。
+    /// 保留供测试单独锁定「重建后旧笔记不再是更新锚点」这条不变量。
+    #[allow(dead_code)]
     pub fn create_rebuilt_note_with_sources_and_coverage(
         &self,
         create: LibraryNoteCreate,
@@ -827,6 +1446,15 @@ impl LibraryRepository {
         }
         let id = Uuid::new_v4().to_string();
         let now = now_millis_i64();
+        let prepared = prepare_note_directory(
+            &self.root_directory,
+            &id,
+            &create.title,
+            &create.content,
+            None,
+            &[],
+            i64_to_u64(now),
+        )?;
         let transaction = connection
             .transaction()
             .map_err(|error| format!("开始重建深度笔记失败：{error}"))?;
@@ -842,11 +1470,24 @@ impl LibraryRepository {
             .map_err(|error| format!("切换深度笔记更新锚点失败：{error}"))?;
         transaction
             .execute(
-                "INSERT INTO library_notes (id, item_id, title, content, group_name, created_at, updated_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)",
-                params![id, create.item_id, create.title, create.content, create.group_name, now, now],
+                "INSERT INTO library_notes (
+                    id, item_id, title, content, group_name, directory_path, content_hash,
+                    created_at, updated_at
+                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                params![
+                    id,
+                    create.item_id,
+                    create.title,
+                    prepared.content,
+                    create.group_name,
+                    prepared.relative_directory,
+                    prepared.content_hash,
+                    now,
+                    now
+                ],
             )
             .map_err(|error| format!("创建重建深度笔记失败：{error}"))?;
+        insert_note_attachments(&transaction, &prepared.attachments)?;
         insert_note_sources(&transaction, &id, sources, now)?;
         upsert_deep_note_coverage_snapshot(
             &transaction,
@@ -862,6 +1503,201 @@ impl LibraryRepository {
             .map_err(|error| format!("提交重建深度笔记失败：{error}"))?;
         self.get_note_with_connection(&connection, &id)?
             .ok_or_else(|| "创建后的重建深度笔记不存在。".to_string())
+    }
+
+    fn complete_existing_deep_note_run_in_transaction(
+        &self,
+        transaction: &Transaction<'_>,
+        run_id: &str,
+        warnings_json: &str,
+        degraded: bool,
+    ) -> Result<Option<LibraryNote>, String> {
+        let existing_note_id = transaction
+            .query_row(
+                "SELECT note_id FROM note_pipeline_runs WHERE id = ?",
+                params![run_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()
+            .map_err(|error| format!("读取深度笔记任务失败：{error}"))?
+            .ok_or_else(|| "深度笔记任务不存在。".to_string())?;
+        let Some(existing_note_id) = existing_note_id.filter(|id| !id.trim().is_empty()) else {
+            return Ok(None);
+        };
+        let note = self
+            .get_note_with_connection(transaction, &existing_note_id)?
+            .ok_or_else(|| "深度笔记任务引用的笔记已不存在。".to_string())?;
+        let payload = deep_note_completion_payload(
+            transaction,
+            run_id,
+            &existing_note_id,
+            degraded,
+            true,
+        )?;
+        transition_note_pipeline_phase_in_transaction(
+            transaction,
+            run_id,
+            NotePipelinePhase::Done,
+            Some(&existing_note_id),
+            warnings_json,
+            None,
+            None,
+            "runCompleted",
+            &payload,
+        )?;
+        Ok(Some(note))
+    }
+
+    /// 在**同一个事务**里完成深度笔记的落库与 run 的终态推进。
+    ///
+    /// 拆成两个事务（先建笔记、再写 note_id）时，两者之间崩溃会留下
+    /// “笔记已存在但 run.note_id 为空”的状态，恢复路径会再写一篇，
+    /// 用户看到两篇内容几乎相同的笔记。合并成单事务后这个窗口消失：
+    /// 要么笔记与 note_id 同时存在，要么两者都不存在。
+    ///
+    /// 返回 `(笔记, 终态 run)`。若该 run 已经带 note_id（重复调用或迟到恢复），
+    /// 不再新建笔记，直接返回既有笔记，保证幂等。
+    #[allow(clippy::too_many_arguments)]
+    pub fn commit_deep_note_and_complete_run(
+        &self,
+        run_id: &str,
+        create: LibraryNoteCreate,
+        sources: Vec<NoteSourceCreate>,
+        conversation_id: &str,
+        snapshot: &DeepNoteInputSnapshot,
+        sidecar_json: &str,
+        attachment_sources: Vec<NoteAttachmentSource>,
+        force_rebuild: bool,
+        warnings: &[String],
+        degraded: bool,
+    ) -> Result<(LibraryNote, NotePipelineRun), String> {
+        let run_id = normalize_identifier("任务 ID", run_id)?;
+        let create = create.normalize_and_validate()?;
+        let sources = normalize_note_sources(sources)?;
+        let conversation_id = normalize_identifier("会话 ID", conversation_id)?;
+        let snapshot_json = normalize_coverage_snapshot(snapshot)?;
+        let warnings_json = serde_json::to_string(warnings)
+            .map_err(|error| format!("序列化深度笔记检查提示失败：{error}"))?;
+        let mut connection = self.open_connection()?;
+        if let Some(item_id) = create.item_id.as_deref() {
+            ensure_active_item_exists(&connection, item_id)?;
+        }
+        {
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(|error| format!("开始检查深度笔记幂等状态失败：{error}"))?;
+            if let Some(note) = self.complete_existing_deep_note_run_in_transaction(
+                &transaction,
+                &run_id,
+                &warnings_json,
+                degraded,
+            )? {
+                transaction
+                    .commit()
+                    .map_err(|error| format!("提交深度笔记终态失败：{error}"))?;
+                let run = get_note_pipeline_run_with_connection(&connection, &run_id)?
+                    .ok_or_else(|| "深度笔记任务不存在。".to_string())?;
+                return Ok((note, run));
+            }
+        }
+
+        let id = Uuid::new_v4().to_string();
+        let now = now_millis_i64();
+        // 不持有 SQLite 写事务时完成文件落地。后续事务失败只会留下不可见孤儿目录，
+        // 不会产生一条指向缺失正文的用户可见记录。
+        let prepared = prepare_note_directory(
+            &self.root_directory,
+            &id,
+            &create.title,
+            &create.content,
+            Some(sidecar_json),
+            &attachment_sources,
+            i64_to_u64(now),
+        )?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| format!("开始提交深度笔记失败：{error}"))?;
+        // 文件复制期间另一个提交者可能已经完成；入库前必须再次检查。
+        // 若命中，刚落地的目录保持不可见并由宽限期 GC 回收。
+        if let Some(note) = self.complete_existing_deep_note_run_in_transaction(
+            &transaction,
+            &run_id,
+            &warnings_json,
+            degraded,
+        )? {
+            transaction
+                .commit()
+                .map_err(|error| format!("提交深度笔记终态失败：{error}"))?;
+            let run = get_note_pipeline_run_with_connection(&connection, &run_id)?
+                .ok_or_else(|| "深度笔记任务不存在。".to_string())?;
+            return Ok((note, run));
+        }
+        if let Some(group_name) = create.group_name.as_deref() {
+            register_note_group(&transaction, group_name, now)?;
+        }
+        if force_rebuild {
+            // 全量重建让新笔记成为该会话后续增量的锚点，历史笔记保留自身引用。
+            transaction
+                .execute(
+                    "UPDATE note_sources SET summarized_until_message_id = NULL
+                     WHERE conversation_id = ? AND summarized_until_message_id IS NOT NULL",
+                    params![conversation_id],
+                )
+                .map_err(|error| format!("切换深度笔记更新锚点失败：{error}"))?;
+        }
+        transaction
+            .execute(
+                "INSERT INTO library_notes (
+                    id, item_id, title, content, group_name, directory_path, content_hash,
+                    created_at, updated_at
+                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                params![
+                    id,
+                    create.item_id,
+                    create.title,
+                    prepared.content,
+                    create.group_name,
+                    prepared.relative_directory,
+                    prepared.content_hash,
+                    now,
+                    now
+                ],
+            )
+            .map_err(|error| format!("创建深度笔记失败：{error}"))?;
+        insert_note_attachments(&transaction, &prepared.attachments)?;
+        insert_note_sources(&transaction, &id, sources, now)?;
+        upsert_deep_note_coverage_snapshot(
+            &transaction,
+            &id,
+            &conversation_id,
+            &snapshot_json,
+            now,
+        )?;
+        let units = source_units_from_snapshot(&id, &conversation_id, snapshot, i64_to_u64(now));
+        insert_deep_note_source_units(&transaction, &id, &conversation_id, &units)?;
+
+        // 笔记与终态在同一事务内落地，这是本方法存在的唯一理由。
+        let payload = deep_note_completion_payload(&transaction, &run_id, &id, degraded, false)?;
+        transition_note_pipeline_phase_in_transaction(
+            &transaction,
+            &run_id,
+            NotePipelinePhase::Done,
+            Some(&id),
+            &warnings_json,
+            None,
+            None,
+            "runCompleted",
+            &payload,
+        )?;
+        transaction
+            .commit()
+            .map_err(|error| format!("提交深度笔记失败：{error}"))?;
+        let note = self
+            .get_note_with_connection(&connection, &id)?
+            .ok_or_else(|| "创建后的深度笔记不存在。".to_string())?;
+        let run = get_note_pipeline_run_with_connection(&connection, &run_id)?
+            .ok_or_else(|| "深度笔记任务不存在。".to_string())?;
+        Ok((note, run))
     }
 
     pub fn deep_note_coverage_snapshot(
@@ -982,8 +1818,35 @@ impl LibraryRepository {
         conversation_id: &str,
     ) -> Result<usize, String> {
         let conversation_id = normalize_identifier("会话 ID", conversation_id)?;
-        let connection = self.open_connection()?;
-        connection
+        let mut connection = self.open_connection()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| format!("开始断开笔记会话来源失败：{error}"))?;
+        let affected: i64 = transaction
+            .query_row(
+                "SELECT COUNT(*) FROM note_sources WHERE conversation_id = ?",
+                params![conversation_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| format!("统计笔记会话来源失败：{error}"))?;
+        transaction
+            .execute(
+                "DELETE FROM note_sources AS target
+                 WHERE target.conversation_id = ?
+                   AND EXISTS (
+                     SELECT 1 FROM note_sources AS kept
+                     WHERE kept.note_id = target.note_id
+                       AND kept.section_id = target.section_id
+                       AND kept.origin = target.origin
+                       AND (
+                         kept.conversation_id IS NULL
+                         OR (kept.conversation_id = ? AND kept.rowid < target.rowid)
+                       )
+                   )",
+                params![conversation_id, conversation_id],
+            )
+            .map_err(|error| format!("合并重复笔记会话来源失败：{error}"))?;
+        transaction
             .execute(
                 "UPDATE note_sources
                  SET conversation_id = NULL,
@@ -992,13 +1855,44 @@ impl LibraryRepository {
                  WHERE conversation_id = ?",
                 params![conversation_id],
             )
-            .map_err(|error| format!("断开笔记会话来源失败：{error}"))
+            .map_err(|error| format!("断开笔记会话来源失败：{error}"))?;
+        transaction
+            .commit()
+            .map_err(|error| format!("提交笔记会话来源断开失败：{error}"))?;
+        Ok(usize::try_from(affected).unwrap_or(usize::MAX))
     }
 
     /// 清空会话前断开全部会话来源；AI 补充来源不受影响。
     pub fn detach_all_note_conversation_sources(&self) -> Result<usize, String> {
-        let connection = self.open_connection()?;
-        connection
+        let mut connection = self.open_connection()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| format!("开始断开全部笔记会话来源失败：{error}"))?;
+        let affected: i64 = transaction
+            .query_row(
+                "SELECT COUNT(*) FROM note_sources WHERE conversation_id IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|error| format!("统计全部笔记会话来源失败：{error}"))?;
+        transaction
+            .execute(
+                "DELETE FROM note_sources AS target
+                 WHERE target.conversation_id IS NOT NULL
+                   AND EXISTS (
+                     SELECT 1 FROM note_sources AS kept
+                     WHERE kept.note_id = target.note_id
+                       AND kept.section_id = target.section_id
+                       AND kept.origin = target.origin
+                       AND (
+                         kept.conversation_id IS NULL
+                         OR (kept.conversation_id IS NOT NULL AND kept.rowid < target.rowid)
+                       )
+                   )",
+                [],
+            )
+            .map_err(|error| format!("合并全部重复笔记会话来源失败：{error}"))?;
+        transaction
             .execute(
                 "UPDATE note_sources
                  SET conversation_id = NULL,
@@ -1007,7 +1901,11 @@ impl LibraryRepository {
                  WHERE conversation_id IS NOT NULL",
                 [],
             )
-            .map_err(|error| format!("断开全部笔记会话来源失败：{error}"))
+            .map_err(|error| format!("断开全部笔记会话来源失败：{error}"))?;
+        transaction
+            .commit()
+            .map_err(|error| format!("提交全部笔记会话来源断开失败：{error}"))?;
+        Ok(usize::try_from(affected).unwrap_or(usize::MAX))
     }
 
     pub fn create_note_pipeline_run(
@@ -1026,6 +1924,14 @@ impl LibraryRepository {
         }
         let connection = self.open_connection()?;
         let now = now_millis_i64();
+        // `create.idempotency_key` 现在是**内容派生的基键**（见
+        // `deep_note_content_signature`）：相同输入必然得到相同的基键。但
+        // `note_pipeline_output_idempotency` 是全局唯一索引，而活跃会话索引不含
+        // done/cancelled —— 也就是说「同一输入合法重生成」是被允许的业务动作，却
+        // 会撞上这条全局唯一索引。所以这里给基键找空位：第一次用基键本身，之后追加
+        // `#n` 代次。代次本身就是「这份输入被重生成过几次」的可观测事实。
+        let idempotency_key =
+            self.next_free_idempotency_key(&connection, &create.idempotency_key)?;
         let inserted = connection.execute(
             "INSERT INTO note_pipeline_runs (
                 id, conversation_id, phase, outline_json, selected_section_ids_json,
@@ -1045,7 +1951,7 @@ impl LibraryRepository {
                 create.input_snapshot_hash,
                 create.budget_json,
                 create.preflight_json,
-                create.idempotency_key,
+                idempotency_key,
                 now,
                 now,
             ],
@@ -1054,10 +1960,44 @@ impl LibraryRepository {
             Ok(_) => get_note_pipeline_run_with_connection(&connection, &id)?
                 .ok_or_else(|| "创建后的深度笔记任务不存在。".to_string()),
             Err(error) if is_unique_constraint(&error) => {
+                // 走到这里说明撞的是活跃会话索引（幂等键已经在上面让开了），或者
+                // 与另一次并发创建赛跑同时撞上。两种情况对用户的含义一致。
                 Err("该会话已有一个可恢复的深度笔记任务。".to_string())
             }
             Err(error) => Err(format!("创建深度笔记任务失败：{error}")),
         }
+    }
+
+    /// 为内容派生的基键找一个当前未被占用的键。基键为空时原样返回（空串被唯一索引的
+    /// `WHERE idempotency_key <> ''` 排除，天然可重复）。
+    fn next_free_idempotency_key(
+        &self,
+        connection: &Connection,
+        base_key: &str,
+    ) -> Result<String, String> {
+        let base_key = base_key.trim();
+        if base_key.is_empty() {
+            return Ok(String::new());
+        }
+        let mut candidate = base_key.to_string();
+        for generation in 1..=MAX_IDEMPOTENCY_GENERATIONS {
+            let taken = connection
+                .query_row(
+                    "SELECT 1 FROM note_pipeline_runs WHERE idempotency_key = ? LIMIT 1",
+                    params![candidate],
+                    |_| Ok(()),
+                )
+                .optional()
+                .map_err(|error| format!("检查深度笔记幂等键失败：{error}"))?
+                .is_some();
+            if !taken {
+                return Ok(candidate);
+            }
+            candidate = format!("{base_key}#{generation}");
+        }
+        Err(format!(
+            "同一份输入的深度笔记重生成次数已达上限（{MAX_IDEMPOTENCY_GENERATIONS} 次）。"
+        ))
     }
 
     pub fn get_note_pipeline_run(&self, run_id: &str) -> Result<NotePipelineRun, String> {
@@ -1101,12 +2041,6 @@ impl LibraryRepository {
         if changed != 1 {
             return Err("深度笔记任务已有未过期的运行实例，拒绝并发 Worker。".to_string());
         }
-        recover_expired_note_pipeline_nodes_in_transaction(
-            &transaction,
-            &run_id,
-            &runtime_instance_id,
-            now,
-        )?;
         transaction
             .commit()
             .map_err(|error| format!("提交深度笔记运行实例领取失败：{error}"))?;
@@ -1119,11 +2053,8 @@ impl LibraryRepository {
         runtime_instance_id: &str,
     ) -> Result<(), String> {
         let now = now_millis_i64();
-        let mut connection = self.open_connection()?;
-        let transaction = connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(|error| format!("开始更新深度笔记运行心跳失败：{error}"))?;
-        let changed = transaction
+        let connection = self.open_connection()?;
+        let changed = connection
             .execute(
                 "UPDATE note_pipeline_runs SET heartbeat_at = ?, updated_at = ?
                  WHERE id = ? AND runtime_instance_id = ?
@@ -1134,19 +2065,6 @@ impl LibraryRepository {
         if changed != 1 {
             return Err("深度笔记运行实例已失效，拒绝迟到 Worker 心跳。".to_string());
         }
-        let lease_expires_at = now.saturating_add(90_000);
-        transaction
-            .execute(
-                "UPDATE note_pipeline_nodes
-                 SET heartbeat_at = ?, lease_expires_at = ?
-                 WHERE run_id = ? AND lease_owner = ?
-                   AND status IN ('leased', 'inProgress', 'in_progress')",
-                params![now, lease_expires_at, run_id, runtime_instance_id],
-            )
-            .map_err(|error| format!("续租深度笔记 DAG 节点失败：{error}"))?;
-        transaction
-            .commit()
-            .map_err(|error| format!("提交深度笔记运行心跳失败：{error}"))?;
         Ok(())
     }
 
@@ -1379,10 +2297,93 @@ impl LibraryRepository {
         self.get_note_pipeline_run(&run_id)
     }
 
+    /// 收尾“笔记已落库但终态未推进”的历史 run。
+    ///
+    /// 单事务提交（`commit_deep_note_and_complete_run`）之后不再产生这种状态，
+    /// 但升级前留下的数据仍可能停在 persisting 且 note_id 非空。
+    ///
+    /// 这里不能靠“把它们从可恢复列表里排除”来处理：`note_pipeline_active_conversation`
+    /// 唯一索引把 persisting 算作活跃阶段，一旦排除，用户既无法恢复也无法在该会话
+    /// 新建任务，会形成死锁。正确做法是主动把它们推进到 Done。
+    ///
+    /// 返回被收尾的 run 数量。
+    pub fn finalize_persisted_note_pipeline_runs(&self) -> Result<usize, String> {
+        let connection = self.open_connection()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT id FROM note_pipeline_runs
+                 WHERE phase = 'persisting' AND note_id IS NOT NULL AND TRIM(note_id) <> ''",
+            )
+            .map_err(|error| format!("准备深度笔记收尾查询失败：{error}"))?;
+        let ids = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|error| format!("查询待收尾深度笔记任务失败：{error}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("读取待收尾深度笔记任务失败：{error}"))?;
+        drop(statement);
+        let mut finalized = 0usize;
+        for id in ids {
+            let run = match get_note_pipeline_run_with_connection(&connection, &id)? {
+                Some(run) => run,
+                None => continue,
+            };
+            let Some(note_id) = run.note_id.as_deref().filter(|id| !id.trim().is_empty()) else {
+                continue;
+            };
+            // 笔记本体已被删除时不做收尾，留给恢复路径按普通失败处理。
+            if self
+                .get_note_with_connection(&connection, note_id)?
+                .is_none()
+            {
+                continue;
+            }
+            let warnings_json = serde_json::to_string(&run.warnings)
+                .map_err(|error| format!("序列化深度笔记检查提示失败：{error}"))?;
+            match self.finalize_single_persisted_run(&id, note_id, &warnings_json) {
+                Ok(()) => finalized = finalized.saturating_add(1),
+                // 单个 run 收尾失败不应阻塞其余 run 与调用方的主流程。
+                Err(error) => {
+                    eprintln!("收尾深度笔记任务 {id} 失败：{error}");
+                }
+            }
+        }
+        Ok(finalized)
+    }
+
+    fn finalize_single_persisted_run(
+        &self,
+        run_id: &str,
+        note_id: &str,
+        warnings_json: &str,
+    ) -> Result<(), String> {
+        let mut connection = self.open_connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| format!("开始收尾深度笔记任务失败：{error}"))?;
+        let payload = deep_note_completion_payload(&transaction, run_id, note_id, false, true)?;
+        transition_note_pipeline_phase_in_transaction(
+            &transaction,
+            run_id,
+            NotePipelinePhase::Done,
+            Some(note_id),
+            warnings_json,
+            None,
+            None,
+            "runCompleted",
+            &payload,
+        )?;
+        transaction
+            .commit()
+            .map_err(|error| format!("提交深度笔记收尾状态失败：{error}"))
+    }
+
     pub fn list_resumable_note_pipeline_runs(&self) -> Result<Vec<NotePipelineRun>, String> {
         let connection = self.open_connection()?;
         let mut statement = connection
             .prepare(
+                // persisting 阶段刻意**不**加 `note_id IS NULL` 过滤：
+                // 见 `finalize_persisted_note_pipeline_runs` 的注释，过滤会造成死锁。
+                // 这类 run 由收尾逻辑推进到 Done 后自然离开本列表。
                 "SELECT candidate.id FROM note_pipeline_runs AS candidate
                  WHERE (
                     candidate.phase IN (
@@ -1644,6 +2645,60 @@ impl LibraryRepository {
             .map_err(|error| format!("提交深度笔记 DAG 失败：{error}"))
     }
 
+    /// 用独立节点表覆盖运行时 JSON 中的 DAG 状态。
+    ///
+    /// 只接纳 `input_hash` 与当前编译计划一致的行，避免旧计划或迟到 worker 的状态
+    /// 污染新计划；缺失行继续使用编译计划内的状态作为兼容回退。
+    pub fn restore_note_pipeline_nodes(
+        &self,
+        run_id: &str,
+        plan_version: u32,
+        compiled_nodes: &[DeepNoteDagNode],
+    ) -> Result<Vec<DeepNoteDagNode>, String> {
+        let run_id = normalize_identifier("任务 ID", run_id)?;
+        let connection = self.open_connection()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT node_id, status, attempt_count, evidence_ids_json, input_hash,
+                        output_ref, validation_json, error_message
+                 FROM note_pipeline_nodes
+                 WHERE run_id = ? AND plan_version = ?",
+            )
+            .map_err(|error| format!("准备恢复深度笔记 DAG 节点失败：{error}"))?;
+        let rows = statement
+            .query_map(params![run_id, i64::from(plan_version)], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                ))
+            })
+            .map_err(|error| format!("查询恢复深度笔记 DAG 节点失败：{error}"))?;
+        let mut restored = compiled_nodes.to_vec();
+        for row in rows {
+            let raw = row.map_err(|error| format!("读取恢复深度笔记 DAG 节点失败：{error}"))?;
+            let Some(node) = restored.iter_mut().find(|node| node.node_id == raw.0) else {
+                continue;
+            };
+            if node.input_hash != raw.4 {
+                continue;
+            }
+            node.status = DeepNoteNodeStatus::parse(&raw.1)?;
+            node.attempt_count = u8::try_from(raw.2).unwrap_or(u8::MAX);
+            node.evidence_ids = serde_json::from_str(&raw.3)
+                .map_err(|error| format!("解析恢复 DAG 节点证据失败：{error}"))?;
+            node.output_ref = raw.5;
+            node.validation_json = raw.6;
+            node.error_message = raw.7;
+        }
+        Ok(restored)
+    }
+
     pub fn update_note_pipeline_node_state(
         &self,
         run_id: &str,
@@ -1667,8 +2722,7 @@ impl LibraryRepository {
         let now = now_millis_i64();
         let current = transaction
             .query_row(
-                "SELECT status, state_version, execution_version, lease_token,
-                        lease_owner, lease_expires_at
+                "SELECT status, state_version, execution_version
                  FROM note_pipeline_nodes
                  WHERE run_id = ? AND plan_version = ? AND node_id = ?",
                 params![run_id, i64::from(plan_version), node_id],
@@ -1677,9 +2731,6 @@ impl LibraryRepository {
                         row.get::<_, String>(0)?,
                         row.get::<_, i64>(1)?,
                         row.get::<_, i64>(2)?,
-                        row.get::<_, Option<String>>(3)?,
-                        row.get::<_, Option<String>>(4)?,
-                        row.get::<_, Option<i64>>(5)?,
                     ))
                 },
             )
@@ -1689,28 +2740,14 @@ impl LibraryRepository {
         let current_status = DeepNoteNodeStatus::parse(&current.0)?;
         let target_status = DeepNoteNodeStatus::parse(status)?;
         let worker_instance_id = current_task_instance_id();
-        let requires_lease = matches!(
-            current_status,
-            DeepNoteNodeStatus::Leased | DeepNoteNodeStatus::InProgress
-        ) && worker_instance_id.is_some();
-        if requires_lease
-            && (current.3.is_none()
-                || current.4.as_deref() != worker_instance_id.as_deref()
-                || current.5.is_some_and(|expires_at| expires_at < now))
-        {
-            return Err(format!(
-                "深度笔记 DAG 节点租约已失效，拒绝迟到 Worker：{node_id}"
-            ));
-        }
         if current_status == target_status {
             let changed = transaction
                 .execute(
                     "UPDATE note_pipeline_nodes
                      SET attempt_count = ?, evidence_ids_json = ?, output_ref = ?,
-                         validation_json = ?, error_message = ?, heartbeat_at = ?, updated_at = ?
+                         validation_json = ?, error_message = ?, updated_at = ?
                      WHERE run_id = ? AND plan_version = ? AND node_id = ?
-                       AND state_version = ? AND execution_version = ?
-                       AND (? = 0 OR (lease_token = ? AND lease_owner = ?))",
+                       AND state_version = ? AND execution_version = ?",
                     params![
                         i64::from(attempt_count),
                         evidence_ids_json,
@@ -1718,15 +2755,11 @@ impl LibraryRepository {
                         validation_json,
                         error_message,
                         now,
-                        now,
                         run_id,
                         i64::from(plan_version),
                         node_id,
                         current.1,
                         current.2,
-                        requires_lease,
-                        current.3,
-                        worker_instance_id.as_deref(),
                     ],
                 )
                 .map_err(|error| format!("更新深度笔记 DAG 节点检查点失败：{error}"))?;
@@ -1745,37 +2778,14 @@ impl LibraryRepository {
         if transition.next_state != target_status {
             return Err("DAG 状态机结果与请求目标不一致，拒绝写入。".to_string());
         }
-        let clear_lease = transition.effects.iter().any(|effect| {
-            matches!(
-                effect,
-                crate::chat::note_pipeline::node_machine::DagNodeEffect::ReleaseLease
-                    | crate::chat::note_pipeline::node_machine::DagNodeEffect::MarkSuperseded
-            )
-        });
-        let starts_lease = current_status == DeepNoteNodeStatus::Ready
-            && matches!(
-                target_status,
-                DeepNoteNodeStatus::Leased | DeepNoteNodeStatus::InProgress
-            );
-        let new_lease_token = starts_lease.then(|| Uuid::new_v4().to_string());
-        let new_lease_owner = starts_lease.then(|| {
-            worker_instance_id
-                .clone()
-                .unwrap_or_else(|| "compatibility-worker".to_string())
-        });
-        let new_lease_expires_at = starts_lease.then(|| now.saturating_add(90_000));
         let changed = transaction
             .execute(
                 "UPDATE note_pipeline_nodes
                  SET status = ?, attempt_count = ?, evidence_ids_json = ?, output_ref = ?,
                      validation_json = ?, error_message = ?, state_version = state_version + 1,
-                     lease_token = CASE WHEN ? THEN ? WHEN ? THEN NULL ELSE lease_token END,
-                     lease_owner = CASE WHEN ? THEN ? WHEN ? THEN NULL ELSE lease_owner END,
-                     lease_expires_at = CASE WHEN ? THEN ? WHEN ? THEN NULL ELSE lease_expires_at END,
-                     heartbeat_at = ?, updated_at = ?
+                     updated_at = ?
                  WHERE run_id = ? AND plan_version = ? AND node_id = ?
-                   AND status = ? AND state_version = ? AND execution_version = ?
-                   AND (? = 0 OR (lease_token = ? AND lease_owner = ?))",
+                   AND status = ? AND state_version = ? AND execution_version = ?",
                 params![
                     target_status.as_str(),
                     i64::from(attempt_count),
@@ -1783,16 +2793,6 @@ impl LibraryRepository {
                     output_ref,
                     validation_json,
                     error_message,
-                    starts_lease,
-                    new_lease_token,
-                    clear_lease,
-                    starts_lease,
-                    new_lease_owner,
-                    clear_lease,
-                    starts_lease,
-                    new_lease_expires_at,
-                    clear_lease,
-                    now,
                     now,
                     run_id,
                     i64::from(plan_version),
@@ -1800,9 +2800,6 @@ impl LibraryRepository {
                     current_status.as_str(),
                     current.1,
                     current.2,
-                    requires_lease,
-                    current.3,
-                    worker_instance_id.as_deref(),
                 ],
             )
             .map_err(|error| format!("更新深度笔记 DAG 节点失败：{error}"))?;
@@ -1881,7 +2878,7 @@ impl LibraryRepository {
         for chunk in chunks {
             transaction
                 .execute(
-                    "INSERT INTO note_pipeline_source_chunks (
+                    "INSERT OR IGNORE INTO note_pipeline_source_chunks (
                         run_id, chunk_id, source_kind, source_id, message_id, attachment_id,
                         library_item_id, location, excerpt, content_hash, ocr_confidence, created_at
                      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -1902,15 +2899,6 @@ impl LibraryRepository {
                 )
                 .map_err(|error| format!("保存深度笔记来源分块失败：{error}"))?;
         }
-        transaction
-            .execute(
-                "DELETE FROM note_pipeline_chunk_digests
-                 WHERE run_id = ? AND chunk_id NOT IN (
-                    SELECT chunk_id FROM note_pipeline_source_chunks WHERE run_id = ?
-                 )",
-                params![run_id, run_id],
-            )
-            .map_err(|error| format!("清理失效的深度笔记 Chunk 检查点失败：{error}"))?;
         transaction
             .commit()
             .map_err(|error| format!("提交深度笔记来源分块失败：{error}"))
@@ -1964,22 +2952,62 @@ impl LibraryRepository {
         .collect()
     }
 
-    pub fn list_note_pipeline_chunk_digests(
+    pub fn find_note_pipeline_chunk_digests(
         &self,
-        run_id: &str,
+        keys: &[(String, String)],
+        provider_id: &str,
+        model_id: &str,
     ) -> Result<Vec<NotePipelineChunkDigest>, String> {
-        let run_id = normalize_identifier("任务 ID", run_id)?;
-        let connection = self.open_connection()?;
-        let mut statement = connection
-            .prepare(
-                "SELECT chunk_id, content_hash, prompt_hash, provider_id, model_id,
-                        digest_json, semantic_calls, updated_at
-                 FROM note_pipeline_chunk_digests WHERE run_id = ?
-                 ORDER BY chunk_id ASC",
+        if keys.is_empty() {
+            return Ok(Vec::new());
+        }
+        if keys.len() > NOTE_DIGEST_CACHE_MAX_LOOKUPS {
+            return Err("单次查询的深度笔记 Chunk 检查点过多。".to_string());
+        }
+        let provider_id = normalize_identifier("提供方 ID", provider_id)?;
+        let model_id = normalize_identifier("模型 ID", model_id)?;
+        let mut normalized_keys = Vec::with_capacity(keys.len());
+        for (content_hash, prompt_hash) in keys {
+            normalized_keys.push((
+                normalize_identifier("Chunk 内容 Hash", content_hash)?,
+                normalize_identifier("Chunk Prompt Hash", prompt_hash)?,
+            ));
+        }
+        normalized_keys.sort();
+        normalized_keys.dedup();
+
+        let mut connection = self.open_connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| format!("开始读取全局 Chunk 摘要缓存失败：{error}"))?;
+        let now = now_millis_i64();
+        let cutoff = now.saturating_sub(NOTE_DIGEST_CACHE_TTL_MS);
+        transaction
+            .execute(
+                "DELETE FROM note_pipeline_chunk_digests WHERE updated_at < ?",
+                params![cutoff],
             )
+            .map_err(|error| format!("清理过期 Chunk 摘要缓存失败：{error}"))?;
+        let key_predicates = std::iter::repeat("(content_hash = ? AND prompt_hash = ?)")
+            .take(normalized_keys.len())
+            .collect::<Vec<_>>()
+            .join(" OR ");
+        let sql = format!(
+            "SELECT chunk_id, content_hash, prompt_hash, provider_id, model_id,
+                    digest_json, semantic_calls, updated_at
+             FROM note_pipeline_chunk_digests
+             WHERE provider_id = ? AND model_id = ? AND ({key_predicates})"
+        );
+        let mut values = vec![Value::Text(provider_id.clone()), Value::Text(model_id.clone())];
+        for (content_hash, prompt_hash) in &normalized_keys {
+            values.push(Value::Text(content_hash.clone()));
+            values.push(Value::Text(prompt_hash.clone()));
+        }
+        let mut statement = transaction
+            .prepare(&sql)
             .map_err(|error| format!("准备深度笔记 Chunk 检查点查询失败：{error}"))?;
         let rows = statement
-            .query_map(params![run_id], |row| {
+            .query_map(params_from_iter(values.iter()), |row| {
                 Ok(NotePipelineChunkDigest {
                     chunk_id: row.get(0)?,
                     content_hash: row.get(1)?,
@@ -1992,14 +3020,38 @@ impl LibraryRepository {
                 })
             })
             .map_err(|error| format!("查询深度笔记 Chunk 检查点失败：{error}"))?;
-        rows.map(|row| row.map_err(|error| format!("读取深度笔记 Chunk 检查点失败：{error}")))
-            .collect()
+        let checkpoints = rows
+            .map(|row| {
+                row.map_err(|error| format!("读取深度笔记 Chunk 检查点失败：{error}"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(statement);
+        for checkpoint in &checkpoints {
+            transaction
+                .execute(
+                    "UPDATE note_pipeline_chunk_digests
+                     SET hit_count = hit_count + 1, last_accessed_at = ?
+                     WHERE content_hash = ? AND prompt_hash = ?
+                       AND provider_id = ? AND model_id = ?",
+                    params![
+                        now,
+                        checkpoint.content_hash,
+                        checkpoint.prompt_hash,
+                        checkpoint.provider_id,
+                        checkpoint.model_id,
+                    ],
+                )
+                .map_err(|error| format!("更新 Chunk 摘要缓存命中时间失败：{error}"))?;
+        }
+        transaction
+            .commit()
+            .map_err(|error| format!("提交全局 Chunk 摘要缓存读取失败：{error}"))?;
+        Ok(checkpoints)
     }
 
     #[allow(clippy::too_many_arguments)]
     pub fn save_note_pipeline_chunk_digest(
         &self,
-        run_id: &str,
         chunk_id: &str,
         content_hash: &str,
         prompt_hash: &str,
@@ -2008,29 +3060,32 @@ impl LibraryRepository {
         digest_json: &str,
         semantic_calls: u32,
     ) -> Result<(), String> {
-        let run_id = normalize_identifier("任务 ID", run_id)?;
         let chunk_id = normalize_identifier("Chunk ID", chunk_id)?;
+        let content_hash = normalize_identifier("Chunk 内容 Hash", content_hash)?;
+        let prompt_hash = normalize_identifier("Chunk Prompt Hash", prompt_hash)?;
+        let provider_id = normalize_identifier("提供方 ID", provider_id)?;
+        let model_id = normalize_identifier("模型 ID", model_id)?;
         if digest_json.trim().is_empty() {
             return Err("深度笔记 Chunk 摘要不能为空。".to_string());
         }
         let now = now_millis_i64();
-        let connection = self.open_connection()?;
-        connection
+        let mut connection = self.open_connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| format!("开始保存全局 Chunk 摘要缓存失败：{error}"))?;
+        transaction
             .execute(
                 "INSERT INTO note_pipeline_chunk_digests (
-                    run_id, chunk_id, content_hash, prompt_hash, provider_id, model_id,
-                    digest_json, semantic_calls, created_at, updated_at
-                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                 ON CONFLICT(run_id, chunk_id) DO UPDATE SET
-                    content_hash = excluded.content_hash,
-                    prompt_hash = excluded.prompt_hash,
-                    provider_id = excluded.provider_id,
-                    model_id = excluded.model_id,
+                    chunk_id, content_hash, prompt_hash, provider_id, model_id,
+                    digest_json, semantic_calls, hit_count, last_accessed_at, created_at, updated_at
+                 ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+                 ON CONFLICT(content_hash, prompt_hash, provider_id, model_id) DO UPDATE SET
+                    chunk_id = excluded.chunk_id,
                     digest_json = excluded.digest_json,
                     semantic_calls = excluded.semantic_calls,
+                    last_accessed_at = excluded.last_accessed_at,
                     updated_at = excluded.updated_at",
                 params![
-                    run_id,
                     chunk_id,
                     content_hash,
                     prompt_hash,
@@ -2040,10 +3095,24 @@ impl LibraryRepository {
                     i64::from(semantic_calls),
                     now,
                     now,
+                    now,
                 ],
             )
             .map_err(|error| format!("保存深度笔记 Chunk 检查点失败：{error}"))?;
-        Ok(())
+        transaction
+            .execute(
+                "DELETE FROM note_pipeline_chunk_digests
+                 WHERE rowid IN (
+                    SELECT rowid FROM note_pipeline_chunk_digests
+                    ORDER BY last_accessed_at DESC, updated_at DESC
+                    LIMIT -1 OFFSET ?
+                 )",
+                params![NOTE_DIGEST_CACHE_MAX_ENTRIES],
+            )
+            .map_err(|error| format!("淘汰全局 Chunk 摘要缓存失败：{error}"))?;
+        transaction
+            .commit()
+            .map_err(|error| format!("提交全局 Chunk 摘要缓存失败：{error}"))
     }
 
     pub fn replace_note_pipeline_evidence(
@@ -2256,6 +3325,103 @@ impl LibraryRepository {
         u64::try_from(next).map_err(|_| "深度笔记事件序号无效。".to_string())
     }
 
+    /// 在物理 HTTP 请求发出前原子扣减一次 run 级上游请求预算并写入遥测事件。
+    ///
+    /// `BEGIN IMMEDIATE` 把「读当前用量、比较上限、写事件」收进同一个写事务。多个
+    /// section 并行到达上限时最多只有一个能拿到最后一个名额，不会发生先查后写的
+    /// 超发竞态。事件本身就是权威计数，崩溃恢复后不会重新获得预算。
+    pub fn try_append_note_pipeline_upstream_attempt(
+        &self,
+        run_id: &str,
+        request_limit: u32,
+        payload_json: &str,
+    ) -> Result<u32, String> {
+        let run_id = normalize_identifier("任务 ID", run_id)?;
+        serde_json::from_str::<serde_json::Value>(payload_json)
+            .map_err(|error| format!("深度笔记上游请求事件不是有效 JSON：{error}"))?;
+        let mut connection = self.open_connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| format!("开始扣减深度笔记上游请求预算失败：{error}"))?;
+        let used = note_pipeline_upstream_request_count(&transaction, &run_id)?;
+        if used >= request_limit {
+            return Err(format!(
+                "深度笔记上游请求预算已用尽（{used}/{request_limit}）。"
+            ));
+        }
+        let run_meta = transaction
+            .query_row(
+                "SELECT last_event_sequence, execution_version, runtime_instance_id,
+                        budget_json, preflight_json
+                 FROM note_pipeline_runs WHERE id = ?",
+                params![run_id],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|error| format!("读取深度笔记请求预算失败：{error}"))?
+            .ok_or_else(|| "深度笔记任务不存在。".to_string())?;
+        let next_sequence = run_meta.0.saturating_add(1);
+        let next_used = used.saturating_add(1);
+        let (budget_json, runtime_json) =
+            set_upstream_request_usage(&run_meta.3, &run_meta.4, next_used)?;
+        let now = now_millis_i64();
+        transaction
+            .execute(
+                "INSERT INTO note_pipeline_events (
+                    run_id, sequence, event_type, node_id, payload_json, created_at,
+                    execution_version, runtime_instance_id
+                 ) VALUES (?, ?, 'modelAttemptStarted', NULL, ?, ?, ?, ?)",
+                params![
+                    run_id,
+                    next_sequence,
+                    payload_json,
+                    now,
+                    run_meta.1,
+                    run_meta.2,
+                ],
+            )
+            .map_err(|error| format!("保存深度笔记上游请求事件失败：{error}"))?;
+        let changed = transaction
+            .execute(
+                "UPDATE note_pipeline_runs
+                 SET last_event_sequence = ?, heartbeat_at = ?, updated_at = ?,
+                     budget_json = ?, preflight_json = ?
+                 WHERE id = ? AND last_event_sequence = ?",
+                params![
+                    next_sequence,
+                    now,
+                    now,
+                    budget_json,
+                    runtime_json,
+                    run_id,
+                    run_meta.0,
+                ],
+            )
+            .map_err(|error| format!("推进深度笔记请求预算游标失败：{error}"))?;
+        if changed != 1 {
+            return Err("深度笔记请求预算在写入时发生并发冲突。".to_string());
+        }
+        transaction
+            .commit()
+            .map_err(|error| format!("提交深度笔记上游请求预算失败：{error}"))?;
+        Ok(next_used)
+    }
+
+    /// 返回 provider 实际看到的请求数；流式回落与普通重试都各算一次。
+    pub fn count_note_pipeline_upstream_requests(&self, run_id: &str) -> Result<u32, String> {
+        let run_id = normalize_identifier("任务 ID", run_id)?;
+        let connection = self.open_connection()?;
+        note_pipeline_upstream_request_count(&connection, &run_id)
+    }
+
     pub fn list_note_pipeline_events(
         &self,
         run_id: &str,
@@ -2289,6 +3455,49 @@ impl LibraryRepository {
         Ok(events)
     }
 
+    /// 汇总某个 run 迄今累计的上游墙钟（毫秒）。
+    ///
+    /// 刻意不复用 `list_note_pipeline_events`：那个方法把 limit 夹到 500，长 run
+    /// 会被静默截断，而截断的方向是**少算**——预算闸门于是永远不触发，正好是最坏的
+    /// 失效方式。这里不设上限。
+    ///
+    /// 从事件表汇总而不是在内存里计数，是为了让恢复后的 run 继承已消耗的时间：
+    /// 内存计数在续跑时归零，等于每次重启都白送一份完整预算。
+    pub fn sum_note_pipeline_upstream_wall_clock_ms(&self, run_id: &str) -> Result<u64, String> {
+        let run_id = normalize_identifier("任务 ID", run_id)?;
+        let connection = self.open_connection()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT payload_json FROM note_pipeline_events
+                 WHERE run_id = ? AND event_type IN ('modelCallCompleted', 'modelCallFailed')",
+            )
+            .map_err(|error| format!("准备深度笔记墙钟查询失败：{error}"))?;
+        let rows = statement
+            .query_map(params![run_id], |row| row.get::<_, String>(0))
+            .map_err(|error| format!("查询深度笔记墙钟失败：{error}"))?;
+        let mut total = 0u64;
+        for payload in rows {
+            let payload = payload.map_err(|error| format!("读取深度笔记墙钟失败：{error}"))?;
+            // 单条载荷解析失败就跳过而不是让整次汇总失败：一条坏事件不应该让
+            // 预算闸门彻底失效。失效方向是少算，但比抛错中断任务好。
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(&payload) else {
+                continue;
+            };
+            if value
+                .get("actualAttemptCount")
+                .and_then(serde_json::Value::as_u64)
+                == Some(0)
+            {
+                // 请求在本地字节闸或 run 预算闸前被拒绝，没有等待上游。
+                continue;
+            }
+            if let Some(duration) = value.get("durationMs").and_then(|value| value.as_u64()) {
+                total = total.saturating_add(duration);
+            }
+        }
+        Ok(total)
+    }
+
     pub fn update_note_pipeline_runtime_json(
         &self,
         run_id: &str,
@@ -2297,8 +3506,16 @@ impl LibraryRepository {
         sidecar_json: Option<&str>,
     ) -> Result<(), String> {
         let run_id = normalize_identifier("任务 ID", run_id)?;
-        let connection = self.open_connection()?;
-        connection
+        let mut connection = self.open_connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| format!("开始保存深度笔记运行状态失败：{error}"))?;
+        // runtime 快照可能来自并行 worker 启动前。始终在同一个写事务内从事件表
+        // 重建物理请求用量，避免旧快照把刚扣减的 upstreamRequestsUsed 覆盖回去。
+        let used = note_pipeline_upstream_request_count(&transaction, &run_id)?;
+        let (budget_json, preflight_json) =
+            set_upstream_request_usage(budget_json, preflight_json, used)?;
+        transaction
             .execute(
                 "UPDATE note_pipeline_runs
                  SET budget_json = ?, preflight_json = ?, sidecar_json = COALESCE(?, sidecar_json),
@@ -2312,6 +3529,9 @@ impl LibraryRepository {
                 ],
             )
             .map_err(|error| format!("保存深度笔记运行状态失败：{error}"))?;
+        transaction
+            .commit()
+            .map_err(|error| format!("提交深度笔记运行状态失败：{error}"))?;
         Ok(())
     }
 
@@ -2490,6 +3710,14 @@ impl LibraryRepository {
         get_note_pipeline_sections_with_connection(&connection, &run_id)
     }
 
+    /// 只更新章节正文与状态的精简写入。
+    ///
+    /// `#[allow(dead_code)]`：生产路径统一走 `save_note_pipeline_section_checkpoint`
+    /// —— 它同时落尝试计数、修订计数、证据 ID 与校验结果，恢复时才有足够信息决定
+    /// 「这一节还能重试几次」。本方法只剩测试引用，保留是因为它把「正文 + 状态」这
+    /// 一对最小写入单独暴露出来，测试可以在不构造证据与校验 JSON 的情况下验证章节
+    /// 的持久化与读回。
+    #[allow(dead_code)]
     pub fn save_note_pipeline_section(
         &self,
         run_id: &str,
@@ -2503,9 +3731,12 @@ impl LibraryRepository {
         if markdown.len() > MAX_NOTE_PIPELINE_JSON_BYTES {
             return Err("深度笔记章节正文过长。".to_string());
         }
-        let connection = self.open_connection()?;
+        let mut connection = self.open_connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| format!("开始保存深度笔记章节状态失败：{error}"))?;
         let now = now_millis_i64();
-        let changed = connection
+        let changed = transaction
             .execute(
                 "UPDATE note_pipeline_sections
                  SET markdown = ?, status = ?, error_message = ?, updated_at = ?
@@ -2523,13 +3754,15 @@ impl LibraryRepository {
         if changed == 0 {
             return Err("深度笔记章节不存在。".to_string());
         }
-        connection
+        transaction
             .execute(
                 "UPDATE note_pipeline_runs SET updated_at = ? WHERE id = ?",
                 params![now, run_id],
             )
             .map_err(|error| format!("更新深度笔记任务时间失败：{error}"))?;
-        Ok(())
+        transaction
+            .commit()
+            .map_err(|error| format!("提交深度笔记章节检查点失败：{error}"))
     }
 
     pub fn save_note_pipeline_section_checkpoint(
@@ -2553,9 +3786,12 @@ impl LibraryRepository {
         }
         let evidence_ids_json = serde_json::to_string(evidence_ids)
             .map_err(|error| format!("序列化章节证据失败：{error}"))?;
-        let connection = self.open_connection()?;
+        let mut connection = self.open_connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| format!("开始保存深度笔记章节检查点失败：{error}"))?;
         let now = now_millis_i64();
-        let changed = connection
+        let changed = transaction
             .execute(
                 "UPDATE note_pipeline_sections
                  SET markdown = ?, status = ?, attempt_count = ?, revision_count = ?,
@@ -2578,13 +3814,15 @@ impl LibraryRepository {
         if changed == 0 {
             return Err("深度笔记章节不存在。".to_string());
         }
-        connection
+        transaction
             .execute(
                 "UPDATE note_pipeline_runs SET updated_at = ? WHERE id = ?",
                 params![now, run_id],
             )
             .map_err(|error| format!("更新深度笔记任务时间失败：{error}"))?;
-        Ok(())
+        transaction
+            .commit()
+            .map_err(|error| format!("提交深度笔记章节检查点失败：{error}"))
     }
 
     pub fn update_note_pipeline_phase(
@@ -2887,6 +4125,22 @@ impl LibraryRepository {
         if current.updated_at != i64_to_u64(raw.1) {
             return Err("目标笔记已发生变化，请重新生成修改提案。".to_string());
         }
+        let stored_directory = transaction
+            .query_row(
+                "SELECT directory_path FROM library_notes WHERE id = ?",
+                params![raw.0],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .map_err(|error| format!("读取笔记目录登记失败：{error}"))?;
+        let updated_at = now.max(raw.1.saturating_add(1));
+        let prepared = refresh_note_directory(
+            &self.root_directory,
+            stored_directory.as_deref(),
+            &raw.0,
+            &new_title,
+            &new_content,
+            i64_to_u64(updated_at),
+        )?;
         let version_id = Uuid::new_v4().to_string();
         transaction
             .execute(
@@ -2895,11 +4149,19 @@ impl LibraryRepository {
                 params![version_id, raw.0, raw.2, raw.4, now],
             )
             .map_err(|error| format!("备份旧笔记版本失败：{error}"))?;
-        let updated_at = now.max(raw.1.saturating_add(1));
         transaction
             .execute(
-                "UPDATE library_notes SET title = ?, content = ?, updated_at = ? WHERE id = ?",
-                params![new_title, new_content, updated_at, raw.0],
+                "UPDATE library_notes
+                 SET title = ?, content = ?, directory_path = ?, content_hash = ?, updated_at = ?
+                 WHERE id = ?",
+                params![
+                    new_title,
+                    prepared.content,
+                    prepared.relative_directory,
+                    prepared.content_hash,
+                    updated_at,
+                    raw.0
+                ],
             )
             .map_err(|error| format!("应用笔记修改失败：{error}"))?;
         let sources = if partial_replacement {
@@ -3153,10 +4415,28 @@ impl LibraryRepository {
     pub fn update_note(&self, update: LibraryNoteUpdate) -> Result<LibraryNote, String> {
         let update = update.normalize_and_validate()?;
         let connection = self.open_connection()?;
+        let now = now_millis_i64();
+        let current = connection
+            .query_row(
+                "SELECT directory_path FROM library_notes WHERE id = ?",
+                params![update.note_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()
+            .map_err(|error| format!("读取笔记目录登记失败：{error}"))?
+            .ok_or_else(|| "笔记不存在或所属文献位于回收站。".to_string())?;
+        let prepared = refresh_note_directory(
+            &self.root_directory,
+            current.as_deref(),
+            &update.note_id,
+            &update.title,
+            &update.content,
+            i64_to_u64(now),
+        )?;
         let changed = connection
             .execute(
                 "UPDATE library_notes
-                 SET title = ?, content = ?, updated_at = ?
+                 SET title = ?, content = ?, directory_path = ?, content_hash = ?, updated_at = ?
                  WHERE id = ? AND (
                     item_id IS NULL OR EXISTS (
                         SELECT 1 FROM library_items i
@@ -3165,8 +4445,10 @@ impl LibraryRepository {
                  )",
                 params![
                     update.title,
-                    update.content,
-                    now_millis_i64(),
+                    prepared.content,
+                    prepared.relative_directory,
+                    prepared.content_hash,
+                    now,
                     update.note_id,
                 ],
             )
@@ -3181,17 +4463,46 @@ impl LibraryRepository {
     pub fn rename_note(&self, rename: LibraryNoteRename) -> Result<LibraryNote, String> {
         let rename = rename.normalize_and_validate()?;
         let connection = self.open_connection()?;
+        let now = now_millis_i64();
+        let current = connection
+            .query_row(
+                "SELECT content, directory_path FROM library_notes WHERE id = ?",
+                params![rename.note_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|error| format!("读取笔记目录登记失败：{error}"))?
+            .ok_or_else(|| "笔记不存在或所属文献位于回收站。".to_string())?;
+        let prepared = refresh_note_directory(
+            &self.root_directory,
+            current.1.as_deref(),
+            &rename.note_id,
+            &rename.title,
+            &current.0,
+            i64_to_u64(now),
+        )?;
         let changed = connection
             .execute(
                 "UPDATE library_notes
-                 SET title = ?, updated_at = ?
+                 SET title = ?, directory_path = ?, content_hash = ?, updated_at = ?
                  WHERE id = ? AND (
                     item_id IS NULL OR EXISTS (
                         SELECT 1 FROM library_items i
                         WHERE i.id = library_notes.item_id AND i.deleted_at IS NULL
                     )
                  )",
-                params![rename.title, now_millis_i64(), rename.note_id],
+                params![
+                    rename.title,
+                    prepared.relative_directory,
+                    prepared.content_hash,
+                    now,
+                    rename.note_id
+                ],
             )
             .map_err(|error| format!("重命名文献笔记失败：{error}"))?;
         if changed == 0 {
@@ -3675,11 +4986,31 @@ impl LibraryRepository {
         Ok(stale_runs.len())
     }
 
-    pub(crate) fn open_connection(&self) -> Result<Connection, String> {
+    /// 建目录并把 schema 迁移到最新版本。**必须在任何数据访问之前调用一次。**
+    ///
+    /// 从 `open_connection` 里拆出来的原因：迁移原先每次开连接都跑一遍（127 个调用
+    /// 点），虽然 `migrate()` 靠 `PRAGMA user_version` 快速返回，但两次
+    /// `create_dir_all` 系统调用 + 一次 pragma 读是每次数据访问都要付的固定开销，
+    /// **读路径也在付**。
+    ///
+    /// 幂等：重复调用是安全的，`migrate()` 自己按 `user_version` 判断。
+    pub fn initialize(&self) -> Result<(), String> {
         fs::create_dir_all(&self.root_directory)
             .map_err(|error| format!("创建文献库目录失败：{error}"))?;
         fs::create_dir_all(&self.files_directory)
             .map_err(|error| format!("创建文献文件目录失败：{error}"))?;
+        fs::create_dir_all(self.root_directory.join(NOTE_DIRECTORY_NAME))
+            .map_err(|error| format!("创建笔记文件目录失败：{error}"))?;
+        let connection = Connection::open(&self.database_path)
+            .map_err(|error| format!("打开文献库数据库失败：{error}"))?;
+        connection
+            .busy_timeout(Duration::from_secs(5))
+            .map_err(|error| format!("设置文献库等待时间失败：{error}"))?;
+        configure_sqlite_concurrency(&connection)?;
+        migrate(&connection)
+    }
+
+    pub(crate) fn open_connection(&self) -> Result<Connection, String> {
         let connection = Connection::open(&self.database_path)
             .map_err(|error| format!("打开文献库数据库失败：{error}"))?;
         connection
@@ -3688,7 +5019,14 @@ impl LibraryRepository {
         connection
             .execute_batch("PRAGMA foreign_keys = ON;")
             .map_err(|error| format!("启用文献库外键失败：{error}"))?;
-        migrate(&connection)?;
+        // 每条连接都要设：`foreign_keys` 与 `busy_timeout` 是**连接级**的，
+        // 不随数据库文件持久化。而 `journal_mode = WAL` 是数据库级的、写进文件头，
+        // `initialize` 设过一次就够。
+        //
+        // 这里容错而不是 `?`：`journal_mode` 在并发下可能返回 SQLITE_BUSY，而
+        // `open_connection` 是 127 个数据访问点的公共入口 —— 为一个已经生效的
+        // 数据库级设置引入新的失败面不值得。`synchronous` 是连接级的，尽力设置。
+        let _ = configure_sqlite_concurrency(&connection);
         Ok(connection)
     }
 
@@ -3944,10 +5282,10 @@ impl LibraryRepository {
         connection: &Connection,
         note_id: &str,
     ) -> Result<Option<LibraryNote>, String> {
-        connection
+        let mut note = connection
             .query_row(
                 "SELECT n.id, n.item_id, i.title, n.title, n.content, n.group_name,
-                        n.created_at, n.updated_at
+                        n.created_at, n.updated_at, n.directory_path, n.content_hash
                  FROM library_notes n
                  LEFT JOIN library_items i ON i.id = n.item_id
                  WHERE n.id = ? AND (n.item_id IS NULL OR i.deleted_at IS NULL)",
@@ -3955,107 +5293,29 @@ impl LibraryRepository {
                 note_from_row,
             )
             .optional()
-            .map_err(|error| format!("读取文献笔记失败：{error}"))
-    }
-}
-
-fn recover_expired_note_pipeline_nodes_in_transaction(
-    transaction: &Transaction<'_>,
-    run_id: &str,
-    runtime_instance_id: &str,
-    now: i64,
-) -> Result<(), String> {
-    let mut statement = transaction
-        .prepare(
-            "SELECT node_id, status, state_version, execution_version
-             FROM note_pipeline_nodes
-             WHERE run_id = ? AND status IN ('leased', 'inProgress', 'in_progress')
-               AND lease_expires_at IS NOT NULL AND lease_expires_at < ?",
-        )
-        .map_err(|error| format!("准备过期深度笔记 DAG 租约查询失败：{error}"))?;
-    let rows = statement
-        .query_map(params![run_id, now], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, i64>(2)?,
-                row.get::<_, i64>(3)?,
-            ))
-        })
-        .map_err(|error| format!("查询过期深度笔记 DAG 租约失败：{error}"))?;
-    let mut expired = Vec::new();
-    for row in rows {
-        expired.push(row.map_err(|error| format!("读取过期深度笔记 DAG 租约失败：{error}"))?);
-    }
-    drop(statement);
-
-    for (node_id, raw_status, state_version, execution_version) in expired {
-        let current = DeepNoteNodeStatus::parse(&raw_status)?;
-        let transition = DagNodeMachine::transition(current, &DagNodeEvent::LeaseExpired, &())
-            .map_err(|error| format!("恢复过期 DAG 租约被状态机拒绝：{error}"))?;
-        let changed = transaction
-            .execute(
-                "UPDATE note_pipeline_nodes
-                 SET status = ?, state_version = state_version + 1,
-                     lease_token = NULL, lease_owner = NULL, lease_expires_at = NULL,
-                     heartbeat_at = NULL, error_message = '节点租约过期，等待安全恢复',
-                     updated_at = ?
-                 WHERE run_id = ? AND node_id = ? AND status = ?
-                   AND state_version = ? AND execution_version = ?",
-                params![
-                    transition.next_state.as_str(),
-                    now,
-                    run_id,
-                    node_id,
-                    raw_status,
-                    state_version,
-                    execution_version,
-                ],
-            )
-            .map_err(|error| format!("恢复过期深度笔记 DAG 租约失败：{error}"))?;
-        if changed != 1 {
-            return Err(format!("DAG 节点租约恢复发生版本冲突：{node_id}"));
+            .map_err(|error| format!("读取文献笔记失败：{error}"))?;
+        if let Some(note) = note.as_mut() {
+            if let Some(stored_path) = note.directory_path.as_deref() {
+                let absolute = resolve_note_directory(&self.root_directory, stored_path)?;
+                let file_content = fs::read_to_string(absolute.join("note.md"));
+                let expected_hash = note.content_hash.as_deref().unwrap_or_default();
+                let db_hash = note_content_hash(&note.content);
+                let shadow_matches = file_content
+                    .as_deref()
+                    .is_ok_and(|content| note_content_hash(content) == expected_hash)
+                    && db_hash == expected_hash;
+                if !shadow_matches {
+                    eprintln!(
+                        "DeepNote shadow reconciliation mismatch for note {}; DB content remains authoritative",
+                        note.id
+                    );
+                }
+                note.directory_path = Some(absolute.to_string_lossy().into_owned());
+            }
+            note.attachments = list_note_attachments(connection, &note.id)?;
         }
-        let sequence: i64 = transaction
-            .query_row(
-                "SELECT last_event_sequence + 1 FROM note_pipeline_runs WHERE id = ?",
-                params![run_id],
-                |row| row.get(0),
-            )
-            .map_err(|error| format!("读取 DAG 租约恢复事件序号失败：{error}"))?;
-        transaction
-            .execute(
-                "UPDATE note_pipeline_runs SET last_event_sequence = ? WHERE id = ?",
-                params![sequence, run_id],
-            )
-            .map_err(|error| format!("更新 DAG 租约恢复事件序号失败：{error}"))?;
-        let payload = serde_json::json!({
-            "reason": transition.reason,
-            "stateVersion": state_version.saturating_add(1),
-            "executionVersion": execution_version,
-        })
-        .to_string();
-        transaction
-            .execute(
-                "INSERT INTO note_pipeline_events (
-                    run_id, sequence, event_type, node_id, payload_json, created_at,
-                    command_id, from_phase, to_phase, execution_version, runtime_instance_id
-                 ) VALUES (?, ?, 'nodeLeaseExpired', ?, ?, ?, NULL, ?, ?, ?, ?)",
-                params![
-                    run_id,
-                    sequence,
-                    node_id,
-                    payload,
-                    now,
-                    current.as_str(),
-                    transition.next_state.as_str(),
-                    execution_version,
-                    runtime_instance_id,
-                ],
-            )
-            .map_err(|error| format!("保存 DAG 租约恢复事件失败：{error}"))?;
+        Ok(note)
     }
-    Ok(())
 }
 
 fn reset_note_pipeline_nodes_for_retry_in_transaction(
@@ -4100,8 +5360,7 @@ fn reset_note_pipeline_nodes_for_retry_in_transaction(
                  SET status = ?, attempt_count = 0, evidence_ids_json = '[]',
                      output_ref = NULL, validation_json = '', error_message = NULL,
                      state_version = state_version + 1, execution_version = ?,
-                     lease_token = NULL, lease_owner = NULL, lease_expires_at = NULL,
-                     heartbeat_at = NULL, updated_at = ?
+                     updated_at = ?
                  WHERE run_id = ? AND node_id = ? AND status = ?
                    AND state_version = ? AND execution_version = ?",
                 params![
@@ -4215,6 +5474,19 @@ fn transition_note_pipeline_phase_in_transaction(
     }
     let transition = DeepNoteRunMachine::transition_to(current_phase, target)
         .map_err(|error| format!("拒绝深度笔记状态转换：{error}"))?;
+    // 目标相位与状态机算出的相位必须一致。
+    //
+    // 这道断言防的是一类**静默写错**：下面写库用的是 `transition.next_state`，
+    // 而 `transition_to` 由 target 反推事件；一旦某个 target 反推出的事件有多个
+    // 可能的目标相位，调用方写 A、库里就会落成 B，没有任何报错，run 可能停在一个
+    // 「看起来还在跑」的相位上永不收敛。宁可在这里失败。
+    if transition.next_state != target && transition.next_state != current_phase {
+        return Err(format!(
+            "深度笔记状态转换目标不一致：请求 {}，状态机给出 {}。",
+            target.as_str(),
+            transition.next_state.as_str()
+        ));
+    }
     let now = now_millis_i64();
 
     // 幂等状态写入只合并伴随数据，不伪造第二个状态事件。
@@ -4690,6 +5962,35 @@ fn cancel_agent_tool_calls_in_transaction(
     Ok(())
 }
 
+/// 打开 WAL 并把 `synchronous` 降到 `NORMAL`。
+///
+/// 为什么需要：默认的 rollback journal 下写事务会**阻塞读**。对一条带 15 秒心跳、
+/// 又有并行 chunk worker 的管线来说，这是主要的争用来源 —— 心跳写入会把并行读全
+/// 挡住。WAL 支持多读一写，正好匹配「大量读 + 少量写」的负载。
+///
+/// `synchronous = NORMAL` 的取舍：断电可能丢最后几个事务，但**不会损坏数据库**。
+/// 对本应用可接受 —— 丢的是运行态进度，重跑即可，正文已经落在文件里。
+///
+/// 前置依赖：WAL 会产生 `-wal` / `-shm` 两个伴生文件，备份与迁移必须一并处理
+/// （见 `storage::SQLITE_SIDECAR_SUFFIXES` 与迁移前的 TRUNCATE 检查点）。
+/// **只开 WAL 不改备份，会产出缺失最近事务的备份，比不开 WAL 更糟。**
+fn configure_sqlite_concurrency(connection: &Connection) -> Result<(), String> {
+    // `journal_mode` 是查询式 PRAGMA，返回生效后的模式，必须用 query_row 读取；
+    // 用 execute_batch 会因为「有返回行」而报错。
+    let mode: String = connection
+        .query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))
+        .map_err(|error| format!("启用文献库 WAL 失败：{error}"))?;
+    if !mode.eq_ignore_ascii_case("wal") {
+        // 不硬失败：内存库和某些网络文件系统不支持 WAL，此时退回默认模式仍然可用，
+        // 只是并发差一些。把它变成启动失败得不偿失。
+        return Ok(());
+    }
+    connection
+        .execute_batch("PRAGMA synchronous = NORMAL;")
+        .map_err(|error| format!("设置文献库同步级别失败：{error}"))?;
+    Ok(())
+}
+
 fn migrate(connection: &Connection) -> Result<(), String> {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
@@ -5138,15 +6439,6 @@ fn migrate(connection: &Connection) -> Result<(), String> {
                     created_at INTEGER NOT NULL,
                     PRIMARY KEY (run_id, sequence)
                  );
-                 CREATE TABLE IF NOT EXISTS note_pipeline_outputs (
-                    run_id TEXT PRIMARY KEY REFERENCES note_pipeline_runs(id) ON DELETE CASCADE,
-                    note_id TEXT REFERENCES library_notes(id) ON DELETE SET NULL,
-                    markdown TEXT NOT NULL,
-                    sidecar_json TEXT NOT NULL,
-                    idempotency_key TEXT NOT NULL UNIQUE,
-                    created_at INTEGER NOT NULL,
-                    updated_at INTEGER NOT NULL
-                 );
                  PRAGMA user_version = 7;
                  COMMIT;",
             )
@@ -5458,6 +6750,140 @@ fn migrate(connection: &Connection) -> Result<(), String> {
             )
             .map_err(|error| format!("Failed to upgrade Agent tool provenance schema: {error}"))?;
     }
+    // v16：DeepNote 中转路由的动态身份、可用性和 AIMD 体积状态；同时停止
+    // 不可达的节点级租约协议。租约列暂留到后续重建表，避免在这一版做破坏性迁移。
+    if version <= 15 {
+        connection
+            .execute_batch(
+                "BEGIN IMMEDIATE;
+                 CREATE TABLE IF NOT EXISTS deep_note_route_profiles (
+                    route_key TEXT PRIMARY KEY,
+                    provider_id TEXT NOT NULL,
+                    provider_config_epoch TEXT NOT NULL,
+                    model_id TEXT NOT NULL,
+                    api_model TEXT NOT NULL,
+                    protocol TEXT NOT NULL,
+                    transport_mode TEXT NOT NULL,
+                    state TEXT NOT NULL CHECK (state IN (
+                        'unknown', 'available', 'degraded', 'circuitOpen',
+                        'unsupported', 'disabled', 'tombstoned'
+                    )),
+                    profile_json TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL
+                 );
+                 CREATE INDEX IF NOT EXISTS deep_note_route_profiles_provider
+                    ON deep_note_route_profiles(provider_id, provider_config_epoch, model_id);
+                 CREATE INDEX IF NOT EXISTS deep_note_route_profiles_prior
+                    ON deep_note_route_profiles(protocol, api_model, state);
+                 CREATE INDEX IF NOT EXISTS deep_note_route_profiles_state_updated
+                    ON deep_note_route_profiles(state, updated_at);
+                 UPDATE note_pipeline_nodes
+                 SET status = CASE WHEN status = 'leased' THEN 'ready' ELSE status END,
+                     lease_token = NULL,
+                     lease_owner = NULL,
+                     lease_expires_at = NULL,
+                     heartbeat_at = NULL
+                 WHERE status = 'leased'
+                    OR lease_token IS NOT NULL
+                    OR lease_owner IS NOT NULL
+                    OR lease_expires_at IS NOT NULL
+                    OR heartbeat_at IS NOT NULL;
+                 DROP INDEX IF EXISTS note_pipeline_nodes_lease;
+                 PRAGMA user_version = 16;
+                 COMMIT;",
+            )
+            .map_err(|error| format!("升级 DeepNote 动态路由容量结构失败：{error}"))?;
+    }
+    // v17：笔记目录影子写元数据、附件登记，以及来源写入的幂等约束。
+    // 这里只改结构，不在 SQLite 事务中做文件 IO；既有正文仍以 content 为权威。
+    if version <= 16 {
+        connection
+            .execute_batch(
+                "BEGIN IMMEDIATE;
+                 ALTER TABLE library_notes ADD COLUMN directory_path TEXT;
+                 ALTER TABLE library_notes ADD COLUMN content_hash TEXT;
+                 CREATE TABLE IF NOT EXISTS note_attachments (
+                    id TEXT PRIMARY KEY,
+                    note_id TEXT NOT NULL REFERENCES library_notes(id) ON DELETE CASCADE,
+                    relative_path TEXT NOT NULL,
+                    original_name TEXT NOT NULL,
+                    content_hash TEXT NOT NULL,
+                    byte_size INTEGER NOT NULL,
+                    mime_type TEXT,
+                    created_at INTEGER NOT NULL,
+                    UNIQUE (note_id, relative_path)
+                 );
+                 CREATE INDEX IF NOT EXISTS note_attachments_note
+                    ON note_attachments(note_id);
+                 DELETE FROM note_sources
+                 WHERE rowid NOT IN (
+                    SELECT MIN(rowid)
+                    FROM note_sources
+                    GROUP BY note_id, section_id, origin,
+                             COALESCE(conversation_id, ''), COALESCE(message_id, '')
+                 );
+                 CREATE UNIQUE INDEX IF NOT EXISTS note_sources_dedupe
+                    ON note_sources(
+                       note_id, section_id, origin,
+                       COALESCE(conversation_id, ''), COALESCE(message_id, '')
+                    );
+                 PRAGMA user_version = 17;
+                 COMMIT;",
+            )
+            .map_err(|error| format!("升级笔记目录与附件结构失败：{error}"))?;
+    }
+    // v18：Chunk Digest 从 run 私有检查点升级为全局内容缓存。
+    // 内容、Prompt、provider 与 model 四项共同组成复用门禁；不再由 run 的外键级联删除。
+    if version <= 17 {
+        connection
+            .execute_batch(
+                "BEGIN IMMEDIATE;
+                 ALTER TABLE note_pipeline_chunk_digests
+                    RENAME TO note_pipeline_chunk_digests_v13;
+                 CREATE TABLE note_pipeline_chunk_digests (
+                    chunk_id TEXT NOT NULL,
+                    content_hash TEXT NOT NULL,
+                    prompt_hash TEXT NOT NULL,
+                    provider_id TEXT NOT NULL,
+                    model_id TEXT NOT NULL,
+                    digest_json TEXT NOT NULL,
+                    semantic_calls INTEGER NOT NULL DEFAULT 1,
+                    hit_count INTEGER NOT NULL DEFAULT 0,
+                    last_accessed_at INTEGER NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    PRIMARY KEY (content_hash, prompt_hash, provider_id, model_id)
+                 );
+                 INSERT OR REPLACE INTO note_pipeline_chunk_digests (
+                    chunk_id, content_hash, prompt_hash, provider_id, model_id,
+                    digest_json, semantic_calls, hit_count, last_accessed_at,
+                    created_at, updated_at
+                 )
+                 SELECT chunk_id, content_hash, prompt_hash, provider_id, model_id,
+                        digest_json, semantic_calls, 0, updated_at, created_at, updated_at
+                 FROM note_pipeline_chunk_digests_v13
+                 ORDER BY updated_at ASC;
+                 DROP TABLE note_pipeline_chunk_digests_v13;
+                 CREATE INDEX note_pipeline_chunk_digest_lru
+                    ON note_pipeline_chunk_digests(last_accessed_at, updated_at);
+                 CREATE INDEX note_pipeline_chunk_digest_route
+                    ON note_pipeline_chunk_digests(provider_id, model_id, content_hash);
+                 CREATE TABLE note_shadow_reconciliation_runs (
+                    id TEXT PRIMARY KEY,
+                    checked_count INTEGER NOT NULL,
+                    matched_count INTEGER NOT NULL,
+                    mismatch_count INTEGER NOT NULL,
+                    missing_count INTEGER NOT NULL,
+                    created_at INTEGER NOT NULL
+                 );
+                 CREATE INDEX note_shadow_reconciliation_created
+                    ON note_shadow_reconciliation_runs(created_at DESC);
+                 PRAGMA user_version = 18;
+                 COMMIT;",
+            )
+            .map_err(|error| format!("升级全局 Chunk 摘要缓存失败：{error}"))?;
+    }
     Ok(())
 }
 
@@ -5535,7 +6961,42 @@ fn note_from_row(row: &Row<'_>) -> rusqlite::Result<LibraryNote> {
         group_name: row.get(5)?,
         created_at: i64_to_u64(row.get(6)?),
         updated_at: i64_to_u64(row.get(7)?),
+        directory_path: row.get(8)?,
+        content_hash: row.get(9)?,
+        attachments: Vec::new(),
     })
+}
+
+fn list_note_attachments(
+    connection: &Connection,
+    note_id: &str,
+) -> Result<Vec<LibraryNoteAttachment>, String> {
+    let mut statement = connection
+        .prepare(
+            "SELECT id, note_id, relative_path, original_name, content_hash,
+                    byte_size, mime_type, created_at
+             FROM note_attachments WHERE note_id = ? ORDER BY relative_path ASC",
+        )
+        .map_err(|error| format!("准备笔记附件查询失败：{error}"))?;
+    let rows = statement
+        .query_map(params![note_id], |row| {
+            Ok(LibraryNoteAttachment {
+                id: row.get(0)?,
+                note_id: row.get(1)?,
+                relative_path: row.get(2)?,
+                original_name: row.get(3)?,
+                content_hash: row.get(4)?,
+                byte_size: u64::try_from(row.get::<_, i64>(5)?).unwrap_or(u64::MAX),
+                mime_type: row.get(6)?,
+                created_at: i64_to_u64(row.get(7)?),
+            })
+        })
+        .map_err(|error| format!("查询笔记附件失败：{error}"))?;
+    let mut attachments = Vec::new();
+    for row in rows {
+        attachments.push(row.map_err(|error| format!("读取笔记附件失败：{error}"))?);
+    }
+    Ok(attachments)
 }
 
 fn note_summary_from_row(row: &Row<'_>) -> rusqlite::Result<LibraryNoteSummary> {
@@ -5669,6 +7130,34 @@ fn get_note_pipeline_run_with_connection(
         created_at: i64_to_u64(raw.13),
         updated_at: i64_to_u64(raw.14),
     }))
+}
+
+/// 组装 `runCompleted` 事件载荷。章节计数在事务内现读，避免与前端诊断面板
+/// （`deepNoteDiagnostics.ts` 读取 `completedSectionCount`）的字段契约脱节。
+fn deep_note_completion_payload(
+    connection: &Connection,
+    run_id: &str,
+    note_id: &str,
+    degraded: bool,
+    reused_existing_note: bool,
+) -> Result<String, String> {
+    let sections = get_note_pipeline_sections_with_connection(connection, run_id)?;
+    let completed = sections
+        .iter()
+        .filter(|section| section.status == NotePipelineSectionStatus::Completed)
+        .count();
+    let failed = sections
+        .iter()
+        .filter(|section| section.status == NotePipelineSectionStatus::Failed)
+        .count();
+    Ok(serde_json::json!({
+        "noteId": note_id,
+        "completedSectionCount": completed,
+        "failedSectionCount": failed,
+        "degraded": degraded,
+        "reusedExistingNote": reused_existing_note,
+    })
+    .to_string())
 }
 
 fn get_note_pipeline_sections_with_connection(
@@ -5821,7 +7310,7 @@ fn insert_note_sources(
     for source in sources {
         connection
             .execute(
-                "INSERT INTO note_sources (
+                "INSERT OR IGNORE INTO note_sources (
                     id, note_id, section_id, origin, conversation_id, message_id,
                     summarized_until_message_id, created_at
                  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -5837,6 +7326,33 @@ fn insert_note_sources(
                 ],
             )
             .map_err(|error| format!("写入笔记来源失败：{error}"))?;
+    }
+    Ok(())
+}
+
+fn insert_note_attachments(
+    connection: &Connection,
+    attachments: &[LibraryNoteAttachment],
+) -> Result<(), String> {
+    for attachment in attachments {
+        connection
+            .execute(
+                "INSERT OR IGNORE INTO note_attachments (
+                    id, note_id, relative_path, original_name, content_hash,
+                    byte_size, mime_type, created_at
+                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                params![
+                    attachment.id,
+                    attachment.note_id,
+                    attachment.relative_path,
+                    attachment.original_name,
+                    attachment.content_hash,
+                    i64::try_from(attachment.byte_size).unwrap_or(i64::MAX),
+                    attachment.mime_type,
+                    i64::try_from(attachment.created_at).unwrap_or(i64::MAX),
+                ],
+            )
+            .map_err(|error| format!("登记笔记附件失败：{error}"))?;
     }
     Ok(())
 }
@@ -6270,17 +7786,20 @@ fn is_unique_constraint(error: &rusqlite::Error) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::PathBuf};
+    use std::{collections::HashSet, fs, path::PathBuf, time::Duration};
 
     use rusqlite::Connection;
 
-    use super::{LibraryRepository, LIBRARY_SCHEMA_VERSION};
+    use super::{LibraryRepository, LIBRARY_DIRECTORY_NAME, LIBRARY_SCHEMA_VERSION};
     use crate::chat::{
         agent::run_machine::{AgentRunEvent, AgentRunState, ToolCallEvent, ToolCallState},
+        note_pipeline::adaptive_volume::{
+            AdaptiveVolumeOutcome, DeepNoteRouteIdentity, INITIAL_ADAPTIVE_CHUNK_TOKENS,
+        },
         note_pipeline::types::{
-            DeepNoteCapabilities, DeepNoteInputSnapshot, DeepNoteModelSnapshot,
-            DeepNoteSourceChunk, DeepNoteSourceKind, DeepNoteSourceUnit, DeepNoteSourceUnitKind,
-            DeepNoteSourceUnitStatus,
+            DeepNoteCapabilities, DeepNoteDagNode, DeepNoteInputSnapshot, DeepNoteModelSnapshot,
+            DeepNoteNodeStatus, DeepNoteNodeType, DeepNoteSourceChunk, DeepNoteSourceKind,
+            DeepNoteSourceUnit, DeepNoteSourceUnitKind, DeepNoteSourceUnitStatus,
         },
     };
     use crate::library::types::{
@@ -6336,10 +7855,160 @@ mod tests {
         }
     }
 
+    fn route_identity(route_key: &str, model_id: &str) -> DeepNoteRouteIdentity {
+        DeepNoteRouteIdentity {
+            route_key: route_key.to_string(),
+            provider_id: "relay".to_string(),
+            provider_config_epoch: "epoch-1".to_string(),
+            model_id: model_id.to_string(),
+            api_model: model_id.to_string(),
+            protocol: "openAiChatCompletions".to_string(),
+            transport_mode: "streamingPreferred".to_string(),
+        }
+    }
+
+    #[test]
+    fn adaptive_route_profile_persists_and_bootstraps_new_models_conservatively() {
+        let directory = test_directory("adaptive-route-profile");
+        let repository = LibraryRepository::new(directory.clone());
+        repository.initialize().unwrap();
+        let first = route_identity("route-1", "model-1");
+        let profile = repository
+            .get_or_create_deep_note_route_profile(&first)
+            .unwrap();
+        assert_eq!(
+            profile.learned_target_tokens,
+            INITIAL_ADAPTIVE_CHUNK_TOKENS
+        );
+        for _ in 0..3 {
+            repository
+                .record_deep_note_route_outcome(
+                    &first,
+                    &AdaptiveVolumeOutcome::success(true, 8_000, 32_000),
+                )
+                .unwrap();
+        }
+        let learned = repository
+            .get_or_create_deep_note_route_profile(&first)
+            .unwrap();
+        assert_eq!(learned.learned_target_tokens, 9_024);
+
+        // 同一中转配置新上线的模型不必等待 100 条样本；它从该 provider 的低分位
+        // 先验冷启动，并随后建立自己的独立状态。
+        let second = route_identity("route-2", "model-2");
+        let bootstrapped = repository
+            .get_or_create_deep_note_route_profile(&second)
+            .unwrap();
+        assert_eq!(bootstrapped.learned_target_tokens, 9_024);
+        drop(repository);
+
+        let reopened = LibraryRepository::new(directory.clone());
+        let persisted = reopened
+            .get_or_create_deep_note_route_profile(&first)
+            .unwrap();
+        assert_eq!(persisted.learned_target_tokens, 9_024);
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    /// P0-13 契约：`initialize()` 负责建表，`open_connection` 不再负责。
+    ///
+    /// 迁移原先挂在 `open_connection` 上，127 个数据访问点每次都要付两次
+    /// `create_dir_all` + 一次 pragma 读，读路径也在付。拆开之后必须锁住两件事：
+    /// 未初始化的库不会被连接顺手建好，以及 `initialize()` 可重复调用。
+    #[test]
+    fn schema_is_created_by_initialize_not_by_opening_a_connection() {
+        let directory = test_directory("explicit-init");
+        let repository = LibraryRepository::new(directory.clone());
+
+        // 手工建目录，模拟「目录在、库还没迁移」这个中间态。`open_connection`
+        // 不再负责建目录，所以这一步不能省。
+        std::fs::create_dir_all(directory.join(LIBRARY_DIRECTORY_NAME)).unwrap();
+
+        // 还没 initialize：连接可以开（文件会被创建），但表不该存在。
+        let connection = repository.open_connection().unwrap();
+        let version: i64 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            version, 0,
+            "open_connection 不应再跑迁移，否则这次拆分等于没做"
+        );
+        assert!(
+            connection
+                .query_row(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'library_items'",
+                    [],
+                    |_| Ok(())
+                )
+                .is_err(),
+            "表不该由开连接的副作用建出来"
+        );
+        drop(connection);
+
+        repository.initialize().unwrap();
+        // 幂等：启动路径之外还有恢复流程可能重复调用。
+        repository.initialize().unwrap();
+
+        let connection = repository.open_connection().unwrap();
+        let version: i64 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert!(version > 0, "initialize 之后 schema 版本必须前进");
+        connection
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'library_items'",
+                [],
+                |_| Ok(()),
+            )
+            .expect("initialize 之后核心表必须存在");
+        drop(connection);
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    /// P0-11 验收：连接建立后 `journal_mode` 必须是 wal。
+    ///
+    /// 默认的 rollback journal 下写事务会阻塞读，而这条管线有 15 秒心跳 + 并行
+    /// worker，心跳写入会把并行读全挡住。
+    #[test]
+    fn connections_run_in_wal_mode_with_relaxed_synchronous() {
+        let directory = test_directory("wal-mode");
+        let repository = LibraryRepository::new(directory.clone());
+        repository.initialize().unwrap();
+        let connection = repository.open_connection().unwrap();
+
+        let mode: String = connection
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            mode.to_lowercase(),
+            "wal",
+            "文献库必须运行在 WAL 模式，否则写事务会阻塞读"
+        );
+
+        // synchronous = NORMAL 对应枚举值 1。FULL(2) 会让每次提交都 fsync，
+        // 是心跳写入变慢的直接原因。
+        let synchronous: i64 = connection
+            .query_row("PRAGMA synchronous", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            synchronous, 1,
+            "WAL 下应取 NORMAL：断电只丢最后几个事务，不损坏库"
+        );
+
+        // 外键约束不能被这次改动带偏。
+        let foreign_keys: i64 = connection
+            .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(foreign_keys, 1);
+        drop(connection);
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
     #[test]
     fn creates_collections_and_keeps_deleted_items_out_of_normal_views() {
         let directory = test_directory("schema");
         let repository = LibraryRepository::new(directory.clone());
+        repository.initialize().unwrap();
         let collection = repository.create_collection("研究资料").unwrap();
         assert_eq!(collection.item_count, 0);
         assert_eq!(repository.list_collections().unwrap().len(), 1);
@@ -6367,6 +8036,7 @@ mod tests {
         let source = directory.join("研究论文.pdf");
         fs::write(&source, b"%PDF-1.7\nminimal test content").unwrap();
         let repository = LibraryRepository::new(directory.clone());
+        repository.initialize().unwrap();
         let collection = repository.create_collection("论文").unwrap();
 
         let imported = repository
@@ -6433,6 +8103,8 @@ mod tests {
         repository.restore_from_trash(&item.id).unwrap();
         assert_eq!(repository.list_items(all).unwrap().total, 1);
 
+        // 重开时刻意不调 `initialize()`：库已经建好，`open_connection` 必须独立可用。
+        // 这正是生产路径的形状 —— 启动时迁移一次，之后开无数条连接。
         let reopened_repository = LibraryRepository::new(directory.clone());
         assert_eq!(
             reopened_repository.get_item(&item.id).unwrap().title,
@@ -6453,6 +8125,7 @@ mod tests {
         let source = directory.join("reading.pdf");
         fs::write(&source, b"%PDF-1.7\n0123456789abcdef").unwrap();
         let repository = LibraryRepository::new(directory.clone());
+        repository.initialize().unwrap();
         let imported = repository
             .import_pdfs(vec![source.to_string_lossy().into_owned()], None)
             .unwrap();
@@ -6488,6 +8161,7 @@ mod tests {
         let source = directory.join("annotated.pdf");
         fs::write(&source, b"%PDF-1.7\nannotation test").unwrap();
         let repository = LibraryRepository::new(directory.clone());
+        repository.initialize().unwrap();
         let item = repository
             .import_pdfs(vec![source.to_string_lossy().into_owned()], None)
             .unwrap()
@@ -6631,6 +8305,7 @@ mod tests {
     fn imports_markdown_files_as_global_notes() {
         let root = test_directory("import-markdown-notes");
         let repository = LibraryRepository::new(root.join("app-data"));
+        repository.initialize().unwrap();
         let source = root.join("research.md");
         fs::create_dir_all(&root).unwrap();
         fs::write(&source, "# Research\n\nEvidence").unwrap();
@@ -6663,6 +8338,7 @@ mod tests {
         drop(connection);
 
         let repository = LibraryRepository::new(directory.clone());
+        repository.initialize().unwrap();
         let connection = repository.open_connection().unwrap();
         let version: i64 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
@@ -6686,6 +8362,8 @@ mod tests {
                  WHERE type = 'table'
                    AND name IN (
                      'library_annotations', 'library_notes', 'library_note_groups', 'note_sources',
+                     'note_attachments',
+                     'note_shadow_reconciliation_runs',
                      'agent_runs', 'agent_tool_calls', 'agent_run_events',
                      'note_pipeline_chunk_digests'
                    )",
@@ -6693,7 +8371,157 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(tables, 8);
+        assert_eq!(tables, 10);
+        let obsolete_outputs: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table' AND name = 'note_pipeline_outputs'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(obsolete_outputs, 0);
+
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn migrates_v16_notes_and_deduplicates_sources_without_losing_content() {
+        let directory = test_directory("migration-v17-note-files");
+        let library_directory = directory.join("library");
+        fs::create_dir_all(&library_directory).unwrap();
+        let database_path = library_directory.join("library.sqlite3");
+        let connection = Connection::open(&database_path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE library_notes (
+                    id TEXT PRIMARY KEY,
+                    item_id TEXT,
+                    title TEXT NOT NULL,
+                    content TEXT NOT NULL DEFAULT '',
+                    group_name TEXT,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL
+                 );
+                  CREATE TABLE note_sources (
+                    id TEXT PRIMARY KEY,
+                    note_id TEXT NOT NULL,
+                    section_id TEXT NOT NULL,
+                    origin TEXT NOT NULL,
+                    conversation_id TEXT,
+                    message_id TEXT,
+                    summarized_until_message_id TEXT,
+                    created_at INTEGER NOT NULL
+                  );
+                  CREATE TABLE note_pipeline_chunk_digests (
+                    run_id TEXT NOT NULL,
+                    chunk_id TEXT NOT NULL,
+                    content_hash TEXT NOT NULL,
+                    prompt_hash TEXT NOT NULL,
+                    provider_id TEXT NOT NULL,
+                    model_id TEXT NOT NULL,
+                    digest_json TEXT NOT NULL,
+                    semantic_calls INTEGER NOT NULL DEFAULT 1,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    PRIMARY KEY (run_id, chunk_id)
+                  );
+                 INSERT INTO library_notes
+                    (id, item_id, title, content, group_name, created_at, updated_at)
+                 VALUES ('note-1', NULL, 'Migrated', '# preserved', NULL, 1, 1);
+                  INSERT INTO note_sources VALUES
+                    ('source-1', 'note-1', 'section-1', 'conversation', NULL, NULL, NULL, 1),
+                    ('source-2', 'note-1', 'section-1', 'conversation', NULL, NULL, NULL, 2);
+                  INSERT INTO note_pipeline_chunk_digests VALUES
+                    ('old-run', 'chunk-old', 'content-old', 'prompt-old',
+                     'provider-old', 'model-old', 'preserved', 1,
+                     2000000000000, 2000000000000);
+                  PRAGMA user_version = 16;",
+            )
+            .unwrap();
+        drop(connection);
+
+        let repository = LibraryRepository::new(directory.clone());
+        repository.initialize().unwrap();
+        let connection = repository.open_connection().unwrap();
+        let version: i64 = connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, LIBRARY_SCHEMA_VERSION);
+        let preserved: String = connection
+            .query_row("SELECT content FROM library_notes WHERE id = 'note-1'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(preserved, "# preserved");
+        let source_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM note_sources", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(source_count, 1);
+        let attachment_table: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table' AND name = 'note_attachments'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(attachment_table, 1);
+        drop(connection);
+        let migrated_digests = repository
+            .find_note_pipeline_chunk_digests(
+                &[("content-old".to_string(), "prompt-old".to_string())],
+                "provider-old",
+                "model-old",
+            )
+            .unwrap();
+        assert_eq!(migrated_digests.len(), 1);
+        assert_eq!(migrated_digests[0].chunk_id, "chunk-old");
+
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn migrates_legacy_note_directories_idempotently() {
+        let directory = test_directory("legacy-note-directories");
+        let repository = LibraryRepository::new(directory.clone());
+        repository.initialize().unwrap();
+        let note = repository
+            .create_note(LibraryNoteCreate {
+                item_id: None,
+                title: "Legacy note".to_string(),
+                content: "# Legacy\n\nDatabase authority".to_string(),
+                group_name: None,
+            })
+            .unwrap();
+        let old_directory = PathBuf::from(note.directory_path.as_deref().unwrap());
+        fs::remove_dir_all(&old_directory).unwrap();
+        let connection = repository.open_connection().unwrap();
+        connection
+            .execute(
+                "UPDATE library_notes SET directory_path = NULL, content_hash = NULL WHERE id = ?",
+                [&note.id],
+            )
+            .unwrap();
+        drop(connection);
+
+        assert_eq!(repository.migrate_legacy_note_directories(20).unwrap(), 1);
+        assert_eq!(repository.migrate_legacy_note_directories(20).unwrap(), 0);
+        let migrated = repository.get_note(&note.id).unwrap();
+        let migrated_directory = PathBuf::from(migrated.directory_path.as_deref().unwrap());
+        assert_eq!(
+            fs::read_to_string(migrated_directory.join("note.md")).unwrap(),
+            "# Legacy\n\nDatabase authority"
+        );
+        assert_eq!(
+            repository.reconcile_note_directory_shadows().unwrap(),
+            (1, 0, 0)
+        );
+        fs::write(migrated_directory.join("note.md"), "tampered shadow").unwrap();
+        assert_eq!(
+            repository.reconcile_note_directory_shadows().unwrap(),
+            (1, 1, 0)
+        );
 
         let _ = fs::remove_dir_all(directory);
     }
@@ -6702,6 +8530,7 @@ mod tests {
     fn creates_lists_detaches_and_cascades_note_sources() {
         let directory = test_directory("note-sources");
         let repository = LibraryRepository::new(directory.clone());
+        repository.initialize().unwrap();
         let note = repository
             .create_note_with_sources(
                 LibraryNoteCreate {
@@ -6730,6 +8559,12 @@ mod tests {
             .unwrap();
 
         let sources = repository.list_note_sources(&note.id).unwrap();
+        let note_directory = PathBuf::from(note.directory_path.as_deref().unwrap());
+        assert!(note_directory.join("note.md").is_file());
+        assert_eq!(
+            fs::read_to_string(note_directory.join("note.md")).unwrap(),
+            note.content
+        );
         assert_eq!(sources.len(), 2);
         let conversation_source = sources
             .iter()
@@ -6763,6 +8598,15 @@ mod tests {
         );
 
         assert!(repository.delete_note(&note.id).unwrap());
+        assert!(note_directory.is_dir());
+        let moved = super::collect_orphan_note_directories(
+            &repository.root_directory,
+            &HashSet::new(),
+            Duration::ZERO,
+        )
+        .unwrap();
+        assert_eq!(moved, 1);
+        assert!(!note_directory.exists());
         let connection = repository.open_connection().unwrap();
         let remaining: i64 = connection
             .query_row("SELECT COUNT(*) FROM note_sources", [], |row| row.get(0))
@@ -6775,6 +8619,7 @@ mod tests {
     fn rejects_invalid_note_sources_without_persisting_note() {
         let directory = test_directory("invalid-note-sources");
         let repository = LibraryRepository::new(directory.clone());
+        repository.initialize().unwrap();
         let result = repository.create_note_with_sources(
             LibraryNoteCreate {
                 item_id: None,
@@ -6799,6 +8644,7 @@ mod tests {
     fn note_groups_cover_assignment_and_cleanup() {
         let directory = test_directory("note-groups");
         let repository = LibraryRepository::new(directory.clone());
+        repository.initialize().unwrap();
 
         // 空分组可以先创建并保留；重名（含大小写差异）被拒绝。
         let group = repository.create_note_group("数据库").unwrap();
@@ -6844,6 +8690,7 @@ mod tests {
     fn note_pipeline_run_accepts_zero_retries_when_auto_retry_is_disabled() {
         let directory = test_directory("note-pipeline-zero-retries");
         let repository = LibraryRepository::new(directory.clone());
+        repository.initialize().unwrap();
 
         let run = repository
             .create_note_pipeline_run(NotePipelineRunCreate {
@@ -6869,6 +8716,7 @@ mod tests {
     fn cancellation_state_rejects_stale_progress_and_recovers_after_restart() {
         let directory = test_directory("note-pipeline-cancelling");
         let repository = LibraryRepository::new(directory.clone());
+        repository.initialize().unwrap();
         let run = repository
             .create_note_pipeline_run(NotePipelineRunCreate {
                 id: "cancelling-run".to_string(),
@@ -6893,6 +8741,7 @@ mod tests {
             .update_note_pipeline_phase(&run.id, NotePipelinePhase::Analyzing, None, &[], None,)
             .is_err());
 
+        // 不调 `initialize()`：恢复逻辑必须能在一个已存在的库上直接工作。
         let recovered = LibraryRepository::new(directory.clone());
         assert_eq!(recovered.recover_stale_cancelling_runs().unwrap(), 1);
         assert_eq!(
@@ -6908,9 +8757,266 @@ mod tests {
     }
 
     #[test]
+    fn content_derived_idempotency_key_still_allows_regeneration() {
+        let directory = test_directory("note-pipeline-idempotency");
+        let repository = LibraryRepository::new(directory.clone());
+        repository.initialize().unwrap();
+        // 内容派生键的代价：同一份输入重生成时基键必然相同，而
+        // `note_pipeline_output_idempotency` 是全局唯一索引。代次让位保证重生成
+        // 仍然可用，而不是抛出一句「该会话已有一个可恢复的深度笔记任务」。
+        let create = |run_id: &str| NotePipelineRunCreate {
+            id: run_id.to_string(),
+            conversation_id: format!("conversation-{run_id}"),
+            provider_id: "provider-1".to_string(),
+            model_id: "model-1".to_string(),
+            max_output_tokens: 4_096,
+            thinking_enabled: false,
+            retry_attempts: 1,
+            input_snapshot_hash: "snapshot-1".to_string(),
+            budget_json: "{}".to_string(),
+            preflight_json: "{}".to_string(),
+            // 相同输入 → 相同基键。
+            idempotency_key: "content-signature".to_string(),
+        };
+
+        let first = repository
+            .create_note_pipeline_run(create("run-1"))
+            .unwrap();
+        let second = repository
+            .create_note_pipeline_run(create("run-2"))
+            .unwrap();
+        let third = repository
+            .create_note_pipeline_run(create("run-3"))
+            .unwrap();
+
+        assert_eq!(first.idempotency_key, "content-signature");
+        assert_eq!(second.idempotency_key, "content-signature#1");
+        assert_eq!(third.idempotency_key, "content-signature#2");
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn blank_idempotency_key_is_left_untouched() {
+        let directory = test_directory("note-pipeline-blank-key");
+        let repository = LibraryRepository::new(directory.clone());
+        repository.initialize().unwrap();
+        // 空串被唯一索引的 `WHERE idempotency_key <> ''` 排除，不需要让位。
+        let run = repository
+            .create_note_pipeline_run(NotePipelineRunCreate {
+                id: "run-blank".to_string(),
+                conversation_id: "conversation-blank".to_string(),
+                provider_id: "provider-1".to_string(),
+                model_id: "model-1".to_string(),
+                max_output_tokens: 4_096,
+                thinking_enabled: false,
+                retry_attempts: 0,
+                input_snapshot_hash: "snapshot-1".to_string(),
+                budget_json: "{}".to_string(),
+                preflight_json: "{}".to_string(),
+                idempotency_key: String::new(),
+            })
+            .unwrap();
+        assert_eq!(run.idempotency_key, "");
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn upstream_request_budget_counts_physical_attempts_without_raising_the_limit() {
+        let directory = test_directory("note-pipeline-upstream-budget");
+        let repository = LibraryRepository::new(directory.clone());
+        repository.initialize().unwrap();
+        let run = repository
+            .create_note_pipeline_run(NotePipelineRunCreate {
+                id: "upstream-budget-run".to_string(),
+                conversation_id: "conversation-upstream-budget".to_string(),
+                provider_id: "provider-1".to_string(),
+                model_id: "model-1".to_string(),
+                max_output_tokens: 4_096,
+                thinking_enabled: false,
+                retry_attempts: 2,
+                input_snapshot_hash: "snapshot-upstream-budget".to_string(),
+                budget_json: serde_json::json!({
+                    "upstreamRequestLimit": 2,
+                    "upstreamRequestsUsed": 0,
+                })
+                .to_string(),
+                preflight_json: serde_json::json!({
+                    "budget": {
+                        "upstreamRequestLimit": 2,
+                        "upstreamRequestsUsed": 0,
+                    }
+                })
+                .to_string(),
+                idempotency_key: "upstream-budget-output".to_string(),
+            })
+            .unwrap();
+
+        repository
+            .append_note_pipeline_event(
+                &run.id,
+                "modelCallCompleted",
+                None,
+                &serde_json::json!({ "callId": "legacy-call" }).to_string(),
+            )
+            .unwrap();
+        assert_eq!(
+            repository
+                .count_note_pipeline_upstream_requests(&run.id)
+                .unwrap(),
+            1,
+            "升级前的终态事件至少代表一次物理请求"
+        );
+
+        let used = repository
+            .try_append_note_pipeline_upstream_attempt(
+                &run.id,
+                2,
+                &serde_json::json!({
+                    "callId": "instrumented-call",
+                    "requestIndex": 1,
+                    "transport": "streaming",
+                    "requestBytes": 1024,
+                })
+                .to_string(),
+            )
+            .unwrap();
+        assert_eq!(used, 2);
+        repository
+            .append_note_pipeline_event(
+                &run.id,
+                "modelCallCompleted",
+                None,
+                &serde_json::json!({ "callId": "instrumented-call" }).to_string(),
+            )
+            .unwrap();
+        assert_eq!(
+            repository
+                .count_note_pipeline_upstream_requests(&run.id)
+                .unwrap(),
+            2,
+            "新调用的终态事件不能与 attempt 事件重复计数"
+        );
+        let error = repository
+            .try_append_note_pipeline_upstream_attempt(
+                &run.id,
+                2,
+                &serde_json::json!({ "callId": "must-not-send", "requestIndex": 1 }).to_string(),
+            )
+            .unwrap_err();
+        assert!(error.contains("2/2"));
+        repository
+            .append_note_pipeline_event(
+                &run.id,
+                "modelCallFailed",
+                None,
+                &serde_json::json!({
+                    "callId": "must-not-send",
+                    "actualAttemptCount": 0,
+                })
+                .to_string(),
+            )
+            .unwrap();
+        assert_eq!(
+            repository
+                .count_note_pipeline_upstream_requests(&run.id)
+                .unwrap(),
+            2,
+            "在本地预算闸前被拒绝的调用不能反向消耗物理请求预算"
+        );
+
+        repository
+            .update_note_pipeline_runtime_json(
+                &run.id,
+                &serde_json::json!({
+                    "upstreamRequestLimit": 2,
+                    "upstreamRequestsUsed": 0,
+                })
+                .to_string(),
+                &serde_json::json!({
+                    "budget": {
+                        "upstreamRequestLimit": 2,
+                        "upstreamRequestsUsed": 0,
+                    }
+                })
+                .to_string(),
+                None,
+            )
+            .unwrap();
+
+        let persisted = repository.get_note_pipeline_run(&run.id).unwrap();
+        let budget: serde_json::Value = serde_json::from_str(&persisted.budget_json).unwrap();
+        let runtime: serde_json::Value = serde_json::from_str(&persisted.preflight_json).unwrap();
+        assert_eq!(budget["upstreamRequestLimit"], 2);
+        assert_eq!(budget["upstreamRequestsUsed"], 2);
+        assert_eq!(runtime["budget"]["upstreamRequestsUsed"], 2);
+        assert_eq!(
+            repository
+                .list_note_pipeline_events(&run.id, 100)
+                .unwrap()
+                .into_iter()
+                .filter(|event| event.1 == "modelAttemptStarted")
+                .count(),
+            1,
+            "预算耗尽的第三个请求不能写事件，更不能发到 provider"
+        );
+
+        let concurrent = repository
+            .create_note_pipeline_run(NotePipelineRunCreate {
+                id: "concurrent-upstream-budget-run".to_string(),
+                conversation_id: "conversation-concurrent-upstream-budget".to_string(),
+                provider_id: "provider-1".to_string(),
+                model_id: "model-1".to_string(),
+                max_output_tokens: 4_096,
+                thinking_enabled: false,
+                retry_attempts: 0,
+                input_snapshot_hash: "snapshot-concurrent-upstream-budget".to_string(),
+                budget_json: serde_json::json!({
+                    "upstreamRequestLimit": 1,
+                    "upstreamRequestsUsed": 0,
+                })
+                .to_string(),
+                preflight_json: serde_json::json!({ "budget": {} }).to_string(),
+                idempotency_key: "concurrent-upstream-budget-output".to_string(),
+            })
+            .unwrap();
+        let first_repository = repository.clone();
+        let second_repository = repository.clone();
+        let first_run_id = concurrent.id.clone();
+        let second_run_id = concurrent.id.clone();
+        let first = std::thread::spawn(move || {
+            first_repository.try_append_note_pipeline_upstream_attempt(
+                &first_run_id,
+                1,
+                &serde_json::json!({ "callId": "parallel-a" }).to_string(),
+            )
+        });
+        let second = std::thread::spawn(move || {
+            second_repository.try_append_note_pipeline_upstream_attempt(
+                &second_run_id,
+                1,
+                &serde_json::json!({ "callId": "parallel-b" }).to_string(),
+            )
+        });
+        let results = [first.join().unwrap(), second.join().unwrap()];
+        assert_eq!(
+            results.iter().filter(|result| result.is_ok()).count(),
+            1,
+            "并行 worker 只能有一个拿到最后一个上游请求名额：{results:?}"
+        );
+        assert_eq!(
+            repository
+                .count_note_pipeline_upstream_requests(&concurrent.id)
+                .unwrap(),
+            1
+        );
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
     fn persists_and_resumes_note_pipeline_sections() {
         let directory = test_directory("note-pipeline");
         let repository = LibraryRepository::new(directory.clone());
+        repository.initialize().unwrap();
         let run = repository
             .create_note_pipeline_run(NotePipelineRunCreate {
                 id: "run-1".to_string(),
@@ -6987,6 +9093,7 @@ mod tests {
             )
             .unwrap();
 
+        // 不调 `initialize()`：验证的是数据落在 SQLite 而不是进程内状态。
         let reopened = LibraryRepository::new(directory.clone());
         let persisted = reopened.get_note_pipeline_run(&run.id).unwrap();
         assert_eq!(persisted.phase, NotePipelinePhase::Compiling);
@@ -7023,9 +9130,10 @@ mod tests {
     }
 
     #[test]
-    fn chunk_digest_checkpoints_survive_reopen_and_prune_removed_chunks() {
+    fn global_chunk_digest_cache_survives_reopen_and_source_run_deletion() {
         let directory = test_directory("note-pipeline-chunk-digests");
         let repository = LibraryRepository::new(directory.clone());
+        repository.initialize().unwrap();
         let run = repository
             .create_note_pipeline_run(NotePipelineRunCreate {
                 id: "digest-run".to_string(),
@@ -7060,7 +9168,6 @@ mod tests {
             .unwrap();
         repository
             .save_note_pipeline_chunk_digest(
-                &run.id,
                 "chunk-1",
                 "content-1",
                 "prompt-1",
@@ -7072,7 +9179,6 @@ mod tests {
             .unwrap();
         repository
             .save_note_pipeline_chunk_digest(
-                &run.id,
                 "chunk-2",
                 "content-2",
                 "prompt-2",
@@ -7083,18 +9189,162 @@ mod tests {
             )
             .unwrap();
 
+        // 不调 `initialize()`：验证检查点落在 SQLite 而不是进程内状态。
         let reopened = LibraryRepository::new(directory.clone());
-        let checkpoints = reopened.list_note_pipeline_chunk_digests(&run.id).unwrap();
-        assert_eq!(checkpoints.len(), 2);
-        assert_eq!(checkpoints[0].semantic_calls, 1);
-        assert!(checkpoints[0].updated_at > 0);
-
-        reopened
-            .replace_note_pipeline_source_chunks(&run.id, &[first])
+        let keys = vec![
+            ("content-1".to_string(), "prompt-1".to_string()),
+            ("content-2".to_string(), "prompt-2".to_string()),
+        ];
+        let checkpoints = reopened
+            .find_note_pipeline_chunk_digests(&keys, "provider-1", "model-1")
             .unwrap();
-        let remaining = reopened.list_note_pipeline_chunk_digests(&run.id).unwrap();
-        assert_eq!(remaining.len(), 1);
-        assert_eq!(remaining[0].chunk_id, "chunk-1");
+        assert_eq!(checkpoints.len(), 2);
+        assert!(checkpoints.iter().any(|checkpoint| checkpoint.semantic_calls == 1));
+        assert!(checkpoints.iter().all(|checkpoint| checkpoint.updated_at > 0));
+
+        let connection = reopened.open_connection().unwrap();
+        connection
+            .execute("DELETE FROM note_pipeline_runs WHERE id = ?", [&run.id])
+            .unwrap();
+        drop(connection);
+        let remaining = reopened
+            .find_note_pipeline_chunk_digests(&keys, "provider-1", "model-1")
+            .unwrap();
+        assert_eq!(remaining.len(), 2);
+        assert!(reopened
+            .find_note_pipeline_chunk_digests(&keys, "provider-2", "model-1")
+            .unwrap()
+            .is_empty());
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn restores_dag_nodes_from_table_only_when_input_hash_matches() {
+        let directory = test_directory("restore-dag-nodes");
+        let repository = LibraryRepository::new(directory.clone());
+        repository.initialize().unwrap();
+        let run = repository
+            .create_note_pipeline_run(NotePipelineRunCreate {
+                id: "restore-node-run".to_string(),
+                conversation_id: "restore-node-conversation".to_string(),
+                provider_id: "provider-1".to_string(),
+                model_id: "model-1".to_string(),
+                max_output_tokens: 4_096,
+                thinking_enabled: false,
+                retry_attempts: 1,
+                input_snapshot_hash: "snapshot".to_string(),
+                budget_json: "{}".to_string(),
+                preflight_json: "{}".to_string(),
+                idempotency_key: "restore-node-output".to_string(),
+            })
+            .unwrap();
+        repository
+            .replace_note_pipeline_nodes(
+                &run.id,
+                1,
+                &[(
+                    "draft:section-1".to_string(),
+                    "draftSection".to_string(),
+                    Some("section-1".to_string()),
+                    "[]".to_string(),
+                    "pending".to_string(),
+                    "input-1".to_string(),
+                )],
+            )
+            .unwrap();
+        let connection = repository.open_connection().unwrap();
+        connection
+            .execute(
+                "UPDATE note_pipeline_nodes
+                 SET status = 'completed', attempt_count = 2,
+                     evidence_ids_json = '[\"evidence-1\"]', output_ref = 'section:section-1'
+                 WHERE run_id = ?",
+                [&run.id],
+            )
+            .unwrap();
+        drop(connection);
+        let template = DeepNoteDagNode {
+            node_id: "draft:section-1".to_string(),
+            node_type: DeepNoteNodeType::DraftSection,
+            section_id: Some("section-1".to_string()),
+            depends_on: Vec::new(),
+            status: DeepNoteNodeStatus::Pending,
+            attempt_count: 0,
+            evidence_ids: Vec::new(),
+            input_hash: "input-1".to_string(),
+            output_ref: None,
+            validation_json: String::new(),
+            error_message: None,
+        };
+        let restored = repository
+            .restore_note_pipeline_nodes(&run.id, 1, std::slice::from_ref(&template))
+            .unwrap();
+        assert_eq!(restored[0].status, DeepNoteNodeStatus::Completed);
+        assert_eq!(restored[0].attempt_count, 2);
+        assert_eq!(restored[0].evidence_ids, vec!["evidence-1"]);
+
+        let mut mismatched = template;
+        mismatched.input_hash = "new-input".to_string();
+        let untouched = repository
+            .restore_note_pipeline_nodes(&run.id, 1, &[mismatched])
+            .unwrap();
+        assert_eq!(untouched[0].status, DeepNoteNodeStatus::Pending);
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn section_checkpoint_preserves_partial_markdown_across_reopen() {
+        let directory = test_directory("partial-section-checkpoint");
+        let repository = LibraryRepository::new(directory.clone());
+        repository.initialize().unwrap();
+        let run = repository
+            .create_note_pipeline_run(NotePipelineRunCreate {
+                id: "partial-section-run".to_string(),
+                conversation_id: "partial-section-conversation".to_string(),
+                provider_id: "provider-1".to_string(),
+                model_id: "model-1".to_string(),
+                max_output_tokens: 4_096,
+                thinking_enabled: false,
+                retry_attempts: 1,
+                input_snapshot_hash: "snapshot".to_string(),
+                budget_json: "{}".to_string(),
+                preflight_json: "{}".to_string(),
+                idempotency_key: "partial-section-output".to_string(),
+            })
+            .unwrap();
+        let connection = repository.open_connection().unwrap();
+        connection
+            .execute(
+                "INSERT INTO note_pipeline_sections (
+                    run_id, section_id, position, section_json, markdown, status,
+                    error_message, updated_at
+                 ) VALUES (?, 'section-1', 0, '{}', '', 'pending', NULL, 1)",
+                [&run.id],
+            )
+            .unwrap();
+        drop(connection);
+        repository
+            .save_note_pipeline_section_checkpoint(
+                &run.id,
+                "section-1",
+                "## Partial\n\n已生成但尚未通过验证",
+                NotePipelineSectionStatus::NeedsRevision,
+                1,
+                1,
+                &["evidence-1".to_string()],
+                "{\"passed\":false}",
+                Some("needs revision"),
+            )
+            .unwrap();
+
+        let reopened = LibraryRepository::new(directory.clone());
+        let sections = reopened.list_note_pipeline_sections(&run.id).unwrap();
+        assert_eq!(sections.len(), 1);
+        assert_eq!(sections[0].markdown, "## Partial\n\n已生成但尚未通过验证");
+        assert_eq!(sections[0].status, NotePipelineSectionStatus::NeedsRevision);
+        assert_eq!(sections[0].attempt_count, 1);
+        assert_eq!(sections[0].revision_count, 1);
+        assert_eq!(sections[0].evidence_ids, vec!["evidence-1"]);
         let _ = fs::remove_dir_all(directory);
     }
 
@@ -7102,6 +9352,7 @@ mod tests {
     fn discovers_only_the_latest_recoverable_run_for_each_conversation() {
         let directory = test_directory("note-pipeline-recovery-discovery");
         let repository = LibraryRepository::new(directory.clone());
+        repository.initialize().unwrap();
         let first = repository
             .create_note_pipeline_run(NotePipelineRunCreate {
                 id: "cancelled-run".to_string(),
@@ -7156,6 +9407,7 @@ mod tests {
     fn abandoned_runs_are_persisted_and_excluded_from_recovery() {
         let directory = test_directory("note-pipeline-abandoned");
         let repository = LibraryRepository::new(directory.clone());
+        repository.initialize().unwrap();
         let run = repository
             .create_note_pipeline_run(NotePipelineRunCreate {
                 id: "abandoned-run".to_string(),
@@ -7190,6 +9442,7 @@ mod tests {
     fn retry_preserves_completed_checkpoints_and_resets_failed_work() {
         let directory = test_directory("note-pipeline-retry");
         let repository = LibraryRepository::new(directory.clone());
+        repository.initialize().unwrap();
         let run = repository
             .create_note_pipeline_run(NotePipelineRunCreate {
                 id: "retry-run".to_string(),
@@ -7409,6 +9662,7 @@ mod tests {
     fn deep_note_coverage_snapshot_advances_only_when_update_is_applied() {
         let directory = test_directory("deep-note-coverage");
         let repository = LibraryRepository::new(directory.clone());
+        repository.initialize().unwrap();
         let initial_snapshot = coverage_snapshot(&["message-a", "message-b"]);
         let note = repository
             .create_note_with_sources_and_coverage(
@@ -7483,6 +9737,7 @@ mod tests {
     fn rebuilt_note_becomes_the_only_future_update_anchor() {
         let directory = test_directory("deep-note-rebuild-anchor");
         let repository = LibraryRepository::new(directory.clone());
+        repository.initialize().unwrap();
         let initial_snapshot = coverage_snapshot(&["message-a", "message-b"]);
         let old = repository
             .create_note_with_sources_and_coverage(
@@ -7549,6 +9804,7 @@ mod tests {
     fn attachment_source_units_advance_only_after_the_update_is_applied() {
         let directory = test_directory("deep-note-source-units");
         let repository = LibraryRepository::new(directory.clone());
+        repository.initialize().unwrap();
         let initial_snapshot = coverage_snapshot(&["message-a"]);
         let note = repository
             .create_note_with_sources_and_coverage(
@@ -7649,6 +9905,7 @@ mod tests {
     fn note_edit_requires_confirmation_backs_up_and_rejects_stale_edits() {
         let directory = test_directory("note-edit");
         let repository = LibraryRepository::new(directory.clone());
+        repository.initialize().unwrap();
         let note = repository
             .create_note(LibraryNoteCreate {
                 item_id: None,
@@ -7769,6 +10026,7 @@ mod tests {
     fn agent_tool_approval_cancel_race_rejects_late_worker_result() {
         let directory = test_directory("agent-state-machine");
         let repository = LibraryRepository::new(directory.clone());
+        repository.initialize().unwrap();
         let (state, execution_version, state_version) = repository
             .create_agent_run(
                 "run-agent-1",
@@ -7879,6 +10137,7 @@ mod tests {
     fn startup_recovery_invalidates_unfinished_agent_approvals() {
         let directory = test_directory("agent-recovery");
         let repository = LibraryRepository::new(directory.clone());
+        repository.initialize().unwrap();
         repository
             .create_agent_run(
                 "run-agent-recovery",

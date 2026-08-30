@@ -229,6 +229,7 @@ mod tests {
     fn creates_lists_reads_and_updates_notes() {
         let root = std::env::temp_dir().join(format!("mnemora-agent-notes-{}", Uuid::new_v4()));
         let repository = LibraryRepository::new(root.clone());
+        repository.initialize().unwrap();
 
         let created = note_create(
             &repository,

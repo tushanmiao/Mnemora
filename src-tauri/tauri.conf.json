@@ -28,6 +28,7 @@
         "scope": [
           "$APPDATA/english/audio-cache/**",
           "$APPDATA/conversations/**",
+          "$APPDATA/library/notes/**",
           "$APPDATA/pets/**"
         ]
       },

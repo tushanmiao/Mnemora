@@ -605,6 +605,15 @@ export function GeneralSettingsPanel({
           <SettingRow label={t("general.streaming")}>
             <Toggle checked={draft.streamEnabled} onChange={(value) => updateDraft("streamEnabled", value)} />
           </SettingRow>
+          <SettingRow
+            label={t("general.deepNoteStreamKeepalive")}
+            description={t("general.deepNoteStreamKeepaliveDescription")}
+          >
+            <Toggle
+              checked={draft.deepNoteStreamKeepalive}
+              onChange={(value) => updateDraft("deepNoteStreamKeepalive", value)}
+            />
+          </SettingRow>
           <SettingRow label={t("general.thinking")} description={t("general.thinkingDescription")}>
             <Toggle checked={draft.thinkingEnabled} onChange={(value) => updateDraft("thinkingEnabled", value)} />
           </SettingRow>

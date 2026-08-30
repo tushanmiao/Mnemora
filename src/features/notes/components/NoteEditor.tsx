@@ -210,7 +210,7 @@ export function NoteEditor({
             ) : (
               <div ref={previewRef} className="notes-preview-host" onMouseUp={onPreviewSelection}>
                 <Suspense fallback={<div className="notes-empty"><LoaderCircle className="is-spinning" size={20} />正在加载预览</div>}>
-                  <MarkdownNotePreview noteId={activeNote.id} content={content} />
+                  <MarkdownNotePreview noteId={activeNote.id} content={content} directoryPath={activeNote.directoryPath} />
                 </Suspense>
               </div>
             )}

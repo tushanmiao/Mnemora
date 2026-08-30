@@ -415,7 +415,10 @@ mod tests {
             "mnemora-interview-{label}-{}",
             Uuid::new_v4().simple()
         ));
-        (LibraryRepository::new(directory.clone()), directory)
+        let repository = LibraryRepository::new(directory.clone());
+        // schema 迁移不再挂在 `open_connection` 上，必须显式初始化一次。
+        repository.initialize().unwrap();
+        (repository, directory)
     }
 
     #[test]
@@ -462,6 +465,7 @@ mod tests {
         assert!(markdown_export.contains("# 面试会话"));
 
         // 重新构造 Repository，确认会话依赖 SQLite 而非进程内状态。
+        // 这里刻意**不**调 `initialize()`：库已经建好了，重开连接不该再需要迁移。
         let reopened = LibraryRepository::new(directory.clone());
         assert_eq!(get(&reopened, &session.id).unwrap().status, "completed");
         let _ = fs::remove_dir_all(directory);

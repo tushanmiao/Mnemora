@@ -344,10 +344,28 @@ pub struct LibraryNote {
     pub item_title: Option<String>,
     pub title: String,
     pub content: String,
+    /// 笔记目录的绝对路径，仅用于前端生成受 scope 约束的 asset URL。
+    pub directory_path: Option<String>,
+    /// 阶段 2 双写对账使用的 SHA-256；DB 正文仍是当前权威源。
+    pub content_hash: Option<String>,
+    pub attachments: Vec<LibraryNoteAttachment>,
     /// 所属分组名；None 表示未分类。分组只作用于独立笔记（item_id 为空）。
     pub group_name: Option<String>,
     pub created_at: u64,
     pub updated_at: u64,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryNoteAttachment {
+    pub id: String,
+    pub note_id: String,
+    pub relative_path: String,
+    pub original_name: String,
+    pub content_hash: String,
+    pub byte_size: u64,
+    pub mime_type: Option<String>,
+    pub created_at: u64,
 }
 
 /// 笔记列表只返回短预览，完整正文仅在打开具体笔记时读取。
@@ -502,6 +520,14 @@ impl NotePipelinePhase {
         }
     }
 
+    /// 该相位是否允许被恢复。
+    ///
+    /// `#[allow(dead_code)]`：只被单测使用。生产的可恢复判定走 SQL —— 见
+    /// `store::list_resumable_note_pipeline_runs` 的相位白名单，那里还要叠加
+    /// `cancelled` 的 `note_id IS NULL` 守卫与「排除更新的同会话 run」，无法用一个
+    /// 纯相位谓词表达。保留这个方法是为了让「相位本身是否可恢复」有一处可直接
+    /// 单测的定义，避免那份白名单只存在于 SQL 字符串里。
+    #[allow(dead_code)]
     pub fn is_resumable(self) -> bool {
         matches!(
             self,
@@ -621,6 +647,14 @@ pub struct NotePipelineRunCreate {
     pub idempotency_key: String,
 }
 
+/// `note_pipeline_sections` 的行映射。
+///
+/// `#[allow(dead_code)]`：`run_id`、`section_json`、`evidence_ids`、`validation_json`、
+/// `input_hash` 目前没有读取方 —— 恢复路径只用到 `markdown` 与状态计数。保留完整
+/// 行是因为这个结构体的职责就是忠实映射表：字段与 `SELECT` 列表一一对应，删字段
+/// 就要同时改 SQL，而下次需要它们时（P3-4 的章节内检查点要比对 `input_hash`）又得
+/// 把两边一起改回来。
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct NotePipelineSection {
     pub run_id: String,
@@ -638,6 +672,10 @@ pub struct NotePipelineSection {
     pub updated_at: u64,
 }
 
+/// `note_pipeline_chunk_digests` 的行映射。
+///
+/// 缓存已脱离 run 生命周期；`updated_at` 用于 TTL，`semantic_calls` 保留原始生成成本。
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct NotePipelineChunkDigest {
     pub chunk_id: String,
@@ -656,16 +694,6 @@ pub struct NotePipelineSectionCreate {
     pub position: usize,
     pub section_json: String,
     pub input_hash: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct LibraryNoteVersion {
-    pub id: String,
-    pub note_id: String,
-    pub title: String,
-    pub reason: String,
-    pub created_at: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -30,6 +30,16 @@ const SECTION_STATUS_LABELS: Record<DeepNoteSectionStatus, string> = {
   blocked: "已阻塞", skipped: "已跳过", interrupted: "已中断",
 };
 
+const ROUTE_STATE_LABELS: Record<string, string> = {
+  unknown: "冷启动",
+  available: "可用",
+  degraded: "波动中",
+  circuitOpen: "暂时熔断",
+  unsupported: "模型不可用",
+  disabled: "已禁用",
+  tombstoned: "配置已移除",
+};
+
 const TERMINAL_PHASES = new Set<NotePipelinePhase>(["done", "cancelled", "error"]);
 const PAUSABLE_PHASES = new Set<NotePipelinePhase>([
   "analyzing", "compiling", "queued", "drafting", "validating", "replanning",
@@ -167,8 +177,8 @@ export default function DeepNoteView() {
     ? Math.min(100, Math.round((processedSections / totalSections) * 100)) : 0;
   const budget = runtime.detail?.budget;
   const contextBudget = runtime.detail?.contextBudget;
-  const budgetProgress = budget && budget.semanticCallLimit > 0
-    ? Math.min(100, Math.round((budget.semanticCallsUsed / budget.semanticCallLimit) * 100)) : 0;
+  const budgetProgress = budget && budget.upstreamRequestLimit > 0
+    ? Math.min(100, Math.round((budget.upstreamRequestsUsed / budget.upstreamRequestLimit) * 100)) : 0;
   const nodes = runtime.detail?.nodes ?? [];
   const completedNodes = useMemo(() => nodes.filter((node) => node.status === "completed").length, [nodes]);
   const sectionHeadings = useMemo(() => new Map(
@@ -239,7 +249,8 @@ export default function DeepNoteView() {
       `状态: ${statusMessage}`,
           `模型: ${modelOption?.providerName ?? runProviderId ?? "-"} / ${modelOption?.displayName ?? runModelId ?? "-"} (${runApiModel ?? modelOption?.apiModel ?? "-"})`,
       `输入覆盖: ${contextBudget?.processedMessageCount ?? 0}/${contextBudget?.totalMessageCount ?? 0}`,
-      `语义调用: ${budget?.semanticCallsUsed ?? 0}/${budget?.semanticCallLimit ?? 0}`,
+      `上游请求: ${budget?.upstreamRequestsUsed ?? 0}/${budget?.upstreamRequestLimit ?? 0}`,
+      `逻辑调用: ${budget?.semanticCallsUsed ?? 0}/${budget?.semanticCallLimit ?? 0}`,
       `分块并发: ${budget?.maxParallelChunks ?? 1}；章节并发: ${budget?.maxParallelNodes ?? 1}`,
       activity
         ? `当前请求: ${activity.callId}，第 ${activity.attempt}/${activity.maxRetries + 1} 次，已等待 ${formatDuration(activityElapsed ?? 0)}，超时 ${formatDuration(activity.timeoutMs)}`
@@ -540,15 +551,19 @@ export default function DeepNoteView() {
           <div><dt>消息</dt><dd>{contextBudget?.processedMessageCount ?? 0}/{contextBudget?.totalMessageCount ?? 0}</dd></div>
           <div><dt>来源分块</dt><dd>{contextBudget?.processedChunkCount ?? 0}/{contextBudget?.chunkCount ?? 0}</dd></div>
           <div><dt>预计输入</dt><dd>{formatTokenCount(contextBudget?.estimatedInputTokens)}</dd></div>
+          <div><dt>动态分块上限</dt><dd>{formatTokenCount(contextBudget?.adaptiveChunkLimitTokens)}</dd></div>
+          <div><dt>路由状态</dt><dd>{ROUTE_STATE_LABELS[contextBudget?.adaptiveRouteState ?? ""] ?? "冷启动"}</dd></div>
+          <div><dt>容量样本</dt><dd>{contextBudget?.adaptiveProfileSamples ?? 0}</dd></div>
           <div><dt>处理结果</dt><dd>{contextBudget?.coverageComplete ? "完整" : "处理中"}</dd></div>
         </dl>
         {(contextBudget?.omittedMessageIds.length ?? 0) > 0 ? <p className="deep-note-inline-warning"><AlertTriangle size={13} />仍有 {contextBudget?.omittedMessageIds.length} 条消息未处理</p> : null}
 
         <div className="deep-note-pane-heading"><Gauge size={15} /><strong>运行预算</strong></div>
         <div className="deep-note-budget-meter"><span style={{ width: `${budgetProgress}%` }} /></div>
-        <p>{budget?.semanticCallsUsed ?? 0} / {budget?.semanticCallLimit ?? 0} 次语义调用</p>
+        <p>{budget?.upstreamRequestsUsed ?? 0} / {budget?.upstreamRequestLimit ?? 0} 次上游请求</p>
         <dl className="deep-note-stat-list">
           <div><dt>请求重试上限</dt><dd>{runtime.detail?.run.retryAttempts ?? 5} 次（最多 {(runtime.detail?.run.retryAttempts ?? 5) + 1} 次请求）</dd></div>
+          <div><dt>逻辑调用</dt><dd>{budget?.semanticCallsUsed ?? 0}/{budget?.semanticCallLimit ?? 0}</dd></div>
           <div><dt>节点尝试上限</dt><dd>{budget?.nodeAttemptLimit ?? 5}</dd></div>
           <div><dt>章节修订上限</dt><dd>{budget?.sectionRevisionLimit ?? 5}</dd></div>
           <div><dt>提纲调整</dt><dd>{budget?.replansUsed ?? 0}/{budget?.replanLimit ?? 4}</dd></div>

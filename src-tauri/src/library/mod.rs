@@ -6,6 +6,7 @@
 
 pub mod import;
 pub mod interview;
+pub mod note_files;
 pub mod store;
 pub mod types;
 

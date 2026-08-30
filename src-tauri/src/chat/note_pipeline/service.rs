@@ -1,8 +1,9 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     fs::File,
     future::Future,
     io::Read,
+    sync::atomic::{AtomicU32, AtomicUsize, Ordering},
     time::Duration,
 };
 
@@ -24,10 +25,13 @@ use crate::{
         service as chat_service,
         types::{ChatCompletionRequest, ChatModelMessage, ChatWorkspaceMode},
     },
-    library::types::{
-        LibraryNoteCreate, NoteEditProposalCreate, NotePipelinePhase, NotePipelineRun,
-        NotePipelineRunCreate, NotePipelineSection, NotePipelineSectionCreate,
-        NotePipelineSectionStatus, NoteSourceCreate, NoteSourceOrigin,
+    library::{
+        note_files::NoteAttachmentSource,
+        types::{
+            LibraryNoteCreate, NoteEditProposalCreate, NotePipelinePhase, NotePipelineRun,
+            NotePipelineRunCreate, NotePipelineSection, NotePipelineSectionCreate,
+            NotePipelineSectionStatus, NoteSourceCreate, NoteSourceOrigin,
+        },
     },
     settings::types::ModelSettings,
     state::AppState,
@@ -35,6 +39,10 @@ use crate::{
 };
 
 use super::{
+    adaptive_volume::{
+        AdaptiveVolumeOutcome, AdaptiveVolumeProfile, DeepNoteRouteIdentity, RouteAvailability,
+        MAX_ADAPTIVE_CHUNK_TOKENS, MIN_ADAPTIVE_CHUNK_TOKENS,
+    },
     merge::{apply_note_patches, compact_diff},
     prompts::{
         ANALYST_SYSTEM_PROMPT, CHUNK_ANALYST_SYSTEM_PROMPT, NOTE_ATTACHMENT_EDIT_PATCH_PROMPT,
@@ -42,6 +50,7 @@ use super::{
         NOTE_EDIT_PLAN_PROMPT, SECTION_REVISION_SYSTEM_PROMPT, SECTION_SYSTEM_PROMPT,
         STRICT_JSON_SUFFIX,
     },
+    run_machine::{DeepNoteRunEffect, DeepNoteRunMachine},
     scheduler::{stable_topological_sections, DeepNoteDagScheduler},
     types::{
         compile_plan, DeepNoteBudget, DeepNoteCapabilities, DeepNoteContextBudget, DeepNoteDagNode,
@@ -55,8 +64,12 @@ use super::{
         NoteEditPrepareRequest, NoteEditPrepareResult, NoteMergePlan, NotePatchSet,
         NotePipelineActivity, NotePipelineAdjustRequest, NotePipelineCancelResult,
         NotePipelineConfirmRequest, NotePipelineProgress, NotePipelineStartRequest,
+        MAX_DEEP_NOTE_SOURCE_CHUNKS, MAX_DEEP_NOTE_UPSTREAM_REQUESTS,
     },
 };
+
+#[cfg(test)]
+use super::adaptive_volume::INITIAL_ADAPTIVE_CHUNK_TOKENS;
 
 // Direct mode is only safe when the same raw input can also be reused by a
 // section writer. Larger inputs first build a traceable ledger so drafting
@@ -79,19 +92,140 @@ const OUTLINE_SIZE_SUFFIX: &str =
 const DEFAULT_CHUNK_TARGET_TOKENS: u64 = 16_000;
 const UNKNOWN_CONTEXT_CHUNK_TOKENS: u64 = 8_000;
 const PLANNER_PROMPT_OVERHEAD_TOKENS: u64 = 4_096;
-const MAX_ANALYSIS_CHUNKS: usize = 96;
+const MAX_ANALYSIS_CHUNKS: usize = MAX_DEEP_NOTE_SOURCE_CHUNKS;
 const MAX_INCREMENTAL_ATTACHMENT_CHUNKS: usize = 24;
+const MAX_UNPACKED_ATTACHMENT_CHUNKS: usize = 1_024;
 const PIPELINE_STOP_WAIT_ATTEMPTS: usize = 80;
 const PIPELINE_STOP_WAIT_INTERVAL: Duration = Duration::from_millis(50);
 const PIPELINE_ABORT_WAIT_ATTEMPTS: usize = 20;
+/// 纯文本请求的请求体字节上限。
+///
+/// 按字节而非 token 设闸：网关限的是 body 大小，而一个中文字符是 1 token、3 字节，
+/// token 估算会系统性低估。2 MiB 约等于 70 万中文字符 —— 正常单次调用远达不到，
+/// 所以这道闸只会在载荷失控时响（例如超长对话直出规划），不会误伤正常请求。
+const REQUEST_BYTE_LIMIT: usize = 2 * 1024 * 1024;
+/// 带图请求的请求体字节上限。
+///
+/// base64 图片比原文件再大约 1/3，且在 token 估算里几乎不占位，是最容易悄悄超限的
+/// 一类载荷，所以单独给一档更宽的上限，而不是让它去挤文本档。
+const VISION_REQUEST_BYTE_LIMIT: usize = 16 * 1024 * 1024;
+const RUN_BUDGET_EXHAUSTED_PREFIX: &str = "deep-note-run-budget-exhausted:";
+
+#[derive(Debug, Clone)]
+struct AdaptiveBudgetSnapshot {
+    limit_tokens: u64,
+    route_key: String,
+    route_state: String,
+    profile_samples: u64,
+}
+
+impl AdaptiveBudgetSnapshot {
+    #[cfg(test)]
+    fn cold_start() -> Self {
+        Self {
+            limit_tokens: INITIAL_ADAPTIVE_CHUNK_TOKENS,
+            route_key: String::new(),
+            route_state: "unknown".to_string(),
+            profile_samples: 0,
+        }
+    }
+
+    fn from_profile(profile: &AdaptiveVolumeProfile) -> Self {
+        Self {
+            limit_tokens: profile.effective_target_tokens(crate::usage::now_ms()),
+            route_key: profile.identity.route_key.clone(),
+            route_state: profile.availability.as_str().to_string(),
+            profile_samples: profile.sample_count,
+        }
+    }
+}
+
+fn deep_note_route_profile(
+    state: &AppState,
+    provider_id: &str,
+    model_id: &str,
+) -> Result<(DeepNoteRouteIdentity, AdaptiveVolumeProfile), String> {
+    let streaming_preferred = state
+        .app_settings
+        .read()
+        .map_err(|_| "应用设置锁不可用。".to_string())?
+        .deep_note_stream_keepalive;
+    let identity = {
+        let settings = state
+            .model_settings
+            .read()
+            .map_err(|_| "模型设置锁不可用。".to_string())?;
+        DeepNoteRouteIdentity::resolve(
+            &settings,
+            provider_id,
+            model_id,
+            streaming_preferred,
+        )?
+    };
+    let profile = state
+        .library_repository
+        .get_or_create_deep_note_route_profile(&identity)?;
+    Ok((identity, profile))
+}
+
+fn blocked_route_error(profile: &AdaptiveVolumeProfile) -> Option<ModelError> {
+    let reason = profile.blocked_reason(crate::usage::now_ms())?;
+    Some(if profile.availability == RouteAvailability::Unsupported {
+        ModelError::model_not_found(reason)
+    } else {
+        ModelError::route_unavailable(reason)
+    })
+}
+
+fn record_adaptive_route_outcome(
+    state: &AppState,
+    run_id: &str,
+    identity: &DeepNoteRouteIdentity,
+    previous: &AdaptiveVolumeProfile,
+    outcome: &AdaptiveVolumeOutcome,
+) -> AdaptiveVolumeProfile {
+    match state
+        .library_repository
+        .record_deep_note_route_outcome(identity, outcome)
+    {
+        Ok(profile) => profile,
+        Err(error) => {
+            let _ = state.library_repository.append_note_pipeline_event(
+                run_id,
+                "routeProfileUpdateFailed",
+                None,
+                &serde_json::json!({
+                    "routeKey": identity.route_key.as_str(),
+                    "message": error,
+                })
+                .to_string(),
+            );
+            previous.clone()
+        }
+    }
+}
+
+/// 按本次调用是否带图选择字节上限档位。
+///
+/// 只看 `kind == "image"`：非图片附件走的是读取工具、内容以文本进入 prompt，已经被
+/// 文本档覆盖；只有图片会被内联成 base64 直接撑大请求体。
+fn request_byte_limit(
+    attachments: &[crate::chat::conversation_types::StoredChatAttachment],
+) -> usize {
+    if attachments.iter().any(|item| item.kind == "image") {
+        VISION_REQUEST_BYTE_LIMIT
+    } else {
+        REQUEST_BYTE_LIMIT
+    }
+}
 
 fn budget_for_drafting(previous: &DeepNoteBudget, section_count: usize) -> DeepNoteBudget {
     let mut budget = DeepNoteBudget::for_section_count(section_count);
     budget.semantic_calls_used = previous.semantic_calls_used;
+    budget.upstream_request_limit = previous.upstream_request_limit;
+    budget.upstream_requests_used = previous.upstream_requests_used;
     budget.replans_used = previous.replans_used;
-    let section_calls = section_count as u32
-        * (u32::from(budget.node_attempt_limit) + u32::from(budget.section_revision_limit));
-    budget.reserve_semantic_calls(section_calls);
+    budget.upstream_wall_clock_ms = previous.upstream_wall_clock_ms;
     budget
 }
 
@@ -407,10 +541,6 @@ fn append_pipeline_event_if_available(
     Ok(())
 }
 
-fn truncate_chars(value: String) -> String {
-    value
-}
-
 fn noteworthy_messages(conversation: &StoredConversation) -> Vec<&StoredChatMessage> {
     conversation
         .messages
@@ -560,36 +690,29 @@ fn message_text(message: &StoredChatMessage, include_reasoning: bool) -> String 
         .join("\n")
 }
 
+/// 不做长度控制：这里一旦截断就是静默丢失来源，而后续引用校验会把丢掉的
+/// message-id 当成模型编造。超长由两道机制处理 —— 规划阶段的
+/// `should_fallback_to_chunked_planner` 转分块，发出前的字节硬闸兜底。
 fn transcript(conversation: &StoredConversation, include_reasoning: bool) -> String {
-    truncate_chars(
-        noteworthy_messages(conversation)
-            .into_iter()
-            .map(|message| {
-                let anchor = format!("<!-- message-id: {} -->\n", message.id);
-                format!("{anchor}{}", message_text(message, include_reasoning))
-            })
-            .collect::<Vec<_>>()
-            .join("\n\n"),
-    )
+    noteworthy_messages(conversation)
+        .into_iter()
+        .map(|message| {
+            let anchor = format!("<!-- message-id: {} -->\n", message.id);
+            format!("{anchor}{}", message_text(message, include_reasoning))
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
 fn estimate_text_tokens(value: &str) -> u64 {
-    let mut ascii = 0u64;
-    let mut non_ascii = 0u64;
-    for character in value.chars() {
-        if character.is_ascii() {
-            ascii += 1;
-        } else {
-            non_ascii += 1;
-        }
-    }
-    ascii.div_ceil(4) + non_ascii
+    token_estimate_units(value).div_ceil(4)
 }
 
 fn context_budget(
     conversation: &StoredConversation,
     model: &DeepNoteModelSnapshot,
     max_output_tokens: u32,
+    adaptive: &AdaptiveBudgetSnapshot,
 ) -> DeepNoteContextBudget {
     let messages = noteworthy_messages(conversation);
     let estimated_input_tokens = messages
@@ -604,6 +727,10 @@ fn context_budget(
     // budget here can force otherwise safe conversations into unnecessary chunking.
     let planner_output_reserve_tokens =
         u64::from(max_output_tokens.min(PLANNER_OUTPUT_TOKEN_LIMIT));
+    let adaptive_limit = adaptive.limit_tokens.clamp(
+        MIN_ADAPTIVE_CHUNK_TOKENS,
+        MAX_ADAPTIVE_CHUNK_TOKENS,
+    );
     let (safety_margin_tokens, usable_input_tokens, direct_input_limit_tokens, chunk_target_tokens) =
         if let Some(window) = model.context_window_tokens {
             let safety = (window / 12).max(4_096);
@@ -614,18 +741,19 @@ fn context_budget(
             (
                 safety,
                 usable,
-                usable.min(DIRECT_PLANNER_TOKEN_LIMIT),
+                usable.min(DIRECT_PLANNER_TOKEN_LIMIT).min(adaptive_limit),
                 usable
                     .saturating_sub(1_024)
                     .min(DEFAULT_CHUNK_TARGET_TOKENS)
+                    .min(adaptive_limit)
                     .max(2_048),
             )
         } else {
             (
                 4_096,
                 UNKNOWN_CONTEXT_CHUNK_TOKENS,
-                UNKNOWN_CONTEXT_CHUNK_TOKENS,
-                UNKNOWN_CONTEXT_CHUNK_TOKENS,
+                UNKNOWN_CONTEXT_CHUNK_TOKENS.min(adaptive_limit),
+                UNKNOWN_CONTEXT_CHUNK_TOKENS.min(adaptive_limit),
             )
         };
     DeepNoteContextBudget {
@@ -637,6 +765,10 @@ fn context_budget(
         usable_input_tokens,
         direct_input_limit_tokens,
         chunk_target_tokens,
+        adaptive_chunk_limit_tokens: adaptive_limit,
+        adaptive_route_key: adaptive.route_key.clone(),
+        adaptive_route_state: adaptive.route_state.clone(),
+        adaptive_profile_samples: adaptive.profile_samples,
         chunk_count: 0,
         processed_chunk_count: 0,
         total_message_count: messages.len(),
@@ -652,7 +784,7 @@ fn split_text_by_token_budget(value: &str, target_tokens: u64) -> Vec<String> {
     let mut current = String::new();
     let mut current_units = 0u64;
     for block in semantic_text_blocks(value) {
-        let block_units = text_budget_units(&block);
+        let block_units = token_estimate_units(&block);
         if !current.is_empty() && current_units.saturating_add(block_units) > target_units {
             chunks.push(std::mem::take(&mut current));
             current_units = 0;
@@ -676,10 +808,18 @@ fn split_text_by_token_budget(value: &str, target_tokens: u64) -> Vec<String> {
     chunks
 }
 
-fn text_budget_units(value: &str) -> u64 {
-    value.chars().fold(0u64, |total, character| {
-        total + if character.is_ascii() { 1 } else { 4 }
-    })
+/// Token 估算的唯一底层标度：ASCII=1 unit，非 ASCII=4 units，4 units=1 token。
+/// 切块需要字符级累计，因此保留 unit 精度；所有对外预算一律经
+/// `estimate_text_tokens` 向上取整，不能把 unit 当 token 使用。
+fn token_estimate_units(value: &str) -> u64 {
+    value
+        .chars()
+        .map(character_token_units)
+        .fold(0u64, u64::saturating_add)
+}
+
+fn character_token_units(character: char) -> u64 {
+    if character.is_ascii() { 1 } else { 4 }
 }
 
 fn semantic_text_blocks(value: &str) -> Vec<String> {
@@ -722,7 +862,7 @@ fn split_oversized_text_block(value: &str, target_units: u64) -> Vec<String> {
     let mut current = String::new();
     let mut current_units = 0u64;
     for line in value.split_inclusive('\n') {
-        let line_units = text_budget_units(line);
+        let line_units = token_estimate_units(line);
         if !current.is_empty() && current_units.saturating_add(line_units) > target_units {
             chunks.push(std::mem::take(&mut current));
             current_units = 0;
@@ -733,7 +873,7 @@ fn split_oversized_text_block(value: &str, target_units: u64) -> Vec<String> {
             continue;
         }
         for character in line.chars() {
-            let units = if character.is_ascii() { 1 } else { 4 };
+            let units = character_token_units(character);
             if !current.is_empty() && current_units.saturating_add(units) > target_units {
                 chunks.push(std::mem::take(&mut current));
                 current_units = 0;
@@ -754,6 +894,10 @@ fn source_chunk_limit_error() -> String {
     )
 }
 
+fn content_addressed_chunk_id(excerpt: &str) -> String {
+    format!("chunk-{}", stable_hash(excerpt))
+}
+
 fn push_conversation_chunk(
     chunks: &mut Vec<ConversationChunk>,
     conversation_id: &str,
@@ -768,7 +912,7 @@ fn push_conversation_chunk(
     }
     message_ids.sort();
     message_ids.dedup();
-    let chunk_id = format!("chunk-{:04}", chunks.len() + 1);
+    let chunk_id = content_addressed_chunk_id(&excerpt);
     let location = if message_ids.len() == 1 {
         format!("消息 {}", message_ids[0])
     } else {
@@ -1030,10 +1174,7 @@ fn push_attachment_source_chunks(
     content: String,
     target_tokens: u64,
 ) -> Result<(), String> {
-    for (segment_index, excerpt) in split_text_by_token_budget(&content, target_tokens)
-        .into_iter()
-        .enumerate()
-    {
+    for excerpt in split_text_by_token_budget(&content, target_tokens) {
         if excerpt.trim().is_empty() {
             continue;
         }
@@ -1041,13 +1182,7 @@ fn push_attachment_source_chunks(
             return Err(source_chunk_limit_error());
         }
         let content_hash = stable_hash(&excerpt);
-        let chunk_id = format!(
-            "source-{}",
-            &stable_hash(format!(
-                "{}:{location}:{segment_index}:{content_hash}",
-                attachment.id
-            ))[..20]
-        );
+        let chunk_id = content_addressed_chunk_id(&excerpt);
         chunks.push(ConversationChunk {
             estimated_tokens: estimate_text_tokens(&excerpt),
             source: DeepNoteSourceChunk {
@@ -1066,6 +1201,58 @@ fn push_attachment_source_chunks(
         });
     }
     Ok(())
+}
+
+fn pack_adjacent_attachment_chunks(
+    chunks: Vec<ConversationChunk>,
+    target_tokens: u64,
+) -> Vec<ConversationChunk> {
+    let target_tokens = target_tokens.max(MIN_ADAPTIVE_CHUNK_TOKENS);
+    let mut packed: Vec<ConversationChunk> = Vec::new();
+    for next in chunks {
+        let can_merge = packed.last().is_some_and(|previous| {
+            previous.source.attachment_id.is_some()
+                && previous.source.attachment_id == next.source.attachment_id
+                && previous.source.message_id == next.source.message_id
+                && previous.source.source_kind == next.source.source_kind
+                && attachment_pack_group(&previous.source.location)
+                    == attachment_pack_group(&next.source.location)
+                && previous
+                    .estimated_tokens
+                    .saturating_add(next.estimated_tokens)
+                    .saturating_add(8)
+                    <= target_tokens
+        });
+        if !can_merge {
+            packed.push(next);
+            continue;
+        }
+        let previous = packed.last_mut().expect("merge candidate checked above");
+        let first_location = previous
+            .source
+            .location
+            .split(" … ")
+            .next()
+            .unwrap_or(previous.source.location.as_str())
+            .to_string();
+        previous.source.excerpt.push_str("\n\n<!-- packed-source-boundary -->\n\n");
+        previous.source.excerpt.push_str(&next.source.excerpt);
+        previous.estimated_tokens = estimate_text_tokens(&previous.source.excerpt);
+        previous.source.location = format!("{first_location} … {}", next.source.location);
+        previous.source.content_hash = stable_hash(&previous.source.excerpt);
+        previous.source.chunk_id = content_addressed_chunk_id(&previous.source.excerpt);
+    }
+    packed
+}
+
+fn attachment_pack_group(location: &str) -> &str {
+    location
+        .rsplit_once(" … ")
+        .map(|(_, last)| last)
+        .unwrap_or(location)
+        .split(" 第")
+        .next()
+        .unwrap_or(location)
 }
 
 async fn execute_source_reader(
@@ -1189,8 +1376,8 @@ async fn attachment_source_chunks(
             if cancellation.is_cancelled() {
                 return Err("操作已取消。".to_string());
             }
-            if chunks.len() >= max_chunks {
-                return Err(source_chunk_limit_error());
+            if chunks.len() >= MAX_UNPACKED_ATTACHMENT_CHUNKS {
+                return Err("附件预分块达到内存安全上限，请缩小附件范围。".to_string());
             }
             let read_kind = attachment_formats::deep_note_read_kind(attachment);
             if read_kind == AttachmentReadKind::Image {
@@ -1229,7 +1416,7 @@ async fn attachment_source_chunks(
                 }
                 push_attachment_source_chunks(
                     &mut chunks,
-                    max_chunks,
+                    MAX_UNPACKED_ATTACHMENT_CHUNKS,
                     attachment,
                     &message.id,
                     DeepNoteSourceKind::Image,
@@ -1248,8 +1435,8 @@ async fn attachment_source_chunks(
                 };
                 let mut start = 1usize;
                 loop {
-                    if chunks.len() >= max_chunks {
-                        return Err(source_chunk_limit_error());
+                    if chunks.len() >= MAX_UNPACKED_ATTACHMENT_CHUNKS {
+                        return Err("附件预分块达到内存安全上限，请缩小附件范围。".to_string());
                     }
                     if calls >= SOURCE_READER_CALL_LIMIT {
                         return Err("来源 Reader 调用达到安全上限，附件覆盖尚未完成。".to_string());
@@ -1324,7 +1511,7 @@ async fn attachment_source_chunks(
                         if start == 1 {
                             push_attachment_source_chunks(
                                 &mut chunks,
-                                max_chunks,
+                                MAX_UNPACKED_ATTACHMENT_CHUNKS,
                                 attachment,
                                 &message.id,
                                 source_kind,
@@ -1337,7 +1524,7 @@ async fn attachment_source_chunks(
                     }
                     push_attachment_source_chunks(
                         &mut chunks,
-                        max_chunks,
+                        MAX_UNPACKED_ATTACHMENT_CHUNKS,
                         attachment,
                         &message.id,
                         source_kind,
@@ -1371,8 +1558,8 @@ async fn attachment_source_chunks(
                 .await
                 .map_err(|error| format!("PDF 页数检查任务失败：{error}"))??;
                 for start in (1..=page_count.max(1)).step_by(SOURCE_PDF_PAGES_PER_CALL) {
-                    if chunks.len() >= max_chunks {
-                        return Err(source_chunk_limit_error());
+                    if chunks.len() >= MAX_UNPACKED_ATTACHMENT_CHUNKS {
+                        return Err("附件预分块达到内存安全上限，请缩小附件范围。".to_string());
                     }
                     if calls >= SOURCE_READER_CALL_LIMIT {
                         return Err("来源 Reader 调用达到安全上限，PDF 覆盖尚未完成。".to_string());
@@ -1390,7 +1577,7 @@ async fn attachment_source_chunks(
                         execute_source_reader(state, run, call, &attachments, cancellation).await?;
                     push_attachment_source_chunks(
                         &mut chunks,
-                        max_chunks,
+                        MAX_UNPACKED_ATTACHMENT_CHUNKS,
                         attachment,
                         &message.id,
                         DeepNoteSourceKind::Pdf,
@@ -1402,8 +1589,8 @@ async fn attachment_source_chunks(
             } else if read_kind == AttachmentReadKind::Docx {
                 let mut start = 1usize;
                 loop {
-                    if chunks.len() >= max_chunks {
-                        return Err(source_chunk_limit_error());
+                    if chunks.len() >= MAX_UNPACKED_ATTACHMENT_CHUNKS {
+                        return Err("附件预分块达到内存安全上限，请缩小附件范围。".to_string());
                     }
                     if calls >= SOURCE_READER_CALL_LIMIT {
                         return Err("来源 Reader 调用达到安全上限，DOCX 覆盖尚未完成。".to_string());
@@ -1427,7 +1614,7 @@ async fn attachment_source_chunks(
                     }
                     push_attachment_source_chunks(
                         &mut chunks,
-                        max_chunks,
+                        MAX_UNPACKED_ATTACHMENT_CHUNKS,
                         attachment,
                         &message.id,
                         DeepNoteSourceKind::Docx,
@@ -1462,8 +1649,8 @@ async fn attachment_source_chunks(
                 for (sheet_index, sheet) in sheets.iter().enumerate() {
                     let mut start = 1usize;
                     loop {
-                        if chunks.len() >= max_chunks {
-                            return Err(source_chunk_limit_error());
+                        if chunks.len() >= MAX_UNPACKED_ATTACHMENT_CHUNKS {
+                            return Err("附件预分块达到内存安全上限，请缩小附件范围。".to_string());
                         }
                         if calls >= SOURCE_READER_CALL_LIMIT {
                             return Err(
@@ -1494,7 +1681,7 @@ async fn attachment_source_chunks(
                         }
                         push_attachment_source_chunks(
                             &mut chunks,
-                            max_chunks,
+                            MAX_UNPACKED_ATTACHMENT_CHUNKS,
                             attachment,
                             &message.id,
                             DeepNoteSourceKind::Xlsx,
@@ -1513,6 +1700,24 @@ async fn attachment_source_chunks(
             }
         }
     }
+    let unpacked_count = chunks.len();
+    let chunks = pack_adjacent_attachment_chunks(chunks, target_tokens);
+    if chunks.len() > max_chunks {
+        return Err(source_chunk_limit_error());
+    }
+    append_pipeline_event_if_available(
+        state,
+        &run.id,
+        "attachmentChunksPacked",
+        Some("recon-source"),
+        &serde_json::json!({
+            "unpackedChunkCount": unpacked_count,
+            "packedChunkCount": chunks.len(),
+            "targetTokens": target_tokens,
+            "savedChunkCount": unpacked_count.saturating_sub(chunks.len()),
+        })
+        .to_string(),
+    )?;
     Ok(chunks)
 }
 
@@ -1534,13 +1739,6 @@ async fn incremental_attachment_source_chunks(
     if projected.messages.is_empty() {
         return Ok(Vec::new());
     }
-    let visual_source_calls = projected
-        .messages
-        .iter()
-        .flat_map(|message| message.attachments.iter())
-        .filter(|attachment| attachment.kind == "image")
-        .count() as u32;
-    runtime.budget.reserve_semantic_calls(visual_source_calls);
     attachment_source_chunks(
         state,
         run,
@@ -1675,27 +1873,62 @@ async fn digest_incremental_chunks(
     chunks: &[ConversationChunk],
     cancellation: &CancellationToken,
 ) -> Result<DeepNoteLedger, String> {
+    let candidates = chunks
+        .iter()
+        .map(|chunk| {
+            let system_prompt = system_prompt_with_skill_profile(
+                state,
+                &run.id,
+                runtime,
+                DeepNoteSkillProfileKind::Planner,
+                Some("incremental-recon"),
+                CHUNK_ANALYST_SYSTEM_PROMPT,
+            );
+            let user_prompt = chunk_analysis_prompt(chunk);
+            let prompt_hash = stable_hash(format!(
+                "chunk-digest-v4\0{}\0{}\0{}\0{}\0{}",
+                run.provider_id,
+                run.model_id,
+                run.max_output_tokens.min(CHUNK_OUTPUT_TOKEN_LIMIT),
+                system_prompt,
+                user_prompt
+            ));
+            (system_prompt, user_prompt, prompt_hash)
+        })
+        .collect::<Vec<_>>();
+    let cache_keys = chunks
+        .iter()
+        .zip(&candidates)
+        .map(|(chunk, (_, _, prompt_hash))| {
+            (chunk.source.content_hash.clone(), prompt_hash.clone())
+        })
+        .collect::<Vec<_>>();
+    let mut resolved = state
+        .library_repository
+        .find_note_pipeline_chunk_digests(&cache_keys, &run.provider_id, &run.model_id)?
+        .into_iter()
+        .filter_map(|checkpoint| {
+            let digest = parse_json_object::<ChunkDigest>(&checkpoint.digest_json)
+                .and_then(ChunkDigest::validate)
+                .ok()?;
+            Some(((checkpoint.content_hash, checkpoint.prompt_hash), digest))
+        })
+        .collect::<HashMap<_, _>>();
     let mut ledger = DeepNoteLedger::default();
-    runtime
-        .budget
-        .reserve_semantic_calls((chunks.len() as u32).saturating_mul(2));
-    for chunk in chunks {
+    for (chunk, (system_prompt, prompt, prompt_hash)) in chunks.iter().zip(candidates) {
+        let cache_key = (chunk.source.content_hash.clone(), prompt_hash.clone());
+        if let Some(digest) = resolved.get(&cache_key).cloned() {
+            merge_chunk_digest(&mut ledger, chunk, digest);
+            continue;
+        }
         consume_semantic_call(state, &run.id, runtime)?;
-        let prompt = chunk_analysis_prompt(chunk);
         let raw = await_note_pipeline_cancellable(cancellation, async {
             model_call_with_runtime(
                 state,
                 run,
                 "deepNoteChunk",
                 NotePipelinePhase::Analyzing,
-                system_prompt_with_skill_profile(
-                    state,
-                    &run.id,
-                    runtime,
-                    DeepNoteSkillProfileKind::Planner,
-                    Some("incremental-recon"),
-                    CHUNK_ANALYST_SYSTEM_PROMPT,
-                ),
+                system_prompt,
                 prompt.clone(),
                 run.max_output_tokens.min(CHUNK_OUTPUT_TOKEN_LIMIT),
                 run.retry_attempts,
@@ -1706,9 +1939,11 @@ async fn digest_incremental_chunks(
             .map_err(|error| error.message)
         })
         .await?;
+        let mut semantic_calls = 1u32;
         let digest = match parse_json_object::<ChunkDigest>(&raw).and_then(ChunkDigest::validate) {
             Ok(digest) => digest,
             Err(_) => {
+                semantic_calls = semantic_calls.saturating_add(1);
                 consume_semantic_call(state, &run.id, runtime)?;
                 let repaired = await_note_pipeline_cancellable(cancellation, async {
                     model_call_with_runtime(
@@ -1730,6 +1965,18 @@ async fn digest_incremental_chunks(
                 parse_json_object::<ChunkDigest>(&repaired).and_then(ChunkDigest::validate)?
             }
         };
+        let digest_json = serde_json::to_string(&digest)
+            .map_err(|error| format!("序列化增量 Chunk 摘要失败：{error}"))?;
+        state.library_repository.save_note_pipeline_chunk_digest(
+            &chunk.source.chunk_id,
+            &chunk.source.content_hash,
+            &prompt_hash,
+            &run.provider_id,
+            &run.model_id,
+            &digest_json,
+            semantic_calls,
+        )?;
+        resolved.insert(cache_key, digest.clone());
         merge_chunk_digest(&mut ledger, chunk, digest);
     }
     Ok(ledger)
@@ -1745,12 +1992,6 @@ async fn all_source_chunks(
 ) -> Result<Vec<ConversationChunk>, String> {
     let mut chunks = conversation_chunks(conversation, target_tokens)?;
     let remaining_chunks = MAX_ANALYSIS_CHUNKS.saturating_sub(chunks.len());
-    let visual_source_calls = noteworthy_messages(conversation)
-        .into_iter()
-        .flat_map(|message| message.attachments.iter())
-        .filter(|attachment| attachment.kind == "image")
-        .count() as u32;
-    runtime.budget.reserve_semantic_calls(visual_source_calls);
     save_runtime_state(state, &run.id, runtime)?;
     chunks.extend(
         attachment_source_chunks(
@@ -1853,19 +2094,17 @@ fn incremental_transcript(
         .map(|message| message.id.clone())
         .collect::<HashSet<_>>();
     let last = selected.last().map(|message| message.id.clone());
-    let value = truncate_chars(
-        selected
-            .iter()
-            .map(|message| {
-                format!(
-                    "<!-- message-id: {} -->\n{}",
-                    message.id,
-                    message_text(message, true)
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n\n"),
-    );
+    let value = selected
+        .iter()
+        .map(|message| {
+            format!(
+                "<!-- message-id: {} -->\n{}",
+                message.id,
+                message_text(message, true)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
     Ok((value, ids, last))
 }
 
@@ -1882,6 +2121,31 @@ fn enabled_model(settings: &ModelSettings, provider_id: &str, model_id: &str) ->
 
 fn stable_hash(value: impl AsRef<[u8]>) -> String {
     format!("{:x}", Sha256::digest(value.as_ref()))
+}
+
+/// 深度笔记请求的内容指纹。
+///
+/// 修复前这里是 `stable_hash("deep-note-output:{run_id}")`，而 `run_id` 是
+/// `Uuid::new_v4()` —— 每次启动都是全新的随机值，`note_pipeline_output_idempotency`
+/// 唯一索引因此永远不会命中，幂等键实际上没有幂等能力。
+///
+/// 现在由「决定输出内容的全部输入」派生：会话、输入快照哈希（它已经涵盖消息与附件）、
+/// 供应商、模型、输出 Token 上限、思考开关、以及 `force_rebuild`（它改变来源口径，
+/// 必须参与指纹）。`retry_attempts` **不参与**：它只影响失败后重试几次，不影响输出。
+///
+/// 字段之间用 `\0` 分隔，避免「ab|c」与「a|bc」这类拼接歧义。
+fn deep_note_content_signature(
+    conversation_id: &str,
+    input_snapshot_hash: &str,
+    provider_id: &str,
+    model_id: &str,
+    max_output_tokens: u32,
+    thinking_enabled: bool,
+    force_rebuild: bool,
+) -> String {
+    stable_hash(format!(
+        "deep-note-output-v2\0{conversation_id}\0{input_snapshot_hash}\0{provider_id}\0{model_id}\0{max_output_tokens}\0{thinking_enabled}\0{force_rebuild}"
+    ))
 }
 
 fn resolve_note_model_snapshot(
@@ -2201,10 +2465,6 @@ async fn create_input_snapshot(
     Ok(input_snapshot(conversation, model, created_at, hashes))
 }
 
-fn extend_manual_recovery_budget(runtime: &mut DeepNoteRuntimeState) {
-    runtime.budget.reserve_semantic_calls(12);
-}
-
 fn reset_failed_runtime_nodes(runtime: &mut DeepNoteRuntimeState) {
     let Some(plan_version) = runtime.plan_version.as_mut() else {
         return;
@@ -2365,9 +2625,16 @@ fn save_runtime_state(
             return Ok(());
         }
     }
-    let runtime_json = serde_json::to_string(runtime)
+    let mut persisted_runtime = runtime.clone();
+    if let Ok(used) = state
+        .library_repository
+        .count_note_pipeline_upstream_requests(run_id)
+    {
+        persisted_runtime.budget.upstream_requests_used = used;
+    }
+    let runtime_json = serde_json::to_string(&persisted_runtime)
         .map_err(|error| format!("序列化深度笔记运行状态失败：{error}"))?;
-    let budget_json = serde_json::to_string(&runtime.budget)
+    let budget_json = serde_json::to_string(&persisted_runtime.budget)
         .map_err(|error| format!("序列化深度笔记预算失败：{error}"))?;
     state.library_repository.update_note_pipeline_runtime_json(
         run_id,
@@ -2382,18 +2649,101 @@ fn consume_semantic_call(
     run_id: &str,
     runtime: &mut DeepNoteRuntimeState,
 ) -> Result<(), String> {
-    if runtime.budget.semantic_calls_used >= runtime.budget.semantic_call_limit {
+    if let Some(exhaustion) = refresh_run_budget(state, run_id, runtime) {
+        save_runtime_state(state, run_id, runtime)?;
         return Err(format!(
-            "深度笔记语义调用预算已用尽（{}/{}）。",
-            runtime.budget.semantic_calls_used, runtime.budget.semantic_call_limit
+            "{RUN_BUDGET_EXHAUSTED_PREFIX}{}",
+            exhaustion.message(runtime)
         ));
     }
-    runtime.budget.semantic_calls_used += 1;
+    // 这是逻辑调用诊断计数，不再充当 provider 配额。物理请求会在 HTTP 边界逐次
+    // 原子扣减，因此 retry 与 stream fallback 不会被折叠成一次。
+    runtime.budget.semantic_calls_used = runtime.budget.semantic_calls_used.saturating_add(1);
     match state.library_repository.get_note_pipeline_run(run_id) {
         Ok(_) => save_runtime_state(state, run_id, runtime),
         Err(error) if error == "深度笔记任务不存在。" => Ok(()),
         Err(error) => Err(error),
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RunBudgetExhaustion {
+    UpstreamRequests,
+    WallClock,
+}
+
+impl RunBudgetExhaustion {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::UpstreamRequests => "upstreamRequests",
+            Self::WallClock => "upstreamWallClock",
+        }
+    }
+
+    fn message(self, runtime: &DeepNoteRuntimeState) -> String {
+        match self {
+            Self::UpstreamRequests => format!(
+                "上游请求预算已用尽（{}/{}），请缩小范围或改用更稳定的模型。",
+                runtime.budget.upstream_requests_used, runtime.budget.upstream_request_limit
+            ),
+            Self::WallClock => format!(
+                "已达运行时长上限（{} 分钟），请缩小范围或改用更快的模型。",
+                runtime.budget.run_wall_clock_ms / 60_000
+            ),
+        }
+    }
+}
+
+/// 刷新 run 的物理上游请求数与累计上游墙钟，并回答「哪项预算已耗尽」。
+///
+/// 每次批次调度前重算一次，而不是依赖内存里的增量：section 是并行执行的，
+/// 那些任务持有的是 runtime 快照而不是 `&mut runtime`（否则借用检查过不去），
+/// 所以增量只能落在事件表里，由这里汇总回来。
+fn refresh_run_budget(
+    state: &AppState,
+    run_id: &str,
+    runtime: &mut DeepNoteRuntimeState,
+) -> Option<RunBudgetExhaustion> {
+    if let Ok(used) = state
+        .library_repository
+        .count_note_pipeline_upstream_requests(run_id)
+    {
+        runtime.budget.upstream_requests_used = used;
+        if runtime.budget.upstream_request_exhausted() {
+            return Some(RunBudgetExhaustion::UpstreamRequests);
+        }
+    }
+    if let Ok(total) = state
+        .library_repository
+        .sum_note_pipeline_upstream_wall_clock_ms(run_id)
+    {
+        runtime.budget.upstream_wall_clock_ms = total;
+        if runtime.budget.run_wall_clock_exhausted() {
+            return Some(RunBudgetExhaustion::WallClock);
+        }
+    }
+    // 汇总失败不能把任务判死：宁可这一轮不设对应的闸，也不要因为一次读库失败
+    // 就把一个健康的 run 当成预算耗尽收掉。
+    None
+}
+
+/// 登记某个 section 的起草起点，并回答「这个 section 的墙钟是否已耗尽」。
+///
+/// 只在首次登记时写入时刻，重试不刷新起点 —— 否则一个反复重试的 section
+/// 每次都从零开始计时，永远撞不到上限，预算等于不存在。
+/// 只取实际用到的两块状态而不是整个 `DeepNoteRuntimeState`：这样这道闸门可以在
+/// 单测里直接验证，不必拼一个完整的运行时快照。
+fn section_wall_clock_exhausted(
+    section_started_at: &mut BTreeMap<String, u64>,
+    budget: &DeepNoteBudget,
+    section_id: &str,
+    now_ms: u64,
+) -> bool {
+    let started_at = *section_started_at
+        .entry(section_id.to_string())
+        .or_insert(now_ms);
+    let elapsed = now_ms.saturating_sub(started_at);
+    budget.section_wall_clock_exhausted(elapsed)
 }
 
 fn persist_scheduler_state(
@@ -2525,19 +2875,39 @@ fn model_stage_label(operation: &str) -> &'static str {
     }
 }
 
+/// 超时类错误：本地 attempt 超时与网关 504 是**同一个物理原因**的两种表现形式。
+///
+/// `completion_attempt` 的 `tokio::time::timeout` 到期产生 `ClientTimeout`，
+/// 上游网关切断连接产生 `UpstreamTimeout`。两者都意味着"这份载荷在这个时间窗口内
+/// 没能生成完"，原样重投不可能变好 —— 只会把同样的墙钟再烧一遍。
+fn is_timeout_like(kind: ModelErrorKind) -> bool {
+    matches!(
+        kind,
+        ModelErrorKind::ClientTimeout | ModelErrorKind::UpstreamTimeout
+    )
+}
+
 fn should_retry_note_model_call(operation: &str, error: &ModelError) -> bool {
-    // A gateway timeout on an outline aggregation request means the current
-    // payload did not finish inside the upstream gateway window. Return to the
-    // pipeline immediately so it can reduce the payload before trying again.
-    if error.kind == ModelErrorKind::UpstreamTimeout
-        && matches!(
-            operation,
-            "deepNote" | "deepNoteOutline" | "deepNoteOutlineFallback" | "deepNoteOutlineDirect"
-        )
-    {
+    // 超时类错误一律否决 HTTP 层重试，交还给管线缩小载荷后再试。
+    //
+    // 修复前只否决 `UpstreamTimeout`，且名单里没有 `deepNoteChunk`，导致同一个
+    // 物理原因走出两条相反的路：本地 300s 超时会被以 300ms 基数重试 5 次
+    // （约 25 分钟耗在同一份大载荷上），网关 504 则立刻降级。
+    //
+    // 这里按 `deepNote` 前缀判定而不是逐个枚举 operation：管线内所有阶段都用这个
+    // 前缀，枚举式名单已经漏过一次（`deepNoteChunk`、`deepNoteVisionSource`）。
+    if is_timeout_like(error.kind) && operation.starts_with("deepNote") {
         return false;
     }
-    !matches!(error.kind, ModelErrorKind::ProviderUnavailable)
+    !matches!(
+        error.kind,
+        ModelErrorKind::ProviderUnavailable
+            | ModelErrorKind::ModelNotFound
+            | ModelErrorKind::MissingApiKey
+            | ModelErrorKind::Authentication
+            | ModelErrorKind::PermissionDenied
+            | ModelErrorKind::QuotaExceeded
+    )
 }
 
 #[cfg(feature = "deep-note-e2e")]
@@ -2661,6 +3031,10 @@ async fn model_call_with_runtime_attachments(
 ) -> Result<String, ModelError> {
     let started_at = crate::usage::now_ms();
     let call_id = Uuid::new_v4().to_string();
+    let input_chars = user_prompt.chars().count();
+    let system_prompt_chars = system_prompt.chars().count();
+    let estimated_input_tokens =
+        estimate_text_tokens(&user_prompt).saturating_add(estimate_text_tokens(&system_prompt));
     #[cfg(feature = "deep-note-e2e")]
     if std::env::var("MNEMORA_DEEP_NOTE_MOCK").ok().as_deref() == Some("1") {
         let text = mock_model_response(operation, &user_prompt);
@@ -2672,10 +3046,17 @@ async fn model_call_with_runtime_attachments(
                 "callId": call_id,
                 "operation": operation,
                 "phase": phase.as_str(),
+                "providerId": run.provider_id,
+                "modelId": run.model_id,
                 "durationMs": 0,
                 "responseChars": text.chars().count(),
-                "inputChars": user_prompt.chars().count(),
-                "systemPromptChars": system_prompt.chars().count(),
+                "inputChars": input_chars,
+                "systemPromptChars": system_prompt_chars,
+                "estimatedInputTokens": estimated_input_tokens,
+                "actualAttemptCount": 0,
+                "streamingAttemptCount": 0,
+                "nonStreamingAttemptCount": 0,
+                "requestBytes": 0,
                 "maxOutputTokens": max_output_tokens,
                 "maxRetries": 0,
                 "timeoutMs": 0,
@@ -2695,6 +3076,23 @@ async fn model_call_with_runtime_attachments(
         _ => 420_000,
     };
     let observer = |event: chat_service::CompletionProgress| {
+        // 流式回落必须留痕，且与是否有前端通道无关：它是「这个上游不吃流式」的
+        // 唯一线上证据，排查 504 时要靠它区分「没开流式」和「流式被拒」。
+        if let chat_service::CompletionProgress::StreamKeepaliveFellBack { error } = &event {
+            let _ = state.library_repository.append_note_pipeline_event(
+                &run.id,
+                "streamKeepaliveFellBack",
+                None,
+                &serde_json::json!({
+                    "callId": call_id.clone(),
+                    "operation": operation,
+                    "phase": phase.as_str(),
+                    "errorKind": format!("{:?}", error.kind),
+                    "message": error.message.as_str(),
+                })
+                .to_string(),
+            );
+        }
         let Some(channel) = channel else {
             return;
         };
@@ -2752,7 +3150,142 @@ async fn model_call_with_runtime_attachments(
                     last_error: Some(error.message),
                 },
             ),
+            chat_service::CompletionProgress::StreamKeepaliveFellBack { error } => {
+                progress_activity(
+                    state,
+                    channel,
+                    &run.id,
+                    phase,
+                    format!(
+                        "{} · 上游拒绝流式，已回落非流式（长文生成可能触发网关超时）",
+                        model_stage_label(operation)
+                    ),
+                    NotePipelineActivity {
+                        kind: "streamFallback".to_string(),
+                        call_id: call_id.clone(),
+                        operation: operation.to_string(),
+                        attempt: 1,
+                        max_retries,
+                        started_at: crate::usage::now_ms(),
+                        timeout_ms,
+                        delay_ms: None,
+                        last_error: Some(error.message),
+                    },
+                )
+            }
         }
+    };
+    let prefer_streaming = state
+        .app_settings
+        .read()
+        .map(|settings| settings.deep_note_stream_keepalive)
+        // 读锁不可用时保守走非流式：宁可慢，不要在这里放大一个锁故障。
+        .unwrap_or(false);
+    let (route_identity, route_profile) =
+        deep_note_route_profile(state, &run.provider_id, &run.model_id)
+            .map_err(ModelError::invalid_configuration)?;
+    if let Some(error) = blocked_route_error(&route_profile) {
+        let _ = state.library_repository.append_note_pipeline_event(
+            &run.id,
+            "routeCallSuppressed",
+            None,
+            &serde_json::json!({
+                "callId": call_id,
+                "operation": operation,
+                "phase": phase.as_str(),
+                "routeKey": route_identity.route_key.as_str(),
+                "providerConfigEpoch": route_identity.provider_config_epoch.as_str(),
+                "routeState": route_profile.availability.as_str(),
+                "retryAfterUntilMs": route_profile.retry_after_until_ms,
+                "message": error.message.as_str(),
+            })
+            .to_string(),
+        );
+        return Err(error);
+    }
+    // 增量笔记编辑会构造一个不落 `note_pipeline_runs` 的临时 run 来复用模型调用层。
+    // 那条路径没有可恢复任务，也就没有 run 级事件账本；不能因为遥测表里找不到它
+    // 而阻断原本合法的编辑请求。真正持久化的 DeepNote run 则始终 fail-closed。
+    let enforce_upstream_budget = match state.library_repository.get_note_pipeline_run(&run.id) {
+        Ok(_) => true,
+        Err(error) if error == "深度笔记任务不存在。" => false,
+        Err(error) => {
+            return Err(ModelError::invalid_configuration(format!(
+                "读取深度笔记上游请求预算失败：{error}"
+            )))
+        }
+    };
+    let budget_snapshot = if enforce_upstream_budget {
+        Some(
+            serde_json::from_str::<DeepNoteBudget>(&run.budget_json).map_err(|error| {
+                ModelError::invalid_configuration(format!("解析深度笔记上游请求预算失败：{error}"))
+            })?,
+        )
+    } else {
+        None
+    };
+    let request_limit = budget_snapshot
+        .as_ref()
+        .map(|budget| budget.upstream_request_limit)
+        .unwrap_or(MAX_DEEP_NOTE_UPSTREAM_REQUESTS);
+    let run_wall_clock_limit = budget_snapshot
+        .as_ref()
+        .map(|budget| budget.run_wall_clock_ms)
+        .unwrap_or_else(|| DeepNoteBudget::for_section_count(1).run_wall_clock_ms);
+    let actual_attempt_count = AtomicU32::new(0);
+    let streaming_attempt_count = AtomicU32::new(0);
+    let non_streaming_attempt_count = AtomicU32::new(0);
+    let max_request_bytes = AtomicUsize::new(0);
+    let before_upstream_request = |attempt: chat_service::UpstreamRequestAttempt| {
+        if !enforce_upstream_budget {
+            return Ok(());
+        }
+        if state
+            .library_repository
+            .sum_note_pipeline_upstream_wall_clock_ms(&run.id)
+            .is_ok_and(|used| used >= run_wall_clock_limit)
+        {
+            return Err(ModelError::invalid_configuration(format!(
+                "{RUN_BUDGET_EXHAUSTED_PREFIX}已达运行时长上限（{} 分钟），已停止发出新请求。",
+                run_wall_clock_limit / 60_000
+            )));
+        }
+        let payload = serde_json::json!({
+            "callId": call_id.clone(),
+            "operation": operation,
+            "phase": phase.as_str(),
+            "providerId": run.provider_id,
+            "modelId": run.model_id,
+            "routeKey": route_identity.route_key.as_str(),
+            "providerConfigEpoch": route_identity.provider_config_epoch.as_str(),
+            "routeState": route_profile.availability.as_str(),
+            "adaptiveTargetTokens": route_profile.effective_target_tokens(crate::usage::now_ms()),
+            "requestIndex": attempt.request_index,
+            "retryIndex": attempt.retry_index,
+            "maxRetries": attempt.max_retries,
+            "transport": attempt.transport.as_str(),
+            "requestBytes": attempt.request_bytes,
+            "estimatedInputTokens": estimated_input_tokens,
+            "maxOutputTokens": max_output_tokens,
+        })
+        .to_string();
+        state
+            .library_repository
+            .try_append_note_pipeline_upstream_attempt(&run.id, request_limit, &payload)
+            .map_err(|error| {
+                ModelError::invalid_configuration(format!("{RUN_BUDGET_EXHAUSTED_PREFIX}{error}"))
+            })?;
+        actual_attempt_count.fetch_add(1, Ordering::Relaxed);
+        match attempt.transport {
+            chat_service::CompletionTransport::Streaming => {
+                streaming_attempt_count.fetch_add(1, Ordering::Relaxed);
+            }
+            chat_service::CompletionTransport::NonStreaming => {
+                non_streaming_attempt_count.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        max_request_bytes.fetch_max(attempt.request_bytes, Ordering::Relaxed);
+        Ok(())
     };
     let execution = chat_service::CompleteExecution {
         cancellation,
@@ -2760,9 +3293,10 @@ async fn model_call_with_runtime_attachments(
         attempt_timeout: Some(Duration::from_millis(timeout_ms)),
         retry_predicate: Some(&|error| should_retry_note_model_call(operation, error)),
         on_progress: Some(&observer),
+        before_upstream_request: Some(&before_upstream_request),
+        prefer_streaming,
+        max_request_bytes: Some(request_byte_limit(&attachments)),
     };
-    let input_chars = user_prompt.chars().count();
-    let system_prompt_chars = system_prompt.chars().count();
     let result = chat_service::complete_with_execution(
         state,
         ChatCompletionRequest {
@@ -2796,7 +3330,23 @@ async fn model_call_with_runtime_attachments(
     .await;
     match result {
         Ok(response) => {
+            let usage = response.response.usage.as_ref();
+            let input_tokens = usage.and_then(|value| value.input_tokens);
+            let output_tokens = usage.and_then(|value| value.output_tokens);
+            let time_to_first_token_ms = usage.and_then(|value| value.time_to_first_token_ms);
             let text = response.response.text;
+            let request_bytes = max_request_bytes.load(Ordering::Relaxed);
+            let updated_profile = record_adaptive_route_outcome(
+                state,
+                &run.id,
+                &route_identity,
+                &route_profile,
+                &AdaptiveVolumeOutcome::success(
+                    operation == "deepNoteChunk",
+                    estimated_input_tokens,
+                    request_bytes,
+                ),
+            );
             let _ = state.library_repository.append_note_pipeline_event(
                 &run.id,
                 "modelCallCompleted",
@@ -2805,10 +3355,25 @@ async fn model_call_with_runtime_attachments(
                     "callId": call_id,
                     "operation": operation,
                     "phase": phase.as_str(),
+                    "providerId": run.provider_id,
+                    "modelId": run.model_id,
+                    "routeKey": route_identity.route_key.as_str(),
+                    "providerConfigEpoch": route_identity.provider_config_epoch.as_str(),
+                    "routeState": updated_profile.availability.as_str(),
+                    "adaptiveTargetTokens": updated_profile.effective_target_tokens(crate::usage::now_ms()),
+                    "adaptiveProfileSamples": updated_profile.sample_count,
                     "durationMs": crate::usage::now_ms().saturating_sub(started_at),
                     "responseChars": text.chars().count(),
                     "inputChars": input_chars,
                     "systemPromptChars": system_prompt_chars,
+                    "estimatedInputTokens": estimated_input_tokens,
+                    "inputTokens": input_tokens,
+                    "outputTokens": output_tokens,
+                    "timeToFirstTokenMs": time_to_first_token_ms,
+                    "actualAttemptCount": actual_attempt_count.load(Ordering::Relaxed),
+                    "streamingAttemptCount": streaming_attempt_count.load(Ordering::Relaxed),
+                    "nonStreamingAttemptCount": non_streaming_attempt_count.load(Ordering::Relaxed),
+                    "requestBytes": request_bytes,
                     "maxOutputTokens": max_output_tokens,
                     "maxRetries": max_retries,
                     "timeoutMs": timeout_ms,
@@ -2818,6 +3383,20 @@ async fn model_call_with_runtime_attachments(
             Ok(text)
         }
         Err(error) => {
+            let request_bytes = max_request_bytes.load(Ordering::Relaxed);
+            let updated_profile = record_adaptive_route_outcome(
+                state,
+                &run.id,
+                &route_identity,
+                &route_profile,
+                &AdaptiveVolumeOutcome::failure(
+                    error.kind,
+                    operation == "deepNoteChunk",
+                    estimated_input_tokens,
+                    request_bytes,
+                    error.retry_after_ms,
+                ),
+            );
             let _ = state.library_repository.append_note_pipeline_event(
                 &run.id,
                 "modelCallFailed",
@@ -2826,6 +3405,13 @@ async fn model_call_with_runtime_attachments(
                     "callId": call_id,
                     "operation": operation,
                     "phase": phase.as_str(),
+                    "providerId": run.provider_id,
+                    "modelId": run.model_id,
+                    "routeKey": route_identity.route_key.as_str(),
+                    "providerConfigEpoch": route_identity.provider_config_epoch.as_str(),
+                    "routeState": updated_profile.availability.as_str(),
+                    "adaptiveTargetTokens": updated_profile.effective_target_tokens(crate::usage::now_ms()),
+                    "adaptiveProfileSamples": updated_profile.sample_count,
                     "durationMs": crate::usage::now_ms().saturating_sub(started_at),
                     "errorKind": format!("{:?}", error.kind),
                     "message": error.message,
@@ -2834,6 +3420,11 @@ async fn model_call_with_runtime_attachments(
                     "retryAfterMs": error.retry_after_ms,
                     "inputChars": input_chars,
                     "systemPromptChars": system_prompt_chars,
+                    "estimatedInputTokens": estimated_input_tokens,
+                    "actualAttemptCount": actual_attempt_count.load(Ordering::Relaxed),
+                    "streamingAttemptCount": streaming_attempt_count.load(Ordering::Relaxed),
+                    "nonStreamingAttemptCount": non_streaming_attempt_count.load(Ordering::Relaxed),
+                    "requestBytes": request_bytes,
                     "maxOutputTokens": max_output_tokens,
                     "maxRetries": max_retries,
                     "timeoutMs": timeout_ms,
@@ -2861,38 +3452,10 @@ fn analysis_prompt(analysis_transcript: &str, adjustment: &str) -> String {
 
 fn chunk_analysis_prompt(chunk: &ConversationChunk) -> String {
     format!(
-        "分块：{}\n预计输入：{} Token\n来源消息 ID：{}\n\n{}",
-        chunk.source.chunk_id,
+        "预计输入：{} Token\n\n{}",
         chunk.estimated_tokens,
-        chunk.message_ids.join(", "),
         chunk.source.excerpt
     )
-}
-
-fn ledger_analysis_prompt(
-    ledger: &DeepNoteLedger,
-    budget: &DeepNoteContextBudget,
-    adjustment: &str,
-) -> Result<String, String> {
-    let ledger_json = serde_json::to_string_pretty(ledger)
-        .map_err(|error| format!("序列化深度笔记知识账本失败：{error}"))?;
-    Ok([
-        (!adjustment.trim().is_empty())
-            .then(|| format!("用户对提纲的补充要求：\n{}", adjustment.trim())),
-        Some(format!(
-            "以下知识账本由 {}/{} 个来源分块提取，覆盖 {}/{} 条消息，coverageComplete={}。请基于账本生成提纲，并把账本中真实的消息 ID 分配到 sourceMessageIds；不得宣称使用未覆盖内容。\n\n{}",
-            budget.processed_chunk_count,
-            budget.chunk_count,
-            budget.processed_message_count,
-            budget.total_message_count,
-            budget.coverage_complete,
-            ledger_json
-        )),
-    ]
-    .into_iter()
-    .flatten()
-    .collect::<Vec<_>>()
-    .join("\n\n"))
 }
 
 fn sample_ledger_values(values: &[String], limit: usize, max_chars: usize) -> Vec<String> {
@@ -2984,16 +3547,10 @@ fn reserve_parallel_semantic_calls(
     if calls == 0 {
         return Ok(());
     }
-    runtime.budget.reserve_semantic_calls(calls);
     let next = runtime.budget.semantic_calls_used.saturating_add(calls);
-    if next > runtime.budget.semantic_call_limit {
-        return Err(format!(
-            "深度笔记并行语义调用预算不足（需要预留 {calls} 次，当前 {}/{}）。",
-            runtime.budget.semantic_calls_used, runtime.budget.semantic_call_limit
-        ));
-    }
-    // 并行 Worker 启动前做悲观预留，避免应用退出或 Future 被取消后漏记
-    // 已经发出的请求。Worker 全部回收后再归还未使用的 JSON 修复额度。
+    // 这里只记录逻辑调用的规划用量，provider 预算由每个物理 HTTP 请求发出前的
+    // `try_append_note_pipeline_upstream_attempt` 原子扣减。并行 Worker 启动前仍做
+    // 悲观记录，Worker 回收后归还未使用的 JSON 修复额度，便于诊断节点层放大。
     runtime.budget.semantic_calls_used = next;
     save_runtime_state(state, run_id, runtime)
 }
@@ -3017,7 +3574,11 @@ async fn execute_chunk_digest_job(
     channel: Option<&Channel<NotePipelineProgress>>,
 ) -> ChunkDigestJobResult {
     let mut semantic_calls = 1u32;
-    let initial = model_call_with_runtime(
+    // 保留首个错误的 kind。JSON 修复只能修「回来了但格式不对」，修不了「没回来」：
+    // 超时后再投一份同样大的载荷，只会再等一个 timeout_ms（Chunk 档位是 300s），
+    // 白白多花一次语义调用额度。
+    let mut initial_timed_out = false;
+    let initial = match model_call_with_runtime(
         state,
         run,
         "deepNoteChunk",
@@ -3030,12 +3591,17 @@ async fn execute_chunk_digest_job(
         channel,
     )
     .await
-    .map_err(|error| error.message)
-    .and_then(|raw| parse_json_object::<ChunkDigest>(&raw).and_then(ChunkDigest::validate));
+    {
+        Ok(raw) => parse_json_object::<ChunkDigest>(&raw).and_then(ChunkDigest::validate),
+        Err(error) => {
+            initial_timed_out = is_timeout_like(error.kind);
+            Err(error.message)
+        }
+    };
 
     let result = match initial {
         Ok(digest) => Ok(digest),
-        Err(initial_error) if !cancellation.is_cancelled() => {
+        Err(initial_error) if !initial_timed_out && !cancellation.is_cancelled() => {
             semantic_calls = semantic_calls.saturating_add(1);
             model_call_with_runtime(
                 state,
@@ -3061,7 +3627,6 @@ async fn execute_chunk_digest_job(
             .map_err(|error| format!("序列化 Chunk 摘要失败：{error}"));
         if let Err(error) = digest_json.and_then(|digest_json| {
             state.library_repository.save_note_pipeline_chunk_digest(
-                &run.id,
                 &job.chunk.source.chunk_id,
                 &job.chunk.source.content_hash,
                 &job.prompt_hash,
@@ -3140,14 +3705,7 @@ async fn build_chunked_ledger(
     runtime.context_budget.chunk_count = chunks.len();
     runtime.context_budget.coverage_complete = false;
     runtime.context_budget.omitted_message_ids.clear();
-    let cached = state
-        .library_repository
-        .list_note_pipeline_chunk_digests(&run.id)?
-        .into_iter()
-        .map(|checkpoint| (checkpoint.chunk_id.clone(), checkpoint))
-        .collect::<HashMap<_, _>>();
-    let mut digests = vec![None::<ChunkDigest>; chunks.len()];
-    let mut jobs = Vec::new();
+    let mut candidates = Vec::with_capacity(chunks.len());
     for (index, chunk) in chunks.iter().cloned().enumerate() {
         let user_prompt = chunk_analysis_prompt(&chunk);
         let system_prompt = system_prompt_with_skill_profile(
@@ -3159,16 +3717,56 @@ async fn build_chunked_ledger(
             CHUNK_ANALYST_SYSTEM_PROMPT,
         );
         let prompt_hash = stable_hash(format!(
-            "chunk-digest-v2\0{}\0{}\0{}\0{}\0{}",
+            "chunk-digest-v4\0{}\0{}\0{}\0{}\0{}",
             run.provider_id,
             run.model_id,
             run.max_output_tokens.min(CHUNK_OUTPUT_TOKEN_LIMIT),
             system_prompt,
             user_prompt
         ));
-        let restored = cached.get(&chunk.source.chunk_id).and_then(|checkpoint| {
-            (checkpoint.content_hash == chunk.source.content_hash
-                && checkpoint.prompt_hash == prompt_hash
+        candidates.push(ChunkDigestJob {
+            index,
+            chunk,
+            system_prompt,
+            user_prompt,
+            prompt_hash,
+        });
+    }
+    let cache_keys = candidates
+        .iter()
+        .map(|job| {
+            (
+                job.chunk.source.content_hash.clone(),
+                job.prompt_hash.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let cached = state
+        .library_repository
+        .find_note_pipeline_chunk_digests(&cache_keys, &run.provider_id, &run.model_id)?
+        .into_iter()
+        .map(|checkpoint| {
+            (
+                (
+                    checkpoint.content_hash.clone(),
+                    checkpoint.prompt_hash.clone(),
+                ),
+                checkpoint,
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    let mut digests = vec![None::<ChunkDigest>; chunks.len()];
+    let mut jobs = Vec::new();
+    let mut pending_by_cache_key = HashMap::<(String, String), usize>::new();
+    let mut duplicate_indexes = HashMap::<usize, Vec<usize>>::new();
+    for job in candidates {
+        let cache_key = (
+            job.chunk.source.content_hash.clone(),
+            job.prompt_hash.clone(),
+        );
+        let restored = cached.get(&cache_key).and_then(|checkpoint| {
+            (checkpoint.content_hash == job.chunk.source.content_hash
+                && checkpoint.prompt_hash == job.prompt_hash
                 && checkpoint.provider_id == run.provider_id
                 && checkpoint.model_id == run.model_id)
                 .then(|| {
@@ -3179,19 +3777,34 @@ async fn build_chunked_ledger(
                 .flatten()
         });
         if let Some(digest) = restored {
-            digests[index] = Some(digest);
+            digests[job.index] = Some(digest);
+        } else if let Some(representative_index) = pending_by_cache_key.get(&cache_key) {
+            duplicate_indexes
+                .entry(*representative_index)
+                .or_default()
+                .push(job.index);
         } else {
-            jobs.push(ChunkDigestJob {
-                index,
-                chunk,
-                system_prompt,
-                user_prompt,
-                prompt_hash,
-            });
+            pending_by_cache_key.insert(cache_key, job.index);
+            jobs.push(job);
         }
     }
 
     let cached_count = digests.iter().filter(|digest| digest.is_some()).count();
+    if cached.len() > cached_count {
+        let _ = state.library_repository.append_note_pipeline_event(
+            &run.id,
+            "chunkDigestCacheEvaluated",
+            Some("recon-source"),
+            &serde_json::json!({
+                "policyVersion": "chunk-digest-v4",
+                "candidateCheckpointCount": cached.len(),
+                "reusedCheckpointCount": cached_count,
+                "invalidatedCheckpointCount": cached.len().saturating_sub(cached_count),
+                "possibleReasons": ["adaptiveAttachmentPacking", "content", "prompt", "model"],
+            })
+            .to_string(),
+        );
+    }
     let reserved_calls = (jobs.len() as u32).saturating_mul(2);
     reserve_parallel_semantic_calls(state, &run.id, runtime, reserved_calls)?;
     let parallelism = usize::from(runtime.budget.max_parallel_chunks.max(1));
@@ -3209,6 +3822,7 @@ async fn build_chunked_ledger(
     );
 
     let mut failures = Vec::new();
+    let mut run_budget_error = None;
     let mut results = stream::iter(
         jobs.into_iter()
             .map(|job| execute_chunk_digest_job(state, run, job, cancellation, Some(channel))),
@@ -3218,7 +3832,12 @@ async fn build_chunked_ledger(
         release_unused_parallel_semantic_calls(runtime, 2, output.semantic_calls);
         match output.result {
             Ok(digest) => {
-                digests[output.index] = Some(digest);
+                digests[output.index] = Some(digest.clone());
+                if let Some(indexes) = duplicate_indexes.get(&output.index) {
+                    for index in indexes {
+                        digests[*index] = Some(digest.clone());
+                    }
+                }
                 let completed = digests.iter().filter(|digest| digest.is_some()).count();
                 progress(
                     state,
@@ -3243,6 +3862,10 @@ async fn build_chunked_ledger(
                     .to_string(),
                 );
             }
+            Err(error) if error.starts_with(RUN_BUDGET_EXHAUSTED_PREFIX) => {
+                run_budget_error = Some(error);
+                break;
+            }
             Err(error) => failures.push(format!("{}：{}", output.chunk_id, error)),
         }
         runtime.context_budget.processed_chunk_count =
@@ -3257,6 +3880,9 @@ async fn build_chunked_ledger(
         save_runtime_state(state, &run.id, runtime)?;
     }
     drop(results);
+    if let Some(error) = run_budget_error {
+        return Err(error);
+    }
     if !failures.is_empty() {
         return Err(format!(
             "{} 个来源分块生成失败；已完成分块的检查点已保留：{}",
@@ -3882,6 +4508,8 @@ fn sidecar_json(
             "providerId": run.provider_id,
             "modelId": run.model_id,
         },
+        "budget": serde_json::from_str::<serde_json::Value>(&run.budget_json)
+            .unwrap_or(serde_json::Value::Null),
         "sections": sections.iter().map(|(section, markdown, failed)| serde_json::json!({
             "sectionId": section.id,
             "heading": section.heading,
@@ -3937,6 +4565,74 @@ fn note_sources(
             sources
         })
         .collect()
+}
+
+fn note_attachment_sources(
+    state: &AppState,
+    conversation: &StoredConversation,
+) -> Result<Vec<NoteAttachmentSource>, String> {
+    let mut seen = HashSet::new();
+    let mut sources = Vec::new();
+    for attachment in conversation
+        .messages
+        .iter()
+        .flat_map(|message| message.attachments.iter())
+    {
+        if !seen.insert(attachment.path.clone()) {
+            continue;
+        }
+        let source_path = state
+            .conversation_repository
+            .resolve_attachment_path(&conversation.id, &attachment.path)?;
+        let metadata = std::fs::metadata(&source_path)
+            .map_err(|error| format!("读取笔记来源附件“{}”失败：{error}", attachment.name))?;
+        if !metadata.is_file() || metadata.len() != attachment.size_bytes {
+            return Err(format!("笔记来源附件“{}”缺失或大小不一致。", attachment.name));
+        }
+        sources.push(NoteAttachmentSource {
+            source_path,
+            original_name: attachment.name.clone(),
+            mime_type: Some(attachment.mime_type.clone()),
+        });
+    }
+    Ok(sources)
+}
+
+async fn cleanup_transferred_local_source(
+    state: &AppState,
+    run_id: &str,
+    conversation: &StoredConversation,
+) {
+    if conversation.source_kind.as_deref() != Some("localFiles") {
+        return;
+    }
+    let deletion = {
+        let _guard = state.conversation_writes.lock().await;
+        state.conversation_repository.delete(&conversation.id)
+    };
+    if let Err(error) = deletion {
+        let _ = append_pipeline_event_if_available(
+            state,
+            run_id,
+            "noteAttachmentTransferCleanupFailed",
+            Some("persist-note"),
+            &serde_json::json!({ "error": error }).to_string(),
+        );
+        return;
+    }
+    let _guard = state.library_operations.lock().await;
+    if let Err(error) = state
+        .library_repository
+        .detach_note_sources_for_conversation(&conversation.id)
+    {
+        let _ = append_pipeline_event_if_available(
+            state,
+            run_id,
+            "noteSourceDetachFailed",
+            Some("persist-note"),
+            &serde_json::json!({ "error": error }).to_string(),
+        );
+    }
 }
 
 async fn persist_error(
@@ -4005,6 +4701,71 @@ async fn persist_error(
     }
 }
 
+/// 起草前的 run 预算耗尽没有可交付章节，按状态机落到 Blocked，允许用户缩小范围后重启。
+async fn persist_pre_drafting_budget_exhaustion(
+    state: &AppState,
+    run_id: &str,
+    channel: &Channel<NotePipelineProgress>,
+    raw_error: &str,
+) -> Result<(), String> {
+    let (run, message) = {
+        let _guard = state.library_operations.lock().await;
+        let current = state.library_repository.get_note_pipeline_run(run_id)?;
+        let mut runtime = runtime_state(&current)?;
+        let exhaustion = refresh_run_budget(state, run_id, &mut runtime);
+        let transition = DeepNoteRunMachine::timeout(current.phase)
+            .map_err(|error| format!("派发深度笔记预算耗尽事件失败：{error:?}"))?;
+        if transition.effects != vec![DeepNoteRunEffect::PersistTimeout] {
+            return Err(format!(
+                "{:?} 阶段预算耗尽没有产生 PersistTimeout 效果。",
+                current.phase
+            ));
+        }
+        let message = exhaustion.map_or_else(
+            || {
+                raw_error
+                    .strip_prefix(RUN_BUDGET_EXHAUSTED_PREFIX)
+                    .unwrap_or(raw_error)
+                    .to_string()
+            },
+            |reason| reason.message(&runtime),
+        );
+        save_runtime_state(state, run_id, &runtime)?;
+        state.library_repository.append_note_pipeline_event(
+            run_id,
+            "runBudgetExhausted",
+            None,
+            &serde_json::json!({
+                "reason": exhaustion.map(RunBudgetExhaustion::as_str),
+                "phase": current.phase.as_str(),
+                "upstreamRequestsUsed": runtime.budget.upstream_requests_used,
+                "upstreamRequestLimit": runtime.budget.upstream_request_limit,
+                "upstreamWallClockMs": runtime.budget.upstream_wall_clock_ms,
+                "runWallClockMs": runtime.budget.run_wall_clock_ms,
+                "deliveredSections": 0,
+            })
+            .to_string(),
+        )?;
+        let run = state.library_repository.update_note_pipeline_phase(
+            run_id,
+            transition.next_state,
+            None,
+            &[],
+            Some(&message),
+        )?;
+        (run, message)
+    };
+    debug_assert_eq!(run.phase, NotePipelinePhase::Blocked);
+    send(
+        channel,
+        NotePipelineProgress::Error {
+            run_id: run_id.to_string(),
+            message,
+        },
+    );
+    Ok(())
+}
+
 async fn analyze_outline(
     state: &AppState,
     run: &NotePipelineRun,
@@ -4022,10 +4783,13 @@ async fn analyze_outline(
         .into_iter()
         .map(|message| message.id.clone())
         .collect::<HashSet<_>>();
+    let (_, route_profile) = deep_note_route_profile(state, &run.provider_id, &run.model_id)?;
+    let adaptive_budget = AdaptiveBudgetSnapshot::from_profile(&route_profile);
     let calculated = context_budget(
         conversation,
         &runtime.input_snapshot.model,
         run.max_output_tokens,
+        &adaptive_budget,
     );
     let previous = runtime.context_budget.clone();
     runtime.context_budget = calculated;
@@ -4038,7 +4802,12 @@ async fn analyze_outline(
         runtime.context_budget.coverage_complete = previous.coverage_complete;
         runtime.context_budget.omitted_message_ids = previous.omitted_message_ids;
         if previous.chunk_target_tokens > 0 {
-            runtime.context_budget.chunk_target_tokens = previous.chunk_target_tokens;
+            // 同一个 run 可以响应失败后的收缩，但不会因为其他 run 的成功在恢复时
+            // 突然放大分块、令已经写好的检查点整体失效。
+            runtime.context_budget.chunk_target_tokens = runtime
+                .context_budget
+                .chunk_target_tokens
+                .min(previous.chunk_target_tokens);
         }
     }
     save_runtime_state(state, &run.id, runtime)?;
@@ -4433,8 +5202,53 @@ async fn run_analysis_task<R: Runtime>(
     }
     .await;
     if let Err(error) = result {
-        persist_error(&state, &run_id, &channel, error).await;
+        if error.starts_with(RUN_BUDGET_EXHAUSTED_PREFIX) {
+            if let Err(persist_error_message) =
+                persist_pre_drafting_budget_exhaustion(&state, &run_id, &channel, &error).await
+            {
+                persist_error(
+                    &state,
+                    &run_id,
+                    &channel,
+                    format!("{error}；预算耗尽状态持久化失败：{persist_error_message}"),
+                )
+                .await;
+            }
+        } else {
+            persist_error(&state, &run_id, &channel, error).await;
+        }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn save_drafting_checkpoint(
+    state: &AppState,
+    run_id: &str,
+    section_id: &str,
+    markdown: &str,
+    status: NotePipelineSectionStatus,
+    attempts: u8,
+    revisions: u8,
+    evidence_ids: &[String],
+    validation: &DeepNoteValidationReport,
+    error_message: Option<&str>,
+) -> Result<(), String> {
+    let validation_json =
+        serde_json::to_string(validation).map_err(|error| error.to_string())?;
+    let _guard = state.library_operations.lock().await;
+    state
+        .library_repository
+        .save_note_pipeline_section_checkpoint(
+            run_id,
+            section_id,
+            markdown,
+            status,
+            attempts,
+            revisions,
+            evidence_ids,
+            &validation_json,
+            error_message,
+        )
 }
 
 async fn execute_dag_section(
@@ -4488,117 +5302,194 @@ async fn execute_dag_section(
     };
     let mut attempts = persisted.map(|value| value.attempt_count).unwrap_or(0);
     let mut revisions = persisted.map(|value| value.revision_count).unwrap_or(0);
+    let mut candidate = persisted
+        .filter(|value| !value.markdown.trim().is_empty())
+        .map(|value| value.markdown.clone());
+    let mut last_candidate = candidate.clone();
     let node_attempt_limit = node_attempt_limit.max(1);
     let mut semantic_calls = 0u32;
-    'attempts: while attempts < node_attempt_limit {
+    'attempts: while candidate.is_some() || attempts < node_attempt_limit {
         if cancellation.is_cancelled() {
-            break;
+            save_drafting_checkpoint(
+                state,
+                &run.id,
+                &section.id,
+                candidate.as_deref().unwrap_or_default(),
+                NotePipelineSectionStatus::Interrupted,
+                attempts,
+                revisions,
+                evidence_ids,
+                &validation,
+                Some("章节执行被中断。"),
+            )
+            .await?;
+            return Ok((None, semantic_calls));
         }
-        attempts += 1;
-        semantic_calls = semantic_calls.saturating_add(1);
-        match model_call_with_runtime(
-            state,
-            run,
-            "deepNote",
-            NotePipelinePhase::Drafting,
-            writer_system_prompt.to_string(),
-            prompt.clone(),
-            run.max_output_tokens.min(SECTION_OUTPUT_TOKEN_LIMIT),
-            run.retry_attempts,
-            cancellation,
-            Some(channel),
-        )
-        .await
-        {
-            Ok(value) if !value.trim().is_empty() => {
-                let mut candidate = normalize_generated_markdown(value.trim());
-                validation = validate_section_markdown(section, &candidate, evidence_ids);
-                while !validation.passed && revisions < section_revision_limit {
-                    revisions += 1;
-                    semantic_calls = semantic_calls.saturating_add(1);
-                    let revision_prompt = format!(
-                        "章节计划：\n{}\n\n当前正文：\n{}\n\n验证报告：\n{}",
-                        serde_json::to_string(section).map_err(|error| error.to_string())?,
-                        candidate,
-                        serde_json::to_string(&validation).map_err(|error| error.to_string())?,
-                    );
-                    let revision_result = model_call_with_runtime(
-                        state,
-                        run,
-                        "deepNote",
-                        NotePipelinePhase::Validating,
-                        reviewer_system_prompt.to_string(),
-                        revision_prompt,
-                        run.max_output_tokens.min(SECTION_OUTPUT_TOKEN_LIMIT),
-                        run.retry_attempts,
-                        cancellation,
-                        Some(channel),
-                    )
-                    .await;
-                    if cancellation.is_cancelled() {
-                        attempts = attempts.saturating_sub(1);
-                        revisions = revisions.saturating_sub(1);
-                        break 'attempts;
-                    }
-                    candidate = normalize_generated_markdown(
-                        revision_result.map_err(|error| error.message)?.trim(),
-                    );
-                    validation = validate_section_markdown(section, &candidate, evidence_ids);
+        if candidate.is_none() {
+            attempts = attempts.saturating_add(1);
+            semantic_calls = semantic_calls.saturating_add(1);
+            match model_call_with_runtime(
+                state,
+                run,
+                "deepNote",
+                NotePipelinePhase::Drafting,
+                writer_system_prompt.to_string(),
+                prompt.clone(),
+                run.max_output_tokens.min(SECTION_OUTPUT_TOKEN_LIMIT),
+                run.retry_attempts,
+                cancellation,
+                Some(channel),
+            )
+            .await
+            {
+                Ok(value) if !value.trim().is_empty() => {
+                    candidate = Some(normalize_generated_markdown(value.trim()));
                 }
-                if validation.passed {
-                    markdown = Some(candidate);
-                    break;
-                }
-                last_error = validation.errors.join("；");
+                Ok(_) => last_error = "模型返回了空章节。".to_string(),
+                Err(error) => last_error = error.message,
             }
-            Ok(_) => last_error = "模型返回了空章节。".to_string(),
-            Err(_error) if cancellation.is_cancelled() => {
-                attempts = attempts.saturating_sub(1);
+            if candidate.is_none() {
+                let interrupted = cancellation.is_cancelled();
+                save_drafting_checkpoint(
+                    state,
+                    &run.id,
+                    &section.id,
+                    "",
+                    if interrupted {
+                        NotePipelineSectionStatus::Interrupted
+                    } else {
+                        NotePipelineSectionStatus::InProgress
+                    },
+                    attempts,
+                    revisions,
+                    evidence_ids,
+                    &validation,
+                    Some(&last_error),
+                )
+                .await?;
+                if interrupted {
+                    return Ok((None, semantic_calls));
+                }
+                continue;
+            }
+        }
+
+        let mut current = candidate.take().expect("candidate checked above");
+        loop {
+            validation = validate_section_markdown(section, &current, evidence_ids);
+            last_error = validation.errors.join("；");
+            last_candidate = Some(current.clone());
+            save_drafting_checkpoint(
+                state,
+                &run.id,
+                &section.id,
+                &current,
+                if validation.passed {
+                    NotePipelineSectionStatus::Completed
+                } else {
+                    NotePipelineSectionStatus::NeedsRevision
+                },
+                attempts,
+                revisions,
+                evidence_ids,
+                &validation,
+                (!validation.passed).then_some(last_error.as_str()),
+            )
+            .await?;
+            if validation.passed {
+                markdown = Some(current);
+                break 'attempts;
+            }
+            if revisions >= section_revision_limit {
                 break;
             }
-            Err(error) => last_error = error.message,
+            revisions = revisions.saturating_add(1);
+            semantic_calls = semantic_calls.saturating_add(1);
+            let revision_prompt = format!(
+                "章节计划：\n{}\n\n当前正文：\n{}\n\n验证报告：\n{}",
+                serde_json::to_string(section).map_err(|error| error.to_string())?,
+                current,
+                serde_json::to_string(&validation).map_err(|error| error.to_string())?,
+            );
+            let revision_result = model_call_with_runtime(
+                state,
+                run,
+                "deepNote",
+                NotePipelinePhase::Validating,
+                reviewer_system_prompt.to_string(),
+                revision_prompt,
+                run.max_output_tokens.min(SECTION_OUTPUT_TOKEN_LIMIT),
+                run.retry_attempts,
+                cancellation,
+                Some(channel),
+            )
+            .await;
+            if cancellation.is_cancelled() {
+                save_drafting_checkpoint(
+                    state,
+                    &run.id,
+                    &section.id,
+                    &current,
+                    NotePipelineSectionStatus::Interrupted,
+                    attempts,
+                    revisions,
+                    evidence_ids,
+                    &validation,
+                    Some("章节修订被中断，已保留当前草稿。"),
+                )
+                .await?;
+                return Ok((None, semantic_calls));
+            }
+            match revision_result {
+                Ok(value) if !value.trim().is_empty() => {
+                    current = normalize_generated_markdown(value.trim());
+                }
+                Ok(_) => {
+                    last_error = "模型修订返回了空章节。".to_string();
+                    break;
+                }
+                Err(error) => {
+                    last_error = error.message;
+                    break;
+                }
+            }
         }
     }
     let Some(markdown) = markdown else {
         if cancellation.is_cancelled() {
             return Ok((None, semantic_calls));
         }
-        let validation_json =
-            serde_json::to_string(&validation).map_err(|error| error.to_string())?;
-        let _guard = state.library_operations.lock().await;
-        state
-            .library_repository
-            .save_note_pipeline_section_checkpoint(
-                &run.id,
-                &section.id,
-                "",
-                NotePipelineSectionStatus::Failed,
-                attempts,
-                revisions,
-                evidence_ids,
-                &validation_json,
-                Some(&last_error),
-            )?;
+        save_drafting_checkpoint(
+            state,
+            &run.id,
+            &section.id,
+            last_candidate.as_deref().unwrap_or_default(),
+            NotePipelineSectionStatus::Failed,
+            attempts,
+            revisions,
+            evidence_ids,
+            &validation,
+            Some(&last_error),
+        )
+        .await?;
         return Err(format!(
             "章节“{}”在 {} 次节点尝试和 {} 次语义修订后仍未通过验证：{}",
             section.heading, attempts, revisions, last_error
         ));
     };
-    let validation_json = serde_json::to_string(&validation).map_err(|error| error.to_string())?;
-    let _guard = state.library_operations.lock().await;
-    state
-        .library_repository
-        .save_note_pipeline_section_checkpoint(
-            &run.id,
-            &section.id,
-            &markdown,
-            NotePipelineSectionStatus::Completed,
-            attempts,
-            revisions,
-            evidence_ids,
-            &validation_json,
-            None,
-        )?;
+    save_drafting_checkpoint(
+        state,
+        &run.id,
+        &section.id,
+        &markdown,
+        NotePipelineSectionStatus::Completed,
+        attempts,
+        revisions,
+        evidence_ids,
+        &validation,
+        None,
+    )
+    .await?;
     Ok((
         Some((markdown, validation, attempts, revisions)),
         semantic_calls,
@@ -4648,7 +5539,12 @@ async fn run_drafting_task<R: Runtime>(
             .last()
             .map(|message| message.id.clone());
         let total = selected_outline.sections.len();
-        let mut scheduler = DeepNoteDagScheduler::new(plan_version.compiled_dag.clone())?;
+        let restored_nodes = state.library_repository.restore_note_pipeline_nodes(
+            &run.id,
+            plan_version.version,
+            &plan_version.compiled_dag,
+        )?;
+        let mut scheduler = DeepNoteDagScheduler::new(restored_nodes)?;
         let source_chunks = state
             .library_repository
             .list_note_pipeline_source_chunks(&run.id)?;
@@ -4710,6 +5606,9 @@ async fn run_drafting_task<R: Runtime>(
         persist_scheduler_state(&state, &run_id, &mut runtime, &scheduler)?;
 
         let mut cancelled = false;
+        // 是否因为 run 级请求数或墙钟耗尽而退出循环。用来区分收尾方式：有产出走部分交付，
+        // 没产出要落到 `Blocked` 并带上超时原因，而不是和「被用户中断」混为一谈。
+        let mut run_budget_exhaustion = None;
         while scheduler.has_unfinished_sections() {
             scheduler.refresh_ready();
             if cancellation.is_cancelled() {
@@ -4723,6 +5622,97 @@ async fn run_drafting_task<R: Runtime>(
                 persist_scheduler_state(&state, &run_id, &mut runtime, &scheduler)?;
                 return Ok(());
             }
+            // run 级双维度预算闸：请求数或墙钟到点都做部分交付，而不是整体失败。
+            //
+            // 放在批次派发之前：一旦进了下面的 `transition(.., InProgress)`，节点就
+            // 被占住且 attempt_count 已经加过，事后再拦既浪费一次尝试，又可能把节点
+            // 留在非终态上，`has_unfinished_sections` 于是永远为真。
+            if let Some(exhaustion) = refresh_run_budget(&state, &run_id, &mut runtime) {
+                let delivered = drafts_by_id.len();
+                let transition = if delivered == 0 {
+                    DeepNoteRunMachine::transition_to(
+                        NotePipelinePhase::Drafting,
+                        NotePipelinePhase::Blocked,
+                    )
+                } else {
+                    DeepNoteRunMachine::timeout(NotePipelinePhase::Drafting)
+                }
+                .map_err(|error| format!("派发深度笔记预算耗尽事件失败：{error:?}"))?;
+                let expected_effect = if delivered == 0 {
+                    DeepNoteRunEffect::PersistTimeout
+                } else {
+                    DeepNoteRunEffect::SkipUnfinishedSections
+                };
+                if transition.effects != vec![expected_effect] {
+                    return Err("起草阶段预算耗尽产生了错误的收敛效果。".to_string());
+                }
+                if delivered == 0 {
+                    save_runtime_state(&state, &run_id, &runtime)?;
+                    state.library_repository.append_note_pipeline_event(
+                        &run_id,
+                        "runBudgetExhausted",
+                        None,
+                        &serde_json::json!({
+                            "reason": exhaustion.as_str(),
+                            "upstreamRequestsUsed": runtime.budget.upstream_requests_used,
+                            "upstreamRequestLimit": runtime.budget.upstream_request_limit,
+                            "upstreamWallClockMs": runtime.budget.upstream_wall_clock_ms,
+                            "runWallClockMs": runtime.budget.run_wall_clock_ms,
+                            "deliveredSections": 0,
+                            "totalSections": total,
+                        })
+                        .to_string(),
+                    )?;
+                    state.library_repository.update_note_pipeline_phase(
+                        &run_id,
+                        transition.next_state,
+                        None,
+                        &[],
+                        Some(&exhaustion.message(&runtime)),
+                    )?;
+                    progress(
+                        &state,
+                        &channel,
+                        &run_id,
+                        NotePipelinePhase::Blocked,
+                        Some(0),
+                        Some(total),
+                        exhaustion.message(&runtime),
+                    );
+                    return Ok(());
+                }
+                run_budget_exhaustion = Some(exhaustion);
+                scheduler.skip_unfinished_sections();
+                persist_scheduler_state(&state, &run_id, &mut runtime, &scheduler)?;
+                state.library_repository.append_note_pipeline_event(
+                    &run_id,
+                    "runBudgetExhausted",
+                    None,
+                    &serde_json::json!({
+                        "reason": exhaustion.as_str(),
+                        "upstreamRequestsUsed": runtime.budget.upstream_requests_used,
+                        "upstreamRequestLimit": runtime.budget.upstream_request_limit,
+                        "upstreamWallClockMs": runtime.budget.upstream_wall_clock_ms,
+                        "runWallClockMs": runtime.budget.run_wall_clock_ms,
+                        "deliveredSections": delivered,
+                        "totalSections": total,
+                    })
+                    .to_string(),
+                )?;
+                progress(
+                    &state,
+                    &channel,
+                    &run_id,
+                    NotePipelinePhase::Drafting,
+                    Some(delivered),
+                    Some(total),
+                    format!(
+                        "{}，交付已完成的 {delivered}/{total} 个章节",
+                        exhaustion.message(&runtime)
+                    ),
+                );
+                break;
+            }
             let ready = scheduler.ready_section_ids(runtime.budget.max_parallel_nodes as usize);
             if ready.is_empty() {
                 if scheduler.has_section_failures() {
@@ -4732,7 +5722,44 @@ async fn run_drafting_task<R: Runtime>(
             }
             let mut jobs = Vec::with_capacity(ready.len());
             let mut batch_reserved_calls = 0u32;
+            let batch_now_ms = crate::usage::now_ms();
             for section_id in ready {
+                // section 级墙钟闸：跳过已经累计耗时过长的 section。
+                //
+                // **作用域是跨 run 续跑**，不是单次 run 内的抢占：`ready_section_ids`
+                // 只返回 `Ready` 的节点，一个 section 在同一次 run 里派发一次就进
+                // `InProgress`，重试在 `execute_dag_section` 内部循环，不会回到这里。
+                // 所以首次派发时 elapsed 必然为 0、闸门不响；它真正生效的场景是暂停
+                // /崩溃后续跑 —— `section_started_at` 从 runtime JSON 读回，一个已经
+                // 烧掉 15 分钟的 section 不会再被重新派发一轮。
+                //
+                // 判定必须在 `transition(.., InProgress)` 之前：进了那一步节点就被
+                // 占住且 attempt_count 已经加过。
+                if section_wall_clock_exhausted(
+                    &mut runtime.section_started_at,
+                    &runtime.budget,
+                    &section_id,
+                    batch_now_ms,
+                ) {
+                    for prefix in ["draft", "validate"] {
+                        if let Ok(node) = scheduler.node_mut(&format!("{prefix}:{section_id}")) {
+                            node.status = DeepNoteNodeStatus::Skipped;
+                            node.error_message = Some("章节执行超过时长上限，已跳过。".to_string());
+                        }
+                    }
+                    scheduler.refresh_ready();
+                    state.library_repository.append_note_pipeline_event(
+                        &run_id,
+                        "sectionWallClockExhausted",
+                        Some(&format!("draft:{section_id}")),
+                        &serde_json::json!({
+                            "sectionId": section_id,
+                            "sectionWallClockMs": runtime.budget.section_wall_clock_ms,
+                        })
+                        .to_string(),
+                    )?;
+                    continue;
+                }
                 let section = selected_outline
                     .sections
                     .iter()
@@ -4781,6 +5808,12 @@ async fn run_drafting_task<R: Runtime>(
                     reserved_semantic_calls,
                     section,
                 });
+            }
+            // 整批都被 section 闸跳过：直接进下一轮重算就绪集合，不要往下走出一条
+            // 「并行执行 0 个章节」的假进度，也不要空转一次预留和并发流。
+            if jobs.is_empty() {
+                persist_scheduler_state(&state, &run_id, &mut runtime, &scheduler)?;
+                continue;
             }
             reserve_parallel_semantic_calls(&state, &run_id, &mut runtime, batch_reserved_calls)?;
             for job in &jobs {
@@ -4975,7 +6008,10 @@ async fn run_drafting_task<R: Runtime>(
             finish_interrupted_run(&state, &run_id, &channel).await?;
             return Ok(());
         }
-        if scheduler.has_section_failures() && !cancelled {
+        // 墙钟耗尽时不走这条路：此时「有 section 失败」和「有 section 没做完」是同一
+        // 个原因造成的（上游太慢），把它判成组装失败会让用户连已完成的部分都拿不到。
+        // 超时的收敛统一由下面的部分交付/`Blocked` 两条分支处理。
+        if scheduler.has_section_failures() && !cancelled && run_budget_exhaustion.is_none() {
             persist_scheduler_state(&state, &run_id, &mut runtime, &scheduler)?;
             return Err("深度笔记存在失败或被阻塞的章节节点，未继续组装不完整笔记。".to_string());
         }
@@ -4993,6 +6029,24 @@ async fn run_drafting_task<R: Runtime>(
             })
             .collect::<Vec<_>>();
         if drafts.is_empty() {
+            // run 预算耗尽且一个 section 都没做出来：落到 `Blocked` 并带上具体原因。
+            //
+            // 不复用 `finish_interrupted_run`：那条路表达的是「被中断」，用户看到的
+            // 提示会指向暂停/取消，而真实原因是上游太慢。区分开之后界面才能给出
+            // 「缩小范围或换更快的模型」这种能自救的建议。
+            if let Some(exhaustion) = run_budget_exhaustion {
+                state.library_repository.update_note_pipeline_phase(
+                    &run_id,
+                    NotePipelinePhase::Blocked,
+                    None,
+                    &[],
+                    Some(&format!(
+                        "{}且尚无可交付章节。",
+                        exhaustion.message(&runtime)
+                    )),
+                )?;
+                return Ok(());
+            }
             finish_interrupted_run(&state, &run_id, &channel).await?;
             return Ok(());
         }
@@ -5110,7 +6164,7 @@ async fn run_drafting_task<R: Runtime>(
             scheduler.transition("persist-note", DeepNoteNodeStatus::InProgress)?;
         }
         let sources = note_sources(&conversation.id, last_message_id.as_deref(), &drafts);
-        let note = {
+        {
             let _guard = state.library_operations.lock().await;
             state.library_repository.update_note_pipeline_phase(
                 &run_id,
@@ -5125,32 +6179,39 @@ async fn run_drafting_task<R: Runtime>(
                 &serde_json::to_string(&runtime).map_err(|error| error.to_string())?,
                 Some(&sidecar),
             )?;
+        }
+        // 先把 persist-note 节点标成 InProgress 落盘，再做真正的提交。
+        // 提交本身是单事务（笔记 + note_id + 终态 + runCompleted 事件），
+        // 所以这里之后不再存在“笔记已建但 run 不知道”的中间态。
+        if scheduler
+            .node("persist-note")
+            .is_some_and(|node| node.status == DeepNoteNodeStatus::InProgress)
+        {
+            persist_scheduler_state(&state, &run_id, &mut runtime, &scheduler)?;
+        }
+        let attachment_sources = note_attachment_sources(&state, &conversation)?;
+        let (note, completed) = {
+            let _guard = state.library_operations.lock().await;
             let create = LibraryNoteCreate {
                 item_id: None,
                 title,
                 content,
                 group_name: None,
             };
-            if runtime.force_rebuild {
-                state
-                    .library_repository
-                    .create_rebuilt_note_with_sources_and_coverage(
-                        create,
-                        sources,
-                        &conversation.id,
-                        &runtime.input_snapshot,
-                    )?
-            } else {
-                state
-                    .library_repository
-                    .create_note_with_sources_and_coverage(
-                        create,
-                        sources,
-                        &conversation.id,
-                        &runtime.input_snapshot,
-                    )?
-            }
+            state.library_repository.commit_deep_note_and_complete_run(
+                &run_id,
+                create,
+                sources,
+                &conversation.id,
+                &runtime.input_snapshot,
+                &sidecar,
+                attachment_sources,
+                runtime.force_rebuild,
+                &warnings,
+                false,
+            )?
         };
+        cleanup_transferred_local_source(&state, &run_id, &conversation).await;
         if scheduler
             .node("persist-note")
             .is_some_and(|node| node.status == DeepNoteNodeStatus::InProgress)
@@ -5161,29 +6222,6 @@ async fn run_drafting_task<R: Runtime>(
             }
             persist_scheduler_state(&state, &run_id, &mut runtime, &scheduler)?;
         }
-        let completed = {
-            let _guard = state.library_operations.lock().await;
-            let completed = state.library_repository.update_note_pipeline_phase(
-                &run_id,
-                NotePipelinePhase::Done,
-                Some(&note.id),
-                &warnings,
-                None,
-            )?;
-            state.library_repository.append_note_pipeline_event(
-                &run_id,
-                "runCompleted",
-                None,
-                &serde_json::json!({
-                    "noteId": note.id,
-                    "completedSectionCount": completed.completed_section_ids.len(),
-                    "failedSectionCount": completed.failed_section_ids.len(),
-                    "degraded": false,
-                })
-                .to_string(),
-            )?;
-            completed
-        };
         send(
             &channel,
             NotePipelineProgress::Done {
@@ -5512,7 +6550,7 @@ async fn run_drafting_task_legacy<R: Runtime>(
             },
         );
         let sources = note_sources(&conversation.id, last_message_id.as_deref(), &drafts);
-        let note = {
+        {
             let _guard = state.library_operations.lock().await;
             state.library_repository.update_note_pipeline_phase(
                 &run_id,
@@ -5527,56 +6565,32 @@ async fn run_drafting_task_legacy<R: Runtime>(
                 &serde_json::to_string(&runtime).map_err(|error| error.to_string())?,
                 Some(&sidecar),
             )?;
+        }
+        // 与完整路径共用同一个单事务提交方法：降级交付同样不允许留下
+        // “笔记已建、note_id 未写”的中间态。
+        let attachment_sources = note_attachment_sources(&state, &conversation)?;
+        let (_note, completed) = {
+            let _guard = state.library_operations.lock().await;
             let create = LibraryNoteCreate {
                 item_id: None,
                 title,
                 content,
                 group_name: None,
             };
-            if runtime.force_rebuild {
-                state
-                    .library_repository
-                    .create_rebuilt_note_with_sources_and_coverage(
-                        create,
-                        sources,
-                        &conversation.id,
-                        &runtime.input_snapshot,
-                    )?
-            } else {
-                state
-                    .library_repository
-                    .create_note_with_sources_and_coverage(
-                        create,
-                        sources,
-                        &conversation.id,
-                        &runtime.input_snapshot,
-                    )?
-            }
-        };
-        let phase = NotePipelinePhase::Done;
-        let completed = {
-            let _guard = state.library_operations.lock().await;
-            let completed = state.library_repository.update_note_pipeline_phase(
+            state.library_repository.commit_deep_note_and_complete_run(
                 &run_id,
-                phase,
-                Some(&note.id),
+                create,
+                sources,
+                &conversation.id,
+                &runtime.input_snapshot,
+                &sidecar,
+                attachment_sources,
+                runtime.force_rebuild,
                 &warnings,
-                None,
-            )?;
-            state.library_repository.append_note_pipeline_event(
-                &run_id,
-                "runCompleted",
-                None,
-                &serde_json::json!({
-                    "noteId": note.id,
-                    "completedSectionCount": completed.completed_section_ids.len(),
-                    "failedSectionCount": completed.failed_section_ids.len(),
-                    "degraded": cancelled,
-                })
-                .to_string(),
-            )?;
-            completed
+                cancelled,
+            )?
         };
+        cleanup_transferred_local_source(&state, &run_id, &conversation).await;
         send(
             &channel,
             NotePipelineProgress::Done {
@@ -5866,6 +6880,19 @@ async fn spawn_drafting<R: Runtime>(
     let cancellation = CancellationToken::new();
     let instance_id = Uuid::new_v4().to_string();
     let state = app.state::<AppState>();
+    // 兜底守卫：所有起草 Worker 都从这里进入。run 上已有 note_id 意味着这一轮
+    // 的产物早已落库，再起草一次只会产生第二篇内容几乎相同的笔记。
+    // `dispatch_checkpoint` 已在 Persisting 分支单独处理，这里覆盖它之外的调用路径。
+    {
+        let existing = state.library_repository.get_note_pipeline_run(&run_id)?;
+        if existing
+            .note_id
+            .as_deref()
+            .is_some_and(|id| !id.trim().is_empty())
+        {
+            return Err("该深度笔记任务已经产出笔记，拒绝重复起草。".to_string());
+        }
+    }
     if !state
         .register_note_pipeline_run(
             run_id.clone(),
@@ -6010,12 +7037,22 @@ pub async fn start<R: Runtime>(
         skill_profiles: skill_profiles.clone(),
         context_budget: DeepNoteContextBudget::default(),
         force_rebuild: request.force_rebuild,
+        section_started_at: BTreeMap::new(),
     };
     let runtime_json = serde_json::to_string(&runtime)
         .map_err(|error| format!("序列化深度笔记运行状态失败：{error}"))?;
     let budget_json = serde_json::to_string(&runtime.budget)
         .map_err(|error| format!("序列化深度笔记预算失败：{error}"))?;
     let run_id = Uuid::new_v4().to_string();
+    let idempotency_key = deep_note_content_signature(
+        &conversation.id,
+        &snapshot_hash,
+        &provider_id,
+        &model_id,
+        max_output_tokens,
+        thinking_enabled,
+        request.force_rebuild,
+    );
     let run = {
         let _guard = state.library_operations.lock().await;
         state
@@ -6031,7 +7068,7 @@ pub async fn start<R: Runtime>(
                 input_snapshot_hash: snapshot_hash,
                 budget_json,
                 preflight_json: runtime_json,
-                idempotency_key: stable_hash(format!("deep-note-output:{run_id}")),
+                idempotency_key,
             })?
     };
     {
@@ -6277,7 +7314,6 @@ pub async fn adjust<R: Runtime>(
         ));
     }
     runtime.budget.replans_used = runtime.budget.replans_used.saturating_add(1);
-    runtime.budget.reserve_semantic_calls(2);
     let run = {
         let _guard = state.library_operations.lock().await;
         save_runtime_state(&state, &run.id, &runtime)?;
@@ -6432,6 +7468,44 @@ async fn dispatch_checkpoint<R: Runtime>(
         NotePipelinePhase::Analyzing => {
             spawn_analysis(app, run.id.clone(), String::new(), channel).await?;
         }
+        // Persisting 必须先于 catch-all 分支单独判定。
+        // 它是唯一一个“笔记可能已经落库”的可恢复阶段：若 note_id 已存在，
+        // 说明提交事务已经成功，只是终态推进或 Worker 退出被打断。此时重新
+        // spawn_drafting 会把整篇笔记重写一遍，产出第二篇几乎相同的笔记。
+        NotePipelinePhase::Persisting if run.note_id.is_some() => {
+            let note_id = run.note_id.clone().unwrap_or_default();
+            let completed = {
+                let _guard = state.library_operations.lock().await;
+                let completed = state.library_repository.update_note_pipeline_phase(
+                    &run.id,
+                    NotePipelinePhase::Done,
+                    Some(&note_id),
+                    &run.warnings,
+                    None,
+                )?;
+                state.library_repository.append_note_pipeline_event(
+                    &run.id,
+                    "runCompleted",
+                    None,
+                    &serde_json::json!({
+                        "noteId": note_id,
+                        "completedSectionCount": completed.completed_section_ids.len(),
+                        "failedSectionCount": completed.failed_section_ids.len(),
+                        "degraded": false,
+                        "reusedExistingNote": true,
+                    })
+                    .to_string(),
+                )?;
+                completed
+            };
+            send(
+                &channel,
+                NotePipelineProgress::Done {
+                    run: completed,
+                    degraded: false,
+                },
+            );
+        }
         NotePipelinePhase::Compiling
         | NotePipelinePhase::Queued
         | NotePipelinePhase::Drafting
@@ -6498,7 +7572,6 @@ async fn prepare_manual_recovery<R: Runtime>(
         &runtime.input_snapshot,
     )
     .await?;
-    extend_manual_recovery_budget(&mut runtime);
     if reset_failed_sections {
         reset_failed_runtime_nodes(&mut runtime);
     }
@@ -6847,6 +7920,16 @@ pub async fn pause<R: Runtime>(
 }
 
 pub fn list_resumable(state: &AppState) -> Result<Vec<NotePipelineRun>, String> {
+    // 先收尾“笔记已落库但终态未推进”的历史 run，再列举真正需要恢复的任务。
+    // 否则这类 run 会被前端当成未完成任务自动 resume，重写出第二篇笔记。
+    match state
+        .library_repository
+        .finalize_persisted_note_pipeline_runs()
+    {
+        Ok(0) => {}
+        Ok(count) => eprintln!("已收尾 {count} 个笔记已落库但未推进终态的深度笔记任务。"),
+        Err(error) => eprintln!("收尾深度笔记任务失败：{error}"),
+    }
     state.library_repository.list_resumable_note_pipeline_runs()
 }
 
@@ -7064,6 +8147,8 @@ pub async fn prepare_note_edit(
         return Err("新增附件包含图片，但当前笔记模型未明确支持视觉输入。".to_string());
     }
     let (skill_profiles, skill_warnings) = snapshot_skill_profiles(state, requires_vision);
+    let (_, route_profile) = deep_note_route_profile(state, &run.provider_id, &run.model_id)?;
+    let adaptive_budget = AdaptiveBudgetSnapshot::from_profile(&route_profile);
     let mut incremental_runtime = DeepNoteRuntimeState {
         preflight: DeepNotePreflight {
             ready: true,
@@ -7091,10 +8176,15 @@ pub async fn prepare_note_edit(
         skill_profiles,
         context_budget: DeepNoteContextBudget {
             context_window_tokens: model_snapshot.context_window_tokens,
-            chunk_target_tokens: DEFAULT_CHUNK_TARGET_TOKENS,
+            chunk_target_tokens: adaptive_budget.limit_tokens,
+            adaptive_chunk_limit_tokens: adaptive_budget.limit_tokens,
+            adaptive_route_key: adaptive_budget.route_key,
+            adaptive_route_state: adaptive_budget.route_state,
+            adaptive_profile_samples: adaptive_budget.profile_samples,
             ..DeepNoteContextBudget::default()
         },
         force_rebuild: false,
+        section_started_at: BTreeMap::new(),
     };
     let cancellation = CancellationToken::new();
     let attachment_chunks = if attachment_count > 0 {
@@ -7501,12 +8591,17 @@ mod tests {
 
     use super::{
         analyze_markdown_fences, await_note_pipeline_cancellable, can_pause_phase,
-        compact_ledger_for_planner, context_budget, conversation_chunks, evidence_for_plan,
-        input_snapshot, ledger_has_real_output, merge_chunk_digest, normalize_generated_markdown,
-        normalize_math_fences, phase_expects_background_worker, reset_failed_nodes,
-        should_fallback_to_chunked_planner, should_retry_note_model_call,
-        snapshot_conversation_after_validation, split_text_by_token_budget, validate_global_drafts,
-        validate_recovery_snapshot, validate_section_markdown, ChunkDigest, ConversationChunk,
+        chunk_analysis_prompt, compact_ledger_for_planner, content_addressed_chunk_id,
+        context_budget, conversation_chunks,
+        deep_note_content_signature, evidence_for_plan, input_snapshot, ledger_has_real_output,
+        merge_chunk_digest, normalize_generated_markdown, normalize_math_fences,
+        pack_adjacent_attachment_chunks, phase_expects_background_worker, request_byte_limit,
+        reset_failed_nodes,
+        section_wall_clock_exhausted, should_fallback_to_chunked_planner,
+        should_retry_note_model_call, snapshot_conversation_after_validation,
+        split_text_by_token_budget, token_estimate_units, validate_global_drafts,
+        validate_recovery_snapshot, validate_section_markdown, AdaptiveBudgetSnapshot,
+        ChunkDigest, ConversationChunk, REQUEST_BYTE_LIMIT, VISION_REQUEST_BYTE_LIMIT,
     };
     use crate::chat::note_pipeline::types::{
         DeepNoteCapabilities, DeepNoteDagNode, DeepNoteEvidenceStatus, DeepNoteLedger,
@@ -7712,17 +8807,125 @@ mod tests {
             ModelRole::User,
             "context".repeat(100),
         )]);
-        let budget = context_budget(&conversation, &model(Some(128_000)), 16_384);
+        let budget = context_budget(
+            &conversation,
+            &model(Some(128_000)),
+            16_384,
+            &AdaptiveBudgetSnapshot::cold_start(),
+        );
         assert_eq!(budget.planner_output_reserve_tokens, 2_048);
         assert_eq!(budget.prompt_overhead_tokens, 4_096);
         assert_eq!(budget.safety_margin_tokens, 128_000 / 12);
         assert_eq!(budget.direct_input_limit_tokens, 3_000);
-        assert_eq!(budget.chunk_target_tokens, 16_000);
+        assert_eq!(budget.chunk_target_tokens, 8_000);
+        assert_eq!(budget.adaptive_chunk_limit_tokens, 8_000);
         assert!(budget.usable_input_tokens < 128_000);
 
-        let unknown = context_budget(&conversation, &model(None), 16_384);
+        let unknown = context_budget(
+            &conversation,
+            &model(None),
+            16_384,
+            &AdaptiveBudgetSnapshot::cold_start(),
+        );
         assert_eq!(unknown.direct_input_limit_tokens, 8_000);
         assert_eq!(unknown.chunk_target_tokens, 8_000);
+
+        let constrained = AdaptiveBudgetSnapshot {
+            limit_tokens: 2_048,
+            route_key: "route-constrained".to_string(),
+            route_state: "degraded".to_string(),
+            profile_samples: 4,
+        };
+        let constrained_budget = context_budget(
+            &conversation,
+            &model(Some(128_000)),
+            16_384,
+            &constrained,
+        );
+        assert_eq!(constrained_budget.direct_input_limit_tokens, 2_048);
+        assert_eq!(constrained_budget.chunk_target_tokens, 2_048);
+        assert_eq!(
+            constrained_budget.adaptive_route_key,
+            "route-constrained"
+        );
+    }
+
+    #[test]
+    fn token_estimator_and_splitter_share_one_unit_scale() {
+        for value in ["abcde", "中文abcde", "a\n中文\nxyz"] {
+            let units = token_estimate_units(value);
+            let tokens = super::estimate_text_tokens(value);
+            assert!(tokens.saturating_mul(4) >= units);
+            assert!(tokens.saturating_mul(4).saturating_sub(units) < 4);
+        }
+    }
+
+    #[test]
+    fn packs_adjacent_attachment_windows_without_crossing_sources() {
+        let chunk = |id: &str, attachment_id: &str, excerpt: String| ConversationChunk {
+            estimated_tokens: super::estimate_text_tokens(&excerpt),
+            source: DeepNoteSourceChunk {
+                chunk_id: id.to_string(),
+                source_kind: DeepNoteSourceKind::Text,
+                source_id: attachment_id.to_string(),
+                message_id: Some("message-1".to_string()),
+                attachment_id: Some(attachment_id.to_string()),
+                library_item_id: None,
+                location: format!("{attachment_id} 第 {id} 行"),
+                excerpt: excerpt.clone(),
+                content_hash: super::stable_hash(excerpt),
+                ocr_confidence: None,
+            },
+            message_ids: vec!["message-1".to_string()],
+        };
+        let packed = pack_adjacent_attachment_chunks(
+            vec![
+                chunk("a-1", "attachment-a", "a".repeat(4_000)),
+                chunk("a-2", "attachment-a", "b".repeat(4_000)),
+                chunk("b-1", "attachment-b", "c".repeat(400)),
+            ],
+            2_048,
+        );
+        assert_eq!(packed.len(), 2);
+        assert!(packed[0].source.excerpt.contains(&"a".repeat(100)));
+        assert!(packed[0].source.excerpt.contains(&"b".repeat(100)));
+        assert_eq!(
+            packed[1].source.attachment_id.as_deref(),
+            Some("attachment-b")
+        );
+    }
+
+    #[test]
+    fn chunk_ids_and_digest_prompts_are_position_independent() {
+        let excerpt = "相同内容应跨 run 复用".to_string();
+        assert_eq!(
+            content_addressed_chunk_id(&excerpt),
+            content_addressed_chunk_id(&excerpt)
+        );
+        assert_ne!(
+            content_addressed_chunk_id(&excerpt),
+            content_addressed_chunk_id("不同内容")
+        );
+        let chunk = |message_id: &str, location: &str| ConversationChunk {
+            estimated_tokens: super::estimate_text_tokens(&excerpt),
+            source: DeepNoteSourceChunk {
+                chunk_id: content_addressed_chunk_id(&excerpt),
+                source_kind: DeepNoteSourceKind::Conversation,
+                source_id: "conversation".to_string(),
+                message_id: Some(message_id.to_string()),
+                attachment_id: None,
+                library_item_id: None,
+                location: location.to_string(),
+                excerpt: excerpt.clone(),
+                content_hash: super::stable_hash(&excerpt),
+                ocr_confidence: None,
+            },
+            message_ids: vec![message_id.to_string()],
+        };
+        assert_eq!(
+            chunk_analysis_prompt(&chunk("message-1", "开头")),
+            chunk_analysis_prompt(&chunk("message-9", "结尾"))
+        );
     }
 
     #[test]
@@ -8240,25 +9443,37 @@ mod tests {
         }));
     }
 
-    #[test]
-    fn outline_gateway_timeouts_reduce_payload_instead_of_repeating_the_same_request() {
-        let gateway_timeout = ModelError {
-            kind: ModelErrorKind::UpstreamTimeout,
-            message: "gateway timeout".to_string(),
-            status_code: Some(504),
+    fn note_model_error(kind: ModelErrorKind) -> ModelError {
+        ModelError {
+            kind,
+            message: "timeout".to_string(),
+            status_code: None,
             provider_code: None,
             retry_after_ms: None,
-        };
+        }
+    }
+
+    /// 管线内的全部 operation。新增阶段时必须补进来 —— 否决名单曾经用枚举式实现，
+    /// 漏过 `deepNoteChunk` 与 `deepNoteVisionSource` 两个。
+    const DEEP_NOTE_OPERATIONS: [&str; 7] = [
+        "deepNote",
+        "deepNoteChunk",
+        "deepNoteChunkRepair",
+        "deepNoteOutline",
+        "deepNoteOutlineDirect",
+        "deepNoteOutlineFallback",
+        "deepNoteVisionSource",
+    ];
+
+    #[test]
+    fn outline_gateway_timeouts_reduce_payload_instead_of_repeating_the_same_request() {
+        let gateway_timeout = note_model_error(ModelErrorKind::UpstreamTimeout);
         assert!(!should_retry_note_model_call(
             "deepNoteOutline",
             &gateway_timeout
         ));
         assert!(!should_retry_note_model_call(
             "deepNoteOutlineFallback",
-            &gateway_timeout
-        ));
-        assert!(should_retry_note_model_call(
-            "deepNoteChunk",
             &gateway_timeout
         ));
         assert!(should_retry_note_model_call(
@@ -8270,6 +9485,264 @@ mod tests {
                 provider_code: None,
                 retry_after_ms: None,
             }
+        ));
+        for kind in [
+            ModelErrorKind::ModelNotFound,
+            ModelErrorKind::ProviderUnavailable,
+            ModelErrorKind::Authentication,
+            ModelErrorKind::QuotaExceeded,
+        ] {
+            assert!(
+                !should_retry_note_model_call("deepNoteChunk", &note_model_error(kind)),
+                "{kind:?} 不应以相同路由原样重试"
+            );
+        }
+    }
+
+    fn signature_of(
+        snapshot_hash: &str,
+        model_id: &str,
+        max_output_tokens: u32,
+        thinking_enabled: bool,
+        force_rebuild: bool,
+    ) -> String {
+        deep_note_content_signature(
+            "conversation-1",
+            snapshot_hash,
+            "provider-1",
+            model_id,
+            max_output_tokens,
+            thinking_enabled,
+            force_rebuild,
+        )
+    }
+
+    #[test]
+    fn identical_deep_note_inputs_produce_identical_idempotency_keys() {
+        // 修复前基键来自 `Uuid::new_v4()`，这个断言不可能成立。
+        let first = signature_of("snapshot-a", "model-1", 8_192, false, false);
+        let second = signature_of("snapshot-a", "model-1", 8_192, false, false);
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn every_output_affecting_input_changes_the_idempotency_key() {
+        let base = signature_of("snapshot-a", "model-1", 8_192, false, false);
+        let variants = [
+            signature_of("snapshot-b", "model-1", 8_192, false, false),
+            signature_of("snapshot-a", "model-2", 8_192, false, false),
+            signature_of("snapshot-a", "model-1", 16_384, false, false),
+            signature_of("snapshot-a", "model-1", 8_192, true, false),
+            // force_rebuild 改变来源口径（全量重建 vs 增量），必须改变指纹。
+            signature_of("snapshot-a", "model-1", 8_192, false, true),
+            deep_note_content_signature(
+                "conversation-2",
+                "snapshot-a",
+                "provider-1",
+                "model-1",
+                8_192,
+                false,
+                false,
+            ),
+            deep_note_content_signature(
+                "conversation-1",
+                "snapshot-a",
+                "provider-2",
+                "model-1",
+                8_192,
+                false,
+                false,
+            ),
+        ];
+        for variant in variants {
+            assert_ne!(base, variant);
+        }
+    }
+
+    #[test]
+    fn idempotency_key_field_separator_prevents_concatenation_ambiguity() {
+        // 「ab + c」与「a + bc」在无分隔符拼接下会撞成同一个键。
+        let left = deep_note_content_signature("ab", "c", "p", "m", 8_192, false, false);
+        let right = deep_note_content_signature("a", "bc", "p", "m", 8_192, false, false);
+        assert_ne!(left, right);
+    }
+
+    #[test]
+    fn both_timeout_kinds_are_vetoed_on_every_deep_note_operation() {
+        // 本地 `tokio::time::timeout` 到点（ClientTimeout）与网关 504（UpstreamTimeout）
+        // 是同一个物理原因。修复前两者走出相反的路：前者原样重投 5 次，后者立刻降级。
+        for operation in DEEP_NOTE_OPERATIONS {
+            let client = should_retry_note_model_call(
+                operation,
+                &note_model_error(ModelErrorKind::ClientTimeout),
+            );
+            let upstream = should_retry_note_model_call(
+                operation,
+                &note_model_error(ModelErrorKind::UpstreamTimeout),
+            );
+            assert!(!client, "{operation} 的 ClientTimeout 应被否决");
+            assert_eq!(client, upstream, "{operation} 的两种超时应当同构");
+        }
+    }
+
+    #[test]
+    fn non_pipeline_operations_keep_retrying_on_timeout() {
+        // 前缀判定不能把普通会话的超时重试一并砍掉：那里没有「缩小载荷再来」的退路。
+        for operation in ["chat", "titleSuggestion", "deepReview"] {
+            assert!(should_retry_note_model_call(
+                operation,
+                &note_model_error(ModelErrorKind::ClientTimeout)
+            ));
+        }
+    }
+
+    #[test]
+    fn provider_unavailable_is_never_retried() {
+        for operation in DEEP_NOTE_OPERATIONS {
+            assert!(!should_retry_note_model_call(
+                operation,
+                &note_model_error(ModelErrorKind::ProviderUnavailable)
+            ));
+        }
+    }
+
+    fn attachment(kind: &str) -> StoredChatAttachment {
+        StoredChatAttachment {
+            id: format!("attachment-{kind}"),
+            kind: kind.to_string(),
+            name: format!("source.{kind}"),
+            mime_type: "application/octet-stream".to_string(),
+            size_bytes: 8,
+            path: format!("attachment-{kind}.bin"),
+            preview_path: None,
+            width: None,
+            height: None,
+        }
+    }
+
+    /// 字节硬闸报出的 kind 必须能触发缩小载荷，否则这道闸只是把「发出去被网关拒」
+    /// 换成「本地直接失败」，用户体验更差。
+    #[test]
+    fn byte_gate_rejection_triggers_the_payload_reduction_path() {
+        assert!(should_fallback_to_chunked_planner(&note_model_error(
+            ModelErrorKind::ContextLengthExceeded
+        )));
+    }
+
+    #[test]
+    fn image_attachments_get_the_wider_byte_budget() {
+        assert_eq!(request_byte_limit(&[]), REQUEST_BYTE_LIMIT);
+        assert_eq!(
+            request_byte_limit(&[attachment("file")]),
+            REQUEST_BYTE_LIMIT,
+            "非图片附件的内容以文本进入 prompt，走文本档"
+        );
+        assert_eq!(
+            request_byte_limit(&[attachment("image")]),
+            VISION_REQUEST_BYTE_LIMIT
+        );
+        assert_eq!(
+            request_byte_limit(&[attachment("file"), attachment("image")]),
+            VISION_REQUEST_BYTE_LIMIT,
+            "混合附件里只要有一张图，就按带图档放宽"
+        );
+        assert!(VISION_REQUEST_BYTE_LIMIT > REQUEST_BYTE_LIMIT);
+    }
+
+    /// `transcript` 曾经把长度控制交给一个恒等函数 `truncate_chars`，等于没有控制。
+    /// 现在明确不截断 —— 截断会静默丢掉 message-id，让后续引用校验把丢失的来源
+    /// 判成模型编造。这个测试锁住「全部来源都在」这个性质。
+    #[test]
+    fn transcript_keeps_every_source_anchor_instead_of_truncating() {
+        let messages = (1..=40)
+            .map(|index| {
+                message(
+                    &format!("message-{index}"),
+                    if index % 2 == 1 {
+                        ModelRole::User
+                    } else {
+                        ModelRole::Assistant
+                    },
+                    "内容".repeat(500),
+                )
+            })
+            .collect::<Vec<_>>();
+        let conversation = conversation(messages);
+        let transcript = super::transcript(&conversation, false);
+        for index in 1..=40 {
+            let anchor = format!("<!-- message-id: message-{index} -->");
+            assert!(
+                transcript.contains(&anchor),
+                "转录丢了 {anchor}，长度控制不能靠截断来做"
+            );
+        }
+    }
+
+    /// section 的起点只记首次，重试不刷新。
+    ///
+    /// 如果每次重试都重置起点，一个反复重试的 section 永远撞不到上限 —— 预算写了
+    /// 等于没写，而这正是「单个 section 卡死拖垮整个 run」的成因。
+    #[test]
+    fn section_wall_clock_start_is_recorded_once_and_survives_retries() {
+        let mut started_at = std::collections::BTreeMap::new();
+        let budget = crate::chat::note_pipeline::types::DeepNoteBudget::for_section_count(4);
+        let limit = budget.section_wall_clock_ms;
+
+        // 首次进入：登记起点，此刻 elapsed 为 0，不该触发。
+        assert!(!section_wall_clock_exhausted(
+            &mut started_at,
+            &budget,
+            "s1",
+            1_000
+        ));
+        assert_eq!(started_at.get("s1"), Some(&1_000));
+
+        // 第二次进入（重试）：起点必须还是 1_000，不能被刷新成新的 now。
+        assert!(!section_wall_clock_exhausted(
+            &mut started_at,
+            &budget,
+            "s1",
+            1_000 + limit - 1
+        ));
+        assert_eq!(
+            started_at.get("s1"),
+            Some(&1_000),
+            "重试刷新了起点，这个 section 将永远不会超时"
+        );
+
+        // 累计跨过上限：触发。
+        assert!(section_wall_clock_exhausted(
+            &mut started_at,
+            &budget,
+            "s1",
+            1_000 + limit
+        ));
+
+        // 各 section 独立计时：一个超时不牵连另一个。
+        assert!(!section_wall_clock_exhausted(
+            &mut started_at,
+            &budget,
+            "s2",
+            1_000 + limit
+        ));
+    }
+
+    /// 时钟回拨不该把 section 判成超时。饱和减法保证 elapsed 落到 0。
+    #[test]
+    fn section_wall_clock_tolerates_a_clock_moving_backwards() {
+        let mut started_at = std::collections::BTreeMap::new();
+        let budget = crate::chat::note_pipeline::types::DeepNoteBudget::for_section_count(2);
+        assert!(!section_wall_clock_exhausted(
+            &mut started_at,
+            &budget,
+            "s1",
+            10_000
+        ));
+        assert!(!section_wall_clock_exhausted(
+            &mut started_at,
+            &budget,
+            "s1",
+            5_000
         ));
     }
 

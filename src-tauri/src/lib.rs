@@ -108,6 +108,16 @@ pub fn run() {
                         true,
                     )
                     .map_err(std::io::Error::other)?;
+                scope
+                    .allow_directory(
+                        app_state
+                            .storage
+                            .current_data_dir()
+                            .join("library")
+                            .join("notes"),
+                        true,
+                    )
+                    .map_err(std::io::Error::other)?;
             }
             app.manage(app_state);
             app.manage(html_preview::HtmlPreviewState::default());
@@ -224,6 +234,7 @@ pub fn run() {
             commands::library::library_delete_annotation,
             commands::library::library_list_notes,
             commands::library::library_get_note,
+            commands::library::library_export_note,
             commands::library::library_create_note,
             commands::library::library_create_note_with_sources,
             commands::library::library_list_note_sources,

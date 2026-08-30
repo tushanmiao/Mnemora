@@ -85,6 +85,14 @@ impl ModelError {
         Self::new(ModelErrorKind::ContextLengthExceeded, message)
     }
 
+    pub fn route_unavailable(message: impl Into<String>) -> Self {
+        Self::new(ModelErrorKind::ProviderUnavailable, message)
+    }
+
+    pub fn model_not_found(message: impl Into<String>) -> Self {
+        Self::new(ModelErrorKind::ModelNotFound, message)
+    }
+
     pub fn from_reqwest(error: reqwest::Error) -> Self {
         let (kind, message) = if error.is_timeout() {
             (ModelErrorKind::ClientTimeout, "模型请求超时，请稍后重试。")

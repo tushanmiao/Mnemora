@@ -486,6 +486,8 @@ export const zhTranslations = {
   "general.systemPrompt": "自定义全局提示词",
   "general.response": "响应",
   "general.streaming": "流式输出",
+  "general.deepNoteStreamKeepalive": "深度笔记流式保活",
+  "general.deepNoteStreamKeepaliveDescription": "深度笔记的模型调用以流式发出，避免长文生成期间连接静默被中转站网关按空闲切断。上游不支持流式时会自动回落非流式。",
   "general.thinking": "思考模式",
   "general.maxTokens": "最大输出 Token",
   "general.responseLanguage": "回复语言",

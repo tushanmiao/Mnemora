@@ -7,7 +7,8 @@
  * - `ProviderModelConfig`：供应商下的一条模型映射，区分 API Model 与 Display Name。
  * - `ApiProtocol`：实际发送请求时采用的网络协议，与供应商身份相互独立。
  *
- * 稳定身份始终使用 `providerId + modelId`。展示名称只用于界面，不能参与请求或数据关联。
+ * 用户选择仍使用 `providerId + modelId`；运行时容量状态还会加入 endpoint、协议、
+ * 凭据代际与传输方式，避免中转站配置变化后错误继承旧包线。
  */
 
 /** 用户对供应商来源的分类，不决定实际网络协议。 */
@@ -87,6 +88,8 @@ export interface ProviderConfig {
   authScheme: AuthScheme;
   /** API 服务基础地址，由 Rust adapter 追加对应协议路径。 */
   baseUrl: string;
+  /** 非敏感凭据代际；由 Rust 在 API Key 写入或删除时递增。 */
+  credentialRevision: number;
   /** 是否已经配置 API Key；普通配置读取不应返回完整 Key。 */
   hasApiKey: boolean;
   /** 关闭后该供应商及其模型不会出现在模型选择器中。 */
@@ -115,7 +118,7 @@ export type ProviderApiKeyUpdate =
   | { providerId: string; action: "set"; apiKey: string }
   | { providerId: string; action: "delete" };
 
-export const CURRENT_MODEL_SETTINGS_VERSION = 6;
+export const CURRENT_MODEL_SETTINGS_VERSION = 7;
 
 /** 创建首次启动时的三家官方供应商配置。 */
 export function createInitialModelSettings(): ModelSettings {
@@ -129,6 +132,7 @@ export function createInitialModelSettings(): ModelSettings {
         protocol: "openAiResponses",
         authScheme: "protocolDefault",
         baseUrl: "https://api.openai.com/v1",
+        credentialRevision: 0,
         hasApiKey: false,
         enabled: true,
         models: [],
@@ -140,6 +144,7 @@ export function createInitialModelSettings(): ModelSettings {
         protocol: "anthropicMessages",
         authScheme: "protocolDefault",
         baseUrl: "https://api.anthropic.com/v1",
+        credentialRevision: 0,
         hasApiKey: false,
         enabled: true,
         models: [],
@@ -151,6 +156,7 @@ export function createInitialModelSettings(): ModelSettings {
         protocol: "geminiGenerateContent",
         authScheme: "protocolDefault",
         baseUrl: "https://generativelanguage.googleapis.com/v1beta",
+        credentialRevision: 0,
         hasApiKey: false,
         enabled: true,
         models: [],

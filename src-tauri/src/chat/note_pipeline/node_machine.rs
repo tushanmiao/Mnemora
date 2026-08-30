@@ -7,22 +7,20 @@ use crate::{
 pub enum DagNodeEvent {
     DependenciesSatisfied,
     DependencyFailed,
-    LeaseAcquired,
     ExecutionStarted,
     ExecutionSucceeded,
+    ExecutionInterrupted,
     ValidationPassed,
     ValidationFailed,
     RevisionScheduled,
     RetryScheduled,
     AttemptLimitReached,
-    LeaseExpired,
     PlanSuperseded,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DagNodeEffect {
     StartWorker,
-    ReleaseLease,
     MarkSuperseded,
 }
 
@@ -42,22 +40,14 @@ impl DagNodeMachine {
         }
         use DagNodeEvent as E;
         use DeepNoteNodeStatus as S;
-        if current == S::Ready && target == S::InProgress {
-            return Ok(Transition {
-                next_state: target,
-                effects: vec![DagNodeEffect::StartWorker],
-                reason: "兼容旧调度器直接领取并开始节点",
-            });
-        }
         let event = match (current, target) {
             (S::Pending, S::Ready) => E::DependenciesSatisfied,
             (S::Pending, S::Blocked) => E::DependencyFailed,
-            (S::Ready, S::Leased) => E::LeaseAcquired,
-            (S::Leased, S::InProgress) => E::ExecutionStarted,
+            (S::Ready, S::InProgress) => E::ExecutionStarted,
             (S::Ready, S::Interrupted) => {
                 return Ok(Transition {
                     next_state: target,
-                    effects: vec![DagNodeEffect::ReleaseLease],
+                    effects: Vec::new(),
                     reason: "调度在执行前被安全中断",
                 })
             }
@@ -65,7 +55,7 @@ impl DagNodeMachine {
             (S::InProgress, S::Completed) => {
                 return Ok(Transition {
                     next_state: S::Completed,
-                    effects: vec![DagNodeEffect::ReleaseLease],
+                    effects: Vec::new(),
                     reason: "兼容原子执行与验证节点",
                 })
             }
@@ -82,7 +72,7 @@ impl DagNodeMachine {
             }
             (S::InProgress, S::Failed) | (S::NeedsRevision, S::Failed) => E::AttemptLimitReached,
             (S::NeedsReview, S::Failed) => E::AttemptLimitReached,
-            (S::InProgress, S::Interrupted) => E::LeaseExpired,
+            (S::InProgress, S::Interrupted) => E::ExecutionInterrupted,
             (
                 S::Failed | S::Blocked | S::Interrupted | S::NeedsReview | S::NeedsRevision,
                 S::Pending,
@@ -94,10 +84,10 @@ impl DagNodeMachine {
                 })
             }
             (S::NeedsReview | S::NeedsRevision, S::Skipped)
-            | (S::Pending | S::Ready | S::Leased | S::Interrupted, S::Skipped) => {
+            | (S::Pending | S::Ready | S::Interrupted, S::Skipped) => {
                 return Ok(Transition {
                     next_state: target,
-                    effects: vec![DagNodeEffect::ReleaseLease],
+                    effects: Vec::new(),
                     reason: "兼容调度器跳过未完成节点",
                 })
             }
@@ -144,43 +134,26 @@ impl StateMachine for DagNodeMachine {
         match (state, event) {
             (S::Pending, E::DependenciesSatisfied) => ok(S::Ready, vec![], "依赖已满足"),
             (S::Pending, E::DependencyFailed) => ok(S::Blocked, vec![], "依赖失败"),
-            (S::Ready, E::LeaseAcquired) => ok(S::Leased, vec![], "领取节点租约"),
-            (S::Leased, E::ExecutionStarted) => ok(
+            (S::Ready, E::ExecutionStarted) => ok(
                 S::InProgress,
                 vec![DagNodeEffect::StartWorker],
                 "开始执行节点",
             ),
-            (S::InProgress, E::ExecutionSucceeded) => ok(
-                S::NeedsReview,
-                vec![DagNodeEffect::ReleaseLease],
-                "执行完成等待验证",
-            ),
+            (S::InProgress, E::ExecutionSucceeded) => {
+                ok(S::NeedsReview, vec![], "执行完成等待验证")
+            }
             (S::NeedsReview, E::ValidationPassed) => ok(S::Completed, vec![], "验证通过"),
             (S::NeedsReview, E::ValidationFailed) => ok(S::NeedsRevision, vec![], "需要修订"),
             (S::NeedsRevision, E::RevisionScheduled) => ok(S::Ready, vec![], "重新排队修订"),
             (S::InProgress, E::RetryScheduled) | (S::NeedsRevision, E::RetryScheduled) => {
-                ok(S::Ready, vec![DagNodeEffect::ReleaseLease], "节点重试")
+                ok(S::Ready, vec![], "节点重试")
             }
             (S::InProgress | S::NeedsReview | S::NeedsRevision, E::AttemptLimitReached) => {
-                ok(S::Failed, vec![DagNodeEffect::ReleaseLease], "达到尝试上限")
+                ok(S::Failed, vec![], "达到尝试上限")
             }
-            (S::Leased, E::LeaseExpired) => ok(
-                S::Ready,
-                vec![DagNodeEffect::ReleaseLease],
-                "领取后租约过期",
-            ),
-            (S::InProgress, E::LeaseExpired) => ok(
-                S::Interrupted,
-                vec![DagNodeEffect::ReleaseLease],
-                "租约过期",
-            ),
+            (S::InProgress, E::ExecutionInterrupted) => ok(S::Interrupted, vec![], "执行被中断"),
             (
-                S::Pending
-                | S::Ready
-                | S::Leased
-                | S::NeedsReview
-                | S::NeedsRevision
-                | S::Interrupted,
+                S::Pending | S::Ready | S::NeedsReview | S::NeedsRevision | S::Interrupted,
                 E::PlanSuperseded,
             ) => ok(
                 S::Superseded,
@@ -213,14 +186,14 @@ mod tests {
     }
 
     #[test]
-    fn expired_lease_returns_to_ready_and_compatibility_targets_match() {
-        let expired = DagNodeMachine::transition(
-            DeepNoteNodeStatus::Leased,
-            &DagNodeEvent::LeaseExpired,
+    fn interrupted_execution_and_compatibility_targets_match() {
+        let interrupted = DagNodeMachine::transition(
+            DeepNoteNodeStatus::InProgress,
+            &DagNodeEvent::ExecutionInterrupted,
             &(),
         )
         .unwrap();
-        assert_eq!(expired.next_state, DeepNoteNodeStatus::Ready);
+        assert_eq!(interrupted.next_state, DeepNoteNodeStatus::Interrupted);
         let skipped = DagNodeMachine::transition_to(
             DeepNoteNodeStatus::NeedsReview,
             DeepNoteNodeStatus::Skipped,

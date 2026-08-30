@@ -78,6 +78,12 @@ export interface AppSettings {
   userAvatar: string;
   workingDirectory: string;
   streamEnabled: boolean;
+  /**
+   * 深度笔记的模型调用是否走流式。与 `streamEnabled` 无关（后者只决定聊天调哪个命令）。
+   * 目的是保活：非流式请求生成期间连接静默，容易撞上中转站的 idle 超时。
+   * 默认开启；流式失败会自动回落非流式并记一次告警。
+   */
+  deepNoteStreamKeepalive: boolean;
   thinkingEnabled: boolean;
   maxOutputTokens: number;
   responseLanguage: ResponseLanguage;
@@ -145,6 +151,7 @@ export function createInitialAppSettings(): AppSettings {
     userAvatar: "",
     workingDirectory: "",
     streamEnabled: true,
+    deepNoteStreamKeepalive: true,
     thinkingEnabled: false,
     maxOutputTokens: 32_768,
     responseLanguage: "followInput",

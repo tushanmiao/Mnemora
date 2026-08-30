@@ -4,7 +4,7 @@
 //! `load_model_settings` / `save_model_settings` 只传递非敏感配置；
 //! `set_provider_api_key` / `delete_provider_api_key` 是密钥的单向写入和删除入口。
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use tauri::State;
 use zeroize::Zeroizing;
@@ -29,17 +29,33 @@ pub async fn load_model_settings(state: State<'_, AppState>) -> Result<ModelSett
 #[tauri::command]
 pub async fn save_model_settings(
     state: State<'_, AppState>,
-    settings: ModelSettings,
+    mut settings: ModelSettings,
 ) -> Result<ModelSettings, String> {
+    let (previous_provider_ids, credential_revisions) = {
+        let previous = state
+            .model_settings
+            .read()
+            .map_err(|_| "Model settings lock is unavailable".to_string())?;
+        (
+            previous
+                .providers
+                .iter()
+                .map(|provider| provider.id.clone())
+                .collect::<HashSet<_>>(),
+            previous
+                .providers
+                .iter()
+                .map(|provider| (provider.id.clone(), provider.credential_revision))
+                .collect::<HashMap<_, _>>(),
+        )
+    };
+    // 凭据代际属于 Rust/系统凭据边界，不能被前端提交的旧快照回退。
+    for provider in &mut settings.providers {
+        if let Some(revision) = credential_revisions.get(&provider.id) {
+            provider.credential_revision = *revision;
+        }
+    }
     let settings = settings.normalize_and_validate()?;
-    let previous_provider_ids = state
-        .model_settings
-        .read()
-        .map_err(|_| "Model settings lock is unavailable".to_string())?
-        .providers
-        .iter()
-        .map(|provider| provider.id.clone())
-        .collect::<HashSet<_>>();
     let next_provider_ids = settings
         .providers
         .iter()
@@ -65,6 +81,12 @@ pub async fn save_model_settings(
     .await
     .map_err(join_error)??;
 
+    if let Err(error) = state
+        .library_repository
+        .reconcile_deep_note_route_profiles(&saved)
+    {
+        eprintln!("Failed to reconcile DeepNote route profiles after settings save: {error}");
+    }
     *state
         .model_settings
         .write()
@@ -97,15 +119,35 @@ pub async fn set_provider_api_key(
     .await
     .map_err(join_error)??;
 
-    if let Some(provider) = state
+    let settings = {
+        let mut settings = state
+            .model_settings
+            .write()
+            .map_err(|_| "Model settings lock is unavailable".to_string())?;
+        if let Some(provider) = settings
+            .providers
+            .iter_mut()
+            .find(|provider| provider.id == provider_id)
+        {
+            provider.has_api_key = true;
+            provider.credential_revision = provider.credential_revision.saturating_add(1);
+        }
+        settings.clone()
+    };
+    let repository = state.model_settings_repository.clone();
+    tauri::async_runtime::spawn_blocking(move || repository.save(&settings))
+        .await
+        .map_err(join_error)??;
+    let snapshot = state
         .model_settings
-        .write()
+        .read()
         .map_err(|_| "Model settings lock is unavailable".to_string())?
-        .providers
-        .iter_mut()
-        .find(|provider| provider.id == provider_id)
+        .clone();
+    if let Err(error) = state
+        .library_repository
+        .reconcile_deep_note_route_profiles(&snapshot)
     {
-        provider.has_api_key = true;
+        eprintln!("Failed to reconcile DeepNote route profiles after credential update: {error}");
     }
     Ok(true)
 }
@@ -131,15 +173,35 @@ pub async fn delete_provider_api_key(
         .await
         .map_err(join_error)??;
 
-    if let Some(provider) = state
+    let settings = {
+        let mut settings = state
+            .model_settings
+            .write()
+            .map_err(|_| "Model settings lock is unavailable".to_string())?;
+        if let Some(provider) = settings
+            .providers
+            .iter_mut()
+            .find(|provider| provider.id == provider_id)
+        {
+            provider.has_api_key = false;
+            provider.credential_revision = provider.credential_revision.saturating_add(1);
+        }
+        settings.clone()
+    };
+    let repository = state.model_settings_repository.clone();
+    tauri::async_runtime::spawn_blocking(move || repository.save(&settings))
+        .await
+        .map_err(join_error)??;
+    let snapshot = state
         .model_settings
-        .write()
+        .read()
         .map_err(|_| "Model settings lock is unavailable".to_string())?
-        .providers
-        .iter_mut()
-        .find(|provider| provider.id == provider_id)
+        .clone();
+    if let Err(error) = state
+        .library_repository
+        .reconcile_deep_note_route_profiles(&snapshot)
     {
-        provider.has_api_key = false;
+        eprintln!("Failed to reconcile DeepNote route profiles after credential delete: {error}");
     }
     Ok(true)
 }

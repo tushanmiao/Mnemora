@@ -19,8 +19,8 @@ function detail(overrides: Partial<DeepNoteRunDetail> = {}): DeepNoteRunDetail {
     preflight: null,
     inputSnapshot: null,
     planVersion: null,
-    budget: { semanticCallLimit: 12, semanticCallsUsed: 0, nodeAttemptLimit: 5, sectionRevisionLimit: 5, replanLimit: 4, replansUsed: 0, maxParallelNodes: 2, maxParallelChunks: 2 },
-    contextBudget: { contextWindowTokens: 128_000, estimatedInputTokens: 58_000, plannerOutputReserveTokens: 4_096, promptOverheadTokens: 4_096, safetyMarginTokens: 8_000, usableInputTokens: 100_000, directInputLimitTokens: 24_000, chunkTargetTokens: 16_000, chunkCount: 5, processedChunkCount: 5, totalMessageCount: 24, processedMessageCount: 24, coverageComplete: true, omittedMessageIds: [] },
+    budget: { semanticCallLimit: 12, semanticCallsUsed: 0, upstreamRequestLimit: 640, upstreamRequestsUsed: 0, nodeAttemptLimit: 5, sectionRevisionLimit: 5, replanLimit: 4, replansUsed: 0, maxParallelNodes: 2, maxParallelChunks: 2 },
+    contextBudget: { contextWindowTokens: 128_000, estimatedInputTokens: 58_000, plannerOutputReserveTokens: 4_096, promptOverheadTokens: 4_096, safetyMarginTokens: 8_000, usableInputTokens: 100_000, directInputLimitTokens: 24_000, chunkTargetTokens: 16_000, adaptiveChunkLimitTokens: 16_000, adaptiveRouteKey: "route-1", adaptiveRouteState: "available", adaptiveProfileSamples: 12, chunkCount: 5, processedChunkCount: 5, totalMessageCount: 24, processedMessageCount: 24, coverageComplete: true, omittedMessageIds: [] },
     sourceChunkCount: 5, nodes: [], sections: [], sourceChunks: [], evidence: [], ledger: {}, events: [], markdownPreview: "", sidecarJson: "{}",
     ...overrides,
   };
@@ -91,6 +91,36 @@ describe("deep note diagnostics", () => {
     expect(event.detail).toContain("4096 Token");
   });
 
+  it("shows physical upstream attempts and request-budget exhaustion", () => {
+    const attempt = describeNotePipelineEvent({
+      sequence: 4,
+      eventType: "modelAttemptStarted",
+      nodeId: null,
+      payloadJson: JSON.stringify({
+        operation: "deepNoteChunk", requestIndex: 2, retryIndex: 0, maxRetries: 3,
+        transport: "nonStreaming", requestBytes: 2 * 1024 * 1024,
+      }),
+      createdAt: 21_000,
+    });
+    const exhausted = describeNotePipelineEvent({
+      sequence: 5,
+      eventType: "runBudgetExhausted",
+      nodeId: null,
+      payloadJson: JSON.stringify({
+        reason: "upstreamRequests", upstreamRequestsUsed: 640, upstreamRequestLimit: 640,
+      }),
+      createdAt: 22_000,
+    });
+
+    expect(attempt.label).toBe("来源分块提取上游请求开始");
+    expect(attempt.detail).toContain("物理请求 #2");
+    expect(attempt.detail).toContain("2.00 MiB");
+    expect(exhausted).toEqual({
+      label: "运行预算已耗尽",
+      detail: "上游请求 640/640，已停止发出新请求",
+    });
+  });
+
   it("keeps legacy model events readable without invented zero metrics", () => {
     const event = describeNotePipelineEvent({
       sequence: 4,
@@ -102,6 +132,28 @@ describe("deep note diagnostics", () => {
     expect(event.detail).toBe("耗时 2 秒 · 返回 180 字符");
     expect(event.detail).not.toContain("输入 0");
     expect(event.detail).not.toContain("输出上限 0");
+  });
+
+  it("explains dynamic route suppression and attachment packing", () => {
+    const suppressed = describeNotePipelineEvent({
+      sequence: 6,
+      eventType: "routeCallSuppressed",
+      nodeId: null,
+      payloadJson: JSON.stringify({ routeState: "unsupported", message: "模型暂不可用" }),
+      createdAt: 23_000,
+    });
+    const packed = describeNotePipelineEvent({
+      sequence: 7,
+      eventType: "attachmentChunksPacked",
+      nodeId: null,
+      payloadJson: JSON.stringify({ unpackedChunkCount: 12, packedChunkCount: 5, targetTokens: 8_000 }),
+      createdAt: 24_000,
+    });
+    expect(suppressed).toEqual({
+      label: "动态路由已阻止请求",
+      detail: "模型暂不可用 · 状态 unsupported",
+    });
+    expect(packed.detail).toBe("12 → 5 个，目标 8000 Token");
   });
 
   it("explains continue, retry, and restart recovery events", () => {

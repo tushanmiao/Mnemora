@@ -29,7 +29,6 @@ pub fn sync_document(
 
     let relative = mapped_relative_path
         .and_then(validate_mapped_path)
-        .map(PathBuf::from)
         .unwrap_or_else(|| {
             let file_name = format!(
                 "{}--{}.md",
@@ -73,16 +72,20 @@ fn validate_vault(value: &str) -> Result<PathBuf, String> {
         .map_err(|error| format!("读取 Obsidian Vault 失败：{error}"))
 }
 
-fn validate_mapped_path(value: &str) -> Option<&str> {
+fn validate_mapped_path(value: &str) -> Option<PathBuf> {
     let path = Path::new(value);
-    (!path.is_absolute()
-        && path
+    if path.is_absolute()
+        || !path
             .components()
             .all(|component| matches!(component, std::path::Component::Normal(_)))
-        && path
-            .extension()
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("md")))
-    .then_some(value)
+    {
+        return None;
+    }
+    match path.extension() {
+        Some(extension) if extension.eq_ignore_ascii_case("md") => Some(path.to_path_buf()),
+        Some(_) => None,
+        None => Some(path.join("note.md")),
+    }
 }
 
 fn safe_file_name(value: &str) -> String {
@@ -119,10 +122,26 @@ fn short_id(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::safe_file_name;
+    use std::path::PathBuf;
+
+    use super::{safe_file_name, validate_mapped_path};
 
     #[test]
     fn file_names_remove_windows_reserved_characters() {
         assert_eq!(safe_file_name("A:B/C?"), "A_B_C_");
+    }
+
+    #[test]
+    fn mapped_note_directories_resolve_to_note_md_without_allowing_traversal() {
+        assert_eq!(
+            validate_mapped_path("deep-notes/note-1"),
+            Some(PathBuf::from("deep-notes/note-1/note.md"))
+        );
+        assert_eq!(
+            validate_mapped_path("legacy/note.md"),
+            Some(PathBuf::from("legacy/note.md"))
+        );
+        assert_eq!(validate_mapped_path("../outside"), None);
+        assert_eq!(validate_mapped_path("C:\\outside"), None);
     }
 }

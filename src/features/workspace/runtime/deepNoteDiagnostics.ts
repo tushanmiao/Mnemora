@@ -243,6 +243,13 @@ function number(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+function formatRequestBytes(value: number): string {
+  if (value < 1024) return `${Math.max(0, Math.round(value))} B`;
+  return value < 1024 * 1024
+    ? `${Math.round(value / 1024)} KiB`
+    : `${(value / 1024 / 1024).toFixed(2)} MiB`;
+}
+
 function modelStage(value: unknown): string {
   switch (text(value)) {
     case "deepNoteChunk": return "来源分块提取";
@@ -259,8 +266,18 @@ function modelCallMetrics(data: Record<string, unknown>, includeResponse: boolea
   const inputChars = number(data.inputChars);
   const responseChars = number(data.responseChars);
   const maxOutputTokens = number(data.maxOutputTokens);
+  const requestBytes = number(data.requestBytes);
+  const actualAttemptCount = number(data.actualAttemptCount);
+  const ttftMs = number(data.timeToFirstTokenMs);
+  const adaptiveTargetTokens = number(data.adaptiveTargetTokens);
+  const routeState = text(data.routeState);
   if (inputChars !== null) metrics.push(`输入 ${inputChars} 字符`);
   if (includeResponse && responseChars !== null) metrics.push(`返回 ${responseChars} 字符`);
+  if (requestBytes !== null) metrics.push(`请求体 ${formatRequestBytes(requestBytes)}`);
+  if (actualAttemptCount !== null) metrics.push(`物理请求 ${actualAttemptCount} 次`);
+  if (ttftMs !== null) metrics.push(`首字 ${formatDuration(ttftMs)}`);
+  if (adaptiveTargetTokens !== null) metrics.push(`动态上限 ${adaptiveTargetTokens} Token`);
+  if (routeState) metrics.push(`路由 ${routeState}`);
   if (maxOutputTokens !== null) metrics.push(`输出上限 ${maxOutputTokens} Token`);
   return metrics.join(" · ");
 }
@@ -320,6 +337,31 @@ export function describeNotePipelineEvent(record: NotePipelineEventRecord): { la
       };
     case "modelRetryScheduled":
       return { label: "模型请求准备重试", detail: text(activity.lastError) ?? text(data.message) ?? "等待重试" };
+    case "modelAttemptStarted":
+      return {
+        label: `${modelStage(data.operation)}上游请求开始`,
+        detail: [
+          `物理请求 #${number(data.requestIndex) ?? "-"}`,
+          text(data.transport) === "streaming" ? "流式" : "非流式",
+          number(data.requestBytes) !== null ? `请求体 ${formatRequestBytes(number(data.requestBytes) ?? 0)}` : null,
+          `重试序号 ${number(data.retryIndex) ?? 0}/${number(data.maxRetries) ?? 0}`,
+        ].filter(Boolean).join(" · "),
+      };
+    case "routeCallSuppressed":
+      return {
+        label: "动态路由已阻止请求",
+        detail: [
+          text(data.message) ?? "路由暂不可用",
+          text(data.routeState) ? `状态 ${text(data.routeState)}` : null,
+        ].filter(Boolean).join(" · "),
+      };
+    case "routeProfileUpdateFailed":
+      return { label: "路由容量状态写入失败", detail: text(data.message) ?? "本次继续使用旧安全值" };
+    case "attachmentChunksPacked":
+      return {
+        label: "附件分块已按动态包线打包",
+        detail: `${number(data.unpackedChunkCount) ?? 0} → ${number(data.packedChunkCount) ?? 0} 个，目标 ${number(data.targetTokens) ?? 0} Token`,
+      };
     case "modelCallCompleted":
       return {
         label: `${modelStage(data.operation)}完成`,
@@ -348,6 +390,13 @@ export function describeNotePipelineEvent(record: NotePipelineEventRecord): { la
       return { label: `${text(data.heading) ?? "章节"}生成失败`, detail: text(data.message) ?? "未通过验证" };
     case "runPaused":
       return { label: "任务暂停", detail: "当前请求已中断，检查点已保留" };
+    case "runBudgetExhausted":
+      return {
+        label: "运行预算已耗尽",
+        detail: data.reason === "upstreamRequests"
+          ? `上游请求 ${number(data.upstreamRequestsUsed) ?? 0}/${number(data.upstreamRequestLimit) ?? 0}，已停止发出新请求`
+          : `累计上游等待 ${formatDuration(number(data.upstreamWallClockMs) ?? 0)}，已进入收敛流程`,
+      };
     case "runCancellationRequested":
       return { label: "已请求停止任务", detail: "正在等待后台任务协作退出" };
     case "runCancelled":

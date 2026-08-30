@@ -459,7 +459,7 @@ export function NoteWorkspace({
             ) : (
               <div ref={previewRef} className="note-workspace-preview" onMouseUp={showPreviewSelection} onScroll={() => setSelectionMenu(null)}>
                 <Suspense fallback={<div className="work-library-state" role="status"><LoaderCircle className="work-library-spinner" size={20} /><span>正在加载预览</span></div>}>
-                  <MarkdownNotePreview noteId={note.id} content={content} />
+                  <MarkdownNotePreview noteId={note.id} content={content} directoryPath={note.directoryPath} />
                 </Suspense>
               </div>
             )}

@@ -301,6 +301,7 @@ export function ModelSettingsPanel({
       protocol: "openAiChatCompletions",
       authScheme: "protocolDefault",
       baseUrl: "",
+      credentialRevision: 0,
       hasApiKey: false,
       enabled: true,
       models: [],

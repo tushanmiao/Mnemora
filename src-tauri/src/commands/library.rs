@@ -242,9 +242,21 @@ pub async fn library_list_notes(
     item_id: Option<String>,
 ) -> Result<Vec<LibraryNoteSummary>, String> {
     let repository = state.library_repository.clone();
-    tauri::async_runtime::spawn_blocking(move || repository.list_notes(item_id.as_deref()))
+    let maintenance_repository = repository.clone();
+    let maintenance_operations = state.library_operations.clone();
+    let notes = tauri::async_runtime::spawn_blocking(move || repository.list_notes(item_id.as_deref()))
         .await
-        .map_err(join_error)?
+        .map_err(join_error)??;
+    tauri::async_runtime::spawn(async move {
+        let _maintenance_guard = maintenance_operations.lock().await;
+        let _ = tauri::async_runtime::spawn_blocking(move || {
+            let _ = maintenance_repository.migrate_legacy_note_directories(20);
+            let _ = maintenance_repository.reconcile_note_directory_shadows();
+            let _ = maintenance_repository.collect_orphan_note_directories();
+        })
+        .await;
+    });
+    Ok(notes)
 }
 
 #[tauri::command]
@@ -256,6 +268,21 @@ pub async fn library_get_note(
     tauri::async_runtime::spawn_blocking(move || repository.get_note(&note_id))
         .await
         .map_err(join_error)?
+}
+
+#[tauri::command]
+pub async fn library_export_note(
+    state: State<'_, AppState>,
+    note_id: String,
+    destination_parent: String,
+) -> Result<String, String> {
+    let repository = state.library_repository.clone();
+    let path = tauri::async_runtime::spawn_blocking(move || {
+        repository.export_note(&note_id, &destination_parent)
+    })
+    .await
+    .map_err(join_error)??;
+    Ok(path.to_string_lossy().into_owned())
 }
 
 #[tauri::command]

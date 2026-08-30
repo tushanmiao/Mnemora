@@ -16,6 +16,7 @@ use zeroize::Zeroizing;
 
 use crate::{
     ai::{
+        concurrency::ProviderRequestClass,
         dispatcher,
         error::{ModelError, ModelErrorKind},
         stream,
@@ -107,6 +108,38 @@ pub enum CompletionProgress {
         delay_ms: u64,
         error: ModelError,
     },
+    /// 流式保活尝试失败，本次调用已回落非流式。携带触发回落的错误。
+    StreamKeepaliveFellBack {
+        error: ModelError,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompletionTransport {
+    Streaming,
+    NonStreaming,
+}
+
+impl CompletionTransport {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Streaming => "streaming",
+            Self::NonStreaming => "nonStreaming",
+        }
+    }
+}
+
+/// 一次真正要发给 provider 的物理请求。
+///
+/// `retry_index` 统计同载荷重试，`request_index` 则贯穿整个逻辑调用。流式失败后回落
+/// 非流式时，两者的 retry_index 相同、request_index 不同；预算必须按后者扣减。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UpstreamRequestAttempt {
+    pub retry_index: u8,
+    pub max_retries: u8,
+    pub request_index: u32,
+    pub transport: CompletionTransport,
+    pub request_bytes: usize,
 }
 
 pub struct CompleteExecution<'a> {
@@ -115,6 +148,41 @@ pub struct CompleteExecution<'a> {
     pub attempt_timeout: Option<Duration>,
     pub retry_predicate: Option<&'a (dyn Fn(&ModelError) -> bool + Send + Sync)>,
     pub on_progress: Option<&'a (dyn Fn(CompletionProgress) + Send + Sync)>,
+    /// 物理 HTTP 请求发出前的同步闸门。返回错误会阻止该请求发出。
+    ///
+    /// DeepNote 用它在 SQLite 的 IMMEDIATE 事务里原子扣减上游请求预算；普通重试和
+    /// 流式回落都会经过这里，所以不会再把一次逻辑调用误记成一次上游请求。
+    pub before_upstream_request:
+        Option<&'a (dyn Fn(UpstreamRequestAttempt) -> Result<(), ModelError> + Send + Sync)>,
+    /// 是否用流式请求换取非流式结果，目的是保活（见 `dispatcher::complete_via_stream`）。
+    ///
+    /// 只影响传输方式，不影响返回给调用方的形态。首次尝试若因流式相关原因失败，
+    /// 本次调用会自动回落非流式，并通过 `on_progress` 报一次
+    /// `CompletionProgress::StreamKeepaliveFellBack`。
+    pub prefer_streaming: bool,
+    /// 请求体字节数硬闸。`None` 表示不设闸。
+    ///
+    /// 中转站限制的是 body 字节数而非 token，且**不可协商** —— 超限的请求发出去只会
+    /// 被网关拒绝或截断，白等一个 attempt 超时。所以这里在发出之前就拦下来，并以
+    /// `ContextLengthExceeded` 上报，让调用方走既有的缩小载荷通路
+    /// （深度笔记的 `should_fallback_to_chunked_planner` 已经认这个 kind）。
+    pub max_request_bytes: Option<usize>,
+}
+
+impl CompleteExecution<'_> {
+    /// 非流式、不重试、不限时的默认执行策略。
+    pub fn plain(cancellation: &CancellationToken) -> CompleteExecution<'_> {
+        CompleteExecution {
+            cancellation,
+            max_retries: None,
+            attempt_timeout: None,
+            retry_predicate: None,
+            on_progress: None,
+            before_upstream_request: None,
+            prefer_streaming: false,
+            max_request_bytes: None,
+        }
+    }
 }
 
 pub async fn complete(
@@ -122,13 +190,7 @@ pub async fn complete(
     request: ChatCompletionRequest,
 ) -> Result<ChatCompletionResponse, ModelError> {
     let cancellation = CancellationToken::new();
-    let execution = CompleteExecution {
-        cancellation: &cancellation,
-        max_retries: None,
-        attempt_timeout: None,
-        retry_predicate: None,
-        on_progress: None,
-    };
+    let execution = CompleteExecution::plain(&cancellation);
     complete_with_execution(state, request, &execution).await
 }
 
@@ -437,6 +499,13 @@ fn is_final_agent_call(call_index: u16, max_agent_rounds: u16) -> bool {
     call_index == max_agent_rounds
 }
 
+/// 一次 Agent 运行最多占用的调用槽位数：`max_agent_rounds` 轮业务调用外，再留一
+/// 个收尾调用的位置。
+///
+/// `#[allow(dead_code)]`：只被单测使用。保留是因为它锁定的是 `is_final_agent_call`
+/// 的边界语义 —— 「第 max_agent_rounds 次是最后一次业务调用」意味着总槽位是
+/// max_agent_rounds + 1，那个 +1 靠这个函数写明，而不是散落在调用点的算术里。
+#[allow(dead_code)]
 fn agent_call_slots(max_agent_rounds: u16) -> usize {
     usize::from(max_agent_rounds).saturating_add(1)
 }
@@ -669,6 +738,12 @@ async fn run_agent_complete(
     let max_agent_rounds = agent_round_limit(state);
     let mut tool_call_total = 0usize;
     let mut force_final_answer = false;
+    let mut upstream_request_index = 0u32;
+    let request_class = if parent_operation.starts_with("deepNote") {
+        ProviderRequestClass::Background
+    } else {
+        ProviderRequestClass::Interactive
+    };
 
     // `max_agent_rounds` counts rounds that may execute tools. The inclusive final slot is
     // deliberately tool-free so a budget boundary still yields a useful answer.
@@ -682,6 +757,25 @@ async fn run_agent_complete(
                 .get_or_insert_with(String::new)
                 .push_str("\n\nAgent 运行预算已用尽。不要再请求工具，请直接根据已有结果给出最终回答，并明确说明仍缺少的信息。");
         }
+        // 逐轮称重：一轮内重试的载荷不变，工具结果进入下一轮后才需要重算。流式与
+        // 非流式 body 分别缓存，因为流式回落会在同一个 retry_index 内发出第二个物理
+        // 请求，两者都必须使用自己真正会发出的字节数。
+        let needs_request_metadata =
+            execution.max_request_bytes.is_some() || execution.before_upstream_request.is_some();
+        let non_streaming_request_bytes = needs_request_metadata
+            .then(|| dispatcher::request_body_bytes_for_transport(context, &request, false))
+            .transpose()?;
+        let streaming_request_bytes = (needs_request_metadata && execution.prefer_streaming)
+            .then(|| dispatcher::request_body_bytes_for_transport(context, &request, true))
+            .transpose()?;
+        if let Some(limit) = execution.max_request_bytes {
+            if let Some(bytes) = non_streaming_request_bytes {
+                enforce_request_byte_limit(bytes, limit)?;
+            }
+            if let Some(bytes) = streaming_request_bytes {
+                enforce_request_byte_limit(bytes, limit)?;
+            }
+        }
         let created_at_ms = usage::now_ms();
         let started_at = Instant::now();
         let retry_policy = RetryPolicy {
@@ -690,6 +784,9 @@ async fn run_agent_complete(
                 .unwrap_or_else(|| retry_policy(state).max_retries),
         };
         let mut retry_index = 0;
+        // 流式保活是**每次调用**内的一次性降级，不占用重试预算：一旦回落，本次调用
+        // 后续的全部尝试都走非流式，避免对同一个不支持流式的上游反复试探。
+        let mut streaming = execution.prefer_streaming;
         let result = loop {
             if let Some(callback) = execution.on_progress {
                 callback(CompletionProgress::AttemptStarted {
@@ -697,12 +794,93 @@ async fn run_agent_complete(
                     max_retries: retry_policy.max_retries,
                 });
             }
-            let attempt = completion_attempt(
-                execution.cancellation,
-                execution.attempt_timeout,
-                dispatcher::complete(&state.http, context, &request),
-            )
-            .await;
+            let attempt = if streaming {
+                let request_index = upstream_request_index.saturating_add(1);
+                let permit = state
+                    .provider_concurrency
+                    .acquire(&target.provider_id, request_class, execution.cancellation)
+                    .await?;
+                if let Some(callback) = execution.before_upstream_request {
+                    callback(UpstreamRequestAttempt {
+                        retry_index,
+                        max_retries: retry_policy.max_retries,
+                        request_index,
+                        transport: CompletionTransport::Streaming,
+                        request_bytes: streaming_request_bytes.unwrap_or(0),
+                    })?;
+                }
+                upstream_request_index = request_index;
+                let streamed = completion_attempt(
+                    execution.cancellation,
+                    execution.attempt_timeout,
+                    dispatcher::complete_via_stream(
+                        &state.http,
+                        context,
+                        &request,
+                        execution.cancellation,
+                    ),
+                )
+                .await;
+                drop(permit);
+                match streamed {
+                    Err(error) if should_fall_back_from_streaming(&error) => {
+                        streaming = false;
+                        if let Some(callback) = execution.on_progress {
+                            callback(CompletionProgress::StreamKeepaliveFellBack {
+                                error: error.clone(),
+                            });
+                        }
+                        let request_index = upstream_request_index.saturating_add(1);
+                        let permit = state
+                            .provider_concurrency
+                            .acquire(&target.provider_id, request_class, execution.cancellation)
+                            .await?;
+                        if let Some(callback) = execution.before_upstream_request {
+                            callback(UpstreamRequestAttempt {
+                                retry_index,
+                                max_retries: retry_policy.max_retries,
+                                request_index,
+                                transport: CompletionTransport::NonStreaming,
+                                request_bytes: non_streaming_request_bytes.unwrap_or(0),
+                            })?;
+                        }
+                        upstream_request_index = request_index;
+                        let result = completion_attempt(
+                            execution.cancellation,
+                            execution.attempt_timeout,
+                            dispatcher::complete(&state.http, context, &request),
+                        )
+                        .await;
+                        drop(permit);
+                        result
+                    }
+                    other => other,
+                }
+            } else {
+                let request_index = upstream_request_index.saturating_add(1);
+                let permit = state
+                    .provider_concurrency
+                    .acquire(&target.provider_id, request_class, execution.cancellation)
+                    .await?;
+                if let Some(callback) = execution.before_upstream_request {
+                    callback(UpstreamRequestAttempt {
+                        retry_index,
+                        max_retries: retry_policy.max_retries,
+                        request_index,
+                        transport: CompletionTransport::NonStreaming,
+                        request_bytes: non_streaming_request_bytes.unwrap_or(0),
+                    })?;
+                }
+                upstream_request_index = request_index;
+                let result = completion_attempt(
+                    execution.cancellation,
+                    execution.attempt_timeout,
+                    dispatcher::complete(&state.http, context, &request),
+                )
+                .await;
+                drop(permit);
+                result
+            };
             match attempt {
                 Ok(response) => break Ok(response),
                 Err(error)
@@ -1012,6 +1190,7 @@ async fn run_agent_stream(
         let outcome = stream_inner(
             state,
             context,
+            &target.provider_id,
             &request,
             cancellation,
             on_event,
@@ -1721,6 +1900,7 @@ fn emit_skill_activated(
 async fn stream_inner(
     state: &AppState,
     context: &ProviderRequestContext<'_>,
+    provider_id: &str,
     request: &ModelRequest,
     cancellation: &CancellationToken,
     on_event: &Channel<ModelStreamEvent>,
@@ -1735,6 +1915,14 @@ async fn stream_inner(
     let mut retry_index = 0;
     let mut emitted_output = false;
     loop {
+        let permit = state
+            .provider_concurrency
+            .acquire(
+                provider_id,
+                ProviderRequestClass::Interactive,
+                cancellation,
+            )
+            .await?;
         let mut emit = |chunk: ModelStreamChunk| match chunk {
             ModelStreamChunk::TextDelta(delta) => {
                 request_debug::append_preview(response_preview, &delta);
@@ -1768,7 +1956,9 @@ async fn stream_inner(
                 Ok(())
             }
         };
-        match stream::stream(&state.http, context, request, cancellation, &mut emit).await {
+        let outcome = stream::stream(&state.http, context, request, cancellation, &mut emit).await;
+        drop(permit);
+        match outcome {
             Ok(outcome) => return Ok(outcome),
             Err(error)
                 if !emitted_output
@@ -2255,19 +2445,86 @@ fn should_retry(error: &ModelError) -> bool {
     )
 }
 
+/// 流式保活失败是否应当回落到非流式。
+///
+/// 只认「这个上游/中转站不吃流式」这一类信号：
+/// - `InvalidResponse`：SSE 分帧或事件解析失败。不支持流式的网关常见的表现是
+///   HTTP 200 却回一个普通 JSON body，解析器会在这里报错。
+/// - `InvalidConfiguration`：网关对 `stream: true` 直接回 400/422
+///   （`classify_error` 把这两个状态码归到这里）。
+///
+/// 刻意**不**包含的几类：
+/// - 两种超时。流式本来就是为了避免超时，流式都超时了，非流式只会更早死；
+///   回落只会把一次失败变成两次，把 P0-6 刚统一好的超时语义又搅乱。
+/// - `Connection` / `RateLimited` / `Authentication` / `ContextLengthExceeded`：
+///   与传输方式无关，换非流式同样失败。这些交给重试循环或直接上报。
+/// - `Cancelled`：用户意图，不能偷偷再发一次请求。
+fn should_fall_back_from_streaming(error: &ModelError) -> bool {
+    matches!(
+        error.kind,
+        ModelErrorKind::InvalidResponse | ModelErrorKind::InvalidConfiguration
+    )
+}
+
+/// 请求体字节硬闸。超限即 `ContextLengthExceeded`，不是 `InvalidConfiguration`。
+///
+/// kind 的选择是这道闸能起作用的关键：调用方靠 kind 判断「该缩载荷了」
+/// （深度笔记的 `should_fallback_to_chunked_planner` 认 `ContextLengthExceeded`，
+/// 会把直出规划降级成分块规划）。报成配置错误会让它变成一个死错误，
+/// 用户看到的就是任务失败而不是自动缩小重试。
+///
+/// 边界取 `>`：正好等于上限是合规的。
+fn enforce_request_byte_limit(bytes: usize, limit: usize) -> Result<(), ModelError> {
+    if bytes > limit {
+        return Err(ModelError::context_length(format!(
+            "请求体 {bytes} 字节超过上限 {limit} 字节，已在发出前拦下，请缩小本次输入。"
+        )));
+    }
+    Ok(())
+}
+
+/// 退避抖动源。项目没有 `rand` 依赖，这里用纳秒时钟做低成本扰动：
+/// 目的只是打散并发重试的对齐，不需要密码学强度。
+fn jitter_ratio() -> f64 {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|value| value.subsec_nanos())
+        .unwrap_or(0);
+    // 用一次乘法混淆低位，避免调用点密集时纳秒低位近似单调。
+    let mixed = (u64::from(nanos)).wrapping_mul(6_364_136_223_846_793_005) >> 33;
+    (mixed % 1_000) as f64 / 1_000.0
+}
+
+/// 重试退避。基数按错误类型重定，并叠加 ±25% 抖动。
+///
+/// 修复前 `RateLimited` 落在 `_` 分支上，基数只有 300ms —— 一个不带 `Retry-After`
+/// 的 429 会被几乎立刻重投，把限流打成雪崩；而 `ConcurrencyLimited` 是 15s，
+/// 两者量级差 50 倍，缺乏统一模型。全程无抖动也意味着并发请求会同步重试。
 fn retry_delay(error: &ModelError, retry_index: u8) -> Duration {
+    retry_delay_with_jitter(error, retry_index, jitter_ratio())
+}
+
+fn retry_delay_with_jitter(error: &ModelError, retry_index: u8, jitter: f64) -> Duration {
     let base_ms: u64 = match error.kind {
+        // 限流与并发受限都是"上游让我们慢下来"，基数取同一量级。
         ModelErrorKind::ConcurrencyLimited => 15_000,
-        ModelErrorKind::UpstreamTimeout => 5_000,
-        _ => 300,
+        ModelErrorKind::RateLimited => 8_000,
+        ModelErrorKind::QuotaExceeded => 15_000,
+        // 超时类：中转站压力信号，退避要明显长于普通网络抖动。
+        ModelErrorKind::UpstreamTimeout | ModelErrorKind::ClientTimeout => 5_000,
+        ModelErrorKind::ProviderUnavailable => 5_000,
+        // 连接层瞬时失败，快速重试是合理的。
+        ModelErrorKind::Connection => 1_000,
+        _ => 1_000,
     };
     let exponential_ms = base_ms.saturating_mul(1u64 << retry_index.min(4));
-    Duration::from_millis(
-        error
-            .retry_after_ms
-            .unwrap_or(exponential_ms)
-            .clamp(100, 120_000),
-    )
+    // 上游明确给了 Retry-After 就尊重它，只补一点抖动避免同刻齐发。
+    let target_ms = error.retry_after_ms.unwrap_or(exponential_ms);
+    let jitter_span = target_ms / 2;
+    let jittered = target_ms
+        .saturating_sub(jitter_span / 2)
+        .saturating_add((jitter_span as f64 * jitter.clamp(0.0, 1.0)) as u64);
+    Duration::from_millis(jittered.clamp(100, 120_000))
 }
 
 fn resolve_target(
@@ -2640,6 +2897,94 @@ mod tests {
         assert!(super::resolve_target(&settings, "official-openai", "model-1").is_err());
     }
 
+    fn model_error(kind: ModelErrorKind, retry_after_ms: Option<u64>) -> ModelError {
+        ModelError {
+            kind,
+            message: "test".to_string(),
+            status_code: None,
+            provider_code: None,
+            retry_after_ms,
+        }
+    }
+
+    #[test]
+    fn retry_delay_uses_a_meaningful_base_for_rate_limiting() {
+        // 修复前 RateLimited 落在 `_` 分支上，基数只有 300ms，等于把限流打成雪崩。
+        let delay =
+            super::retry_delay_with_jitter(&model_error(ModelErrorKind::RateLimited, None), 0, 0.0);
+        assert!(
+            delay >= Duration::from_millis(4_000),
+            "限流退避不应短于 4s，实际 {delay:?}"
+        );
+        let quota = super::retry_delay_with_jitter(
+            &model_error(ModelErrorKind::QuotaExceeded, None),
+            0,
+            0.0,
+        );
+        assert!(quota >= Duration::from_millis(7_000));
+    }
+
+    #[test]
+    fn retry_delay_treats_both_timeout_kinds_the_same() {
+        // ClientTimeout 与 UpstreamTimeout 是同一物理原因，退避量级必须一致。
+        let client = super::retry_delay_with_jitter(
+            &model_error(ModelErrorKind::ClientTimeout, None),
+            0,
+            0.5,
+        );
+        let upstream = super::retry_delay_with_jitter(
+            &model_error(ModelErrorKind::UpstreamTimeout, None),
+            0,
+            0.5,
+        );
+        assert_eq!(client, upstream);
+    }
+
+    #[test]
+    fn retry_delay_grows_exponentially_and_stays_clamped() {
+        let error = model_error(ModelErrorKind::Connection, None);
+        let first = super::retry_delay_with_jitter(&error, 0, 0.5);
+        let later = super::retry_delay_with_jitter(&error, 3, 0.5);
+        assert!(
+            later > first,
+            "退避应随重试次数增长：{first:?} -> {later:?}"
+        );
+        // 指数增长在 retry_index=4 处封顶，再叠加抖动也不得越过 120s 上限。
+        let saturated = super::retry_delay_with_jitter(
+            &model_error(ModelErrorKind::ConcurrencyLimited, None),
+            9,
+            1.0,
+        );
+        assert_eq!(saturated, Duration::from_millis(120_000));
+        let floored = super::retry_delay_with_jitter(
+            &model_error(ModelErrorKind::Connection, Some(10)),
+            0,
+            0.0,
+        );
+        assert_eq!(floored, Duration::from_millis(100));
+    }
+
+    #[test]
+    fn retry_delay_applies_jitter_around_retry_after() {
+        // 上游给了 Retry-After 就尊重它的量级，但仍要抖动，避免并发请求同刻齐发。
+        let error = model_error(ModelErrorKind::RateLimited, Some(4_000));
+        let low = super::retry_delay_with_jitter(&error, 0, 0.0);
+        let mid = super::retry_delay_with_jitter(&error, 0, 0.5);
+        let high = super::retry_delay_with_jitter(&error, 0, 1.0);
+        assert_eq!(low, Duration::from_millis(3_000));
+        assert_eq!(mid, Duration::from_millis(4_000));
+        assert_eq!(high, Duration::from_millis(5_000));
+        assert!(low < mid && mid < high, "抖动应当单调映射到时延区间");
+    }
+
+    #[test]
+    fn jitter_ratio_stays_within_the_unit_interval() {
+        for _ in 0..256 {
+            let ratio = super::jitter_ratio();
+            assert!((0.0..1.0).contains(&ratio), "抖动比例越界：{ratio}");
+        }
+    }
+
     #[test]
     fn retries_only_transient_model_errors() {
         let transient = ModelError {
@@ -2658,6 +3003,88 @@ mod tests {
         };
         assert!(super::should_retry(&transient));
         assert!(!super::should_retry(&permanent));
+    }
+
+    #[test]
+    fn streaming_falls_back_only_on_stream_shaped_failures() {
+        // 网关对 `stream: true` 回 400/422 → InvalidConfiguration；
+        // 回 200 但 body 不是 SSE → 分帧/解析失败 → InvalidResponse。
+        for kind in [
+            ModelErrorKind::InvalidResponse,
+            ModelErrorKind::InvalidConfiguration,
+        ] {
+            assert!(super::should_fall_back_from_streaming(&model_error(
+                kind, None
+            )));
+        }
+    }
+
+    #[test]
+    fn streaming_does_not_fall_back_on_timeouts() {
+        // 流式本来就是为了避免超时。流式都超时了，非流式只会更早死；回落只会把
+        // 一次失败变成两次，并且与 P0-6 统一好的超时语义冲突。
+        for kind in [
+            ModelErrorKind::ClientTimeout,
+            ModelErrorKind::UpstreamTimeout,
+        ] {
+            assert!(!super::should_fall_back_from_streaming(&model_error(
+                kind, None
+            )));
+        }
+    }
+
+    #[test]
+    fn streaming_does_not_fall_back_on_transport_independent_failures() {
+        for kind in [
+            ModelErrorKind::Connection,
+            ModelErrorKind::RateLimited,
+            ModelErrorKind::ConcurrencyLimited,
+            ModelErrorKind::Authentication,
+            ModelErrorKind::QuotaExceeded,
+            ModelErrorKind::ContextLengthExceeded,
+            ModelErrorKind::ContentFiltered,
+            ModelErrorKind::ProviderUnavailable,
+            ModelErrorKind::ModelNotFound,
+            ModelErrorKind::Provider,
+            // 取消是用户意图，绝不能偷偷再发一次非流式请求。
+            ModelErrorKind::Cancelled,
+        ] {
+            assert!(
+                !super::should_fall_back_from_streaming(&model_error(kind, None)),
+                "{kind:?} 不应触发流式回落"
+            );
+        }
+    }
+
+    #[test]
+    fn oversized_requests_are_intercepted_before_sending() {
+        let error = super::enforce_request_byte_limit(2_048, 1_024)
+            .expect_err("超限请求必须在发出前被拦下");
+        // kind 必须是 ContextLengthExceeded：调用方靠它触发缩小载荷，
+        // 换成别的 kind 这道闸就从「自动降级」退化成「任务失败」。
+        assert_eq!(error.kind, ModelErrorKind::ContextLengthExceeded);
+        assert!(
+            error.message.contains("2048") && error.message.contains("1024"),
+            "错误信息要同时给出实际值和上限，否则无法判断该缩多少：{}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn requests_at_or_below_the_limit_pass_the_gate() {
+        assert!(super::enforce_request_byte_limit(1_024, 1_024).is_ok());
+        assert!(super::enforce_request_byte_limit(0, 1_024).is_ok());
+        assert!(super::enforce_request_byte_limit(1_023, 1_024).is_ok());
+    }
+
+    #[test]
+    fn plain_execution_sets_no_byte_gate() {
+        let cancellation = CancellationToken::new();
+        let execution = super::CompleteExecution::plain(&cancellation);
+        // 只有深度笔记设闸。普通聊天不设：聊天的载荷由用户直接可见地控制，
+        // 在这里拦一刀只会变成一个无法自愈的发送失败。
+        assert!(execution.max_request_bytes.is_none());
+        assert!(!execution.prefer_streaming);
     }
 
     #[test]

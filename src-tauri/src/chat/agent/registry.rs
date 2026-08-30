@@ -2786,7 +2786,6 @@ mod tests {
         let conversation = crate::chat::storage::ConversationRepository::new(root.join("chat"));
         let memory = crate::memory::MemoryRepository::new(root.join("memory"));
         let library = crate::library::LibraryRepository::new(root.join("library"));
-        library.initialize().unwrap();
         let library_operations = Mutex::new(());
         let mcp = McpManager::new(root.join("mcp-config"), root.join("mcp-data")).unwrap();
         let cancellation = CancellationToken::new();

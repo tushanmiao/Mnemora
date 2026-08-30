@@ -46,6 +46,13 @@ impl AgentRunState {
     }
 }
 
+/// Agent 运行的完整事件集。
+///
+/// `#[allow(dead_code)]`：部分事件（如 `UserInputRequired`、`BudgetExceeded`）目前
+/// 没有生产构造点，但它们是 `transition` 的 match 臂与单测断言的一部分。删掉
+/// variant 就要同时删掉转移规则，等于把状态机的合法转移表改小 —— 那是功能变更，
+/// 不是清理。事件集在这里保持完整，是为了让「哪些转移是合法的」一眼可读。
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentRunEvent {
     StartRequested,

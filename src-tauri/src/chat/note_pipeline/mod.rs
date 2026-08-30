@@ -1,3 +1,4 @@
+pub mod adaptive_volume;
 mod merge;
 pub mod node_machine;
 mod prompts;
