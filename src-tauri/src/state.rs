@@ -12,13 +12,14 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::chat::storage::ConversationRepository;
 use crate::ai::concurrency::ProviderConcurrencyPool;
+use crate::chat::storage::ConversationRepository;
 use crate::english::{learning::EnglishLearningRepository, EnglishRepository};
 use crate::library::LibraryRepository;
 use crate::mcp::McpManager;
 use crate::memory::MemoryRepository;
 use crate::plugins::PluginManager;
+use crate::prompts::PromptTemplateRepository;
 use crate::request_debug::RequestDebugRecord;
 use crate::settings::{
     app_repository::AppSettingsRepository, app_types::AppSettings,
@@ -72,6 +73,8 @@ pub struct AppState {
     pub plugin_manager: PluginManager,
     pub plugin_operations: Mutex<()>,
     pub skill_operations: Mutex<()>,
+    pub prompt_template_repository: PromptTemplateRepository,
+    pub prompt_template_operations: Mutex<()>,
     pub usage_dir: PathBuf,
     pub usage_operations: Mutex<()>,
     pub request_debug_records: StdMutex<VecDeque<RequestDebugRecord>>,
@@ -172,6 +175,7 @@ impl AppState {
         let usage_dir = crate::usage::usage_dir(&app_data_dir);
         let skill_repository =
             SkillRepository::new(resource_dir.join("skills"), app_data_dir.join("skills"));
+        let prompt_template_repository = PromptTemplateRepository::new(app_data_dir.clone());
         let memory_repository = MemoryRepository::new(app_data_dir.clone());
         let library_repository = LibraryRepository::new(app_data_dir.clone());
         // schema 迁移只在启动时跑一次。以前它挂在 `open_connection` 上，127 个数据
@@ -214,9 +218,7 @@ impl AppState {
                 provider.has_api_key = false;
             }
         }
-        if let Err(error) =
-            library_repository.reconcile_deep_note_route_profiles(&model_settings)
-        {
+        if let Err(error) = library_repository.reconcile_deep_note_route_profiles(&model_settings) {
             eprintln!("Failed to reconcile DeepNote route profiles: {error}");
         }
 
@@ -259,6 +261,8 @@ impl AppState {
             plugin_manager,
             plugin_operations: Mutex::new(()),
             skill_operations: Mutex::new(()),
+            prompt_template_repository,
+            prompt_template_operations: Mutex::new(()),
             usage_dir,
             usage_operations: Mutex::new(()),
             request_debug_records: StdMutex::new(crate::request_debug::empty_store()),

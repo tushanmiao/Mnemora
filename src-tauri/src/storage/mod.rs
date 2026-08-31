@@ -35,6 +35,7 @@ const MANAGED_DIRECTORIES: &[(&str, &str)] = &[
     ("conversations", "conversations"),
     ("library", "library"),
     ("memory", "memory"),
+    ("prompts", "prompts"),
     ("skills", "skills"),
     ("usage", "usage"),
     ("sync", "sync"),

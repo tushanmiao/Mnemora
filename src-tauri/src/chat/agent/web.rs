@@ -720,14 +720,18 @@ fn normalize_search_url(value: &str) -> Option<String> {
 }
 
 fn extract_attribute(tag: &str, attribute: &str) -> Option<String> {
+    // 只对 ASCII 做大小写折叠，字节下标与原串保持一致，所以可以拿 lower 的
+    // 位置去切 tag。单引号和双引号都要试：搜索结果页两种写法都出现过，早先
+    // 这里在第一种没命中时就整个函数返回 None，导致 href='...' 的链接被判成
+    // 空串，进而被 Url::parse 拒掉、结果条目被静默丢弃。
     let lower = tag.to_ascii_lowercase();
-    for quote in ['"', '\''] {
+    let attribute = attribute.to_ascii_lowercase();
+    ['"', '\''].into_iter().find_map(|quote| {
         let needle = format!("{attribute}={quote}");
         let start = lower.find(&needle)? + needle.len();
         let end = tag[start..].find(quote)? + start;
-        return Some(tag[start..end].to_string());
-    }
-    None
+        Some(tag[start..end].to_string())
+    })
 }
 
 fn extract_class_content(region: &str, class_name: &str) -> Option<String> {
@@ -908,8 +912,8 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
     use super::{
-        html_to_text, is_forbidden_ip, is_textual_content_type, parse_bing_results,
-        parse_duckduckgo_results, WebRunState,
+        extract_attribute, html_to_text, is_forbidden_ip, is_textual_content_type,
+        parse_bing_results, parse_duckduckgo_results, WebRunState,
     };
 
     #[test]
@@ -945,6 +949,36 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].title, "Example docs");
         assert_eq!(results[0].snippet, "Fallback snippet");
+    }
+
+    #[test]
+    fn extracts_attributes_written_with_either_quote_style() {
+        assert_eq!(
+            extract_attribute(r#"<a href="https://example.com/a">"#, "href").as_deref(),
+            Some("https://example.com/a")
+        );
+        assert_eq!(
+            extract_attribute(r#"<a href='https://example.com/b'>"#, "href").as_deref(),
+            Some("https://example.com/b")
+        );
+        assert_eq!(
+            extract_attribute(r#"<a HREF='https://example.com/c'>"#, "href").as_deref(),
+            Some("https://example.com/c")
+        );
+        assert_eq!(extract_attribute(r#"<a rel="nofollow">"#, "href"), None);
+    }
+
+    #[test]
+    fn keeps_single_quoted_result_links() {
+        let html = r#"<div class="result"><a class="result__a" href='https://example.com/a'>Single quoted</a><div class="result__snippet">Snippet</div></div>"#;
+        let results = parse_duckduckgo_results(html, 5);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].url, "https://example.com/a");
+
+        let bing = r#"<ol><li class="b_algo"><h2><a href='https://example.com/docs'>Docs</a></h2><div><p>Snippet</p></div></li></ol>"#;
+        let bing_results = parse_bing_results(bing, 5);
+        assert_eq!(bing_results.len(), 1);
+        assert_eq!(bing_results[0].url, "https://example.com/docs");
     }
 
     #[test]

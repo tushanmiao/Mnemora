@@ -30,6 +30,7 @@ export function sectionSystemPrompt(): string {
     "输出会直接渲染为 Markdown，禁止用 ```markdown、```md 或四反引号包裹整章；Mermaid 必须是正文顶层的 ```mermaid 代码块。",
     "对话事实与 AI 补充必须分层。needsSupplement=true 时，在补充内容附近明确标注“AI 补充背景”，并提示建议进一步核实。",
     "复杂流程按需使用 Mermaid；数学公式统一使用 KaTeX 兼容的 Markdown：行内使用 $...$，独立公式使用 $$...$$，不要使用 ```math、```latex 或 ```tex 代码围栏；相似概念按需使用 Markdown 表格；示例应说明输入、过程、结果。",
+    "Mermaid 语法硬约束，违反会直接导致渲染失败：节点标签只要含有 ( ) [ ] 这四个半角括号，必须整体用英文双引号包起来，例如 A[\"MCP 主机 (Host) - AI 应用<br/>如 Claude Desktop / Visual Studio Code\"]；不加引号时 ( 会被当成圆角节点的开头、[ 会被当成下一个节点的开头，立刻报错。换行只用 <br/>，不要用裸 <br> 或字面 \\n。边标签写成 A -->|说明| B，竖线闭合后不要再补引号；箭头右侧必须是不含空格的节点 ID，多词短语写成 ID[\"多词 短语\"]。erDiagram 复合键写 PK, FK 而不是 PK_FK 或 PK FK。",
     "不要输出全文 H1，不要写‘好的’或‘以下是’。",
   ].join("\n");
 }

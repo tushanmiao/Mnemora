@@ -15,7 +15,7 @@ export interface SkillProvenance {
   adaptationNotes?: string;
 }
 
-/** 技能列表和对话选择器共用的轻量元数据，不包含 SKILL.md 正文。 */
+/** 设置页与模型目录共用的轻量元数据，不包含 SKILL.md 正文。 */
 export interface SkillSummary {
   id: string;
   name: string;
@@ -66,7 +66,7 @@ export interface SkillImportResult {
   skill: SkillSummary;
 }
 
-/** 输入区解析后的本轮技能选择；Slash 技能会在消息快照中单独标记。 */
+/** 输入区解析出的显式 Slash 技能；普通消息由模型根据轻量目录隐式命中。 */
 export interface SkillActivationSelection {
   skillIds: string[];
   slashSkillId?: string;

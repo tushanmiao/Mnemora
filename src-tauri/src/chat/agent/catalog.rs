@@ -758,7 +758,7 @@ pub static TOOL_ENTRIES: &[ToolEntry] = &[
     },
     ToolEntry {
         name: "activate_skill",
-        description: "加载已经 inspect_skill 检查过且与当前任务匹配的 Skill 完整工作说明；同一运行无需重复激活。",
+        description: "加载与当前任务匹配的 Skill 完整 SKILL.md 工作说明；可根据轻量目录直接调用，同一运行无需重复激活。",
         input_schema: activate_skill_schema,
         namespace: ToolNamespace::Skill,
         handler: ToolHandler::ActivateSkill,
@@ -786,7 +786,7 @@ pub static TOOL_ENTRIES: &[ToolEntry] = &[
     // intentionally never disclosed by configure_model_request.
     ToolEntry {
         name: "skill",
-        description: "兼容旧版本的 Skill 激活名称；新请求必须使用 inspect_skill -> activate_skill。",
+        description: "兼容旧版本的 Skill 激活名称；新请求使用 activate_skill。",
         input_schema: activate_skill_schema,
         namespace: ToolNamespace::Skill,
         handler: ToolHandler::ActivateSkill,
@@ -1303,8 +1303,7 @@ mod discovery {
         let mut ranked: Vec<(usize, &'static str)> = TOOL_ENTRIES
             .iter()
             .map(|e| {
-                let hay =
-                    format!("{} {} {:?}", e.name, e.description, e.namespace).to_lowercase();
+                let hay = format!("{} {} {:?}", e.name, e.description, e.namespace).to_lowercase();
                 let score = if hay.contains(&q) {
                     terms.len() + 2
                 } else {

@@ -10,8 +10,8 @@ use crate::{
 /// variant 仍被 `transition` 的 match 臂与单测使用，删掉它们就要同时改转移表。
 ///
 /// 一个例外值得单独记住：`TimeoutDetected` 只由 `DeepNoteRunMachine::timeout()`
-/// 构造，而那个入口尚未接入生产路径（见 `timeout()` 的文档注释）。它零构造是
-/// **未接线**，不是设计如此。
+/// 构造。那个入口**已经接入生产路径**（起草批次的预算闸与 Analyzing 的预算闸，
+/// 见 `timeout()` 的文档注释），因此这条通路不再是死代码。
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeepNoteRunEvent {

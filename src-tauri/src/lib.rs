@@ -12,6 +12,7 @@ mod memory;
 mod network;
 mod packages;
 mod plugins;
+mod prompts;
 mod request_debug;
 mod settings;
 mod skills;
@@ -296,6 +297,9 @@ pub fn run() {
             commands::plugins::plugins_set_enabled,
             commands::plugins::plugins_rollback,
             commands::plugins::plugins_uninstall,
+            commands::prompts::prompt_templates_list,
+            commands::prompts::prompt_templates_upsert,
+            commands::prompts::prompt_templates_delete,
             commands::providers::fetch_provider_models,
             commands::providers::test_provider_connection,
             commands::settings::load_model_settings,

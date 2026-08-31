@@ -5,23 +5,19 @@ import { RESERVED_SLASH_TRIGGERS } from "../commands/slashCommands";
 const MAX_ACTIVE_SKILLS = 12;
 
 /**
- * Slash Trigger 只负责把技能加入本轮选择；原始消息仍会持久化，Rust 在请求边界移除触发词。
+ * Slash Trigger 是保留的显式覆盖入口；普通消息不再携带人工选择，交给模型按目录隐式命中。
  */
 export function resolveSkillActivation(
   content: string,
-  selectedSkillIds: readonly string[],
   skills: readonly SkillSummary[],
 ): SkillActivationSelection {
-  const enabled = new Map(skills.filter((skill) => skill.enabled).map((skill) => [skill.id, skill]));
   const firstWord = content.trimStart().split(/\s+/, 1)[0]?.toLocaleLowerCase("en-US") ?? "";
   const slashMatches = firstWord.startsWith("/") && !RESERVED_SLASH_TRIGGERS.has(firstWord)
     ? skills.filter((skill) => skill.enabled && skill.triggers.some((trigger) => trigger.toLocaleLowerCase("en-US") === firstWord))
     : [];
   const slashSkill = slashMatches.length === 1 ? slashMatches[0] : undefined;
-  const ordered = [slashSkill?.id, ...selectedSkillIds]
-    .filter((id): id is string => Boolean(id) && enabled.has(id as string));
   return {
-    skillIds: [...new Set(ordered)].slice(0, MAX_ACTIVE_SKILLS),
+    skillIds: slashSkill ? [slashSkill.id] : [],
     slashSkillId: slashSkill?.id,
   };
 }
@@ -33,20 +29,17 @@ export function createActivatedSkillSnapshots(
   selection: SkillActivationSelection,
   skills: readonly SkillSummary[],
 ): ActivatedSkillSnapshot[] {
+  if (!selection.slashSkillId || !selection.skillIds.includes(selection.slashSkillId)) return [];
   const enabled = new Map(skills.filter((skill) => skill.enabled).map((skill) => [skill.id, skill]));
-  return [...new Set(selection.skillIds)]
-    .slice(0, MAX_ACTIVE_SKILLS)
-    .flatMap((skillId) => {
-      const skill = enabled.get(skillId);
-      if (!skill) return [];
-      return [{
-        id: skill.id,
-        name: skill.name,
-        version: skill.version,
-        contentHash: skill.contentHash,
-        activation: skill.id === selection.slashSkillId ? "slash" as const : "manual" as const,
-      }];
-    });
+  const skill = enabled.get(selection.slashSkillId);
+  if (!skill) return [];
+  return [{
+    id: skill.id,
+    name: skill.name,
+    version: skill.version,
+    contentHash: skill.contentHash,
+    activation: "slash",
+  }];
 }
 
 /** 重新生成时沿用原来的激活方式，但只保留当前仍安装且启用的技能。 */

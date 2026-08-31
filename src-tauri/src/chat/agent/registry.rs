@@ -53,8 +53,8 @@ use super::{
     },
     knowledge::{knowledge_list, knowledge_read, knowledge_search},
     notes::{note_create, note_list, note_read, note_update},
-    types::{ToolExecution, ToolRisk},
     packages::search_remote_packages,
+    types::{ToolExecution, ToolRisk},
     web::{web_fetch, web_search, WebRunState},
     workspace::{workspace_glob, workspace_list, workspace_read, workspace_search},
 };
@@ -63,6 +63,9 @@ const MAX_TOOL_PREVIEW_CHARS: usize = 2_000;
 const MAX_TEXT_FILE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_TEXT_LINES: usize = 2_000;
 const MAX_ACTIVE_SKILLS_PER_RUN: usize = 12;
+const MAX_INITIAL_SKILL_CATALOG_CHARS: usize = 8_000;
+const MAX_SKILL_CATALOG_DESCRIPTION_CHARS: usize = 320;
+const MAX_COMPACT_SKILL_DESCRIPTION_CHARS: usize = 120;
 const DEEP_NOTE_READER_OUTPUT_LIMIT: usize = 64_000;
 
 #[derive(Clone)]
@@ -73,7 +76,7 @@ pub struct ToolRuntimeContext {
     /** 当前请求真正具备的业务工具；完整 Schema 只在搜索命中后加入模型请求。 */
     pub available_tool_names: Vec<String>,
     pub capabilities: CapabilityRegistry,
-    /** 用户手动选择或 Slash 激活的 Skill 已由请求层注入正文。 */
+    /** 用户通过 Slash 显式激活的 Skill 已由请求层注入正文。 */
     pub manual_skill_ids: Vec<String>,
     pub model_skills: Vec<SkillSummary>,
     pub max_model_skill_activations: usize,
@@ -105,7 +108,6 @@ impl ToolRuntimeContext {
 
 #[derive(Clone, Default)]
 pub struct SkillRunCache {
-    inspected: HashSet<String>,
     activated: HashSet<String>,
     preactivated: HashSet<String>,
     tool_search_hits: HashSet<String>,
@@ -122,20 +124,12 @@ impl SkillRunCache {
         }
     }
 
-    fn inspected(&self, skill_id: &str) -> bool {
-        self.inspected.contains(skill_id)
-    }
-
     fn activated(&self, skill_id: &str) -> bool {
         self.activated.contains(skill_id)
     }
 
     fn activation_count(&self) -> usize {
         self.activated.len().saturating_sub(self.preactivated.len())
-    }
-
-    fn mark_inspected(&mut self, skill_id: String) {
-        self.inspected.insert(skill_id);
     }
 
     fn mark_activated(&mut self, skill_id: String) {
@@ -337,22 +331,21 @@ pub fn configure_model_request(
     }
     if context.max_model_skill_activations > 0 && !context.model_skills.is_empty() {
         push_registered_tool(&mut tools, "search_skills", &context.capabilities);
-        // Skill 的第一阶段是首轮轻量全目录，第二阶段只检查元数据，
-        // 第三阶段才加载正文。目录常驻保证自动命中不会退化成“等用户点名”。
         push_registered_tool(&mut tools, "inspect_skill", &context.capabilities);
+        push_registered_tool(&mut tools, "activate_skill", &context.capabilities);
         append_system_prompt(
             request,
-            "<mnemora_skill_discovery>\n当前工作区存在可按需使用的 Skill。首轮轻量目录已经完整列出可用 Skill；如果任务与某个描述匹配，应主动调用 inspect_skill 检查适用范围和依赖，不需要用户显式点名。检查成功后再调用 activate_skill 加载正文。search_skills 仅用于目录较大、语义不明确或需要补充发现时。用户手动选择或 Slash 触发的 Skill 已在请求层直接加载，不必重复检查。\n</mnemora_skill_discovery>",
+            "<mnemora_skill_discovery>\n当前工作区存在可按需使用的 Skill。根据名称和 description 直接判断当前任务是否匹配；匹配时主动调用 activate_skill 加载完整 SKILL.md，不需要用户显式点名，也不要额外调用分类模型。语义不明确、目录有省略或需要核对依赖时，可先调用 search_skills 或 inspect_skill。Slash 显式触发的 Skill 已在请求层加载，不要重复激活。\n</mnemora_skill_discovery>",
         );
         append_skill_catalog_prompt(request, &context.model_skills);
     }
     if !context.manual_skill_ids.is_empty() {
-        // 手动/Slash Skill 的正文已经在请求层激活，资源读取工具可以直接披露；
+        // Slash Skill 的正文已经在请求层激活，资源读取工具可以直接披露；
         // 资源路径仍只来自正文末尾的受限目录，且运行层会再次校验激活状态。
         push_registered_tool(&mut tools, "read_skill_resource", &context.capabilities);
         append_system_prompt(
             request,
-            "<mnemora_skill_resource_discovery>\n用户手动选择或 Slash 触发的 Skill 已经激活。若其正文列出了按需资源，可调用 read_skill_resource 读取最小必要行范围；不要猜测未列出的路径，也不要重复读取 SKILL.md、来源或许可证文件。\n</mnemora_skill_resource_discovery>",
+            "<mnemora_skill_resource_discovery>\nSlash 显式触发的 Skill 已经激活。若其正文列出了按需资源，可调用 read_skill_resource 读取最小必要行范围；不要猜测未列出的路径，也不要重复读取 SKILL.md、来源或许可证文件。\n</mnemora_skill_resource_discovery>",
         );
     }
     if context
@@ -438,24 +431,62 @@ fn append_tool_catalog_prompt(request: &mut ModelRequest, context: &ToolRuntimeC
 /// 仅给一个抽象的 search_skills 工具无法稳定触发主动搜索。
 fn append_skill_catalog_prompt(request: &mut ModelRequest, skills: &[SkillSummary]) {
     let mut catalog = String::from("<mnemora_available_skills>\n");
+    let footer = "</mnemora_available_skills>";
+    let mut omitted = 0usize;
     for skill in skills {
-        catalog.push_str("  <skill>\n");
-        catalog.push_str("    <id>");
-        catalog.push_str(&xml_escape(&skill.id));
-        catalog.push_str("</id>\n    <name>");
-        catalog.push_str(&xml_escape(&skill.name));
-        catalog.push_str("</name>\n    <description>");
-        catalog.push_str(&xml_escape(&skill.description));
-        catalog.push_str("</description>\n");
-        if !skill.triggers.is_empty() {
-            catalog.push_str("    <triggers>");
-            catalog.push_str(&xml_escape(&skill.triggers.join(", ")));
-            catalog.push_str("</triggers>\n");
+        let full = render_skill_catalog_entry(skill, MAX_SKILL_CATALOG_DESCRIPTION_CHARS, true);
+        let compact = render_skill_catalog_entry(skill, MAX_COMPACT_SKILL_DESCRIPTION_CHARS, false);
+        let remaining_notice_budget = 180usize;
+        if catalog.chars().count()
+            + full.chars().count()
+            + footer.chars().count()
+            + remaining_notice_budget
+            <= MAX_INITIAL_SKILL_CATALOG_CHARS
+        {
+            catalog.push_str(&full);
+        } else if catalog.chars().count()
+            + compact.chars().count()
+            + footer.chars().count()
+            + remaining_notice_budget
+            <= MAX_INITIAL_SKILL_CATALOG_CHARS
+        {
+            catalog.push_str(&compact);
+        } else {
+            omitted += 1;
         }
-        catalog.push_str("  </skill>\n");
     }
-    catalog.push_str("</mnemora_available_skills>");
+    if omitted > 0 {
+        catalog.push_str(&format!(
+            "  <catalog_notice>{omitted} 个 Skill 因 8000 字符目录预算未展示；需要时调用 search_skills 补充发现。</catalog_notice>\n"
+        ));
+    }
+    catalog.push_str(footer);
     append_system_prompt(request, &catalog);
+}
+
+fn render_skill_catalog_entry(
+    skill: &SkillSummary,
+    max_description_chars: usize,
+    include_triggers: bool,
+) -> String {
+    let source = match skill.source {
+        crate::skills::types::SkillSource::Builtin => "builtin",
+        crate::skills::types::SkillSource::User => "user",
+        crate::skills::types::SkillSource::Plugin => "plugin",
+    };
+    let mut entry = format!(
+        "  <skill>\n    <id>{}</id>\n    <name>{}</name>\n    <source>{source}</source>\n    <description>{}</description>\n",
+        xml_escape(&skill.id),
+        xml_escape(&skill.name),
+        xml_escape(&truncate_chars(&skill.description, max_description_chars)),
+    );
+    if include_triggers && !skill.triggers.is_empty() {
+        entry.push_str("    <triggers>");
+        entry.push_str(&xml_escape(&skill.triggers.join(", ")));
+        entry.push_str("</triggers>\n");
+    }
+    entry.push_str("  </skill>\n");
+    entry
 }
 
 fn xml_escape(value: &str) -> String {
@@ -477,8 +508,8 @@ fn push_registered_tool(tools: &mut Vec<ModelTool>, name: &str, capabilities: &C
     tools.push(entry.model_tool());
 }
 
-/** 三段式披露只推进一层：search -> inspect -> execute，Skill 则是
- * lightweight catalog/search -> inspect -> activate。 */
+/** 业务工具按 search -> inspect -> execute 推进；Skill 目录允许模型直接 activate，
+ * inspect_skill 只在语义或依赖不明确时补充元数据。 */
 pub fn apply_tool_disclosures(
     request: &mut ModelRequest,
     call: &ModelToolCall,
@@ -638,8 +669,8 @@ pub async fn execute_tool(
     let entry = context.capabilities.find(&call.name).ok_or_else(|| {
         ModelError::invalid_configuration(format!("模型请求了未注册工具：{}。", call.name))
     })?;
-    // Discovery and Skill tools are governed by their own staged state:
-    // model_skills -> inspected -> activated. They may be disclosed before
+    // Discovery and Skill tools are governed by their own staged state.
+    // Model-visible skills may be inspected or activated directly. They may be disclosed before
     // appearing in the business-tool allowlist, so applying the business
     // allowlist here would make an advertised inspect_skill impossible to run.
     if !matches!(
@@ -1807,7 +1838,7 @@ fn execute_skill_inspect(
     call: &ModelToolCall,
     context: &ToolRuntimeContext,
     repository: &SkillRepository,
-    cache: &mut SkillRunCache,
+    _cache: &mut SkillRunCache,
 ) -> Result<ToolExecution, ModelError> {
     let id = required_string(&call.arguments, "id")?;
     let summary = context
@@ -1818,7 +1849,6 @@ fn execute_skill_inspect(
     let resources = repository
         .list_model_resources(id)
         .map_err(ModelError::invalid_configuration)?;
-    cache.mark_inspected(id.to_string());
     let content = json!({
         "id": summary.id,
         "name": summary.name,
@@ -1872,11 +1902,6 @@ fn execute_skill(
             activated_skill_id: None,
             output_truncated: false,
         });
-    }
-    if !cache.inspected(id) {
-        return Err(ModelError::invalid_configuration(
-            "必须先调用 inspect_skill 检查该 Skill，再加载正文。",
-        ));
     }
     if !cache.preactivated.contains(id)
         && cache.activation_count() >= context.max_model_skill_activations
@@ -2402,8 +2427,8 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        apply_tool_disclosures, configure_model_request, execute_skill, execute_skill_inspect,
-        execute_skill_search, execute_tool, execute_tool_inspect, execute_tool_search,
+        append_skill_catalog_prompt, apply_tool_disclosures, configure_model_request,
+        execute_skill, execute_tool, execute_tool_inspect, execute_tool_search,
         fit_text_window_end, parallel_safe, read_complete_text_content, read_pdf,
         render_skill_arguments, requires_approval, truncate_head_tail, truncate_utf8_bytes,
         validate_disclosed_tool_calls, validate_tool_arguments, SkillRunCache, ToolRuntimeContext,
@@ -2447,7 +2472,7 @@ mod tests {
     }
 
     #[test]
-    fn manually_activated_skill_exposes_resource_reader_on_first_call() {
+    fn slash_activated_skill_exposes_resource_reader_on_first_call() {
         let context = ToolRuntimeContext {
             conversation_id: "conversation-1".to_string(),
             permission_mode: AiPermissionMode::AskSensitive,
@@ -2703,22 +2728,13 @@ mod tests {
                 .iter()
                 .map(|tool| tool.name.as_str())
                 .collect::<Vec<_>>(),
-            vec!["search_skills", "inspect_skill"]
+            vec!["search_skills", "inspect_skill", "activate_skill"]
         );
         assert!(discovery_request
             .system_prompt
             .as_deref()
             .is_some_and(|prompt| prompt.contains("<mnemora_available_skills>")));
-        let search = tool_call("search_skills", json!({ "query": "first" }));
-        let _search_result = execute_skill_search(&search, &context).unwrap();
         let mut cache = SkillRunCache::default();
-        let inspect = tool_call("inspect_skill", json!({ "id": "first" }));
-        let inspected = execute_skill_inspect(&inspect, &context, &repository, &mut cache).unwrap();
-        apply_tool_disclosures(&mut discovery_request, &inspect, &inspected, &context);
-        assert!(discovery_request
-            .tools
-            .iter()
-            .any(|tool| tool.name == "activate_skill"));
         let first = ModelToolCall {
             id: "call-1".to_string(),
             name: "activate_skill".to_string(),
@@ -2742,7 +2758,7 @@ mod tests {
             &mut cache,
         )
         .unwrap_err();
-        assert!(error.message.contains("inspect_skill"));
+        assert!(error.message.contains("已达到上限"));
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -2903,10 +2919,63 @@ mod tests {
             .tools
             .iter()
             .any(|tool| tool.name == "inspect_skill"));
-        assert!(!request
+        assert!(request
             .tools
             .iter()
             .any(|tool| tool.name == "activate_skill"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn initial_skill_catalog_obeys_the_fallback_character_budget() {
+        let root =
+            std::env::temp_dir().join(format!("mnemora-skill-catalog-budget-{}", Uuid::new_v4()));
+        let builtin = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("resources")
+            .join("skills");
+        let repository = SkillRepository::new(builtin, root.clone());
+        let seed = repository
+            .list()
+            .unwrap()
+            .skills
+            .into_iter()
+            .find(|skill| skill.id == "question-framing")
+            .unwrap();
+        let skills = (0..100)
+            .map(|index| {
+                let mut skill = seed.clone();
+                skill.id = format!("catalog-skill-{index:03}");
+                skill.name = format!("Catalog skill {index:03}");
+                skill.description = format!(
+                    "Catalog budget test {index:03}: {}",
+                    "description ".repeat(40)
+                );
+                skill.triggers = vec![format!("/catalog-{index:03}")];
+                skill
+            })
+            .collect::<Vec<_>>();
+        let mut request = ModelRequest {
+            model: "test-model".to_string(),
+            system_prompt: None,
+            messages: Vec::new(),
+            options: ModelOptions::default(),
+            tools: Vec::new(),
+        };
+
+        append_skill_catalog_prompt(&mut request, &skills);
+
+        let prompt = request.system_prompt.as_deref().unwrap();
+        let start = prompt.find("<mnemora_available_skills>").unwrap();
+        let footer = "</mnemora_available_skills>";
+        let end = prompt.find(footer).unwrap() + footer.len();
+        let catalog = &prompt[start..end];
+        assert!(
+            catalog.chars().count() <= 8_000,
+            "{}",
+            catalog.chars().count()
+        );
+        assert!(catalog.contains("<catalog_notice>"), "{catalog}");
+        assert!(catalog.contains("<id>catalog-skill-000</id>"), "{catalog}");
         let _ = fs::remove_dir_all(root);
     }
 

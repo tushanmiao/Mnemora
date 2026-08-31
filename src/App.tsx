@@ -39,6 +39,7 @@ import { exportStoredConversation } from "./features/conversations/api/conversat
 import { SettingsPage } from "./features/settings/components/SettingsPage";
 import { useAppSettings } from "./features/settings/hooks/useAppSettings";
 import { useSkills } from "./features/skills/hooks/useSkills";
+import { usePromptTemplates } from "./features/prompts/hooks/usePromptTemplates";
 import { useLibrary } from "./features/library/hooks/useLibrary";
 import {
   DEFAULT_LAYOUT_PREFERENCES,
@@ -130,6 +131,7 @@ function App() {
 
   const settings = useAppSettings();
   const skills = useSkills();
+  const prompts = usePromptTemplates();
   const conversations = useConversations(navigateToWorkspace);
   const library = useLibrary({
     enabled: activeView === "workspace" && workspaceMode === "work",
@@ -419,18 +421,6 @@ function App() {
     }));
   }, [conversations, settings.modelSettings.providers]);
 
-  const handleConversationSkillsChange = useCallback((enabledSkillIds: string[]) => {
-    if (conversations.requestInFlightRef.current) return;
-    const available = new Set(
-      skills.skills.filter((skill) => skill.enabled).map((skill) => skill.id),
-    );
-    conversations.updateCurrentConversation((conversation) => ({
-      ...conversation,
-      enabledSkillIds: [...new Set(enabledSkillIds.filter((id) => available.has(id)))].slice(0, 12),
-      updatedAt: Date.now(),
-    }));
-  }, [conversations, skills.skills]);
-
   const layout = useWorkspaceLayout(appShellRef, workspaceMode, settings.appSettings);
 
   const workResourceLabel = {
@@ -575,8 +565,11 @@ function App() {
         contextMessages: conversations.currentConversation?.messages ?? [],
         contextSystemPrompt: settings.appSettings.systemPrompt,
         skills: skills.skills,
-        selectedSkillIds: conversations.currentConversation?.enabledSkillIds ?? [],
-        onSelectedSkillsChange: handleConversationSkillsChange,
+        promptTemplates: prompts.templates,
+        onOpenPromptSettings: (create = false) => {
+          if (create) prompts.requestCreate();
+          openSettings("prompts");
+        },
         onSend: chatRuntime.sendMessage,
         onStop: settings.appSettings.streamEnabled ? chatRuntime.stopGeneration : undefined,
         onSlashCommand: handleSlashCommand,
@@ -855,6 +848,7 @@ function App() {
           appSettings={settings.appSettings}
           activeCategory={settingsCategory}
           skillState={skills}
+          promptState={prompts}
           initialError={settings.modelSettingsError}
           appSettingsError={settings.appSettingsError}
           onBack={navigateToWorkspace}

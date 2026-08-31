@@ -7,6 +7,12 @@ export interface PromptTemplate {
   updatedAt: number;
 }
 
+export interface PromptTemplateInput {
+  id?: string;
+  title: string;
+  content: string;
+}
+
 /** 最终 System Prompt 中某一段内容的来源。 */
 export type SystemPromptSource =
   | "builtin"

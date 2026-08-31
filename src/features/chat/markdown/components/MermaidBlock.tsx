@@ -7,12 +7,14 @@ import {
   mountMermaidSvg,
   syncMermaidOverflow,
 } from "../utils/mermaidDom";
+import { explainMermaidError, formatMermaidErrorSummary } from "../utils/mermaidErrors";
 import { renderMermaid } from "../utils/mermaidRuntime";
 import {
   mermaidSvgPaint,
   mermaidThemeConfig,
-  prepareMermaidSource,
+  prepareMermaidSourceDetailed,
   sanitizeMermaidSvg,
+  type PreparedMermaidSource,
 } from "../utils/mermaidSecurity";
 import { MARKDOWN_RENDER_LIMITS } from "../utils/renderLimits";
 import "../styles/enhanced-markdown.css";
@@ -33,6 +35,8 @@ export function MermaidBlock({ code, streaming = false }: MermaidBlockProps) {
   const [status, setStatus] = useState<Status>("source");
   const [svg, setSvg] = useState("");
   const [error, setError] = useState("");
+  // 解析器原始报文。始终保留：翻译层认不出来的错误，原文是用户唯一的线索。
+  const [rawError, setRawError] = useState("");
   const [copied, setCopied] = useState(false);
   const [showSource, setShowSource] = useState(false);
   const [retryKey, setRetryKey] = useState(0);
@@ -68,23 +72,25 @@ export function MermaidBlock({ code, streaming = false }: MermaidBlockProps) {
     if (code.length > MARKDOWN_RENDER_LIMITS.maxMermaidChars) {
       setStatus("error");
       setError("图表内容过长，已保留源代码。");
+      setRawError("");
       return () => { cancelled = true; };
     }
 
     const host = ref.current;
     if (!host) return () => { cancelled = true; };
 
-    let prepared: string;
+    let prepared: PreparedMermaidSource;
     try {
-      prepared = prepareMermaidSource(code);
+      prepared = prepareMermaidSourceDetailed(code);
     } catch (reason) {
       setSvg("");
       setStatus("error");
       setError(reason instanceof Error ? reason.message : "Mermaid 源代码未通过安全检查。");
+      setRawError("");
       return () => { cancelled = true; };
     }
 
-    if (!prepared) {
+    if (!prepared.source) {
       setSvg("");
       setStatus("source");
       return () => { cancelled = true; };
@@ -95,12 +101,13 @@ export function MermaidBlock({ code, streaming = false }: MermaidBlockProps) {
     // source/loading/SVG state changes from producing a visible blank frame.
     setStatus("loading");
     setError("");
+    setRawError("");
     setOverflowed(false);
     const currentId = `mnemora-mermaid-${++renderSequence}`;
     const paint = mermaidSvgPaint(host);
     const timer = window.setTimeout(() => {
       if (cancelled) return;
-      void renderMermaid(prepared, currentId, mermaidThemeConfig(host, prepared, paint)).then((result) => {
+      void renderMermaid(prepared.source, currentId, mermaidThemeConfig(host, prepared.source, paint)).then((result) => {
         if (cancelled) return;
         const sanitized = sanitizeMermaidSvg(result.svg, paint);
         if (!sanitized.metrics.viewerSafe) {
@@ -115,7 +122,11 @@ export function MermaidBlock({ code, streaming = false }: MermaidBlockProps) {
         if (cancelled) return;
         setSvg("");
         setStatus("error");
-        setError(reason instanceof Error ? reason.message : "Mermaid 图表解析失败。");
+        // 把 jison 的期望符号列表翻译成可执行的改法，并说明已经自动修过哪些
+        // 笔误——否则用户会怀疑修复根本没跑。
+        const explanation = explainMermaidError(reason);
+        setError(formatMermaidErrorSummary(explanation, prepared.repairs));
+        setRawError(explanation.raw);
       });
     }, MERMAID_RENDER_DEBOUNCE_MS);
 
@@ -136,6 +147,7 @@ export function MermaidBlock({ code, streaming = false }: MermaidBlockProps) {
     } catch (reason) {
       setStatus("error");
       setError(reason instanceof Error ? reason.message : "Mermaid SVG 显示失败。");
+      setRawError("");
       return;
     }
 
@@ -223,7 +235,17 @@ export function MermaidBlock({ code, streaming = false }: MermaidBlockProps) {
       {showSource || status === "source" || status === "loading" || status === "error" ? (
         <>
           {status === "loading" && !showSource && !svg ? <div className="markdown-enhanced-status"><LoaderCircle className="message-spin" size={15} />正在生成图表…</div> : null}
-          {status === "error" && !showSource ? <div className="markdown-enhanced-error"><X size={15} /><span>{error}</span></div> : null}
+          {status === "error" && !showSource ? (
+            <>
+              <div className="markdown-enhanced-error"><X size={15} /><span>{error}</span></div>
+              {rawError ? (
+                <details className="markdown-mermaid-raw-error">
+                  <summary>解析器原始报错</summary>
+                  <pre><code>{rawError}</code></pre>
+                </details>
+              ) : null}
+            </>
+          ) : null}
           {showSource || status === "source" || (status === "loading" && !svg) || status === "error" ? <pre className="markdown-mermaid-source"><code>{code}</code></pre> : null}
         </>
       ) : null}

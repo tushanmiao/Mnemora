@@ -1,3 +1,4 @@
+import { repairMermaidSource } from "./mermaidRepair";
 import { MARKDOWN_RENDER_LIMITS } from "./renderLimits";
 
 const DANGEROUS_SVG_TAGS = new Set(["script", "iframe", "object", "embed", "image"]);
@@ -38,12 +39,19 @@ export type MermaidSvgPaint = {
   dark: boolean;
 };
 
+export type PreparedMermaidSource = {
+  /** 清洗并修复之后、可直接交给解析器的源码。 */
+  source: string;
+  /** 实际生效的修复规则名。渲染失败时用来告诉用户「修过了仍然失败」。 */
+  repairs: string[];
+};
+
 /**
  * Keep only the single harmless init option that Codex preserves. Every other
  * directive and all click handlers are removed before Mermaid sees the input;
  * an attempted securityLevel override rejects the diagram entirely.
  */
-export function prepareMermaidSource(source: string) {
+export function prepareMermaidSourceDetailed(source: string): PreparedMermaidSource {
   let securityOverride = false;
   const prepared = source.replace(MERMAID_DIRECTIVE, (directive) => {
     if (MERMAID_SECURITY_OVERRIDE.test(directive)) securityOverride = true;
@@ -70,7 +78,15 @@ export function prepareMermaidSource(source: string) {
   if (securityOverride) {
     throw new Error("Mermaid 图表尝试覆盖安全级别，已阻止渲染。");
   }
-  return prepared.replace(MERMAID_CLICK_LINE, "").replace(/\\n/g, "<br/>").trim();
+  const sanitized = prepared.replace(MERMAID_CLICK_LINE, "").replace(/\\n/g, "<br/>").trim();
+  // 清洗之后、交给解析器之前做一次无损语法修复。放在这里而不是更早，是因为
+  // 修复规则要看的是最终形态：\n 已经变成 <br/>，click 行已经删掉。
+  return repairMermaidSource(sanitized);
+}
+
+/** 只关心最终源码时的薄封装。 */
+export function prepareMermaidSource(source: string) {
+  return prepareMermaidSourceDetailed(source).source;
 }
 
 /**

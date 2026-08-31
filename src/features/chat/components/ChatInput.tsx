@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import type { ChatAttachment, PendingChatAttachment } from "../../../types/attachment";
 import type { SkillActivationSelection, SkillSummary } from "../../../types/skill";
+import type { PromptTemplate } from "../../../types/prompt";
 import {
   cancelChatAttachmentTask,
   discardImportedChatAttachments,
@@ -40,7 +41,8 @@ import {
 } from "../utils/attachmentCapabilities";
 import { ChatAttachments } from "./ChatAttachments";
 import { ContextUsageIndicator } from "./ContextUsageIndicator";
-import { ActiveSkillTags, SkillPicker } from "./SkillPicker";
+import { PromptLibraryPopover } from "../../prompts/components/PromptLibraryPopover";
+import { appendPromptTemplate } from "../../prompts/utils/appendPromptTemplate";
 import { useI18n } from "../../../i18n/I18nProvider";
 import { formatChatQuotes, MAX_CHAT_QUOTES } from "../utils/quotes";
 import "../styles/chat-input.css";
@@ -113,8 +115,8 @@ type ChatInputProps = {
   contextMessages?: ChatMessage[];
   contextSystemPrompt?: string;
   skills: SkillSummary[];
-  selectedSkillIds: string[];
-  onSelectedSkillsChange: (skillIds: string[]) => void;
+  promptTemplates: PromptTemplate[];
+  onOpenPromptSettings: (create?: boolean) => void;
   onSend: (
     content: string,
     attachments?: ChatAttachment[],
@@ -212,8 +214,8 @@ export function ChatInput({
   contextMessages = [],
   contextSystemPrompt = "",
   skills,
-  selectedSkillIds,
-  onSelectedSkillsChange,
+  promptTemplates,
+  onOpenPromptSettings,
   onSend,
   onStop,
   onSlashCommand,
@@ -543,7 +545,7 @@ export function ChatInput({
       onSend(
         contentWithQuote,
         storedAttachments,
-        resolveSkillActivation(draft, selectedSkillIds, skills),
+        resolveSkillActivation(draft, skills),
         literatureReferences,
         noteReferences,
       );
@@ -751,12 +753,6 @@ export function ChatInput({
             variant="composer"
             onRemove={removeAttachment}
           />
-          <ActiveSkillTags
-            skills={skills}
-            selectedSkillIds={selectedSkillIds}
-            disabled={inputDisabled}
-            onChange={onSelectedSkillsChange}
-          />
           {attachmentError ? <p className="composer-attachment-error" role="alert">{attachmentError}</p> : null}
           {commandFeedback ? <p className="composer-command-feedback" role="status">{commandFeedback}</p> : null}
           {slashMenuOpen ? (
@@ -833,12 +829,20 @@ export function ChatInput({
                     <BookOpenText size={18} />
                   </button>
                 ) : null}
-                <SkillPicker
-                  skills={skills}
-                  selectedSkillIds={selectedSkillIds}
-                  disabled={inputDisabled || supportsTools !== true}
-                  disabledReason={supportsTools !== true ? t("chat.toolsUnsupported") : undefined}
-                  onChange={onSelectedSkillsChange}
+                <PromptLibraryPopover
+                  templates={promptTemplates}
+                  disabled={inputDisabled}
+                  onCreate={() => onOpenPromptSettings(true)}
+                  onManage={onOpenPromptSettings}
+                  onSelect={(template) => {
+                    setDraft((current) => appendPromptTemplate(current, template.content));
+                    requestAnimationFrame(() => {
+                      const textarea = textareaRef.current;
+                      if (!textarea) return;
+                      textarea.focus();
+                      textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+                    });
+                  }}
                 />
                 <div className="composer-note-control" ref={noteControlRef}>
                   <button className="icon-button" type="button" title={t("chat.noteActions")} aria-label={t("chat.noteActions")} aria-expanded={noteMenuOpen} disabled={inputDisabled || !hasMessages} onClick={() => { setNoteMenuOpen((value) => !value); setReasoningMenuOpen(false); }}>
@@ -857,7 +861,7 @@ export function ChatInput({
                   ) : null}
                 </div>
                 <div className="composer-reasoning-control" ref={reasoningControlRef}>
-                  <button className={`icon-button composer-reasoning-trigger${thinkingEnabled ? " skill-picker-active" : ""}`} type="button" title={reasoningAvailable ? `${t("chat.reasoningSettings")}：${reasoningEffortLabel}` : t("chat.reasoningUnsupported")} aria-label={reasoningAvailable ? `${t("chat.reasoningSettings")}：${reasoningEffortLabel}` : t("chat.reasoningUnsupported")} aria-expanded={reasoningMenuOpen} disabled={inputDisabled || !reasoningAvailable} onClick={() => { setReasoningMenuOpen((value) => !value); setNoteMenuOpen(false); }}>
+                  <button className={`icon-button composer-reasoning-trigger${thinkingEnabled ? " composer-reasoning-trigger-active" : ""}`} type="button" title={reasoningAvailable ? `${t("chat.reasoningSettings")}：${reasoningEffortLabel}` : t("chat.reasoningUnsupported")} aria-label={reasoningAvailable ? `${t("chat.reasoningSettings")}：${reasoningEffortLabel}` : t("chat.reasoningUnsupported")} aria-expanded={reasoningMenuOpen} disabled={inputDisabled || !reasoningAvailable} onClick={() => { setReasoningMenuOpen((value) => !value); setNoteMenuOpen(false); }}>
                     <Brain size={18} />
                     {thinkingEnabled ? <span className="composer-reasoning-trigger-label">{reasoningEffortLabel}</span> : null}
                   </button>

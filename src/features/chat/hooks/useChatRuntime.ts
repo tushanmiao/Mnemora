@@ -292,7 +292,7 @@ export function useChatRuntime({
       updatedAt: now,
     };
     const effectiveActivation = skillActivation ?? {
-      skillIds: targetConversation.enabledSkillIds,
+      skillIds: [],
     };
     const activatedSkills = createActivatedSkillSnapshots(effectiveActivation, skills);
     const assistantMessage = createAssistantMessage(
@@ -447,7 +447,6 @@ export function useChatRuntime({
 
     const activation = resolveSkillActivation(
       content,
-      targetConversation.enabledSkillIds,
       skills,
     );
     const activatedSkills = createActivatedSkillSnapshots(activation, skills);

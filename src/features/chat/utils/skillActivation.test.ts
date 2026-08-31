@@ -23,29 +23,28 @@ const skill = (id: string, triggers: string[], enabled = true): SkillSummary => 
 });
 
 describe("resolveSkillActivation", () => {
-  it("prioritizes a slash-triggered skill and deduplicates manual selection", () => {
+  it("keeps a slash-triggered skill as the explicit override", () => {
     const skills = [skill("paper", ["/paper"]), skill("writing", ["/write"])];
-    expect(resolveSkillActivation(" /paper 分析方法", ["writing", "paper"], skills)).toEqual({
-      skillIds: ["paper", "writing"],
+    expect(resolveSkillActivation(" /paper 分析方法", skills)).toEqual({
+      skillIds: ["paper"],
       slashSkillId: "paper",
     });
   });
 
-  it("drops disabled or missing manual skills", () => {
-    expect(resolveSkillActivation("hello", ["off", "missing"], [skill("off", ["/off"], false)])).toEqual({
+  it("does not preselect skills for an ordinary message", () => {
+    expect(resolveSkillActivation("hello", [skill("paper", ["/paper"]), skill("off", ["/off"], false)])).toEqual({
       skillIds: [],
       slashSkillId: undefined,
     });
   });
 
-  it("creates message snapshots without copying the skill body", () => {
+  it("creates only the explicit slash snapshot without copying the skill body", () => {
     const skills = [skill("paper", ["/paper"]), skill("writing", ["/write"])];
     expect(createActivatedSkillSnapshots({
       skillIds: ["paper", "writing"],
       slashSkillId: "paper",
     }, skills)).toEqual([
       expect.objectContaining({ id: "paper", activation: "slash", contentHash: "sha256:test" }),
-      expect.objectContaining({ id: "writing", activation: "manual", contentHash: "sha256:test" }),
     ]);
   });
 

@@ -155,12 +155,7 @@ fn deep_note_route_profile(
             .model_settings
             .read()
             .map_err(|_| "模型设置锁不可用。".to_string())?;
-        DeepNoteRouteIdentity::resolve(
-            &settings,
-            provider_id,
-            model_id,
-            streaming_preferred,
-        )?
+        DeepNoteRouteIdentity::resolve(&settings, provider_id, model_id, streaming_preferred)?
     };
     let profile = state
         .library_repository
@@ -290,6 +285,12 @@ struct SectionDagJob {
 struct SectionDagJobResult {
     job: SectionDagJob,
     result: Result<(Option<(String, DeepNoteValidationReport, u8, u8)>, u32), String>,
+    /// 本轮这个 section 实际执行了多久（毫秒），用于累加 section 级墙钟预算。
+    ///
+    /// 在任务内部量而不是由调用方按批次估算：并行批次里各 section 的起止时刻不同，
+    /// 用批次时间会把等其他 section 的时间摊到每一个身上。三条结果分支（成功、
+    /// 取消、失败）都要累加 —— 时间是实际花掉的，失败不退款。
+    active_ms: u64,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -727,10 +728,9 @@ fn context_budget(
     // budget here can force otherwise safe conversations into unnecessary chunking.
     let planner_output_reserve_tokens =
         u64::from(max_output_tokens.min(PLANNER_OUTPUT_TOKEN_LIMIT));
-    let adaptive_limit = adaptive.limit_tokens.clamp(
-        MIN_ADAPTIVE_CHUNK_TOKENS,
-        MAX_ADAPTIVE_CHUNK_TOKENS,
-    );
+    let adaptive_limit = adaptive
+        .limit_tokens
+        .clamp(MIN_ADAPTIVE_CHUNK_TOKENS, MAX_ADAPTIVE_CHUNK_TOKENS);
     let (safety_margin_tokens, usable_input_tokens, direct_input_limit_tokens, chunk_target_tokens) =
         if let Some(window) = model.context_window_tokens {
             let safety = (window / 12).max(4_096);
@@ -819,7 +819,11 @@ fn token_estimate_units(value: &str) -> u64 {
 }
 
 fn character_token_units(character: char) -> u64 {
-    if character.is_ascii() { 1 } else { 4 }
+    if character.is_ascii() {
+        1
+    } else {
+        4
+    }
 }
 
 fn semantic_text_blocks(value: &str) -> Vec<String> {
@@ -1235,7 +1239,10 @@ fn pack_adjacent_attachment_chunks(
             .next()
             .unwrap_or(previous.source.location.as_str())
             .to_string();
-        previous.source.excerpt.push_str("\n\n<!-- packed-source-boundary -->\n\n");
+        previous
+            .source
+            .excerpt
+            .push_str("\n\n<!-- packed-source-boundary -->\n\n");
         previous.source.excerpt.push_str(&next.source.excerpt);
         previous.estimated_tokens = estimate_text_tokens(&previous.source.excerpt);
         previous.source.location = format!("{first_location} … {}", next.source.location);
@@ -2727,23 +2734,36 @@ fn refresh_run_budget(
     None
 }
 
-/// 登记某个 section 的起草起点，并回答「这个 section 的墙钟是否已耗尽」。
+/// 回答「这个 section 的累计活跃时长是否已耗尽预算」。
 ///
-/// 只在首次登记时写入时刻，重试不刷新起点 —— 否则一个反复重试的 section
-/// 每次都从零开始计时，永远撞不到上限，预算等于不存在。
-/// 只取实际用到的两块状态而不是整个 `DeepNoteRuntimeState`：这样这道闸门可以在
-/// 单测里直接验证，不必拼一个完整的运行时快照。
+/// 读的是累计活跃时长而不是「现在减去开始时刻」。时刻差会把关机、暂停、等并发
+/// 席位的时间一并算进预算：一个跑了 3 分钟就被中断、次日才续跑的 section，时刻差
+/// 是十几个小时，闸门会把它当成早已超时而跳过，用户拿到一篇静默缺章的笔记。
+/// 累计活跃时长由 `record_section_active_ms` 在每个 section 任务结束时累加。
+///
+/// 纯读不写：登记的职责归 `record_section_active_ms`。这样闸门是个无副作用的谓词，
+/// 单测里不必拼一个完整的运行时快照，也不会因为「问了一次」就改变预算。
 fn section_wall_clock_exhausted(
-    section_started_at: &mut BTreeMap<String, u64>,
+    section_active_ms: &BTreeMap<String, u64>,
     budget: &DeepNoteBudget,
     section_id: &str,
-    now_ms: u64,
 ) -> bool {
-    let started_at = *section_started_at
-        .entry(section_id.to_string())
-        .or_insert(now_ms);
-    let elapsed = now_ms.saturating_sub(started_at);
-    budget.section_wall_clock_exhausted(elapsed)
+    let active = section_active_ms.get(section_id).copied().unwrap_or(0);
+    budget.section_wall_clock_exhausted(active)
+}
+
+/// 把一个 section 本轮实际花掉的执行时长累加进预算。
+///
+/// 累加而不是覆盖：一个 section 可能跨多次 run 断续执行，预算管的是它总共花了
+/// 多久。饱和加法 —— 溢出回绕会让一个严重超时的 section 看起来毫无消耗，那是
+/// 最坏的失效方向。
+fn record_section_active_ms(
+    section_active_ms: &mut BTreeMap<String, u64>,
+    section_id: &str,
+    elapsed_ms: u64,
+) {
+    let entry = section_active_ms.entry(section_id.to_string()).or_insert(0);
+    *entry = entry.saturating_add(elapsed_ms);
 }
 
 fn persist_scheduler_state(
@@ -3453,8 +3473,7 @@ fn analysis_prompt(analysis_transcript: &str, adjustment: &str) -> String {
 fn chunk_analysis_prompt(chunk: &ConversationChunk) -> String {
     format!(
         "预计输入：{} Token\n\n{}",
-        chunk.estimated_tokens,
-        chunk.source.excerpt
+        chunk.estimated_tokens, chunk.source.excerpt
     )
 }
 
@@ -4260,6 +4279,190 @@ fn analyze_markdown_fences(markdown: &str) -> MarkdownFenceAnalysis {
     analysis
 }
 
+/// 收集正文顶层的 ```mermaid 代码块内容。
+///
+/// `analyze_markdown_fences` 只统计数量，语法检查需要块内的正文，所以单独走
+/// 一遍。嵌套在 markdown/text 源码围栏里的块不收——那种情况已经由
+/// `nested_mermaid_markers` 单独报错，重复报没有意义。
+fn collect_top_level_mermaid_blocks(markdown: &str) -> Vec<String> {
+    let mut blocks = Vec::new();
+    let mut active: Option<(char, usize, bool, Vec<&str>)> = None;
+    for line in markdown.lines() {
+        if let Some((marker, length, is_mermaid, body)) = active.as_mut() {
+            if parse_fence_line(line).is_some_and(|(candidate, candidate_length, suffix)| {
+                candidate == *marker && candidate_length >= *length && suffix.trim().is_empty()
+            }) {
+                if *is_mermaid {
+                    blocks.push(body.join("\n"));
+                }
+                active = None;
+            } else {
+                body.push(line);
+            }
+            continue;
+        }
+        let Some((marker, length, info)) = parse_fence_line(line) else {
+            continue;
+        };
+        active = Some((
+            marker,
+            length,
+            fence_language(info) == "mermaid",
+            Vec::new(),
+        ));
+    }
+    blocks
+}
+
+/// Mermaid 图型是否使用 `ID[标签]` 这种方括号节点写法。
+fn is_flowchart_block(code: &str) -> bool {
+    code.lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty() && !line.starts_with("%%"))
+        .is_some_and(|line| line.starts_with("flowchart") || line.starts_with("graph"))
+}
+
+/// 这些行首关键字后面的 `[` 不是节点标签。
+fn is_mermaid_directive_line(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    [
+        "%%",
+        "click ",
+        "style ",
+        "classDef ",
+        "class ",
+        "linkStyle ",
+        "direction ",
+        "subgraph ",
+        "accTitle",
+        "accDescr",
+    ]
+    .iter()
+    .any(|prefix| trimmed.starts_with(prefix))
+}
+
+/// flowchart 的 `[标签]` 里是否存在会让词法分析失败的裸括号。
+///
+/// 判定与前端 `mermaidRepair.ts` 的 `quoteBracketLabels` 保持一致：只看单字符
+/// `[` 开头的形状，标签已被引号包裹或含裸引号时放过。
+fn flowchart_label_needs_quotes(line: &str) -> bool {
+    if is_mermaid_directive_line(line) {
+        return false;
+    }
+    let bytes = line.as_bytes();
+    let mut cursor = 0;
+    while let Some(offset) = line[cursor..].find('[') {
+        let open = cursor + offset;
+        // `[[`、`[(`、`[/`、`[\` 是别的节点形状，闭合符号不同。
+        if matches!(bytes.get(open + 1), Some(b'[' | b'(' | b'/' | b'\\')) {
+            cursor = open + 2;
+            continue;
+        }
+        let Some(close_offset) = line[open + 1..].find(']') else {
+            return false;
+        };
+        let close = open + 1 + close_offset;
+        let label = &line[open + 1..close];
+        let trimmed = label.trim();
+        let already_quoted =
+            trimmed.len() >= 2 && trimmed.starts_with('"') && trimmed.ends_with('"');
+        if !already_quoted && !label.contains('"') && label.contains(['(', ')']) {
+            return true;
+        }
+        cursor = close + 1;
+    }
+    false
+}
+
+/// 边标签的竖线闭合之后紧跟引号：`A -->|"说明"|" Chat`。
+fn edge_label_has_trailing_quote(line: &str) -> bool {
+    let mut rest = line;
+    // 找到成对竖线中的第二根，看它后面（跳过空格）是不是引号。
+    while let Some(first) = rest.find('|') {
+        let after_first = &rest[first + 1..];
+        let Some(second) = after_first.find('|') else {
+            return false;
+        };
+        let tail = after_first[second + 1..].trim_start();
+        if tail.starts_with('"') {
+            return true;
+        }
+        rest = &after_first[second + 1..];
+    }
+    false
+}
+
+/// erDiagram 属性行的复合键连写：`text run_id PK_FK`。
+///
+/// mermaid 只接受逗号分隔的多个键，`PK_FK` 和 `PK FK` 都实测解析失败。
+fn er_attribute_has_compound_key(line: &str) -> bool {
+    let fields = line.split_whitespace().collect::<Vec<_>>();
+    if fields.len() < 3 {
+        return false;
+    }
+    let is_key = |token: &str| matches!(token, "PK" | "FK" | "UK");
+    // 第三段起是键位，注释（"..."）之前的部分才算。
+    let keys = fields[2..]
+        .iter()
+        .take_while(|token| !token.starts_with('"'))
+        .collect::<Vec<_>>();
+    let compound = keys.iter().any(|token| {
+        token
+            .split_once('_')
+            .is_some_and(|(head, tail)| is_key(head) && is_key(tail))
+    });
+    // `PK FK` 空格连写同样解析失败，逗号是唯一合法分隔符。
+    let space_separated = keys.len() >= 2 && keys.iter().all(|token| is_key(token));
+    compound || space_separated
+}
+
+/// mermaid 语法警告的统一前缀。
+///
+/// `passed` 只看 errors，所以光把笔误塞进 warnings 等于没人读。修订循环靠这个
+/// 前缀把「值得让模型再改一轮」的警告从其它警告里认出来。
+const MERMAID_LINT_WARNING_PREFIX: &str = "Mermaid 语法：";
+
+/// 对单个 mermaid 块做保守语法检查。
+///
+/// 每条规则都由 `scripts/probe-mermaid-errors.mjs` 用真实解析器确认过：命中
+/// 即必然渲染失败。刻意不做启发式猜测——误报会白白烧掉章节的修订预算，漏报
+/// 只是维持现状。误报率由 `mermaid_lint_has_no_false_positives` 在本机语料上
+/// 实测，当前为 0。
+fn lint_mermaid_syntax(code: &str) -> Vec<String> {
+    let mut findings = Vec::new();
+    if is_flowchart_block(code) {
+        if code.lines().any(flowchart_label_needs_quotes) {
+            findings.push(format!(
+                "{MERMAID_LINT_WARNING_PREFIX}节点标签含半角圆括号却没有加引号，会被解析成圆角节点而报错；请写成 A[\"主机 (Host)\"]。"
+            ));
+        }
+        if code.lines().any(edge_label_has_trailing_quote) {
+            findings.push(format!(
+                "{MERMAID_LINT_WARNING_PREFIX}边标签的竖线闭合后多了一个引号；请写成 A -->|\"说明\"| B，箭头右侧必须是不含空格的节点 ID。"
+            ));
+        }
+    } else if code.trim_start().starts_with("erDiagram")
+        && code.lines().any(er_attribute_has_compound_key)
+    {
+        findings.push(format!(
+            "{MERMAID_LINT_WARNING_PREFIX}erDiagram 的复合键必须用英文逗号分隔，写成 PK, FK，不能写 PK_FK 或 PK FK。"
+        ));
+    }
+    findings
+}
+
+/// 验证报告里是否存在值得再让模型改一轮的 mermaid 笔误。
+///
+/// 单独判定而不是并进 `passed`：`passed == false` 会在修订次数耗尽时把整章判
+/// 失败、直接中断整次运行，而一处图表笔误不该有这种杀伤力——前端渲染前还有
+/// 一层等价的确定性修复兜底。所以这里只驱动「再改一轮」，不参与成败。
+fn has_mermaid_lint_warning(validation: &DeepNoteValidationReport) -> bool {
+    validation
+        .warnings
+        .iter()
+        .any(|warning| warning.starts_with(MERMAID_LINT_WARNING_PREFIX))
+}
+
 fn strip_outer_markdown_fence(markdown: &str) -> Option<String> {
     let lines = markdown.lines().collect::<Vec<_>>();
     let first = lines.iter().position(|line| !line.trim().is_empty())?;
@@ -4380,6 +4583,12 @@ fn validate_section_markdown(
         .any(|kind| normalized.contains(kind))
     {
         warnings.push("检测到 Mermaid 代码块，但未识别到受支持的图型关键字。".to_string());
+    }
+    // 语法笔误进 warnings 而不是 errors：命中即渲染失败，值得让模型改一轮
+    // （见 has_mermaid_lint_warning），但不该在修订额度耗尽时把整章判失败——
+    // 前端渲染前还有一层等价的确定性修复兜底，丢掉整章更糟。
+    for block in collect_top_level_mermaid_blocks(normalized) {
+        warnings.extend(lint_mermaid_syntax(&block));
     }
     let relation_heavy = matches!(
         section.kind,
@@ -4587,7 +4796,10 @@ fn note_attachment_sources(
         let metadata = std::fs::metadata(&source_path)
             .map_err(|error| format!("读取笔记来源附件“{}”失败：{error}", attachment.name))?;
         if !metadata.is_file() || metadata.len() != attachment.size_bytes {
-            return Err(format!("笔记来源附件“{}”缺失或大小不一致。", attachment.name));
+            return Err(format!(
+                "笔记来源附件“{}”缺失或大小不一致。",
+                attachment.name
+            ));
         }
         sources.push(NoteAttachmentSource {
             source_path,
@@ -5233,8 +5445,7 @@ async fn save_drafting_checkpoint(
     validation: &DeepNoteValidationReport,
     error_message: Option<&str>,
 ) -> Result<(), String> {
-    let validation_json =
-        serde_json::to_string(validation).map_err(|error| error.to_string())?;
+    let validation_json = serde_json::to_string(validation).map_err(|error| error.to_string())?;
     let _guard = state.library_operations.lock().await;
     state
         .library_repository
@@ -5396,11 +5607,17 @@ async fn execute_dag_section(
                 (!validation.passed).then_some(last_error.as_str()),
             )
             .await?;
-            if validation.passed {
+            if validation.passed && !has_mermaid_lint_warning(&validation) {
                 markdown = Some(current);
                 break 'attempts;
             }
             if revisions >= section_revision_limit {
+                // 只剩 mermaid 笔误、修订额度已用尽：接受当前稿，别为一处图表
+                // 丢掉整章。渲染前的确定性修复会再兜一次。
+                if validation.passed {
+                    markdown = Some(current);
+                    break 'attempts;
+                }
                 break;
             }
             revisions = revisions.saturating_add(1);
@@ -5446,10 +5663,20 @@ async fn execute_dag_section(
                 }
                 Ok(_) => {
                     last_error = "模型修订返回了空章节。".to_string();
+                    // 修订请求本身失败时，别把只带 mermaid 笔误、其它验证都过的
+                    // 稿子一起丢掉——那会让一处图表笔误升级成整章失败。
+                    if validation.passed {
+                        markdown = Some(current);
+                        break 'attempts;
+                    }
                     break;
                 }
                 Err(error) => {
                     last_error = error.message;
+                    if validation.passed {
+                        markdown = Some(current);
+                        break 'attempts;
+                    }
                     break;
                 }
             }
@@ -5722,24 +5949,22 @@ async fn run_drafting_task<R: Runtime>(
             }
             let mut jobs = Vec::with_capacity(ready.len());
             let mut batch_reserved_calls = 0u32;
-            let batch_now_ms = crate::usage::now_ms();
             for section_id in ready {
-                // section 级墙钟闸：跳过已经累计耗时过长的 section。
+                // section 级墙钟闸：跳过累计活跃时长已经用完预算的 section。
                 //
                 // **作用域是跨 run 续跑**，不是单次 run 内的抢占：`ready_section_ids`
                 // 只返回 `Ready` 的节点，一个 section 在同一次 run 里派发一次就进
                 // `InProgress`，重试在 `execute_dag_section` 内部循环，不会回到这里。
-                // 所以首次派发时 elapsed 必然为 0、闸门不响；它真正生效的场景是暂停
-                // /崩溃后续跑 —— `section_started_at` 从 runtime JSON 读回，一个已经
-                // 烧掉 15 分钟的 section 不会再被重新派发一轮。
+                // 所以首次派发时累计为 0、闸门不响；它真正生效的场景是暂停/崩溃后
+                // 续跑 —— `section_active_ms` 从 runtime JSON 读回，一个已经烧掉 15
+                // 分钟**执行时间**的 section 不会再被重新派发一轮。
                 //
                 // 判定必须在 `transition(.., InProgress)` 之前：进了那一步节点就被
                 // 占住且 attempt_count 已经加过。
                 if section_wall_clock_exhausted(
-                    &mut runtime.section_started_at,
+                    &runtime.section_active_ms,
                     &runtime.budget,
                     &section_id,
-                    batch_now_ms,
                 ) {
                     for prefix in ["draft", "validate"] {
                         if let Ok(node) = scheduler.node_mut(&format!("{prefix}:{section_id}")) {
@@ -5870,6 +6095,7 @@ async fn run_drafting_task<R: Runtime>(
                 let channel_ref = &channel;
                 let cancellation_ref = &cancellation;
                 async move {
+                    let started_at = crate::usage::now_ms();
                     let result = execute_dag_section(
                         state_ref,
                         run_ref,
@@ -5893,12 +6119,21 @@ async fn run_drafting_task<R: Runtime>(
                     SectionDagJobResult {
                         job: job_for_result,
                         result,
+                        // 饱和减法：时钟回拨时记 0，不要让一次系统时间调整把预算算成天文数字。
+                        active_ms: crate::usage::now_ms().saturating_sub(started_at),
                     }
                 }
             }))
             .buffer_unordered(parallelism);
             while let Some(output) = section_results.next().await {
                 let section_id = output.job.section.id.clone();
+                // 在分支之前累加：成功、取消、失败三条路都实际花掉了这段时间，
+                // 预算要如实反映。放进 match 里就得写三遍，漏一处就等于该分支免费。
+                record_section_active_ms(
+                    &mut runtime.section_active_ms,
+                    &section_id,
+                    output.active_ms,
+                );
                 match output.result {
                     Ok((Some((markdown, validation, attempts, revisions)), used_calls)) => {
                         release_unused_parallel_semantic_calls(
@@ -6369,7 +6604,11 @@ async fn run_drafting_task_legacy<R: Runtime>(
                     Ok(value) if !value.trim().is_empty() => {
                         let mut candidate = normalize_generated_markdown(value.trim());
                         validation = validate_section_markdown(section, &candidate, &[]);
-                        while !validation.passed && revisions < section_revision_limit {
+                        // mermaid 笔误也进这个循环：命中即渲染失败。循环退出后
+                        // 下面只看 passed，所以额度用尽仍有笔误时会照常收下。
+                        while (!validation.passed || has_mermaid_lint_warning(&validation))
+                            && revisions < section_revision_limit
+                        {
                             revisions += 1;
                             consume_semantic_call(&state, &run_id, &mut runtime)?;
                             let revision_prompt = format!(
@@ -6397,9 +6636,15 @@ async fn run_drafting_task_legacy<R: Runtime>(
                                 revisions = revisions.saturating_sub(1);
                                 break 'attempts;
                             }
-                            candidate = normalize_generated_markdown(
-                                revision_result.map_err(|error| error.message)?.trim(),
-                            );
+                            candidate = match revision_result {
+                                Ok(value) => normalize_generated_markdown(value.trim()),
+                                // 只剩 mermaid 笔误时，一次失败的修订请求不该把
+                                // 整次运行拖死；收下已经通过验证的稿子退出循环。
+                                // 笔误本身会随 validation_json 一起存进 checkpoint，
+                                // 不会无声无息。
+                                Err(_) if validation.passed => break,
+                                Err(error) => return Err(error.message),
+                            };
                             validation = validate_section_markdown(section, &candidate, &[]);
                         }
                         if validation.passed {
@@ -7037,7 +7282,7 @@ pub async fn start<R: Runtime>(
         skill_profiles: skill_profiles.clone(),
         context_budget: DeepNoteContextBudget::default(),
         force_rebuild: request.force_rebuild,
-        section_started_at: BTreeMap::new(),
+        section_active_ms: BTreeMap::new(),
     };
     let runtime_json = serde_json::to_string(&runtime)
         .map_err(|error| format!("序列化深度笔记运行状态失败：{error}"))?;
@@ -8184,7 +8429,7 @@ pub async fn prepare_note_edit(
             ..DeepNoteContextBudget::default()
         },
         force_rebuild: false,
-        section_started_at: BTreeMap::new(),
+        section_active_ms: BTreeMap::new(),
     };
     let cancellation = CancellationToken::new();
     let attachment_chunks = if attachment_count > 0 {
@@ -8591,23 +8836,24 @@ mod tests {
 
     use super::{
         analyze_markdown_fences, await_note_pipeline_cancellable, can_pause_phase,
-        chunk_analysis_prompt, compact_ledger_for_planner, content_addressed_chunk_id,
-        context_budget, conversation_chunks,
-        deep_note_content_signature, evidence_for_plan, input_snapshot, ledger_has_real_output,
-        merge_chunk_digest, normalize_generated_markdown, normalize_math_fences,
-        pack_adjacent_attachment_chunks, phase_expects_background_worker, request_byte_limit,
-        reset_failed_nodes,
-        section_wall_clock_exhausted, should_fallback_to_chunked_planner,
+        chunk_analysis_prompt, collect_top_level_mermaid_blocks, compact_ledger_for_planner,
+        content_addressed_chunk_id, context_budget, conversation_chunks,
+        deep_note_content_signature, edge_label_has_trailing_quote, er_attribute_has_compound_key,
+        evidence_for_plan, flowchart_label_needs_quotes, has_mermaid_lint_warning, input_snapshot,
+        ledger_has_real_output, lint_mermaid_syntax, merge_chunk_digest,
+        normalize_generated_markdown, normalize_math_fences, pack_adjacent_attachment_chunks,
+        phase_expects_background_worker, record_section_active_ms, request_byte_limit,
+        reset_failed_nodes, section_wall_clock_exhausted, should_fallback_to_chunked_planner,
         should_retry_note_model_call, snapshot_conversation_after_validation,
         split_text_by_token_budget, token_estimate_units, validate_global_drafts,
-        validate_recovery_snapshot, validate_section_markdown, AdaptiveBudgetSnapshot,
-        ChunkDigest, ConversationChunk, REQUEST_BYTE_LIMIT, VISION_REQUEST_BYTE_LIMIT,
+        validate_recovery_snapshot, validate_section_markdown, AdaptiveBudgetSnapshot, ChunkDigest,
+        ConversationChunk, REQUEST_BYTE_LIMIT, VISION_REQUEST_BYTE_LIMIT,
     };
     use crate::chat::note_pipeline::types::{
         DeepNoteCapabilities, DeepNoteDagNode, DeepNoteEvidenceStatus, DeepNoteLedger,
         DeepNoteModelSnapshot, DeepNoteNodeStatus, DeepNoteNodeType, DeepNoteSection,
         DeepNoteSectionKind, DeepNoteSourceChunk, DeepNoteSourceKind, DeepNoteStartInspection,
-        NotePipelineStartRequest,
+        DeepNoteValidationReport, NotePipelineStartRequest,
     };
 
     fn message(id: &str, role: ModelRole, content: String) -> StoredChatMessage {
@@ -8708,6 +8954,219 @@ mod tests {
         let report = validate_section_markdown(&section, &source, &[]);
         assert!(!report.passed);
         assert!(report.errors.iter().any(|error| error.contains("正文顶层")));
+    }
+
+    #[test]
+    fn collects_only_top_level_mermaid_block_bodies() {
+        let markdown = concat!(
+            "## 依赖\n\n",
+            "```mermaid\nflowchart TD\nA --> B\n```\n\n",
+            "````markdown\n### 示例\n\n```mermaid\nflowchart TD\nC --> D\n```\n````\n\n",
+            "```rust\nfn main() {}\n```\n"
+        );
+        let blocks = collect_top_level_mermaid_blocks(markdown);
+        // 嵌套在 markdown 围栏里的那张图由 nested_mermaid_markers 单独报错，这里不重复收。
+        assert_eq!(blocks, vec!["flowchart TD\nA --> B".to_string()]);
+    }
+
+    #[test]
+    fn flags_unquoted_ascii_parentheses_in_flowchart_labels() {
+        // 真实语料里导致渲染失败的那一行。
+        assert!(flowchart_label_needs_quotes(
+            "    A[MCP 主机 (Host) - AI 应用<br/>如 Claude Desktop / Visual Studio Code]"
+        ));
+        assert!(flowchart_label_needs_quotes("B[结果) 收尾] --> C[正常]"));
+    }
+
+    #[test]
+    fn leaves_label_characters_that_mermaid_already_accepts() {
+        // 这批字符由 scripts/probe-mermaid-errors.mjs 实测确认过合法，报了就是误报，
+        // 会白白烧掉章节的修订预算。
+        for line in [
+            "A[主机（Host）]",
+            "A[标签 <b>强调</b>]",
+            "A[键: 值, 其他]",
+            "A[结尾分号];",
+            "A[\"主机 (Host)\"]",
+            "A[[子程序 (Sub)]]",
+            "A[(数据库 (DB))]",
+            "%% A[注释里的 (括号)]",
+            "click A callback \"提示 (说明)\"",
+            "A[未闭合的 (标签",
+        ] {
+            assert!(!flowchart_label_needs_quotes(line), "误报：{line}");
+        }
+    }
+
+    #[test]
+    fn flags_only_a_quote_that_follows_the_closing_pipe() {
+        assert!(edge_label_has_trailing_quote(
+            "    A -->|\"生成结果\"|\" Chat"
+        ));
+        for line in [
+            "A -->|说明| B",
+            "A -->|\"说明\"| B",
+            "A -- 说明 --> B",
+            "A --> B",
+        ] {
+            assert!(!edge_label_has_trailing_quote(line), "误报：{line}");
+        }
+    }
+
+    #[test]
+    fn flags_er_compound_keys_that_are_not_comma_separated() {
+        assert!(er_attribute_has_compound_key("    text run_id PK_FK"));
+        assert!(er_attribute_has_compound_key("    text run_id PK FK"));
+        for line in [
+            "    string id PK",
+            "    string id PK, FK",
+            "    string id PK \"主键 (primary)\"",
+            "    USER ||--o{ NOTE : writes",
+            "  }",
+        ] {
+            assert!(!er_attribute_has_compound_key(line), "误报：{line}");
+        }
+    }
+
+    #[test]
+    fn mermaid_lint_stays_within_the_matching_diagram_type() {
+        let flowchart = "flowchart TD\n    A[MCP 主机 (Host)] --> B[客户端]";
+        let findings = lint_mermaid_syntax(flowchart);
+        assert_eq!(findings.len(), 1);
+        assert!(findings[0].contains("圆括号"));
+
+        let er = "erDiagram\n    DEEP_NOTE_RUN {\n        text run_id PK_FK\n    }";
+        let er_findings = lint_mermaid_syntax(er);
+        assert_eq!(er_findings.len(), 1);
+        assert!(er_findings[0].contains("PK, FK"));
+
+        // flowchart 里出现 PK_FK 只是普通文本，不该触发 erDiagram 规则。
+        assert!(lint_mermaid_syntax("flowchart TD\n    A[run_id PK_FK] --> B").is_empty());
+        // erDiagram 的实体名带括号不是 flowchart 的方括号标签。
+        assert!(
+            lint_mermaid_syntax("erDiagram\n    USER ||--o{ NOTE : \"writes (many)\"").is_empty()
+        );
+        assert!(lint_mermaid_syntax("flowchart TD\n    A[\"主机 (Host)\"] -->|说明| B").is_empty());
+        assert!(lint_mermaid_syntax("sequenceDiagram\n    A ->> B: 调用 (同步)").is_empty());
+    }
+
+    #[test]
+    fn section_validation_reports_mermaid_typos_as_warnings() {
+        let source = format!(
+            "## 依赖关系\n\n{}\n\n```mermaid\nflowchart TD\n    A[MCP 主机 (Host)] --> B[客户端]\n```\n",
+            "本节解释章节之间的依赖关系、并行条件和失败传播，长度需要越过正文下限。".repeat(8)
+        );
+        let section = DeepNoteSection {
+            id: "sec-dependency".to_string(),
+            heading: "依赖关系".to_string(),
+            kind: DeepNoteSectionKind::Concept,
+            brief: "解释依赖和并行流程".to_string(),
+            purpose: "说明执行顺序".to_string(),
+            depends_on: Vec::new(),
+            evidence_requirements: Vec::new(),
+            success_criteria: vec!["解释依赖关系".to_string()],
+            source_scope: Vec::new(),
+            target_depth: "standard".to_string(),
+            allow_ai_supplement: false,
+            needs_supplement: false,
+            source_message_ids: Vec::new(),
+        };
+        let report = validate_section_markdown(&section, &source, &[]);
+        // 语法笔误只进 warnings，不进 passed：一条可能误报的规则不该在修订额度
+        // 用尽时把整章判失败。但它必须能被修订循环认出来，否则等于没人读。
+        assert!(report.passed);
+        assert!(report.warnings.iter().any(|item| item.contains("圆括号")));
+        assert!(
+            has_mermaid_lint_warning(&report),
+            "warnings 进不了修订循环的话，第 2 层就是死代码"
+        );
+    }
+
+    #[test]
+    fn only_mermaid_lint_warnings_trigger_a_revision() {
+        let clean = DeepNoteValidationReport {
+            passed: true,
+            errors: Vec::new(),
+            warnings: vec!["章节偏短，建议补充。".to_string()],
+            checked_evidence_ids: Vec::new(),
+            criteria_coverage: Vec::new(),
+        };
+        // 普通警告不该白烧一轮修订预算。
+        assert!(!has_mermaid_lint_warning(&clean));
+
+        let flagged = validate_section_markdown(
+            &DeepNoteSection {
+                id: "sec-1".to_string(),
+                heading: "依赖关系".to_string(),
+                kind: DeepNoteSectionKind::Concept,
+                brief: "解释依赖".to_string(),
+                purpose: "说明顺序".to_string(),
+                depends_on: Vec::new(),
+                evidence_requirements: Vec::new(),
+                success_criteria: vec!["解释依赖关系".to_string()],
+                source_scope: Vec::new(),
+                target_depth: "standard".to_string(),
+                allow_ai_supplement: false,
+                needs_supplement: false,
+                source_message_ids: Vec::new(),
+            },
+            &format!(
+                "## 依赖关系\n\n{}\n\n```mermaid\nerDiagram\n    RUN {{\n        text run_id PK_FK\n    }}\n```\n",
+                "本节解释章节之间的依赖关系、并行条件和失败传播，长度需要越过正文下限。".repeat(8)
+            ),
+            &[],
+        );
+        assert!(flagged.passed);
+        assert!(has_mermaid_lint_warning(&flagged));
+    }
+
+    /// 用真实语料量误报率。默认跳过：语料是本机会话数据，不能进仓库。
+    ///
+    /// 复现方式：
+    ///   node --import ./scripts/mermaid-loader.mjs scripts/dump-mermaid-corpus.mjs \
+    ///     corpus.json <会话目录> <文档>
+    ///   MNEMORA_MERMAID_CORPUS=corpus.json cargo test --lib mermaid_lint_has_no_false_positives \
+    ///     -- --ignored --nocapture
+    ///
+    /// 2026-08-31 在 105 张真实图（102 张原样可解析）上的结果：误报 0，3 张真实
+    /// 失败全部命中，漏报 0。加规则之后必须重跑，误报不为 0 就别上线。
+    #[test]
+    #[ignore = "需要本机 mermaid 语料，见 MNEMORA_MERMAID_CORPUS"]
+    fn mermaid_lint_has_no_false_positives() {
+        let Ok(corpus_path) = std::env::var("MNEMORA_MERMAID_CORPUS") else {
+            panic!("请用 MNEMORA_MERMAID_CORPUS 指向 dump-mermaid-corpus.mjs 的输出");
+        };
+        let raw = std::fs::read_to_string(&corpus_path).expect("读取语料失败");
+        let corpus: Vec<serde_json::Value> = serde_json::from_str(&raw).expect("语料不是合法 json");
+        let (mut false_positives, mut caught, mut missed) = (0_usize, 0_usize, 0_usize);
+        for item in &corpus {
+            let code = item["code"].as_str().unwrap_or_default();
+            let parses = item["parses"].as_bool().unwrap_or(true);
+            let findings = lint_mermaid_syntax(code);
+            match (parses, findings.is_empty()) {
+                (true, false) => {
+                    false_positives += 1;
+                    println!(
+                        "误报 {}:{} -> {findings:?}\n{code}\n",
+                        item["file"], item["line"]
+                    );
+                }
+                (false, false) => {
+                    caught += 1;
+                    println!("命中 {}:{} -> {findings:?}", item["file"], item["line"]);
+                }
+                (false, true) => {
+                    missed += 1;
+                    println!("漏报 {}:{}\n{code}\n", item["file"], item["line"]);
+                }
+                (true, true) => {}
+            }
+        }
+        println!(
+            "共 {} 张图：误报 {false_positives}，命中 {caught}，漏报 {missed}",
+            corpus.len()
+        );
+        assert_eq!(false_positives, 0, "存在误报，会白白烧掉章节修订预算");
     }
 
     #[test]
@@ -8836,18 +9295,11 @@ mod tests {
             route_state: "degraded".to_string(),
             profile_samples: 4,
         };
-        let constrained_budget = context_budget(
-            &conversation,
-            &model(Some(128_000)),
-            16_384,
-            &constrained,
-        );
+        let constrained_budget =
+            context_budget(&conversation, &model(Some(128_000)), 16_384, &constrained);
         assert_eq!(constrained_budget.direct_input_limit_tokens, 2_048);
         assert_eq!(constrained_budget.chunk_target_tokens, 2_048);
-        assert_eq!(
-            constrained_budget.adaptive_route_key,
-            "route-constrained"
-        );
+        assert_eq!(constrained_budget.adaptive_route_key, "route-constrained");
     }
 
     #[test]
@@ -9678,72 +10130,68 @@ mod tests {
         }
     }
 
-    /// section 的起点只记首次，重试不刷新。
+    /// section 的执行时长逐轮累加，重试不清零。
     ///
-    /// 如果每次重试都重置起点，一个反复重试的 section 永远撞不到上限 —— 预算写了
-    /// 等于没写，而这正是「单个 section 卡死拖垮整个 run」的成因。
+    /// 如果每轮重试都从零开始计时，一个反复重试的 section 永远撞不到上限 —— 预算
+    /// 写了等于没写，而这正是「单个 section 卡死拖垮整个 run」的成因。
     #[test]
-    fn section_wall_clock_start_is_recorded_once_and_survives_retries() {
-        let mut started_at = std::collections::BTreeMap::new();
+    fn section_wall_clock_accumulates_across_retries() {
+        let mut active = std::collections::BTreeMap::new();
         let budget = crate::chat::note_pipeline::types::DeepNoteBudget::for_section_count(4);
         let limit = budget.section_wall_clock_ms;
 
-        // 首次进入：登记起点，此刻 elapsed 为 0，不该触发。
-        assert!(!section_wall_clock_exhausted(
-            &mut started_at,
-            &budget,
-            "s1",
-            1_000
-        ));
-        assert_eq!(started_at.get("s1"), Some(&1_000));
+        // 未登记过的 section 累计为 0，闸门不响。
+        assert!(!section_wall_clock_exhausted(&active, &budget, "s1"));
 
-        // 第二次进入（重试）：起点必须还是 1_000，不能被刷新成新的 now。
-        assert!(!section_wall_clock_exhausted(
-            &mut started_at,
-            &budget,
-            "s1",
-            1_000 + limit - 1
-        ));
-        assert_eq!(
-            started_at.get("s1"),
-            Some(&1_000),
-            "重试刷新了起点，这个 section 将永远不会超时"
-        );
+        // 逐轮累加，差 1 毫秒时仍不该触发。
+        record_section_active_ms(&mut active, "s1", limit / 2);
+        assert!(!section_wall_clock_exhausted(&active, &budget, "s1"));
+        record_section_active_ms(&mut active, "s1", limit / 2 - 1);
+        assert!(!section_wall_clock_exhausted(&active, &budget, "s1"));
+        assert_eq!(active.get("s1"), Some(&(limit - 1)));
 
         // 累计跨过上限：触发。
-        assert!(section_wall_clock_exhausted(
-            &mut started_at,
-            &budget,
-            "s1",
-            1_000 + limit
-        ));
+        record_section_active_ms(&mut active, "s1", 1);
+        assert!(section_wall_clock_exhausted(&active, &budget, "s1"));
 
         // 各 section 独立计时：一个超时不牵连另一个。
-        assert!(!section_wall_clock_exhausted(
-            &mut started_at,
-            &budget,
-            "s2",
-            1_000 + limit
-        ));
+        assert!(!section_wall_clock_exhausted(&active, &budget, "s2"));
     }
 
-    /// 时钟回拨不该把 section 判成超时。饱和减法保证 elapsed 落到 0。
+    /// 中断后隔很久才续跑，不该把没花掉的时间算进 section 预算。
+    ///
+    /// 这是这道闸门唯一真正生效的场景，也曾经是它最错的场景：闸门原先按
+    /// `now - section_started_at` 判定，用户关掉应用过夜再续跑，所有在途 section
+    /// 的「已耗时」都是十几个小时，会被整批跳过，产出一篇静默缺章的笔记 —— 而它们
+    /// 可能一次上游调用都没跑完。预算必须只认实际执行时间，与挂钟无关。
     #[test]
-    fn section_wall_clock_tolerates_a_clock_moving_backwards() {
-        let mut started_at = std::collections::BTreeMap::new();
+    fn section_wall_clock_ignores_time_spent_paused_between_runs() {
+        let mut active = std::collections::BTreeMap::new();
+        let budget = crate::chat::note_pipeline::types::DeepNoteBudget::for_section_count(4);
+
+        // 第一次 run：这个 section 只执行了 3 分钟就被中断。
+        record_section_active_ms(&mut active, "s1", 3 * 60 * 1000);
+
+        // 隔了 18 小时才续跑。累计活跃时长仍是 3 分钟，闸门不该响。
+        assert!(
+            !section_wall_clock_exhausted(&active, &budget, "s1"),
+            "暂停时间被算进了 section 预算，续跑会静默跳过几乎没执行过的章节"
+        );
+
+        // 续跑后又执行到超过上限，这时才该跳过。
+        record_section_active_ms(&mut active, "s1", budget.section_wall_clock_ms);
+        assert!(section_wall_clock_exhausted(&active, &budget, "s1"));
+    }
+
+    /// 累加用饱和加法：溢出回绕会让一个严重超时的 section 看起来毫无消耗。
+    #[test]
+    fn section_active_time_accumulation_saturates() {
+        let mut active = std::collections::BTreeMap::new();
         let budget = crate::chat::note_pipeline::types::DeepNoteBudget::for_section_count(2);
-        assert!(!section_wall_clock_exhausted(
-            &mut started_at,
-            &budget,
-            "s1",
-            10_000
-        ));
-        assert!(!section_wall_clock_exhausted(
-            &mut started_at,
-            &budget,
-            "s1",
-            5_000
-        ));
+        record_section_active_ms(&mut active, "s1", u64::MAX);
+        record_section_active_ms(&mut active, "s1", 5_000);
+        assert_eq!(active.get("s1"), Some(&u64::MAX));
+        assert!(section_wall_clock_exhausted(&active, &budget, "s1"));
     }
 
     #[test]

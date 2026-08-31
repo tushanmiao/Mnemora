@@ -1,9 +1,10 @@
 import { lazy, Suspense, useCallback, useState } from "react";
-import { ArrowLeft, BarChart3, Bot, Brain, Bug, Cable, Cloud, Database, Info, NotebookPen, PawPrint, Plug, SlidersHorizontal, Sparkles } from "lucide-react";
+import { ArrowLeft, BarChart3, Bot, Brain, Bug, Cable, Cloud, Database, Info, MessageSquareText, NotebookPen, PawPrint, Plug, SlidersHorizontal, Sparkles } from "lucide-react";
 import { RootErrorBoundary } from "../../../bootstrap/RootErrorBoundary";
 import type { AppSettings, SettingsBundle } from "../../../types/appSettings";
 import type { ModelSettings, ProviderApiKeyUpdate } from "../../../types/modelSettings";
 import type { useSkills } from "../../skills/hooks/useSkills";
+import type { usePromptTemplates } from "../../prompts/hooks/usePromptTemplates";
 import { useI18n } from "../../../i18n/I18nProvider";
 import "../styles/settings-kit.css";
 import "../styles/settings-page.css";
@@ -14,6 +15,9 @@ const NoteSettingsPanel = lazy(() => import("./NoteSettingsPanel").then((module)
 const ModelSettingsPanel = lazy(() => import("./ModelSettingsPanel").then((module) => ({ default: module.ModelSettingsPanel })));
 const SkillSettingsPanel = lazy(() => import("./SkillSettingsPanel").then((module) => ({
   default: module.SkillSettingsPanel,
+})));
+const PromptSettingsPanel = lazy(() => import("./PromptSettingsPanel").then((module) => ({
+  default: module.PromptSettingsPanel,
 })));
 const McpSettingsPanel = lazy(() => import("./McpSettingsPanel").then((module) => ({
   default: module.McpSettingsPanel,
@@ -32,14 +36,15 @@ const StorageSettingsPanel = lazy(() => import("./StorageSettingsPanel").then((m
 const RequestDebugSettingsPanel = lazy(() => import("./RequestDebugSettingsPanel").then((module) => ({ default: module.RequestDebugSettingsPanel })));
 const AboutSettingsPanel = lazy(() => import("./AboutSettingsPanel").then((module) => ({ default: module.AboutSettingsPanel })));
 
-export type SettingsCategory = "general" | "pet" | "notes" | "models" | "skills" | "mcp" | "plugins" | "memory" | "storage" | "sync" | "usage" | "debug" | "about";
+export type SettingsCategory = "general" | "pet" | "notes" | "models" | "skills" | "prompts" | "mcp" | "plugins" | "memory" | "storage" | "sync" | "usage" | "debug" | "about";
 
-const CATEGORY_KEYS: Record<SettingsCategory, "settings.general" | "settings.pet" | "settings.notes" | "settings.models" | "settings.skills" | "settings.mcp" | "settings.plugins" | "settings.memory" | "settings.storage" | "settings.sync" | "settings.usage" | "settings.debug" | "settings.about"> = {
+const CATEGORY_KEYS: Record<SettingsCategory, "settings.general" | "settings.pet" | "settings.notes" | "settings.models" | "settings.skills" | "settings.prompts" | "settings.mcp" | "settings.plugins" | "settings.memory" | "settings.storage" | "settings.sync" | "settings.usage" | "settings.debug" | "settings.about"> = {
   general: "settings.general",
   pet: "settings.pet",
   notes: "settings.notes",
   models: "settings.models",
   skills: "settings.skills",
+  prompts: "settings.prompts",
   mcp: "settings.mcp",
   plugins: "settings.plugins",
   memory: "settings.memory",
@@ -57,6 +62,7 @@ type SettingsPageProps = {
   appSettingsError: string | null;
   activeCategory: SettingsCategory;
   skillState: ReturnType<typeof useSkills>;
+  promptState: ReturnType<typeof usePromptTemplates>;
   onBack: () => void;
   onCategoryChange: (category: SettingsCategory) => void;
   onSave: (
@@ -102,6 +108,7 @@ export function SettingsPage(props: SettingsPageProps) {
     { id: "notes", label: t("settings.notes"), icon: NotebookPen },
     { id: "models", label: t("settings.models"), icon: Bot },
     { id: "skills", label: t("settings.skills"), icon: Sparkles },
+    { id: "prompts", label: t("settings.prompts"), icon: MessageSquareText },
     { id: "mcp", label: t("settings.mcp"), icon: Cable },
     { id: "plugins", label: t("settings.plugins"), icon: Plug },
     { id: "memory", label: t("settings.memory"), icon: Brain },
@@ -170,6 +177,8 @@ export function SettingsPage(props: SettingsPageProps) {
               <ModelSettingsPanel settings={props.settings} initialError={props.initialError} onSave={props.onSave} />
             ) : activeCategory === "skills" ? (
               <SkillSettingsPanel state={props.skillState} />
+            ) : activeCategory === "prompts" ? (
+              <PromptSettingsPanel state={props.promptState} />
             ) : activeCategory === "mcp" ? (
               <McpSettingsPanel />
             ) : activeCategory === "plugins" ? (

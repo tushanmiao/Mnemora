@@ -792,10 +792,11 @@ impl DeepNoteBudget {
 
     /// 某个 section 的累计墙钟是否已耗尽。
     ///
-    /// section 的起始时刻由 `DeepNoteRuntimeState::section_started_at` 记录，
+    /// 入参是该 section 的**累计活跃时长**（由 `DeepNoteRuntimeState::section_active_ms`
+    /// 维护），不是「现在减去开始时刻」—— 后者会把暂停与关机的时间算进预算。
     /// 这里只做纯比较，方便单测不依赖系统时钟。
-    pub fn section_wall_clock_exhausted(&self, section_elapsed_ms: u64) -> bool {
-        section_elapsed_ms >= self.section_wall_clock_ms
+    pub fn section_wall_clock_exhausted(&self, section_active_ms: u64) -> bool {
+        section_active_ms >= self.section_wall_clock_ms
     }
 
     pub fn upstream_request_exhausted(&self) -> bool {
@@ -867,7 +868,7 @@ mod budget_tests {
     }
 
     #[test]
-    fn section_wall_clock_uses_elapsed_time_not_call_count() {
+    fn section_wall_clock_uses_active_duration_not_call_count() {
         let budget = DeepNoteBudget::for_section_count(3);
         assert!(!budget.section_wall_clock_exhausted(0));
         assert!(!budget.section_wall_clock_exhausted(budget.section_wall_clock_ms - 1));
@@ -1016,16 +1017,21 @@ pub struct DeepNoteRuntimeState {
     pub context_budget: DeepNoteContextBudget,
     #[serde(default)]
     pub force_rebuild: bool,
-    /// section id → 该 section 首次开始起草的 Unix 毫秒时刻。
+    /// section id → 该 section 已累计的**活跃**执行时长（毫秒）。
+    ///
+    /// 记「累计活跃时长」而不是「首次开始的时刻」，是因为后者会把关机、暂停、
+    /// 等并发席位的时间一起算进预算。一个跑了 3 分钟就被中断、次日才续跑的
+    /// section，用时刻差算出来是十几个小时，会被闸门当成早已超时而直接跳过 ——
+    /// 用户拿到一篇静默缺章的笔记，而那个 section 其实几乎没花上游时间。
+    ///
+    /// 这也让 section 级与 run 级的口径一致：`upstream_wall_clock_ms` 同样只累计
+    /// 真实发生的调用耗时（见该字段注释），两级预算不该用两种时间。
     ///
     /// 独立于 `DeepNoteDagNode`：节点没有任何计时字段，而给节点加字段要动
     /// 计划快照的结构；放在 runtime state 里带 `#[serde(default)]` 就能让存量
     /// 运行时 JSON 直接反序列化成空表，不需要迁移。
-    ///
-    /// 只记首次：section 的墙钟预算管的是「这个 section 总共耗了多久」，
-    /// 重试刷新起点会让一个反复重试的 section 永远撞不到上限。
     #[serde(default)]
-    pub section_started_at: BTreeMap<String, u64>,
+    pub section_active_ms: BTreeMap<String, u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -75,6 +75,15 @@ if refresh_run_wall_clock(&state, &run_id, &mut runtime) {
 
 补这个缺口时应当**从 `timeout()` 派发事件**，而不是再复制一份直接操作 scheduler 的代码 —— 相位与 effect 的对应关系只应有一处真相。这一项未做，记在此处。
 
+### 3.2 更新（2026-08-30）：双轨已合并
+
+本节记录的架构双轨**已消除**，按 3.1 建议的方向做的 —— 从 `timeout()` 派发，没有再复制一份直接操作 scheduler 的代码：
+
+- `DeepNoteRunMachine::timeout()` 现有两处生产调用：`note_pipeline/service.rs:4716`、`:5638`
+- `TimeoutDetected` 在 `run_machine.rs:206` 有独立分支与独立 effect，不再只被单测覆盖
+
+因此本文与 `md/plan/14-DeepNote/05-分阶段实施计划.md` 第 161 行里「`timeout()` 至今零调用」的表述都已过期，两处一并更正。第 7 节表格中「`Analyzing` 等非起草相位的墙钟闸门」一项的补法指引依然有效。
+
 ---
 
 ## 4. 13 个 dead_code 警告的甄别
@@ -151,3 +160,5 @@ npx vitest run                                                   # 221 passed / 
 | `Analyzing` 等非起草相位的墙钟闸门 | 见第 3.1 节。补时应从 `DeepNoteRunMachine::timeout()` 派发，不要复制服务层的直接操作 |
 | 测试与生产的错位 | 见 4.3 节末。让来源校验、覆盖快照、重建锚点改由 `commit_deep_note_and_complete_run` 验证 |
 | P1 / P2 / P3 | 均未开始。P3-1 已由 P0-10 顺带完成，可从计划中划掉 |
+
+> 本表是当轮快照。其中「状态机双轨」已于 2026-08-30 解决（见 3.2 节）；P1、P2、P3-1 至 P3-6 亦已完成，最新状态以 `md/plan/14-DeepNote/05-分阶段实施计划.md` 为准。
