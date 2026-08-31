@@ -175,6 +175,8 @@ export interface DeepNoteDagNode {
   status: DeepNoteDagNodeStatus;
   attemptCount: number;
   evidenceIds: string[];
+  inputHash: string;
+  outputRef: string | null;
   validationJson: string;
   errorMessage: string | null;
 }

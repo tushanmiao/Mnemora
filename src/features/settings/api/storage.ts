@@ -1,8 +1,19 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 
+export type KnownStorageCategoryId =
+  | "conversations"
+  | "library"
+  | "memory"
+  | "prompts"
+  | "skills"
+  | "usage"
+  | "sync"
+  | "english";
+
 export interface StorageCategoryUsage {
-  id: "conversations" | "library" | "memory" | "skills" | "usage" | "sync" | "english";
+  // 后端为了兼容新增数据目录会返回字符串；界面必须为未来分类保留降级显示。
+  id: string;
   bytes: number;
 }
 

@@ -64,7 +64,7 @@ use super::{
         NoteEditPrepareRequest, NoteEditPrepareResult, NoteMergePlan, NotePatchSet,
         NotePipelineActivity, NotePipelineAdjustRequest, NotePipelineCancelResult,
         NotePipelineConfirmRequest, NotePipelineProgress, NotePipelineStartRequest,
-        MAX_DEEP_NOTE_SOURCE_CHUNKS, MAX_DEEP_NOTE_UPSTREAM_REQUESTS,
+        DEEP_NOTE_FAILURE_PREFIX, MAX_DEEP_NOTE_SOURCE_CHUNKS, MAX_DEEP_NOTE_UPSTREAM_REQUESTS,
     },
 };
 
@@ -2778,19 +2778,11 @@ fn persist_scheduler_state(
         .ok_or_else(|| "深度笔记执行图尚未编译。".to_string())?;
     plan_version.compiled_dag = scheduler.nodes().to_vec();
     let version = plan_version.version;
-    for node in scheduler.nodes() {
-        state.library_repository.update_note_pipeline_node_state(
-            run_id,
-            version,
-            &node.node_id,
-            node.status.as_str(),
-            node.attempt_count,
-            &node.evidence_ids,
-            node.output_ref.as_deref(),
-            &node.validation_json,
-            node.error_message.as_deref(),
-        )?;
-    }
+    state.library_repository.update_note_pipeline_nodes_state(
+        run_id,
+        version,
+        scheduler.nodes(),
+    )?;
     save_runtime_state(state, run_id, runtime)
 }
 
@@ -4853,6 +4845,16 @@ async fn persist_error(
     channel: &Channel<NotePipelineProgress>,
     error: String,
 ) {
+    let failure = pipeline_failure_payload(&error);
+    let display_message = failure
+        .get("message")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("深度笔记运行失败。")
+        .to_string();
+    let failed_node_id = failure
+        .get("nodeId")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
     let run = {
         let _guard = state.library_operations.lock().await;
         match state.library_repository.get_note_pipeline_run(run_id) {
@@ -4877,7 +4879,7 @@ async fn persist_error(
                 NotePipelinePhase::Error,
                 None,
                 &[],
-                Some(&error),
+                Some(&display_message),
             ),
             Err(error) => Err(error),
         }
@@ -4898,19 +4900,112 @@ async fn persist_error(
     let _ = state.library_repository.append_note_pipeline_event(
         run_id,
         "runFailed",
-        None,
-        &serde_json::json!({ "message": error }).to_string(),
+        failed_node_id.as_deref(),
+        &failure.to_string(),
     );
     send(
         channel,
         NotePipelineProgress::Error {
             run_id: run_id.to_string(),
-            message: error,
+            message: display_message,
         },
     );
     if run.is_err() {
         eprintln!("Failed to persist note pipeline error for {run_id}");
     }
+}
+
+fn pipeline_failure_payload(error: &str) -> serde_json::Value {
+    if let Some(raw) = error.strip_prefix(DEEP_NOTE_FAILURE_PREFIX) {
+        if let Ok(mut value) = serde_json::from_str::<serde_json::Value>(raw) {
+            if let Some(object) = value.as_object_mut() {
+                object
+                    .entry("title")
+                    .or_insert_with(|| serde_json::json!("内部执行状态异常"));
+                object
+                    .entry("technicalDetail")
+                    .or_insert_with(|| serde_json::json!(error));
+            }
+            return value;
+        }
+    }
+
+    let normalized = error.to_ascii_lowercase();
+    let (category, title, recovery, retryable) = if error.contains("DAG")
+        || error.contains("状态转换")
+        || error.contains("状态机")
+        || error.contains("执行节点")
+    {
+        (
+            "internalState",
+            "内部执行状态异常",
+            "检查点已保留。请重试任务；若仍失败，请复制诊断信息。",
+            true,
+        )
+    } else if error.contains("预算") || error.contains("上限") {
+        (
+            "budget",
+            "运行预算或时限已耗尽",
+            "已完成的检查点会保留。可以缩小章节范围后继续，或调整模型与预算设置。",
+            true,
+        )
+    } else if error.contains("数据库")
+        || error.contains("写入")
+        || error.contains("保存")
+        || normalized.contains("sqlite")
+    {
+        (
+            "storage",
+            "保存运行检查点失败",
+            "请确认存储目录可写且磁盘空间充足，然后重试。",
+            true,
+        )
+    } else if error.contains("验证") || error.contains("校验") {
+        (
+            "validation",
+            "内容验证未通过",
+            "检查失败章节与证据要求；可以调整提纲后重试失败步骤。",
+            true,
+        )
+    } else if normalized.contains("model")
+        || normalized.contains("provider")
+        || normalized.contains("http")
+        || normalized.contains("timeout")
+        || error.contains("模型")
+        || error.contains("渠道")
+        || error.contains("并发")
+        || error.contains("超时")
+    {
+        (
+            "model",
+            "模型请求失败",
+            "等待冷却后重试，或切换到可用的备用模型。",
+            true,
+        )
+    } else if error.contains("输入") || error.contains("附件") || error.contains("来源") {
+        (
+            "input",
+            "输入或来源不可用",
+            "请检查会话消息与附件是否仍然可访问，再重新生成。",
+            false,
+        )
+    } else {
+        (
+            "unknown",
+            "运行步骤失败",
+            "检查点已保留。请查看运行记录中的最后一项并复制诊断信息。",
+            true,
+        )
+    };
+    serde_json::json!({
+        "category": category,
+        "stage": "runtime",
+        "title": title,
+        "message": error,
+        "technicalDetail": error,
+        "recovery": recovery,
+        "retryable": retryable,
+    })
 }
 
 /// 起草前的 run 预算耗尽没有可交付章节，按状态机落到 Blocked，允许用户缩小范围后重启。
@@ -8235,18 +8330,27 @@ pub fn get_detail(state: &AppState, run_id: &str) -> Result<DeepNoteRunDetail, S
         .library_repository
         .latest_note_pipeline_ledger(run_id)?
         .unwrap_or_else(|| runtime.ledger.clone());
+    let mut plan_version = runtime.plan_version.clone();
+    let nodes = if let Some(plan) = plan_version.as_mut() {
+        let restored = state.library_repository.restore_note_pipeline_nodes(
+            run_id,
+            plan.version,
+            &plan.compiled_dag,
+        )?;
+        plan.compiled_dag = restored.clone();
+        restored
+    } else {
+        Vec::new()
+    };
     Ok(DeepNoteRunDetail {
         run,
         preflight: Some(runtime.preflight),
         input_snapshot: Some(runtime.input_snapshot),
-        plan_version: runtime.plan_version.clone(),
+        plan_version,
         budget: runtime.budget,
         context_budget: runtime.context_budget,
         source_chunk_count,
-        nodes: runtime
-            .plan_version
-            .map(|plan| plan.compiled_dag)
-            .unwrap_or_default(),
+        nodes,
         sections: section_progress,
         source_chunks,
         evidence,
@@ -8842,7 +8946,7 @@ mod tests {
         evidence_for_plan, flowchart_label_needs_quotes, has_mermaid_lint_warning, input_snapshot,
         ledger_has_real_output, lint_mermaid_syntax, merge_chunk_digest,
         normalize_generated_markdown, normalize_math_fences, pack_adjacent_attachment_chunks,
-        phase_expects_background_worker, record_section_active_ms, request_byte_limit,
+        phase_expects_background_worker, pipeline_failure_payload, record_section_active_ms, request_byte_limit,
         reset_failed_nodes, section_wall_clock_exhausted, should_fallback_to_chunked_planner,
         should_retry_note_model_call, snapshot_conversation_after_validation,
         split_text_by_token_budget, token_estimate_units, validate_global_drafts,
@@ -8853,7 +8957,7 @@ mod tests {
         DeepNoteCapabilities, DeepNoteDagNode, DeepNoteEvidenceStatus, DeepNoteLedger,
         DeepNoteModelSnapshot, DeepNoteNodeStatus, DeepNoteNodeType, DeepNoteSection,
         DeepNoteSectionKind, DeepNoteSourceChunk, DeepNoteSourceKind, DeepNoteStartInspection,
-        DeepNoteValidationReport, NotePipelineStartRequest,
+        DeepNoteValidationReport, NotePipelineStartRequest, DEEP_NOTE_FAILURE_PREFIX,
     };
 
     fn message(id: &str, role: ModelRole, content: String) -> StoredChatMessage {
@@ -10218,6 +10322,27 @@ mod tests {
         assert!(!phase_expects_background_worker(
             NotePipelinePhase::Cancelled
         ));
+    }
+
+    #[test]
+    fn structured_pipeline_failures_preserve_node_transition_context() {
+        let raw = format!(
+            "{DEEP_NOTE_FAILURE_PREFIX}{}",
+            serde_json::json!({
+                "category": "internalState",
+                "message": "节点状态不一致",
+                "nodeId": "analyze-input",
+                "fromStatus": "ready",
+                "toStatus": "completed",
+                "retryable": true,
+            })
+        );
+        let failure = pipeline_failure_payload(&raw);
+        assert_eq!(failure["category"], "internalState");
+        assert_eq!(failure["title"], "内部执行状态异常");
+        assert_eq!(failure["nodeId"], "analyze-input");
+        assert_eq!(failure["fromStatus"], "ready");
+        assert_eq!(failure["toStatus"], "completed");
     }
 
     #[tokio::test]

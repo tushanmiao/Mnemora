@@ -74,6 +74,9 @@ describe("slash commands", () => {
     expect(parseInstallTarget("pet  someone/cat-pet ")).toEqual({
       kind: "pet", source: "github", query: "someone/cat-pet",
     });
+    expect(parseInstallTarget("mcp https://example.com/mcp")).toEqual({
+      kind: "mcp", source: "mcp", query: "https://example.com/mcp",
+    });
   });
 
   it("keeps an explicit escape hatch for local files", () => {
@@ -85,7 +88,7 @@ describe("slash commands", () => {
 
   it("explains every valid form when the kind is missing or wrong", () => {
     const missing = buildInstallUsage({ kind: null, reason: "missing", token: "" });
-    for (const kind of ["plugin", "skill", "pet"]) {
+    for (const kind of ["plugin", "skill", "mcp", "pet"]) {
       expect(missing).toContain(`/install ${kind}`);
     }
     const unknown = buildInstallUsage({ kind: null, reason: "unknown", token: "plugins" });
@@ -102,7 +105,7 @@ describe("slash commands", () => {
       expect(help).toContain(trigger);
     }
     expect(help).toContain("/compact [重点]");
-    expect(help).toContain("/install <plugin|skill|pet> [名称]");
+    expect(help).toContain("/install <plugin|skill|mcp|pet> [名称或地址]");
   });
 
   it("keeps the install trigger reserved so a skill cannot shadow it", () => {

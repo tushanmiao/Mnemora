@@ -9,8 +9,9 @@ import type {
   DeepNoteSectionProgress, DeepNoteSectionStatus, NotePipelinePhase,
 } from "../../chat/api/notePipeline";
 import type { DeepNoteSection } from "../../chat/notePipeline/outlineSchema";
+import { DeepNoteDagGraph } from "../components/DeepNoteDagGraph";
 import {
-  buildDeepNoteWorkflow, describeNotePipelineEvent, diagnoseDeepNoteRuntime,
+  buildDeepNoteWorkflow, describeNotePipelineEvent, diagnoseDeepNoteFailure, diagnoseDeepNoteRuntime,
   formatDuration, type DeepNoteWorkflowStatus,
 } from "../runtime/deepNoteDiagnostics";
 import { useDeepNoteViewRuntime } from "../runtime/DeepNoteViewRuntime";
@@ -191,6 +192,7 @@ export default function DeepNoteView() {
   const diagnosis = diagnoseDeepNoteRuntime(
     phase, activity, runtime.progress?.updatedAt ?? runtime.detail?.run.updatedAt, clock,
   );
+  const failure = diagnoseDeepNoteFailure(runtime.detail);
   const workflow = buildDeepNoteWorkflow(runtime.detail, phase);
   const events = runtime.detail?.events ?? [];
   const visibleEvents = events.slice(-60).reverse();
@@ -247,7 +249,12 @@ export default function DeepNoteView() {
       `Run ID: ${runtime.detail?.run.id ?? runtime.progress?.runId ?? "尚未创建"}`,
       `阶段: ${PHASE_LABELS[phase]} (${phase})`,
       `状态: ${statusMessage}`,
-          `模型: ${modelOption?.providerName ?? runProviderId ?? "-"} / ${modelOption?.displayName ?? runModelId ?? "-"} (${runApiModel ?? modelOption?.apiModel ?? "-"})`,
+      failure ? `故障分类: ${failure.category} (${failure.title})` : null,
+      failure?.nodeId ? `故障节点: ${failure.nodeId}` : null,
+      failure?.fromStatus && failure.toStatus ? `状态转换: ${failure.fromStatus} -> ${failure.toStatus}` : null,
+      failure ? `恢复建议: ${failure.recovery}` : null,
+      failure?.technicalDetail ? `技术详情: ${failure.technicalDetail}` : null,
+      `模型: ${modelOption?.providerName ?? runProviderId ?? "-"} / ${modelOption?.displayName ?? runModelId ?? "-"} (${runApiModel ?? modelOption?.apiModel ?? "-"})`,
       `输入覆盖: ${contextBudget?.processedMessageCount ?? 0}/${contextBudget?.totalMessageCount ?? 0}`,
       `上游请求: ${budget?.upstreamRequestsUsed ?? 0}/${budget?.upstreamRequestLimit ?? 0}`,
       `逻辑调用: ${budget?.semanticCallsUsed ?? 0}/${budget?.semanticCallLimit ?? 0}`,
@@ -261,8 +268,8 @@ export default function DeepNoteView() {
         return `${event.sequence}. ${formatTime(event.createdAt)} ${description.label} - ${description.detail}`;
       }),
     ];
-    return lines.join("\n");
-  }, [activity, activityElapsed, budget, contextBudget, events, phase, runtime.detail, runtime.progress?.runId, statusMessage]);
+    return lines.filter((line): line is string => line !== null).join("\n");
+  }, [activity, activityElapsed, budget, contextBudget, events, failure, phase, runtime.detail, runtime.progress?.runId, statusMessage]);
 
   const copyDiagnostics = async () => {
     try {
@@ -285,9 +292,11 @@ export default function DeepNoteView() {
         <div className="deep-note-run-status" data-tone={tone}><span className="deep-note-status-dot" />{PHASE_LABELS[phase]}</div>
         {failed ? (
           <div className="deep-note-run-actions">
-            <button className="settings-button settings-button-primary" type="button" disabled={runtime.controlBusy} onClick={runtime.onRetry}>
-              <RotateCcw size={14} />重试失败步骤
-            </button>
+            {failure?.retryable !== false ? (
+              <button className="settings-button settings-button-primary" type="button" disabled={runtime.controlBusy} onClick={runtime.onRetry}>
+                <RotateCcw size={14} />重试失败步骤
+              </button>
+            ) : null}
             <button className="settings-button settings-button-secondary" type="button" disabled={runtime.controlBusy} onClick={runtime.onRestart}>
               <BrainCircuit size={14} />重新生成
             </button>
@@ -361,8 +370,16 @@ export default function DeepNoteView() {
           </div>
         </section>
 
-        {runtime.detail?.run.errorMessage ? (
-          <div className="deep-note-terminal-message is-error"><XCircle size={16} /><div><strong>任务未能完成</strong><p>{runtime.detail.run.errorMessage}</p></div></div>
+        {failure ? (
+          <div className="deep-note-terminal-message is-error">
+            <XCircle size={16} />
+            <div>
+              <strong>{failure.title}</strong>
+              <p>{failure.detail}</p>
+              {failure.nodeId ? <p className="deep-note-failure-location">节点 {failure.nodeId}{failure.fromStatus && failure.toStatus ? ` · ${failure.fromStatus} → ${failure.toStatus}` : ""}</p> : null}
+              <p className="deep-note-failure-recovery">恢复建议：{failure.recovery}</p>
+            </div>
+          </div>
         ) : null}
         {runtime.progress?.degraded ? (
           <div className="deep-note-terminal-message is-warning"><AlertTriangle size={16} /><div><strong>已保存部分结果</strong><p>停止前已完成的章节已经写入笔记库，未完成章节没有被标记为成功。</p></div></div>
@@ -430,6 +447,8 @@ export default function DeepNoteView() {
             <ListTree size={20} /><div><strong>章节执行尚未开始</strong><p>当前正在完成提纲生成。右侧工作流会区分已经完成的输入准备与正在进行的模型规划。</p></div>
           </section>
         )}
+
+        <DeepNoteDagGraph nodes={nodes} sectionHeadings={sectionHeadings} />
 
         <section className="deep-note-event-log" aria-label="深度笔记运行记录">
           <div className="deep-note-event-log-header">
@@ -521,7 +540,7 @@ export default function DeepNoteView() {
         {preflight?.requiresLocalReaders ? <p className="deep-note-pane-note">文档由 Mnemora 本地 Reader 读取，不依赖模型 Tool。</p> : null}
         {preflight?.warnings.map((warning) => <p className="deep-note-inline-warning" key={warning}><AlertTriangle size={13} />{warning}</p>)}
 
-        {failed ? (
+        {failed && failure?.category === "model" ? (
           <section className="deep-note-model-recovery" aria-label="切换备用模型">
             <div className="deep-note-pane-heading"><RotateCcw size={15} /><strong>模型请求失败</strong></div>
             <p>可以先重试当前失败步骤，也可以选择备用模型并从最新会话内容重新生成。</p>
@@ -542,6 +561,12 @@ export default function DeepNoteView() {
                 </button>
               </>
             ) : <p className="deep-note-model-recovery-empty">没有可用的备用模型。请先在设置中配置其他服务商和 API Key。</p>}
+          </section>
+        ) : failed && failure ? (
+          <section className="deep-note-model-recovery is-diagnostic" aria-label="故障定位">
+            <div className="deep-note-pane-heading"><AlertTriangle size={15} /><strong>故障定位</strong></div>
+            <p><strong>{failure.title}</strong><br />{failure.nodeId ? `节点 ${failure.nodeId}` : "运行级故障"}{failure.fromStatus && failure.toStatus ? ` · ${failure.fromStatus} → ${failure.toStatus}` : ""}</p>
+            <p>{failure.recovery}</p>
           </section>
         ) : null}
 
@@ -586,7 +611,7 @@ export default function DeepNoteView() {
 
         {nodes.length > 0 ? (
           <>
-            <div className="deep-note-pane-heading"><Network size={15} /><strong>执行图（计划依赖）</strong></div>
+            <div className="deep-note-pane-heading"><Network size={15} /><strong>节点摘要</strong></div>
             <p>{completedNodes}/{nodes.length} 个节点完成</p>
             <div className="deep-note-node-list">
               {nodes.map((node) => (

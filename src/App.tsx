@@ -104,7 +104,9 @@ function App() {
   const [modelMenuRequest, setModelMenuRequest] = useState(0);
   /** 远端安装对话框；null 表示未打开。 */
   const [remoteInstall, setRemoteInstall] = useState<{ kind: RemotePackageKind; query: string } | null>(null);
+  const [mcpInstallRequest, setMcpInstallRequest] = useState<{ query: string; nonce: number } | null>(null);
   const [remoteInstallResult, setRemoteInstallResult] = useState<string | null>(null);
+  const [extensionsRevision, setExtensionsRevision] = useState(0);
   const [composerFocusRequest, setComposerFocusRequest] = useState(0);
   const [activeWorkNoteContext, setActiveWorkNoteContext] = useState<ActiveWorkNoteContext | null>(null);
   const requestComposerFocus = useCallback((delayMs = 0) => {
@@ -374,6 +376,16 @@ function App() {
         const target = parseInstallTarget(argumentsValue);
         if (target.kind === null) {
           return { executed: false, message: buildInstallUsage(target) };
+        }
+        if (target.source === "mcp") {
+          setMcpInstallRequest({ query: target.query, nonce: Date.now() });
+          openSettings("mcp");
+          return {
+            executed: true,
+            message: target.query
+              ? "已打开 MCP 服务器配置，并填入可识别的地址信息。请确认后保存。"
+              : "已打开 MCP 服务器配置。",
+          };
         }
         if (target.source === "github") {
           // 远端安装在对话框里自动推进到确认页，因此这里只负责打开它。
@@ -859,6 +871,9 @@ function App() {
           onSettingsImported={settings.applyImportedSettings}
           onDefaultModelChange={settings.changeDefaultModel}
           onNoteModelChange={settings.changeNoteModel}
+          mcpInstallRequest={mcpInstallRequest}
+          extensionsRevision={extensionsRevision}
+          onRemoteInstall={(kind) => setRemoteInstall({ kind, query: "" })}
         />
       ) : (
         <ChatViewRuntimeProvider chatPanel={chatWorkspace}>
@@ -960,6 +975,7 @@ function App() {
               setRemoteInstallResult(message);
               // 远端装进来的 Skill / 插件同样可能带新触发词。
               if (remoteInstall.kind !== "pet") void skills.refresh();
+              setExtensionsRevision((revision) => revision + 1);
             }}
           />
         </Suspense>

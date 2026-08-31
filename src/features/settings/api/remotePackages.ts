@@ -28,6 +28,7 @@ export type RemotePackagePreview = {
   fullName: string;
   commitSha: string;
   sourceUrl: string;
+  packagePath: string;
   id: string;
   name: string;
   version: string;
@@ -42,6 +43,51 @@ export type RemotePackagePreview = {
   totalBytes: number;
   fileCount: number;
 };
+
+export type GitHubPackageSource = {
+  fullName: string;
+  gitRef?: string;
+  packagePath?: string;
+};
+
+/**
+ * 接受 owner/repo、仓库 URL，以及 GitHub tree/blob 目录地址。
+ * tree/blob 的 ref 使用第一个路径段；带斜杠的分支请直接使用固定 tag/commit，
+ * 避免 GitHub URL 本身无法区分 ref 与仓库内路径的歧义。
+ */
+export function parseGitHubPackageSource(value: string): GitHubPackageSource | null {
+  const trimmed = value.trim();
+  if (/^[\w.-]+\/[\w.-]+$/.test(trimmed)) {
+    return { fullName: trimmed.replace(/\.git$/i, "") };
+  }
+
+  const candidate = /^github\.com\//i.test(trimmed) ? `https://${trimmed}` : trimmed;
+  let url: URL;
+  try {
+    url = new URL(candidate);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "https:" || !["github.com", "www.github.com"].includes(url.hostname.toLocaleLowerCase("en-US"))) {
+    return null;
+  }
+  let segments: string[];
+  try {
+    segments = url.pathname.split("/").filter(Boolean).map(decodeURIComponent);
+  } catch {
+    return null;
+  }
+  if (segments.length < 2 || !segments.slice(0, 2).every((segment) => /^[\w.-]+$/.test(segment))) {
+    return null;
+  }
+  const source: GitHubPackageSource = { fullName: `${segments[0]}/${segments[1].replace(/\.git$/i, "")}` };
+  if (segments.length === 2) return source;
+  if (!["tree", "blob"].includes(segments[2]) || segments.length < 4) return null;
+  source.gitRef = segments[3];
+  const path = segments.slice(4).join("/");
+  if (path) source.packagePath = path;
+  return source;
+}
 
 const NEEDS_TAURI = "远端资源包安装需要在 Mnemora 桌面应用中执行。";
 
@@ -61,10 +107,18 @@ export function fetchRemotePackage(
   kind: RemotePackageKind,
   fullName: string,
   gitRef?: string,
+  packagePath?: string,
+  selector?: string,
 ): Promise<RemotePackagePreview> {
   if (!isTauri()) return Promise.reject(new Error(NEEDS_TAURI));
   return invoke<RemotePackagePreview>("packages_fetch_remote", {
-    request: { kind, fullName, gitRef: gitRef ?? null },
+    request: {
+      kind,
+      fullName,
+      gitRef: gitRef ?? null,
+      packagePath: packagePath ?? null,
+      selector: selector ?? null,
+    },
   });
 }
 

@@ -14,12 +14,15 @@ import {
   formatBytes,
   formatRelativeDate,
   installRemotePackage,
+  parseGitHubPackageSource,
   searchRemotePackages,
   type RemoteCandidate,
   type RemotePackageKind,
   type RemotePackagePreview,
   type RemoteSearchResult,
 } from "../api/remotePackages";
+import { listPlugins } from "../api/plugins";
+import { listSkills } from "../../skills/api/skills";
 // 这个对话框由 App 直接渲染，不在 SettingsPage 内，因此必须自己带上依赖的
 // 样式：用户可能从未打开过设置页就在 Chat 里敲 /install plugin …，
 // 那时 settings-kit / settings-page 都还没被加载，控件会退化成无样式原生元素。
@@ -33,12 +36,6 @@ const KIND_LABEL: Record<RemotePackageKind, string> = {
   pet: "宠物",
 };
 
-const KIND_TOPIC: Record<RemotePackageKind, string> = {
-  skill: "mnemora-skill",
-  plugin: "mnemora-plugin",
-  pet: "mnemora-pet",
-};
-
 /**
  * 判断能否跳过候选列表直接取回。
  *
@@ -50,11 +47,6 @@ const KIND_TOPIC: Record<RemotePackageKind, string> = {
  * 其余情况一律把列表摆出来让人选。星数接近时自动挑第一个是危险的：
  * 那正是仿冒包能钻进来的缝隙，而排序只反映流行度、不反映「是你要的那个」。
  */
-/** owner/repo 形式：用户指名要某个仓库，而不是描述功能。 */
-function looksLikeRepository(value: string) {
-  return /^[\w.-]+\/[\w.-]+$/.test(value.trim());
-}
-
 function pickAutoCandidate(candidates: RemoteCandidate[], query: string): RemoteCandidate | null {
   if (candidates.length === 0) return null;
 
@@ -67,6 +59,27 @@ function pickAutoCandidate(candidates: RemoteCandidate[], query: string): Remote
   const [first, second] = candidates;
   const dominant = first.stars >= 20 && first.stars >= second.stars * 5;
   return dominant && !first.archived ? first : null;
+}
+
+function localMatchKey(value: string) {
+  return value.toLocaleLowerCase("en-US").replace(/[^\p{L}\p{N}]+/gu, "");
+}
+
+async function installedPackageMessage(kind: RemotePackageKind, query: string): Promise<string | null> {
+  if (parseGitHubPackageSource(query) || kind === "pet") return null;
+  const key = localMatchKey(query);
+  if (!key) return null;
+  if (kind === "skill") {
+    const { skills } = await listSkills();
+    const skill = skills.find((item) => [item.id, item.name].some((value) => localMatchKey(value) === key));
+    if (!skill) return null;
+    const source = skill.source === "builtin" ? "内置技能" : "用户技能";
+    return `“${skill.name}”已经作为${source}安装${skill.enabled ? "并启用" : "，当前已禁用"}，无需重复安装。`;
+  }
+  const { plugins } = await listPlugins();
+  const plugin = plugins.find((item) => [item.id, item.name].some((value) => localMatchKey(value) === key));
+  if (!plugin) return null;
+  return `插件“${plugin.name}”已经安装${plugin.enabled ? "并启用" : "，当前保持停用"}，无需重复安装。`;
 }
 
 type Props = {
@@ -109,12 +122,23 @@ export function RemoteInstallDialog({ kind, initialQuery = "", onClose, onInstal
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [busy, onClose]);
 
-  /** 按 owner/repo 直接取回，不经过搜索。 */
-  const fetchByFullName = useCallback(async (fullName: string) => {
+  /** 按 owner/repo 或 GitHub tree/blob URL 直接取回，不经过搜索。 */
+  const fetchBySource = useCallback(async (value: string, selector?: string) => {
+    const source = parseGitHubPackageSource(value);
+    if (!source) {
+      setError("GitHub 地址无效。请粘贴 owner/repo、仓库 URL 或目标目录的 tree URL。");
+      return;
+    }
     setBusy("fetch");
     setError(null);
     try {
-      const fetched = await fetchRemotePackage(kind, fullName);
+      const fetched = await fetchRemotePackage(
+        kind,
+        source.fullName,
+        source.gitRef,
+        source.packagePath,
+        selector,
+      );
       setPreview(fetched);
       setAcknowledged(false);
       setStage("confirm");
@@ -128,14 +152,20 @@ export function RemoteInstallDialog({ kind, initialQuery = "", onClose, onInstal
   const runSearch = useCallback(async () => {
     const seed = query.trim();
     if (!seed) return;
-    // 搜索框里输入 owner/repo 同样走直取，与命令参数行为一致。
-    if (looksLikeRepository(seed)) {
-      await fetchByFullName(seed);
+    // 搜索框里输入仓库或目录地址同样走直取，与命令参数行为一致。
+    if (parseGitHubPackageSource(seed)) {
+      await fetchBySource(seed);
       return;
     }
     setBusy("search");
     setError(null);
     try {
+      const installed = await installedPackageMessage(kind, seed);
+      if (installed) {
+        onInstalled(installed);
+        onClose();
+        return;
+      }
       setResult(await searchRemotePackages(kind, seed));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -143,7 +173,7 @@ export function RemoteInstallDialog({ kind, initialQuery = "", onClose, onInstal
     } finally {
       setBusy(null);
     }
-  }, [fetchByFullName, kind, query]);
+  }, [fetchBySource, kind, onClose, onInstalled, query]);
 
   /**
    * 带了描述/名称时一路推进到确认页：搜索 → 取回最匹配的一个 → 展示清单。
@@ -159,15 +189,22 @@ export function RemoteInstallDialog({ kind, initialQuery = "", onClose, onInstal
     if (!seed) return;
     let cancelled = false;
     void (async () => {
-      // 写成 owner/repo 就是指名要它，跳过搜索直接取回：
-      // 该仓库可能没打 topic 标签，搜索反而找不到。
-      if (looksLikeRepository(seed)) {
-        await fetchByFullName(seed);
+      // 写成仓库或目录地址就是指名要它，跳过搜索直接取回。
+      if (parseGitHubPackageSource(seed)) {
+        await fetchBySource(seed);
         return;
       }
       setBusy("search");
       setError(null);
       try {
+        const installed = await installedPackageMessage(kind, seed);
+        if (installed) {
+          if (!cancelled) {
+            onInstalled(installed);
+            onClose();
+          }
+          return;
+        }
         const found = await searchRemotePackages(kind, seed);
         if (cancelled) return;
         setResult(found);
@@ -194,7 +231,7 @@ export function RemoteInstallDialog({ kind, initialQuery = "", onClose, onInstal
     setBusy("fetch");
     setError(null);
     try {
-      const fetched = await fetchRemotePackage(kind, candidate.fullName);
+      const fetched = await fetchRemotePackage(kind, candidate.fullName, undefined, undefined, query);
       setPreview(fetched);
       setAcknowledged(false);
       setStage("confirm");
@@ -203,7 +240,7 @@ export function RemoteInstallDialog({ kind, initialQuery = "", onClose, onInstal
     } finally {
       setBusy(null);
     }
-  }, [kind]);
+  }, [kind, query]);
 
   const confirmInstall = async () => {
     if (!preview) return;
@@ -239,7 +276,7 @@ export function RemoteInstallDialog({ kind, initialQuery = "", onClose, onInstal
             <h2 id="remote-install-title">从 GitHub 安装{KIND_LABEL[kind]}</h2>
             <span>
               {stage === "search"
-                ? `说出你想要的功能即可，在带 ${KIND_TOPIC[kind]} 标签的仓库中查找`
+                ? "按名称搜索标准仓库，或直接粘贴 GitHub 仓库/目录地址"
                 : "确认清单内容与权限声明后再安装"}
             </span>
           </div>
@@ -269,7 +306,7 @@ export function RemoteInstallDialog({ kind, initialQuery = "", onClose, onInstal
                   ref={searchInputRef}
                   className="settings-input"
                   value={query}
-                  placeholder={`描述你想要的${KIND_LABEL[kind]}功能，或填 owner/repo`}
+                  placeholder={`输入${KIND_LABEL[kind]}名称、owner/repo 或 GitHub tree URL`}
                   aria-label={`描述你想要的${KIND_LABEL[kind]}`}
                   onChange={(event) => setQuery(event.target.value)}
                 />
@@ -298,7 +335,7 @@ export function RemoteInstallDialog({ kind, initialQuery = "", onClose, onInstal
                     <div className="settings-empty">
                       <Search size={26} />
                       <strong>没有找到匹配的仓库</strong>
-                      <span>请确认仓库已加上 {KIND_TOPIC[kind]} 标签，或换一个关键词。</span>
+                      <span>可换一个关键词，或直接粘贴该资源所在目录的 GitHub tree URL。</span>
                     </div>
                   ) : (
                     <>
@@ -395,6 +432,7 @@ function RemotePreviewPanel({
 
       <dl className="remote-preview-source">
         <div><dt>来源仓库</dt><dd>{preview.fullName}</dd></div>
+        {preview.packagePath ? <div><dt>仓库路径</dt><dd>{preview.packagePath}</dd></div> : null}
         <div><dt>提交</dt><dd>{preview.commitSha.slice(0, 7) || "未知"}</dd></div>
         {preview.id ? <div><dt>标识</dt><dd>{preview.id}</dd></div> : null}
       </dl>

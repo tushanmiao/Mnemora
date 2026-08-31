@@ -671,6 +671,10 @@ pub struct DeepNoteDagNode {
     pub error_message: Option<String>,
 }
 
+/// 内部执行错误的稳定前缀。服务层会把后续 JSON 转成用户可读诊断，同时保留
+/// 节点、阶段与状态转换等机器可读上下文。
+pub const DEEP_NOTE_FAILURE_PREFIX: &str = "mnemora:note-pipeline-failure:";
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct DeepNoteBudget {

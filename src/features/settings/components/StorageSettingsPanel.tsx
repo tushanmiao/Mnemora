@@ -7,22 +7,26 @@ import {
   FolderOpen,
   HardDrive,
   LoaderCircle,
+  MessageSquareText,
   RefreshCw,
 } from "lucide-react";
 import { useI18n } from "../../../i18n/I18nProvider";
+import type { TranslationKey } from "../../../i18n/translations";
 import {
   chooseStorageDirectory,
   getStorageStatus,
   migrateStorageData,
   openStorageDirectory,
+  type KnownStorageCategoryId,
   type StorageCategoryUsage,
   type StorageStatus,
 } from "../api/storage";
 
-const CATEGORY_ICONS: Record<StorageCategoryUsage["id"], typeof Database> = {
+const CATEGORY_ICONS: Record<KnownStorageCategoryId, typeof Database> = {
   conversations: FolderCog,
   library: Database,
   memory: ArchiveRestore,
+  prompts: MessageSquareText,
   skills: FolderCog,
   usage: HardDrive,
   sync: RefreshCw,
@@ -32,17 +36,39 @@ const CATEGORY_ICONS: Record<StorageCategoryUsage["id"], typeof Database> = {
 /**
  * 扇区配色取自工作区身份色，因此跟随主题预设与明暗模式，
  * 且与各自对应的工作区在视觉上呼应（对话=chat、文献=work…）。
- * sync 没有对应工作区，借用 info 状态色补足第七种。
+ * prompts 与 sync 没有对应工作区，借用 warning / info 状态色补足颜色。
  */
-const CATEGORY_COLORS: Record<StorageCategoryUsage["id"], string> = {
+const CATEGORY_COLORS: Record<KnownStorageCategoryId, string> = {
   english: "var(--workspace-english)",
   conversations: "var(--workspace-chat)",
   library: "var(--workspace-work)",
   memory: "var(--workspace-overview)",
+  prompts: "var(--status-warning)",
   skills: "var(--workspace-notes)",
   usage: "var(--workspace-settings)",
   sync: "var(--status-info)",
 };
+
+const CATEGORY_TRANSLATION_KEYS: Record<KnownStorageCategoryId, TranslationKey> = {
+  conversations: "storage.category.conversations",
+  library: "storage.category.library",
+  memory: "storage.category.memory",
+  prompts: "storage.category.prompts",
+  skills: "storage.category.skills",
+  usage: "storage.category.usage",
+  sync: "storage.category.sync",
+  english: "storage.category.english",
+};
+
+/** 后端增加新目录时也不能把整个设置页渲染成 React #130。 */
+export function getStorageCategoryPresentation(id: string) {
+  const knownId = id as KnownStorageCategoryId;
+  return {
+    Icon: CATEGORY_ICONS[knownId] ?? Database,
+    color: CATEGORY_COLORS[knownId] ?? "var(--color-text-secondary)",
+    translationKey: (CATEGORY_TRANSLATION_KEYS as Partial<Record<string, TranslationKey>>)[id],
+  };
+}
 
 type StorageSlice = {
   id: StorageCategoryUsage["id"];
@@ -108,7 +134,7 @@ export function StorageSettingsPanel() {
         id: category.id,
         bytes: category.bytes,
         share: total > 0 ? category.bytes / total : 0,
-        color: CATEGORY_COLORS[category.id],
+        color: getStorageCategoryPresentation(category.id).color,
       }));
   }, [status?.categories, status?.totalBytes]);
 
@@ -236,12 +262,12 @@ export function StorageSettingsPanel() {
                 </div>
                 <ul className="storage-usage-legend">
                   {slices.map((slice) => {
-                    const Icon = CATEGORY_ICONS[slice.id];
+                    const { Icon, translationKey } = getStorageCategoryPresentation(slice.id);
                     return (
                       <li key={slice.id}>
                         {/* 图标本身就是色标：再单独放一个色块是同一信息编码两次，白占宽度 */}
                         <Icon size={15} style={{ color: slice.color }} />
-                        <span>{t(`storage.category.${slice.id}`)}</span>
+                        <span>{translationKey ? t(translationKey) : slice.id}</span>
                         <b>{formatBytes(slice.bytes)}</b>
                         <em>{formatShare(slice.share)}</em>
                       </li>

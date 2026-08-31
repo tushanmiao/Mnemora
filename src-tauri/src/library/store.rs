@@ -32,10 +32,9 @@ use crate::chat::{
         run_machine::DeepNoteRunMachine,
         types::{
             DeepNoteDagNode, DeepNoteEvidenceArtifact, DeepNoteEvidenceStatus,
-            DeepNoteInputSnapshot, DeepNoteLedger, DeepNoteNodeStatus, DeepNoteSourceChunk,
-            DeepNoteSourceKind,
-            DeepNoteSourceUnit, DeepNoteSourceUnitKind, DeepNoteSourceUnitStatus,
-            DeepNoteSupportLevel,
+            DeepNoteInputSnapshot, DeepNoteLedger, DeepNoteNodeStatus, DeepNoteNodeType,
+            DeepNoteSourceChunk, DeepNoteSourceKind, DeepNoteSourceUnit, DeepNoteSourceUnitKind,
+            DeepNoteSourceUnitStatus, DeepNoteSupportLevel, DEEP_NOTE_FAILURE_PREFIX,
         },
     },
 };
@@ -77,6 +76,37 @@ const NOTE_DIGEST_CACHE_MAX_LOOKUPS: usize = 256;
 const LIBRARY_DIRECTORY_NAME: &str = "library";
 const LIBRARY_DATABASE_NAME: &str = "library.sqlite3";
 const LIBRARY_FILES_DIRECTORY_NAME: &str = "files";
+
+fn deep_note_node_type_label(node_type: DeepNoteNodeType) -> String {
+    serde_json::to_value(node_type)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_string))
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn deep_note_transition_error(
+    node: &DeepNoteDagNode,
+    current: DeepNoteNodeStatus,
+    target: DeepNoteNodeStatus,
+    error: impl std::fmt::Display,
+) -> String {
+    format!(
+        "{DEEP_NOTE_FAILURE_PREFIX}{}",
+        serde_json::json!({
+            "category": "internalState",
+            "stage": "dagPersistence",
+            "nodeId": node.node_id,
+            "nodeType": deep_note_node_type_label(node.node_type),
+            "sectionId": node.section_id,
+            "fromStatus": current.as_str(),
+            "toStatus": target.as_str(),
+            "message": format!("DAG 节点状态不一致：{} 无法从 {} 转换为 {}。", node.node_id, current.as_str(), target.as_str()),
+            "technicalDetail": error.to_string(),
+            "recovery": "节点产物与状态检查点均已保留。请重试任务；若仍失败，请复制诊断信息。",
+            "retryable": true,
+        })
+    )
+}
 
 const ITEM_COLUMNS: &str = "
     i.id,
@@ -2773,8 +2803,12 @@ impl LibraryRepository {
                 .map_err(|error| format!("提交深度笔记 DAG 节点检查点失败：{error}"))?;
             return Ok(());
         }
-        let transition = DagNodeMachine::transition_to(current_status, target_status)
-            .map_err(|error| format!("拒绝深度笔记 DAG 节点状态转换：{error}"))?;
+        let transition = DagNodeMachine::transition_to_with_checkpoint(
+            current_status,
+            target_status,
+            output_ref.is_some_and(|value| !value.trim().is_empty()),
+        )
+        .map_err(|error| format!("拒绝深度笔记 DAG 节点状态转换：{error}"))?;
         if transition.next_state != target_status {
             return Err("DAG 状态机结果与请求目标不一致，拒绝写入。".to_string());
         }
@@ -2856,6 +2890,185 @@ impl LibraryRepository {
             .commit()
             .map_err(|error| format!("提交深度笔记 DAG 节点状态失败：{error}"))?;
         Ok(())
+    }
+
+    /// 原子保存一个调度快照中的全部节点。
+    ///
+    /// 任何节点校验或 CAS 失败都会回滚整批更新，避免节点表出现“前半批已提交、
+    /// 后半批失败”的混合状态。状态转换事件也与节点更新处于同一事务。
+    pub fn update_note_pipeline_nodes_state(
+        &self,
+        run_id: &str,
+        plan_version: u32,
+        nodes: &[DeepNoteDagNode],
+    ) -> Result<(), String> {
+        let run_id = normalize_identifier("任务 ID", run_id)?;
+        let mut connection = self.open_connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| format!("开始批量更新深度笔记 DAG 节点失败：{error}"))?;
+        let now = now_millis_i64();
+        let worker_instance_id = current_task_instance_id();
+        let initial_sequence: i64 = transaction
+            .query_row(
+                "SELECT last_event_sequence FROM note_pipeline_runs WHERE id = ?",
+                params![run_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| format!("读取深度笔记 DAG 事件序号失败：{error}"))?;
+        let mut sequence = initial_sequence;
+
+        for node in nodes {
+            let node_id = normalize_identifier("DAG 节点 ID", &node.node_id)?;
+            let evidence_ids_json = serde_json::to_string(&node.evidence_ids)
+                .map_err(|error| format!("序列化深度笔记 DAG 证据失败：{error}"))?;
+            let current = transaction
+                .query_row(
+                    "SELECT status, state_version, execution_version
+                     FROM note_pipeline_nodes
+                     WHERE run_id = ? AND plan_version = ? AND node_id = ?",
+                    params![run_id, i64::from(plan_version), node_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, i64>(1)?,
+                            row.get::<_, i64>(2)?,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(|error| format!("读取深度笔记 DAG 节点状态失败：{error}"))?
+                .ok_or_else(|| format!("深度笔记 DAG 节点不存在：{node_id}"))?;
+            let current_status = DeepNoteNodeStatus::parse(&current.0)?;
+            let target_status = node.status;
+
+            if current_status == target_status {
+                let changed = transaction
+                    .execute(
+                        "UPDATE note_pipeline_nodes
+                         SET attempt_count = ?, evidence_ids_json = ?, output_ref = ?,
+                             validation_json = ?, error_message = ?, updated_at = ?
+                         WHERE run_id = ? AND plan_version = ? AND node_id = ?
+                           AND state_version = ? AND execution_version = ?",
+                        params![
+                            i64::from(node.attempt_count),
+                            evidence_ids_json,
+                            node.output_ref.as_deref(),
+                            node.validation_json,
+                            node.error_message.as_deref(),
+                            now,
+                            run_id,
+                            i64::from(plan_version),
+                            node_id,
+                            current.1,
+                            current.2,
+                        ],
+                    )
+                    .map_err(|error| format!("更新深度笔记 DAG 节点检查点失败：{error}"))?;
+                if changed != 1 {
+                    return Err(format!(
+                        "深度笔记 DAG 节点版本已变化，拒绝迟到 Worker：{node_id}"
+                    ));
+                }
+                continue;
+            }
+
+            let transition = DagNodeMachine::transition_to_with_checkpoint(
+                current_status,
+                target_status,
+                node.output_ref
+                    .as_deref()
+                    .is_some_and(|value| !value.trim().is_empty()),
+            )
+            .map_err(|error| {
+                deep_note_transition_error(node, current_status, target_status, error)
+            })?;
+            if transition.next_state != target_status {
+                return Err(deep_note_transition_error(
+                    node,
+                    current_status,
+                    target_status,
+                    "状态机返回了不同的目标状态",
+                ));
+            }
+            let changed = transaction
+                .execute(
+                    "UPDATE note_pipeline_nodes
+                     SET status = ?, attempt_count = ?, evidence_ids_json = ?, output_ref = ?,
+                         validation_json = ?, error_message = ?, state_version = state_version + 1,
+                         updated_at = ?
+                     WHERE run_id = ? AND plan_version = ? AND node_id = ?
+                       AND status = ? AND state_version = ? AND execution_version = ?",
+                    params![
+                        target_status.as_str(),
+                        i64::from(node.attempt_count),
+                        evidence_ids_json,
+                        node.output_ref.as_deref(),
+                        node.validation_json,
+                        node.error_message.as_deref(),
+                        now,
+                        run_id,
+                        i64::from(plan_version),
+                        node_id,
+                        current_status.as_str(),
+                        current.1,
+                        current.2,
+                    ],
+                )
+                .map_err(|error| format!("更新深度笔记 DAG 节点失败：{error}"))?;
+            if changed != 1 {
+                return Err(format!(
+                    "深度笔记 DAG 节点状态版本已变化，拒绝迟到 Worker：{node_id}"
+                ));
+            }
+
+            sequence = sequence.saturating_add(1);
+            let payload = serde_json::json!({
+                "reason": transition.reason,
+                "attemptCount": node.attempt_count,
+                "stateVersion": current.1.saturating_add(1),
+                "executionVersion": current.2,
+                "nodeType": deep_note_node_type_label(node.node_type),
+                "sectionId": node.section_id,
+            })
+            .to_string();
+            transaction
+                .execute(
+                    "INSERT INTO note_pipeline_events (
+                        run_id, sequence, event_type, node_id, payload_json, created_at,
+                        command_id, from_phase, to_phase, execution_version, runtime_instance_id
+                     ) VALUES (?, ?, 'nodeStateTransition', ?, ?, ?, NULL, ?, ?, ?, ?)",
+                    params![
+                        run_id,
+                        sequence,
+                        node_id,
+                        payload,
+                        now,
+                        current_status.as_str(),
+                        target_status.as_str(),
+                        current.2,
+                        worker_instance_id.as_deref(),
+                    ],
+                )
+                .map_err(|error| format!("保存深度笔记 DAG 状态事件失败：{error}"))?;
+        }
+
+        if sequence != initial_sequence {
+            let run_changed = transaction
+                .execute(
+                    "UPDATE note_pipeline_runs
+                     SET last_event_sequence = ?, heartbeat_at = ?, updated_at = ?
+                     WHERE id = ? AND last_event_sequence = ?",
+                    params![sequence, now, now, run_id, initial_sequence],
+                )
+                .map_err(|error| format!("更新深度笔记任务时间失败：{error}"))?;
+            if run_changed != 1 {
+                return Err("深度笔记 DAG 事件序号发生并发冲突。".to_string());
+            }
+        }
+        transaction
+            .commit()
+            .map_err(|error| format!("提交深度笔记 DAG 节点快照失败：{error}"))
     }
 
     pub fn replace_note_pipeline_source_chunks(
@@ -9289,6 +9502,126 @@ mod tests {
             .restore_note_pipeline_nodes(&run.id, 1, &[mismatched])
             .unwrap();
         assert_eq!(untouched[0].status, DeepNoteNodeStatus::Pending);
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn dag_snapshot_updates_are_atomic_and_accept_completed_checkpoints() {
+        let directory = test_directory("atomic-dag-snapshot");
+        let repository = LibraryRepository::new(directory.clone());
+        repository.initialize().unwrap();
+        let run = repository
+            .create_note_pipeline_run(NotePipelineRunCreate {
+                id: "atomic-dag-run".to_string(),
+                conversation_id: "atomic-dag-conversation".to_string(),
+                provider_id: "provider-1".to_string(),
+                model_id: "model-1".to_string(),
+                max_output_tokens: 4_096,
+                thinking_enabled: false,
+                retry_attempts: 1,
+                input_snapshot_hash: "snapshot".to_string(),
+                budget_json: "{}".to_string(),
+                preflight_json: "{}".to_string(),
+                idempotency_key: "atomic-dag-output".to_string(),
+            })
+            .unwrap();
+        repository
+            .replace_note_pipeline_nodes(
+                &run.id,
+                1,
+                &[
+                    (
+                        "analyze-input".to_string(),
+                        "analyzeInput".to_string(),
+                        None,
+                        "[]".to_string(),
+                        "ready".to_string(),
+                        "input-1".to_string(),
+                    ),
+                    (
+                        "recon-source".to_string(),
+                        "reconSource".to_string(),
+                        None,
+                        "[]".to_string(),
+                        "ready".to_string(),
+                        "input-2".to_string(),
+                    ),
+                ],
+            )
+            .unwrap();
+        let checkpoint = DeepNoteDagNode {
+            node_id: "analyze-input".to_string(),
+            node_type: DeepNoteNodeType::AnalyzeInput,
+            section_id: None,
+            depends_on: Vec::new(),
+            status: DeepNoteNodeStatus::Completed,
+            attempt_count: 0,
+            evidence_ids: Vec::new(),
+            input_hash: "input-1".to_string(),
+            output_ref: Some("input-snapshot".to_string()),
+            validation_json: String::new(),
+            error_message: None,
+        };
+        let invalid = DeepNoteDagNode {
+            node_id: "recon-source".to_string(),
+            node_type: DeepNoteNodeType::ReconSource,
+            section_id: None,
+            depends_on: Vec::new(),
+            status: DeepNoteNodeStatus::Failed,
+            attempt_count: 0,
+            evidence_ids: Vec::new(),
+            input_hash: "input-2".to_string(),
+            output_ref: None,
+            validation_json: String::new(),
+            error_message: Some("invalid transition".to_string()),
+        };
+        let error = repository
+            .update_note_pipeline_nodes_state(&run.id, 1, &[checkpoint.clone(), invalid])
+            .unwrap_err();
+        assert!(error.starts_with(super::DEEP_NOTE_FAILURE_PREFIX));
+        let connection = repository.open_connection().unwrap();
+        let status: String = connection
+            .query_row(
+                "SELECT status FROM note_pipeline_nodes WHERE run_id = ? AND node_id = 'analyze-input'",
+                [&run.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "ready", "失败批次不得部分提交前置节点");
+        drop(connection);
+
+        repository
+            .update_note_pipeline_nodes_state(&run.id, 1, &[checkpoint])
+            .unwrap();
+        let restored = repository
+            .restore_note_pipeline_nodes(
+                &run.id,
+                1,
+                &[DeepNoteDagNode {
+                    node_id: "analyze-input".to_string(),
+                    node_type: DeepNoteNodeType::AnalyzeInput,
+                    section_id: None,
+                    depends_on: Vec::new(),
+                    status: DeepNoteNodeStatus::Ready,
+                    attempt_count: 0,
+                    evidence_ids: Vec::new(),
+                    input_hash: "input-1".to_string(),
+                    output_ref: None,
+                    validation_json: String::new(),
+                    error_message: None,
+                }],
+            )
+            .unwrap();
+        assert_eq!(restored[0].status, DeepNoteNodeStatus::Completed);
+        assert_eq!(restored[0].output_ref.as_deref(), Some("input-snapshot"));
+        let events = repository.list_note_pipeline_events(&run.id, 10).unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.1 == "nodeStateTransition")
+                .count(),
+            1
+        );
         let _ = fs::remove_dir_all(directory);
     }
 

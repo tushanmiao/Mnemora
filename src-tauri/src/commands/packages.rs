@@ -3,11 +3,13 @@
 //! 安装一律复用既有安装器（skills_import / plugins_install / 宠物安装器），
 //! 因此现有的哈希校验、路径防护、容量上限与「拒绝可执行 stdio MCP」全部生效。
 
-use std::{fs, path::PathBuf};
+use std::{fs, time::Duration};
 
+use reqwest::{redirect::Policy, Client};
 use tauri::{async_runtime, State};
 
 use crate::{
+    network,
     packages::{
         github::{download_zipball, search_repositories, validate_full_name, validate_git_ref},
         staging::stage_download,
@@ -25,12 +27,31 @@ fn join_error(error: impl std::fmt::Display) -> String {
     format!("Package background task failed: {error}")
 }
 
+fn remote_package_client(state: &State<'_, AppState>) -> Result<Client, String> {
+    let proxy_settings = state
+        .app_settings
+        .read()
+        .map_err(|_| "应用设置暂时不可用。".to_string())?
+        .update_proxy
+        .clone();
+    let builder = Client::builder()
+        .redirect(Policy::limited(5))
+        .connect_timeout(Duration::from_secs(20))
+        .timeout(Duration::from_secs(150))
+        .user_agent(concat!("Mnemora/", env!("CARGO_PKG_VERSION")));
+    let (builder, _) = network::configure_reqwest_builder(builder, &proxy_settings)?;
+    builder
+        .build()
+        .map_err(|error| format!("创建 GitHub 资源安装客户端失败：{error}"))
+}
+
 #[tauri::command]
 pub async fn packages_search_remote(
     state: State<'_, AppState>,
     request: RemoteSearchRequest,
 ) -> Result<RemoteSearchResult, String> {
-    search_repositories(&state.http, request.kind, &request.query).await
+    let client = remote_package_client(&state)?;
+    search_repositories(&client, request.kind, &request.query).await
 }
 
 /// 下载并解析，但**不安装**。返回的预览用于让用户看清将要装什么。
@@ -47,18 +68,20 @@ pub async fn packages_fetch_remote(
 
     state.package_staging.sweep();
 
-    let (bytes, commit_sha) = download_zipball(&state.http, &owner, &repo, &git_ref).await?;
+    let client = remote_package_client(&state)?;
+    let (bytes, commit_sha) = download_zipball(&client, &owner, &repo, &git_ref).await?;
 
     // 已安装 id 用于判断这次是否覆盖；覆盖必须让用户在确认时看到。
     let installed_ids = collect_installed_ids(&state, request.kind).await?;
 
     let downloads_dir = state.package_downloads_dir.clone();
-    fs::create_dir_all(&downloads_dir)
-        .map_err(|error| format!("创建下载目录失败：{error}"))?;
+    fs::create_dir_all(&downloads_dir).map_err(|error| format!("创建下载目录失败：{error}"))?;
 
     let full_name = format!("{owner}/{repo}");
     let source_url = format!("https://github.com/{full_name}");
     let kind = request.kind;
+    let package_path = request.package_path.clone();
+    let selector = request.selector.clone();
     let staged = async_runtime::spawn_blocking(move || {
         stage_download(
             &downloads_dir,
@@ -68,6 +91,8 @@ pub async fn packages_fetch_remote(
             &source_url,
             &bytes,
             &installed_ids,
+            package_path.as_deref(),
+            selector.as_deref(),
         )
     })
     .await
@@ -101,22 +126,8 @@ pub async fn packages_install_remote(
 
     let result = install_staged(&app, &state, &entry, request.replace_existing).await;
     // 无论成败都清掉暂存物，不在数据目录里留下载残留。
-    let _ = fs::remove_dir_all(staging_root_of(&entry.path));
+    let _ = fs::remove_dir_all(&entry.staging_root);
     result
-}
-
-/// 暂存根目录是 token 目录；`entry.path` 可能指向被剥掉包装的子目录。
-fn staging_root_of(package_path: &PathBuf) -> PathBuf {
-    package_path
-        .parent()
-        .filter(|parent| {
-            parent
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with("stg-"))
-        })
-        .map(|parent| parent.to_path_buf())
-        .unwrap_or_else(|| package_path.clone())
 }
 
 async fn collect_installed_ids(

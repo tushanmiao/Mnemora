@@ -53,6 +53,8 @@ pub struct RemotePackagePreview {
     /// 实际下载到的 commit，写入来源记录用于审计。
     pub commit_sha: String,
     pub source_url: String,
+    /// 仓库中实际选中的包目录。空字符串表示仓库根目录。
+    pub package_path: String,
     /// 清单里声明的身份信息
     pub id: String,
     pub name: String,
@@ -88,6 +90,12 @@ pub struct RemoteFetchRequest {
     /// 可选 ref（分支或 tag）；缺省用默认分支。
     #[serde(default)]
     pub git_ref: Option<String>,
+    /// 可选的仓库内目录。GitHub tree/blob URL 会解析为这个字段。
+    #[serde(default)]
+    pub package_path: Option<String>,
+    /// 从名称搜索进入时用于在多 Skill 仓库里挑选匹配目录。
+    #[serde(default)]
+    pub selector: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

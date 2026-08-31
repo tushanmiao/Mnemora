@@ -11,7 +11,7 @@ use std::{
     collections::HashMap,
     fs::{self, File},
     io::{self, Cursor, Read, Write},
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     sync::Mutex,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -44,6 +44,7 @@ const IGNORED_DIRECTORIES: &[&str] = &[
 pub struct StagingEntry {
     pub kind: RemotePackageKind,
     pub path: PathBuf,
+    pub staging_root: PathBuf,
     pub full_name: String,
     pub commit_sha: String,
     pub replaces_existing: bool,
@@ -88,7 +89,7 @@ impl StagingArea {
             .collect::<Vec<_>>();
         for token in expired {
             if let Some(entry) = entries.remove(&token) {
-                let _ = fs::remove_dir_all(&entry.path);
+                let _ = fs::remove_dir_all(&entry.staging_root);
             }
         }
     }
@@ -227,7 +228,8 @@ fn extract_zipball(bytes: &[u8], destination: &Path) -> Result<ExtractStats, Str
         if let Some(parent) = target.parent() {
             fs::create_dir_all(parent).map_err(|error| format!("创建快照文件目录失败：{error}"))?;
         }
-        let mut output = File::create(&target).map_err(|error| format!("创建快照文件失败：{error}"))?;
+        let mut output =
+            File::create(&target).map_err(|error| format!("创建快照文件失败：{error}"))?;
         let copied = io::copy(&mut entry.take(MAX_SINGLE_FILE_BYTES + 1), &mut output)
             .map_err(|error| format!("解压快照文件失败：{error}"))?;
         if copied > MAX_SINGLE_FILE_BYTES {
@@ -236,7 +238,9 @@ fn extract_zipball(bytes: &[u8], destination: &Path) -> Result<ExtractStats, Str
                 MAX_SINGLE_FILE_BYTES / 1024 / 1024
             ));
         }
-        output.flush().map_err(|error| format!("写入快照文件失败：{error}"))?;
+        output
+            .flush()
+            .map_err(|error| format!("写入快照文件失败：{error}"))?;
     }
 
     Ok(stats)
@@ -306,6 +310,193 @@ pub struct StagedPackage {
     pub preview: RemotePackagePreview,
 }
 
+fn validate_package_path(value: &str) -> Result<PathBuf, String> {
+    let normalized = value.trim().trim_matches('/').replace('\\', "/");
+    if normalized.is_empty() {
+        return Ok(PathBuf::new());
+    }
+    let path = PathBuf::from(normalized);
+    if path.is_absolute()
+        || path
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err("仓库内路径无效。".to_string());
+    }
+    Ok(path)
+}
+
+fn selected_path_root(repository_root: &Path, value: &str) -> Result<PathBuf, String> {
+    let relative = validate_package_path(value)?;
+    let selected = repository_root.join(&relative);
+    if !selected.exists() || !selected.starts_with(repository_root) {
+        return Err(format!("仓库中不存在路径：{}", relative.display()));
+    }
+    if selected.is_dir() {
+        return Ok(selected);
+    }
+    let name = selected
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
+    let parent = selected
+        .parent()
+        .ok_or_else(|| "仓库内文件没有有效父目录。".to_string())?;
+    if name == "plugin.json"
+        && parent.file_name().and_then(|value| value.to_str()) == Some(".codex-plugin")
+    {
+        return parent
+            .parent()
+            .map(Path::to_path_buf)
+            .ok_or_else(|| "Codex 插件目录结构无效。".to_string());
+    }
+    Ok(parent.to_path_buf())
+}
+
+fn find_manifest_roots(
+    directory: &Path,
+    kind: RemotePackageKind,
+    depth: usize,
+) -> Result<Vec<PathBuf>, String> {
+    if depth > MAX_DEPTH {
+        return Err("仓库目录层级超过安全上限。".to_string());
+    }
+    let is_root = match kind {
+        RemotePackageKind::Skill => directory.join("SKILL.md").is_file(),
+        RemotePackageKind::Plugin => {
+            directory.join("plugin.json").is_file()
+                || directory
+                    .join(".codex-plugin")
+                    .join("plugin.json")
+                    .is_file()
+        }
+        RemotePackageKind::Pet => directory.join("pet.json").is_file(),
+    };
+    if is_root {
+        return Ok(vec![directory.to_path_buf()]);
+    }
+    let mut roots = Vec::new();
+    for entry in fs::read_dir(directory).map_err(|error| format!("扫描仓库清单失败：{error}"))?
+    {
+        let entry = entry.map_err(|error| format!("扫描仓库清单失败：{error}"))?;
+        let file_type = entry
+            .file_type()
+            .map_err(|error| format!("读取仓库条目类型失败：{error}"))?;
+        if file_type.is_symlink() {
+            return Err("仓库内容包含符号链接，已拒绝安装。".to_string());
+        }
+        if file_type.is_dir() {
+            roots.extend(find_manifest_roots(&entry.path(), kind, depth + 1)?);
+        }
+    }
+    Ok(roots)
+}
+
+fn match_key(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| character.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn candidate_score(
+    root: &Path,
+    repository_root: &Path,
+    kind: RemotePackageKind,
+    selector: &str,
+) -> u8 {
+    let expected = match_key(selector);
+    if expected.is_empty() {
+        return 0;
+    }
+    let relative = root
+        .strip_prefix(repository_root)
+        .unwrap_or(root)
+        .to_string_lossy();
+    let path_key = match_key(&relative);
+    let mut values = vec![path_key];
+    if kind == RemotePackageKind::Skill {
+        if let Ok(text) = read_manifest_text(&root.join("SKILL.md")) {
+            let fields = parse_skill_frontmatter(&text);
+            if let Some(name) = fields.get("name") {
+                values.push(match_key(name));
+            }
+            if let Some(id) = fields.get("id") {
+                values.push(match_key(id));
+            }
+        }
+    }
+    values
+        .into_iter()
+        .map(|value| {
+            if value == expected {
+                100
+            } else if value.ends_with(&expected) {
+                90
+            } else if value.contains(&expected) {
+                80
+            } else if expected.contains(&value) && value.len() >= 4 {
+                60
+            } else {
+                0
+            }
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+fn choose_discovered_root(
+    repository_root: &Path,
+    kind: RemotePackageKind,
+    selector: Option<&str>,
+) -> Result<PathBuf, String> {
+    let roots = find_manifest_roots(repository_root, kind, 0)?;
+    if roots.is_empty() {
+        let expected = match kind {
+            RemotePackageKind::Skill => "SKILL.md",
+            RemotePackageKind::Plugin => "plugin.json 或 .codex-plugin/plugin.json",
+            RemotePackageKind::Pet => "pet.json",
+        };
+        return Err(format!("仓库中没有找到 {expected}。"));
+    }
+    if roots.len() == 1 {
+        return Ok(roots[0].clone());
+    }
+    if let Some(selector) = selector.filter(|value| !value.trim().is_empty()) {
+        let mut scored = roots
+            .iter()
+            .map(|root| (candidate_score(root, repository_root, kind, selector), root))
+            .collect::<Vec<_>>();
+        scored.sort_by(|left, right| right.0.cmp(&left.0));
+        if scored[0].0 > 0 && scored.get(1).is_none_or(|next| next.0 < scored[0].0) {
+            return Ok(scored[0].1.clone());
+        }
+    }
+    let choices = roots
+        .iter()
+        .take(8)
+        .map(|root| {
+            root.strip_prefix(repository_root)
+                .unwrap_or(root)
+                .to_string_lossy()
+                .replace('\\', "/")
+        })
+        .collect::<Vec<_>>()
+        .join("、");
+    Err(format!(
+        "仓库包含多个可安装条目（{choices}）。请粘贴目标目录的 GitHub tree URL。"
+    ))
+}
+
+fn package_path_label(root: &Path, repository_root: &Path) -> String {
+    root.strip_prefix(repository_root)
+        .ok()
+        .filter(|path| !path.as_os_str().is_empty())
+        .map(|path| path.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_default()
+}
+
 /// 把下载到的 zipball 落到暂存目录并生成待确认清单。
 ///
 /// `installed_ids` 由调用方从各自的仓库读出，用于判定是否覆盖已有条目——
@@ -318,6 +509,8 @@ pub fn stage_download(
     source_url: &str,
     bytes: &[u8],
     installed_ids: &[String],
+    package_path: Option<&str>,
+    selector: Option<&str>,
 ) -> Result<StagedPackage, String> {
     let token = format!("stg-{}-{}", now_ms(), uuid_like(bytes));
     let staging_root = downloads_dir.join(&token);
@@ -333,7 +526,7 @@ pub fn stage_download(
         }
     };
 
-    let package_root = match unwrap_single_directory(&staging_root) {
+    let repository_root = match unwrap_single_directory(&staging_root) {
         Ok(path) => path,
         Err(error) => {
             let _ = fs::remove_dir_all(&staging_root);
@@ -341,7 +534,40 @@ pub fn stage_download(
         }
     };
 
+    let selected_root = match package_path.filter(|value| !value.trim().is_empty()) {
+        Some(value) => selected_path_root(&repository_root, value),
+        None => choose_discovered_root(&repository_root, kind, selector),
+    };
+    let mut package_root = match selected_root {
+        Ok(path) => path,
+        Err(error) => {
+            let _ = fs::remove_dir_all(&staging_root);
+            return Err(error);
+        }
+    };
+    let codex_plugin = kind == RemotePackageKind::Plugin
+        && package_root
+            .join(".codex-plugin")
+            .join("plugin.json")
+            .is_file()
+        && !package_root.join("plugin.json").is_file();
+    if kind == RemotePackageKind::Plugin {
+        package_root = match crate::plugins::prepare_plugin_package(&package_root) {
+            Ok(path) => path,
+            Err(error) => {
+                let _ = fs::remove_dir_all(&staging_root);
+                return Err(error);
+            }
+        };
+    }
+
     let mut warnings = Vec::new();
+    if codex_plugin {
+        warnings.push(
+            "检测到 Codex 插件清单；将兼容导入其中的 Agent Skills，连接器、Hooks 与专用 UI 不会被执行。"
+                .to_string(),
+        );
+    }
     let preview_fields = match build_preview_fields(kind, &package_root, &mut warnings) {
         Ok(fields) => fields,
         Err(error) => {
@@ -351,7 +577,9 @@ pub fn stage_download(
     };
 
     let replaces_existing = !preview_fields.id.is_empty()
-        && installed_ids.iter().any(|value| value == &preview_fields.id);
+        && installed_ids
+            .iter()
+            .any(|value| value == &preview_fields.id);
 
     let preview = RemotePackagePreview {
         staging_token: token.clone(),
@@ -359,6 +587,7 @@ pub fn stage_download(
         full_name: full_name.to_string(),
         commit_sha: commit_sha.to_string(),
         source_url: source_url.to_string(),
+        package_path: package_path_label(&package_root, &repository_root),
         id: preview_fields.id.clone(),
         name: preview_fields.name,
         version: preview_fields.version,
@@ -378,6 +607,7 @@ pub fn stage_download(
         entry: StagingEntry {
             kind,
             path: package_root,
+            staging_root,
             full_name: full_name.to_string(),
             commit_sha: commit_sha.to_string(),
             replaces_existing,
@@ -391,7 +621,11 @@ pub fn stage_download(
 fn uuid_like(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     let digest = Sha256::digest(bytes);
-    digest.iter().take(6).map(|byte| format!("{byte:02x}")).collect()
+    digest
+        .iter()
+        .take(6)
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 #[derive(Default)]
@@ -479,7 +713,9 @@ fn build_preview_fields(
             let text = read_manifest_text(&manifest_path)?;
             let fields = parse_skill_frontmatter(&text);
             if fields.is_empty() {
-                warnings.push("SKILL.md 没有可解析的 frontmatter，安装时由技能安装器再次校验。".to_string());
+                warnings.push(
+                    "SKILL.md 没有可解析的 frontmatter，安装时由技能安装器再次校验。".to_string(),
+                );
             }
             Ok(PreviewFields {
                 id: fields.get("id").cloned().unwrap_or_default(),
@@ -501,7 +737,9 @@ mod tests {
 
     #[test]
     fn reads_selected_frontmatter_fields() {
-        let fields = parse_skill_frontmatter("---\nid: demo\nname: \"Demo Skill\"\nversion: 1.0.0\n---\n正文");
+        let fields = parse_skill_frontmatter(
+            "---\nid: demo\nname: \"Demo Skill\"\nversion: 1.0.0\n---\n正文",
+        );
         assert_eq!(fields.get("id").unwrap(), "demo");
         assert_eq!(fields.get("name").unwrap(), "Demo Skill");
         assert_eq!(fields.get("version").unwrap(), "1.0.0");
@@ -581,7 +819,11 @@ mod tests {
         let mut buffer = Cursor::new(Vec::new());
         {
             let mut writer = ZipWriter::new(&mut buffer);
-            for name in ["pkg/.git/config", "pkg/node_modules/a.js", "pkg/plugin.json"] {
+            for name in [
+                "pkg/.git/config",
+                "pkg/node_modules/a.js",
+                "pkg/plugin.json",
+            ] {
                 writer
                     .start_file(name, SimpleFileOptions::default())
                     .unwrap();
@@ -617,5 +859,50 @@ mod tests {
         assert_eq!(resolved, root);
         let _ = fs::remove_dir_all(&root);
     }
-}
 
+    #[test]
+    fn selects_a_named_skill_from_a_multi_skill_repository() {
+        let root = std::env::temp_dir().join(format!("mnemora-multi-skill-{}", now_ms()));
+        let framing = root
+            .join("skills")
+            .join("research")
+            .join("research-question-framing");
+        let writing = root.join("skills").join("writing");
+        fs::create_dir_all(&framing).unwrap();
+        fs::create_dir_all(&writing).unwrap();
+        fs::write(
+            framing.join("SKILL.md"),
+            "---\nname: research-question-framing\ndescription: Frame research.\n---\nBody",
+        )
+        .unwrap();
+        fs::write(
+            writing.join("SKILL.md"),
+            "---\nname: writing\ndescription: Write.\n---\nBody",
+        )
+        .unwrap();
+
+        let selected =
+            choose_discovered_root(&root, RemotePackageKind::Skill, Some("question-framing"))
+                .unwrap();
+        assert_eq!(selected, framing);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn resolves_github_blob_path_to_its_package_directory() {
+        let root = std::env::temp_dir().join(format!("mnemora-explicit-skill-{}", now_ms()));
+        let skill = root.join("skills").join("demo");
+        fs::create_dir_all(&skill).unwrap();
+        fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: demo\ndescription: Demo.\n---\nBody",
+        )
+        .unwrap();
+        assert_eq!(
+            selected_path_root(&root, "skills/demo/SKILL.md").unwrap(),
+            skill
+        );
+        assert!(selected_path_root(&root, "../outside").is_err());
+        let _ = fs::remove_dir_all(root);
+    }
+}

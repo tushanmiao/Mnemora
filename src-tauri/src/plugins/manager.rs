@@ -6,6 +6,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
@@ -15,8 +16,9 @@ use crate::{
 };
 
 use super::types::{
-    PluginInstallRequest, PluginManifest, PluginOverview, PluginSignatureStatus, PluginStateEntry,
-    PluginStateFile, PluginSummary,
+    PluginCapabilities, PluginInstallRequest, PluginManifest, PluginOverview, PluginPermissions,
+    PluginSignatureStatus, PluginSkillContribution, PluginStateEntry, PluginStateFile,
+    PluginSummary,
 };
 
 const MAX_MANIFEST_BYTES: u64 = 256 * 1024;
@@ -79,7 +81,7 @@ impl PluginManager {
         let extracted = operation.join("extracted");
         let result = (|| {
             stage_package_source(source, request.kind, &extracted)?;
-            let package_root = find_package_root(&extracted)?;
+            let package_root = prepare_plugin_package(&extracted)?;
             let manifest = self.load_manifest(&package_root)?;
             self.validate_package(&package_root, &manifest, request.allow_unsigned)?;
             let mut state = self.read_state()?;
@@ -445,8 +447,18 @@ fn namespaced_servers(
         .collect()
 }
 
+pub(crate) fn prepare_plugin_package(extracted: &Path) -> Result<PathBuf, String> {
+    let root = find_package_root(extracted)?;
+    materialize_codex_manifest(&root)?;
+    Ok(root)
+}
+
+fn has_plugin_manifest(root: &Path) -> bool {
+    root.join("plugin.json").is_file() || root.join(".codex-plugin").join("plugin.json").is_file()
+}
+
 fn find_package_root(extracted: &Path) -> Result<PathBuf, String> {
-    if extracted.join("plugin.json").is_file() {
+    if has_plugin_manifest(extracted) {
         return Ok(extracted.to_path_buf());
     }
     let roots = fs::read_dir(extracted)
@@ -459,12 +471,168 @@ fn find_package_root(extracted: &Path) -> Result<PathBuf, String> {
                 .filter(|kind| kind.is_dir())
                 .map(|_| entry.path())
         })
-        .filter(|path| path.join("plugin.json").is_file())
+        .filter(|path| has_plugin_manifest(path))
         .collect::<Vec<_>>();
     if roots.len() != 1 {
-        return Err("Plugin package must contain exactly one plugin.json root".to_string());
+        return Err(
+            "Plugin package must contain exactly one plugin.json or .codex-plugin/plugin.json root"
+                .to_string(),
+        );
     }
     Ok(roots[0].clone())
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CodexPluginManifest {
+    name: String,
+    version: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    author: Option<CodexPluginAuthor>,
+    #[serde(default)]
+    license: Option<String>,
+    #[serde(default)]
+    skills: Option<CodexSkillLocations>,
+    #[serde(default)]
+    interface: Option<CodexPluginInterface>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum CodexPluginAuthor {
+    Name(String),
+    Detail { name: String },
+}
+
+impl CodexPluginAuthor {
+    fn name(self) -> String {
+        match self {
+            Self::Name(value) => value,
+            Self::Detail { name } => name,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum CodexSkillLocations {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl CodexSkillLocations {
+    fn values(self) -> Vec<String> {
+        match self {
+            Self::One(value) => vec![value],
+            Self::Many(values) => values,
+        }
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CodexPluginInterface {
+    #[serde(default)]
+    display_name: String,
+}
+
+/// Codex 插件把清单放在 `.codex-plugin/plugin.json`，并用 `skills` 指向
+/// Skill 目录。Mnemora 的运行时清单更严格，因此只在安装暂存区生成一份
+/// 等价的声明式清单；上游文件保持原样，连接器、Hooks、UI 等未支持能力
+/// 不会被当作本地代码执行。
+fn materialize_codex_manifest(root: &Path) -> Result<(), String> {
+    if root.join("plugin.json").is_file() {
+        return Ok(());
+    }
+    let codex_path = root.join(".codex-plugin").join("plugin.json");
+    let metadata = fs::metadata(&codex_path)
+        .map_err(|error| format!("Failed to read Codex plugin manifest metadata: {error}"))?;
+    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > MAX_MANIFEST_BYTES {
+        return Err(".codex-plugin/plugin.json is empty or too large".to_string());
+    }
+    let source: CodexPluginManifest = serde_json::from_slice(
+        &fs::read(&codex_path)
+            .map_err(|error| format!("Failed to read .codex-plugin/plugin.json: {error}"))?,
+    )
+    .map_err(|error| format!("Failed to parse .codex-plugin/plugin.json: {error}"))?;
+
+    let locations = source
+        .skills
+        .map(CodexSkillLocations::values)
+        .unwrap_or_else(|| vec!["skills".to_string()]);
+    let canonical_root = root
+        .canonicalize()
+        .map_err(|error| format!("Failed to resolve Codex plugin root: {error}"))?;
+    let mut contributions = Vec::new();
+    let mut seen = HashSet::new();
+    for location in locations {
+        let normalized = location.trim().trim_start_matches("./");
+        if normalized.is_empty() {
+            continue;
+        }
+        let directory = resolve_package_path(root, normalized)?;
+        if !directory.is_dir() {
+            return Err(format!(
+                "Codex plugin skill path is not a directory: {location}"
+            ));
+        }
+        for skill_root in crate::skills::find_skill_roots(&directory, 0)? {
+            let relative = skill_root
+                .strip_prefix(&canonical_root)
+                .map_err(|_| "Codex plugin skill path escapes the package root".to_string())?
+                .to_string_lossy()
+                .replace('\\', "/");
+            if seen.insert(relative.clone()) {
+                contributions.push(PluginSkillContribution { path: relative });
+            }
+        }
+    }
+    if contributions.is_empty() {
+        return Err(
+            "该 Codex 插件没有可由 Mnemora 运行的 Skill；连接器、Hooks 或专用 UI 不能作为本地 Skill 安装。"
+                .to_string(),
+        );
+    }
+    if contributions.len() > 64 {
+        return Err("Codex plugin contains more than 64 skills".to_string());
+    }
+
+    let display_name = source
+        .interface
+        .as_ref()
+        .map(|value| value.display_name.trim())
+        .filter(|value| !value.is_empty())
+        .unwrap_or(source.name.as_str())
+        .to_string();
+    let manifest = PluginManifest {
+        schema_version: 1,
+        id: source.name.clone(),
+        name: display_name,
+        version: source.version,
+        description: source.description,
+        publisher: source
+            .author
+            .map(CodexPluginAuthor::name)
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| "Codex plugin author".to_string()),
+        license: source.license,
+        compatibility: Some(
+            "从 Codex 插件清单兼容导入；Mnemora 仅启用其中的 Agent Skills。".to_string(),
+        ),
+        capabilities: PluginCapabilities {
+            skills: contributions,
+            mcp_servers: Vec::new(),
+        },
+        permissions: PluginPermissions::default(),
+        artifacts: Vec::new(),
+        signature: None,
+    };
+    let bytes = serde_json::to_vec_pretty(&manifest)
+        .map_err(|error| format!("Failed to convert Codex plugin manifest: {error}"))?;
+    fs::write(root.join("plugin.json"), bytes)
+        .map_err(|error| format!("Failed to stage converted Codex plugin manifest: {error}"))
 }
 
 fn resolve_package_path(root: &Path, relative: &str) -> Result<PathBuf, String> {
@@ -630,6 +798,61 @@ mod tests {
             .all(|value| value.id != "demo-skill"));
         assert!(manager.uninstall("demo-plugin").unwrap());
         assert!(manager.list().unwrap().plugins.is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn installs_skill_based_codex_plugin_manifest() {
+        let root = std::env::temp_dir().join(format!("mnemora-codex-plugin-{}", Uuid::new_v4()));
+        let source = root.join("source");
+        let skill = source.join("skills").join("question-helper");
+        fs::create_dir_all(source.join(".codex-plugin")).unwrap();
+        fs::create_dir_all(&skill).unwrap();
+        fs::write(
+            source.join(".codex-plugin").join("plugin.json"),
+            r#"{
+              "name": "codex-helper",
+              "version": "1.2.3",
+              "description": "A Codex-compatible skills plugin.",
+              "author": { "name": "Example" },
+              "license": "MIT",
+              "skills": "./skills/",
+              "interface": { "displayName": "Codex Helper" }
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: question-helper\ndescription: Frame a question.\n---\nUse this skill.\n",
+        )
+        .unwrap();
+
+        let data = root.join("data");
+        let skills = SkillRepository::new(root.join("builtin"), data.join("skills"));
+        let mcp = McpManager::new(root.join("config"), data.clone()).unwrap();
+        let manager = PluginManager::new(data, skills.clone(), mcp);
+        let installed = manager
+            .install(
+                &source,
+                PluginInstallRequest {
+                    kind: SkillImportKind::Directory,
+                    replace_existing: false,
+                    allow_unsigned: true,
+                },
+            )
+            .unwrap();
+        assert_eq!(installed.id, "codex-helper");
+        assert_eq!(installed.name, "Codex Helper");
+        assert_eq!(installed.skill_ids, vec!["question-helper"]);
+        assert!(!installed.enabled);
+
+        manager.set_enabled("codex-helper", true).unwrap();
+        assert!(skills
+            .list()
+            .unwrap()
+            .skills
+            .iter()
+            .any(|value| value.id == "question-helper"));
         let _ = fs::remove_dir_all(root);
     }
 }

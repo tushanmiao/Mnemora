@@ -6,6 +6,7 @@ import type { ModelSettings, ProviderApiKeyUpdate } from "../../../types/modelSe
 import type { useSkills } from "../../skills/hooks/useSkills";
 import type { usePromptTemplates } from "../../prompts/hooks/usePromptTemplates";
 import { useI18n } from "../../../i18n/I18nProvider";
+import type { RemotePackageKind } from "../api/remotePackages";
 import "../styles/settings-kit.css";
 import "../styles/settings-page.css";
 
@@ -74,6 +75,9 @@ type SettingsPageProps = {
   onSettingsImported: (bundle: SettingsBundle) => void;
   onDefaultModelChange: (providerId: string, modelId: string) => Promise<void>;
   onNoteModelChange: (providerId: string | null, modelId: string | null) => Promise<void>;
+  mcpInstallRequest: { query: string; nonce: number } | null;
+  extensionsRevision: number;
+  onRemoteInstall: (kind: RemotePackageKind) => void;
 };
 
 export function SettingsPage(props: SettingsPageProps) {
@@ -176,13 +180,17 @@ export function SettingsPage(props: SettingsPageProps) {
             ) : activeCategory === "models" ? (
               <ModelSettingsPanel settings={props.settings} initialError={props.initialError} onSave={props.onSave} />
             ) : activeCategory === "skills" ? (
-              <SkillSettingsPanel state={props.skillState} />
+              <SkillSettingsPanel state={props.skillState} onRemoteInstall={() => props.onRemoteInstall("skill")} />
             ) : activeCategory === "prompts" ? (
               <PromptSettingsPanel state={props.promptState} />
             ) : activeCategory === "mcp" ? (
-              <McpSettingsPanel />
+              <McpSettingsPanel installRequest={props.mcpInstallRequest} />
             ) : activeCategory === "plugins" ? (
-              <PluginSettingsPanel onSkillsChanged={props.skillState.refresh} />
+              <PluginSettingsPanel
+                onSkillsChanged={props.skillState.refresh}
+                onRemoteInstall={() => props.onRemoteInstall("plugin")}
+                refreshToken={props.extensionsRevision}
+              />
             ) : activeCategory === "memory" ? (
               <MemorySettingsPanel
                 settings={props.appSettings}

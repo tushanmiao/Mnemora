@@ -3,6 +3,7 @@ import type { DeepNoteRunDetail, NotePipelineActivity } from "../../chat/api/not
 import {
   buildDeepNoteWorkflow,
   describeNotePipelineEvent,
+  diagnoseDeepNoteFailure,
   diagnoseDeepNoteRuntime,
 } from "./deepNoteDiagnostics";
 
@@ -176,5 +177,44 @@ describe("deep note diagnostics", () => {
     expect(continued).toEqual({ label: "已从停止点继续", detail: "恢复执行版本 v2，保留已有检查点" });
     expect(retried).toEqual({ label: "已重试失败步骤", detail: "恢复执行版本 v3，失败章节和节点已重置" });
     expect(restarted).toEqual({ label: "已重新生成", detail: "新任务 run-2" });
+  });
+
+  it("keeps structured DAG failure context instead of mislabeling it as a model error", () => {
+    const value = detail({
+      run: { ...detail().run, phase: "error", errorMessage: "DAG 节点状态不一致。" },
+      events: [{
+        sequence: 9,
+        eventType: "runFailed",
+        nodeId: "analyze-input",
+        payloadJson: JSON.stringify({
+          category: "internalState",
+          title: "内部执行状态异常",
+          message: "DAG 节点状态不一致：analyze-input 无法从 ready 转换为 completed。",
+          nodeId: "analyze-input",
+          fromStatus: "ready",
+          toStatus: "completed",
+          recovery: "节点产物与状态检查点均已保留。请重试任务。",
+          retryable: true,
+        }),
+        createdAt: 30_000,
+      }],
+    });
+    const diagnosis = diagnoseDeepNoteFailure(value);
+    expect(diagnosis?.category).toBe("internalState");
+    expect(diagnosis?.title).toBe("内部执行状态异常");
+    expect(diagnosis?.nodeId).toBe("analyze-input");
+    expect(diagnosis?.fromStatus).toBe("ready");
+    expect(diagnosis?.toStatus).toBe("completed");
+  });
+
+  it("classifies legacy DAG errors without structured payloads", () => {
+    const value = detail({
+      run: {
+        ...detail().run,
+        phase: "error",
+        errorMessage: "拒绝深度笔记 DAG 节点状态转换：非法状态转换：ready + target=completed",
+      },
+    });
+    expect(diagnoseDeepNoteFailure(value)?.category).toBe("internalState");
   });
 });

@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
+use super::node_machine::DagNodeMachine;
 use super::types::{DeepNoteDagNode, DeepNoteNodeStatus, DeepNoteNodeType, DeepNoteSection};
 
 #[derive(Debug, Clone)]
@@ -46,15 +47,15 @@ impl DeepNoteDagScheduler {
         if node.status == next {
             return Ok(());
         }
-        if !valid_transition(node.status, next) {
-            return Err(format!(
-                "深度笔记执行节点 {} 不能从 {} 转换为 {}。",
+        let transition = DagNodeMachine::transition_to(node.status, next).map_err(|error| {
+            format!(
+                "深度笔记执行节点 {} 不能从 {} 转换为 {}：{error}",
                 node.node_id,
                 node.status.as_str(),
                 next.as_str()
-            ));
-        }
-        node.status = next;
+            )
+        })?;
+        node.status = transition.next_state;
         Ok(())
     }
 
@@ -321,35 +322,6 @@ pub fn stable_topological_sections(sections: &[DeepNoteSection]) -> Result<Vec<S
         return Err("深度笔记章节依赖存在循环。".to_string());
     }
     Ok(ordered)
-}
-
-fn valid_transition(current: DeepNoteNodeStatus, next: DeepNoteNodeStatus) -> bool {
-    use DeepNoteNodeStatus as Status;
-    matches!(
-        (current, next),
-        (
-            Status::Pending,
-            Status::Ready | Status::Blocked | Status::Skipped
-        ) | (
-            Status::Ready,
-            Status::InProgress | Status::Skipped | Status::Interrupted
-        ) | (
-            Status::InProgress,
-            Status::Completed
-                | Status::NeedsReview
-                | Status::NeedsRevision
-                | Status::Failed
-                | Status::Interrupted
-        ) | (
-            Status::NeedsReview,
-            Status::InProgress | Status::Failed | Status::Skipped
-        ) | (
-            Status::NeedsRevision,
-            Status::InProgress | Status::Failed | Status::Skipped
-        ) | (Status::Failed, Status::Pending)
-            | (Status::Blocked, Status::Pending | Status::Skipped)
-            | (Status::Interrupted, Status::Pending | Status::Skipped)
-    )
 }
 
 #[cfg(test)]

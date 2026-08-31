@@ -42,7 +42,7 @@ const LOCAL_COMMANDS: Array<SlashSuggestion & { command: LocalSlashCommand }> = 
   { command: "skills", trigger: "/skills", title: "技能", description: "打开技能设置", kind: "local" },
   { command: "memory", trigger: "/memory", title: "记忆", description: "打开记忆设置", kind: "local" },
   { command: "attach", trigger: "/attach", title: "添加附件", description: "打开本地附件选择器", kind: "local" },
-  { command: "install", trigger: "/install", title: "安装资源包", description: "安装插件、技能或宠物：/install plugin 天气；不写名称则打开本地文件选择器", kind: "local", argumentHint: "<plugin|skill|pet> [名称]" },
+  { command: "install", trigger: "/install", title: "安装扩展", description: "安装插件、技能、MCP 或宠物：/install skill <名称或 GitHub URL>", kind: "local", argumentHint: "<plugin|skill|mcp|pet> [名称或地址]" },
 ];
 
 export const RESERVED_SLASH_TRIGGERS = new Set(LOCAL_COMMANDS.map((item) => item.trigger));
@@ -59,14 +59,15 @@ export function buildLocalCommandHelp() {
   return `可用命令：${entries.join("、")}。`;
 }
 
-/** 可安装的资源包类型。与后端 RemotePackageKind 的取值保持一致。 */
-export type InstallKind = "plugin" | "skill" | "pet";
+/** 可安装的扩展类型；MCP 是服务器配置，不属于 GitHub 资源包。 */
+export type InstallKind = "plugin" | "skill" | "mcp" | "pet";
 
-export const INSTALL_KINDS: readonly InstallKind[] = ["plugin", "skill", "pet"];
+export const INSTALL_KINDS: readonly InstallKind[] = ["plugin", "skill", "mcp", "pet"];
 
 const INSTALL_KIND_LABEL: Record<InstallKind, string> = {
   plugin: "插件",
   skill: "技能",
+  mcp: "MCP 服务器",
   pet: "宠物",
 };
 
@@ -78,12 +79,14 @@ export type InstallCommandTarget =
   /** 类型缺失或拼错：回一条用法说明，不猜测用户想装什么。 */
   | { kind: null; reason: "missing" | "unknown"; token: string }
   /** 显式要求本地文件：local / dir。 */
-  | { kind: InstallKind; source: "local"; mode: "zip" | "directory" }
+  | { kind: Exclude<InstallKind, "mcp">; source: "local"; mode: "zip" | "directory" }
+  /** MCP 不是仓库包：打开服务器编辑器，并尽可能用 URL 预填配置。 */
+  | { kind: "mcp"; source: "mcp"; query: string }
   /**
    * 其余一律走远端。query 可能是名称，也可能是一句功能描述——
    * 两者都直接交给搜索，不在这里区分。
    */
-  | { kind: InstallKind; source: "github"; query: string };
+  | { kind: Exclude<InstallKind, "mcp">; source: "github"; query: string };
 
 /**
  * 解析 `/install <类型> [描述或名称]`。
@@ -97,6 +100,8 @@ export type InstallCommandTarget =
  *   /install plugin 天气           → 按描述搜索
  *   /install plugin 查天气并出摘要   → 同上，一整句描述也可以
  *   /install plugin owner/repo    → 已知仓库，直接取回
+ *   /install skill https://github.com/owner/repo/tree/main/path → 指定 Skill 目录
+ *   /install mcp https://example.com/mcp → 打开并预填 MCP 配置
  *   /install plugin local         → 本地 ZIP 选择器
  *   /install plugin dir           → 本地目录选择器
  *
@@ -115,6 +120,7 @@ export function parseInstallTarget(argumentsValue: string): InstallCommandTarget
 
   const kind = INSTALL_KINDS.find((item) => item === kindToken);
   if (!kind) return { kind: null, reason: "unknown", token: kindToken };
+  if (kind === "mcp") return { kind, source: "mcp", query: rest };
 
   // 本地安装现在需要显式要求：默认路径是「说一句需求就自动找」。
   const restLower = rest.toLocaleLowerCase("en-US");
@@ -136,7 +142,7 @@ export function buildInstallUsage(target: Extract<InstallCommandTarget, { kind: 
   const prefix = target.reason === "unknown"
     ? `无法识别的安装类型「${target.token}」。`
     : "请指定要安装的类型。";
-  return `${prefix}可用形式：${forms}。后面可以直接说想要什么功能，例如 /install plugin 查天气并生成摘要；已知仓库可写 /install plugin owner/repo；想从本地文件安装则用 /install plugin local 或 /install plugin dir。`;
+  return `${prefix}可用形式：${forms}。Skill/插件可输入名称、owner/repo 或 GitHub tree URL；MCP 可输入 Streamable HTTP 地址；本地包使用 /install plugin local、/install plugin dir、/install skill local 或 /install skill dir。`;
 }
 
 function firstToken(value: string) {

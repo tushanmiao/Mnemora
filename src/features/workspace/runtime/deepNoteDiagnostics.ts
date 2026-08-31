@@ -36,6 +36,27 @@ export interface DeepNoteRuntimeDiagnosis {
   timeoutSeconds: number | null;
 }
 
+export type DeepNoteFailureCategory =
+  | "model"
+  | "validation"
+  | "budget"
+  | "storage"
+  | "input"
+  | "internalState"
+  | "unknown";
+
+export interface DeepNoteFailureDiagnosis {
+  category: DeepNoteFailureCategory;
+  title: string;
+  detail: string;
+  recovery: string;
+  retryable: boolean;
+  nodeId: string | null;
+  fromStatus: string | null;
+  toStatus: string | null;
+  technicalDetail: string | null;
+}
+
 const EXECUTION_PHASES = new Set<NotePipelinePhase>([
   "compiling",
   "queued",
@@ -243,6 +264,65 @@ function number(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+function boolean(value: unknown): boolean | null {
+  return typeof value === "boolean" ? value : null;
+}
+
+const FAILURE_CATEGORIES = new Set<DeepNoteFailureCategory>([
+  "model", "validation", "budget", "storage", "input", "internalState", "unknown",
+]);
+
+function inferFailureCategory(message: string, events: NotePipelineEventRecord[]): DeepNoteFailureCategory {
+  const normalized = message.toLowerCase();
+  if (/dag|状态转换|状态机|执行节点/.test(normalized)) return "internalState";
+  if (/预算|上限/.test(normalized)) return "budget";
+  if (/数据库|写入|保存|sqlite/.test(normalized)) return "storage";
+  if (/验证|校验/.test(normalized)) return "validation";
+  if (/模型|渠道|并发|超时|model|provider|http|timeout/.test(normalized)
+    || events.some((event) => event.eventType === "modelCallFailed")) return "model";
+  if (/输入|附件|来源/.test(normalized)) return "input";
+  return "unknown";
+}
+
+function failureDefaults(category: DeepNoteFailureCategory) {
+  switch (category) {
+    case "internalState": return {
+      title: "内部执行状态异常",
+      recovery: "节点产物与检查点已保留。请重试失败步骤；若仍失败，请复制诊断信息。",
+    };
+    case "model": return { title: "模型请求失败", recovery: "等待冷却后重试，或切换到可用的备用模型。" };
+    case "validation": return { title: "内容验证未通过", recovery: "检查失败章节与证据要求，调整计划后重试失败步骤。" };
+    case "budget": return { title: "运行预算或时限已耗尽", recovery: "缩小章节范围后继续，或调整模型与预算设置。" };
+    case "storage": return { title: "保存运行检查点失败", recovery: "确认存储目录可写且磁盘空间充足，然后重试。" };
+    case "input": return { title: "输入或来源不可用", recovery: "检查会话消息与附件是否仍可访问，再重新生成。" };
+    default: return { title: "运行步骤失败", recovery: "查看最后一条运行记录，并复制诊断信息用于排查。" };
+  }
+}
+
+export function diagnoseDeepNoteFailure(detail: DeepNoteRunDetail | null): DeepNoteFailureDiagnosis | null {
+  if (!detail) return null;
+  const failedEvent = [...detail.events].reverse().find((event) => event.eventType === "runFailed");
+  const data = failedEvent ? payload(failedEvent) : {};
+  const message = text(data.message) ?? detail.run.errorMessage;
+  if (!message && detail.run.phase !== "error" && detail.run.phase !== "blocked") return null;
+  const rawCategory = text(data.category) as DeepNoteFailureCategory | null;
+  const category = rawCategory && FAILURE_CATEGORIES.has(rawCategory)
+    ? rawCategory
+    : inferFailureCategory(message ?? "", detail.events);
+  const defaults = failureDefaults(category);
+  return {
+    category,
+    title: text(data.title) ?? defaults.title,
+    detail: message ?? "任务在当前步骤停止，但没有留下可读错误。",
+    recovery: text(data.recovery) ?? defaults.recovery,
+    retryable: boolean(data.retryable) ?? category !== "input",
+    nodeId: text(data.nodeId) ?? failedEvent?.nodeId ?? null,
+    fromStatus: text(data.fromStatus),
+    toStatus: text(data.toStatus),
+    technicalDetail: text(data.technicalDetail),
+  };
+}
+
 function formatRequestBytes(value: number): string {
   if (value < 1024) return `${Math.max(0, Math.round(value))} B`;
   return value < 1024 * 1024
@@ -432,7 +512,16 @@ export function describeNotePipelineEvent(record: NotePipelineEventRecord): { la
     case "runCompleted":
       return { label: "深度笔记完成", detail: `${number(data.completedSectionCount) ?? 0} 个章节已完成` };
     case "runFailed":
-      return { label: "任务失败", detail: text(data.message) ?? "查看上一条事件定位失败步骤" };
+      return {
+        label: text(data.title) ?? "任务失败",
+        detail: [
+          text(data.message) ?? "查看上一条事件定位失败步骤",
+          text(data.nodeId) ? `节点 ${text(data.nodeId)}` : null,
+          text(data.fromStatus) && text(data.toStatus)
+            ? `${text(data.fromStatus)} → ${text(data.toStatus)}`
+            : null,
+        ].filter(Boolean).join(" · "),
+      };
     default:
       return { label: record.eventType, detail: text(data.message) ?? (record.nodeId ? `节点 ${record.nodeId}` : "运行事件") };
   }

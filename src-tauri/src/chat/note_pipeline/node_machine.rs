@@ -31,6 +31,19 @@ impl DagNodeMachine {
         current: DeepNoteNodeStatus,
         target: DeepNoteNodeStatus,
     ) -> Result<Transition<DeepNoteNodeStatus, DagNodeEffect>, TransitionError> {
+        Self::transition_to_with_checkpoint(current, target, false)
+    }
+
+    /// 根据目标状态执行兼容转换。
+    ///
+    /// `checkpoint_present` 只为“已有权威产物，但节点状态尚未落盘”的恢复场景开放
+    /// 直达 Completed。普通调度仍必须先进入 InProgress，避免把一个尚未执行的 Ready
+    /// 节点误标为完成。
+    pub fn transition_to_with_checkpoint(
+        current: DeepNoteNodeStatus,
+        target: DeepNoteNodeStatus,
+        checkpoint_present: bool,
+    ) -> Result<Transition<DeepNoteNodeStatus, DagNodeEffect>, TransitionError> {
         if current == target {
             return Ok(Transition {
                 next_state: current,
@@ -40,6 +53,19 @@ impl DagNodeMachine {
         }
         use DagNodeEvent as E;
         use DeepNoteNodeStatus as S;
+        if target == S::Completed
+            && checkpoint_present
+            && matches!(
+                current,
+                S::Pending | S::Ready | S::Interrupted | S::NeedsReview | S::NeedsRevision
+            )
+        {
+            return Ok(Transition {
+                next_state: S::Completed,
+                effects: Vec::new(),
+                reason: "根据已有产物检查点完成节点",
+            });
+        }
         let event = match (current, target) {
             (S::Pending, S::Ready) => E::DependenciesSatisfied,
             (S::Pending, S::Blocked) => E::DependencyFailed,
@@ -74,7 +100,12 @@ impl DagNodeMachine {
             (S::NeedsReview, S::Failed) => E::AttemptLimitReached,
             (S::InProgress, S::Interrupted) => E::ExecutionInterrupted,
             (
-                S::Failed | S::Blocked | S::Interrupted | S::NeedsReview | S::NeedsRevision,
+                S::Failed
+                | S::Blocked
+                | S::Interrupted
+                | S::InProgress
+                | S::NeedsReview
+                | S::NeedsRevision,
                 S::Pending,
             ) => {
                 return Ok(Transition {
@@ -84,14 +115,17 @@ impl DagNodeMachine {
                 })
             }
             (S::NeedsReview | S::NeedsRevision, S::Skipped)
-            | (S::Pending | S::Ready | S::Interrupted, S::Skipped) => {
+            | (S::Pending | S::Ready | S::Blocked | S::Interrupted, S::Skipped) => {
                 return Ok(Transition {
                     next_state: target,
                     effects: Vec::new(),
                     reason: "兼容调度器跳过未完成节点",
                 })
             }
-            (S::Pending | S::Interrupted, S::Superseded) => E::PlanSuperseded,
+            (
+                S::Pending | S::Ready | S::Interrupted | S::NeedsReview | S::NeedsRevision,
+                S::Superseded,
+            ) => E::PlanSuperseded,
             _ => {
                 return Err(TransitionError::Invalid {
                     state: current.as_str().into(),
@@ -199,6 +233,37 @@ mod tests {
             DeepNoteNodeStatus::Skipped,
         )
         .unwrap();
+        assert_eq!(skipped.next_state, DeepNoteNodeStatus::Skipped);
+    }
+
+    #[test]
+    fn checkpoint_is_required_for_ready_to_completed_reconciliation() {
+        assert!(DagNodeMachine::transition_to(
+            DeepNoteNodeStatus::Ready,
+            DeepNoteNodeStatus::Completed,
+        )
+        .is_err());
+        let completed = DagNodeMachine::transition_to_with_checkpoint(
+            DeepNoteNodeStatus::Ready,
+            DeepNoteNodeStatus::Completed,
+            true,
+        )
+        .unwrap();
+        assert_eq!(completed.next_state, DeepNoteNodeStatus::Completed);
+        assert_eq!(completed.reason, "根据已有产物检查点完成节点");
+    }
+
+    #[test]
+    fn recovery_and_shutdown_transitions_match_scheduler_behavior() {
+        let recovered = DagNodeMachine::transition_to(
+            DeepNoteNodeStatus::InProgress,
+            DeepNoteNodeStatus::Pending,
+        )
+        .unwrap();
+        assert_eq!(recovered.next_state, DeepNoteNodeStatus::Pending);
+        let skipped =
+            DagNodeMachine::transition_to(DeepNoteNodeStatus::Blocked, DeepNoteNodeStatus::Skipped)
+                .unwrap();
         assert_eq!(skipped.next_state, DeepNoteNodeStatus::Skipped);
     }
 }

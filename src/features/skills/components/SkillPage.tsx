@@ -3,6 +3,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { useEffect, useMemo, useState } from "react";
 import {
   AlertCircle,
+  CloudDownload,
   ExternalLink,
   FileArchive,
   FolderInput,
@@ -22,11 +23,12 @@ type SkillState = ReturnType<typeof useSkills>;
 
 type Props = {
   state: SkillState;
+  onRemoteInstall: () => void;
 };
 
 type Filter = "all" | SkillSource | "disabled";
 
-export function SkillManager({ state }: Props) {
+export function SkillManager({ state, onRemoteInstall }: Props) {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
   const [detail, setDetail] = useState<SkillDetail | null>(null);
@@ -91,6 +93,9 @@ export function SkillManager({ state }: Props) {
           <span>核心学习技能默认启用，其它技能由你按需开启；正文只在实际激活时加载</span>
         </div>
         <div className="skills-header-actions">
+          <button type="button" onClick={onRemoteInstall} disabled={state.busySkillId !== null}>
+            <CloudDownload size={16} /><span>从 GitHub 安装</span>
+          </button>
           <button type="button" onClick={() => void state.toggleAll(true)} disabled={state.busySkillId !== null}>
             <Sparkles size={16} /><span>一键启用全部</span>
           </button>

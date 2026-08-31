@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { ArchiveRestore, FolderOpen, LoaderCircle, Plug, RotateCcw, ShieldAlert, Trash2 } from "lucide-react";
+import { ArchiveRestore, CloudDownload, FolderOpen, LoaderCircle, Plug, RotateCcw, ShieldAlert, Trash2 } from "lucide-react";
 import {
   listPlugins,
   rollbackPlugin,
@@ -11,13 +11,17 @@ import {
 import { pickAndInstallPlugin, type InstallMode } from "../api/installFlows";
 import "../styles/agent-capabilities-settings.css";
 
-type Props = { onSkillsChanged: () => Promise<unknown> | unknown };
+type Props = {
+  onSkillsChanged: () => Promise<unknown> | unknown;
+  onRemoteInstall: () => void;
+  refreshToken?: number;
+};
 
 function errorText(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
-export function PluginSettingsPanel({ onSkillsChanged }: Props) {
+export function PluginSettingsPanel({ onSkillsChanged, onRemoteInstall, refreshToken = 0 }: Props) {
   const [overview, setOverview] = useState<PluginOverview>({ plugins: [], warnings: [] });
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -32,7 +36,7 @@ export function PluginSettingsPanel({ onSkillsChanged }: Props) {
     }
   }, []);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { void load(); }, [load, refreshToken]);
 
   const mutate = async (key: string, operation: () => Promise<unknown>, message: string, refreshSkills = false) => {
     setBusy(key);
@@ -82,14 +86,15 @@ export function PluginSettingsPanel({ onSkillsChanged }: Props) {
       <div className="settings-content-heading">
         <div><h2>插件</h2><span>安装声明式能力包：Skill 与远程 MCP 配置</span></div>
         <div className="settings-heading-actions">
+          <button className="settings-button settings-button-primary" type="button" disabled={busy !== null} onClick={onRemoteInstall}><CloudDownload size={15} />从 GitHub 安装</button>
           <button className="settings-button settings-button-secondary" type="button" disabled={busy !== null} onClick={() => void chooseAndInstall("directory")}><FolderOpen size={15} />安装目录</button>
-          <button className="settings-button settings-button-primary" type="button" disabled={busy !== null} onClick={() => void chooseAndInstall("zip")}>{busy === "install" ? <LoaderCircle className="settings-spin" size={15} /> : <ArchiveRestore size={15} />}安装 ZIP</button>
+          <button className="settings-button settings-button-secondary" type="button" disabled={busy !== null} onClick={() => void chooseAndInstall("zip")}>{busy === "install" ? <LoaderCircle className="settings-spin" size={15} /> : <ArchiveRestore size={15} />}安装 ZIP</button>
         </div>
       </div>
 
       <div className="settings-callout settings-callout-warning">
         <ShieldAlert size={17} />
-        <div><strong>安装与启用分离</strong><span>插件安装后保持停用。启用时才物化 Skill 和 MCP 配置；插件声明的远程 MCP 服务器仍默认关闭，需要在 MCP 页面再次授权。当前仅支持声明式插件，禁止插件直接贡献本地可执行 stdio MCP。</span></div>
+        <div><strong>安装与启用分离</strong><span>插件安装后保持停用。支持 Mnemora plugin.json，也支持以 .codex-plugin/plugin.json 打包的 Skill 型 Codex 插件；启用时才物化 Skill 和 MCP 配置。可执行 stdio MCP 请在 MCP 页面由用户单独配置。</span></div>
       </div>
 
       {error ? <div className="settings-feedback settings-feedback-error">{error}</div> : null}
@@ -97,7 +102,7 @@ export function PluginSettingsPanel({ onSkillsChanged }: Props) {
       {overview.warnings.map((warning) => <div className="settings-feedback settings-feedback-error" key={warning}>{warning}</div>)}
 
       <div className="settings-card-list">
-        {overview.plugins.length === 0 ? <div className="settings-empty"><Plug size={28} /><strong>尚未安装插件</strong><span>插件包必须包含严格的 plugin.json v1 清单。目录和 ZIP 都会经过路径、大小、数量与哈希校验。</span></div> : overview.plugins.map((plugin) => (
+        {overview.plugins.length === 0 ? <div className="settings-empty"><Plug size={28} /><strong>尚未安装插件</strong><span>支持 plugin.json v1 或 .codex-plugin/plugin.json。目录、ZIP 和 GitHub 来源都会经过路径、大小与数量校验。</span></div> : overview.plugins.map((plugin) => (
           <section className="settings-card" key={plugin.id}>
             <header className="settings-card-head">
               <div className="settings-card-title"><span className={`settings-dot${plugin.enabled ? " settings-dot-success" : ""}`} /><div><strong>{plugin.name} <small>v{plugin.version}</small></strong><span>{plugin.id} · {plugin.publisher}</span></div></div>

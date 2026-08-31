@@ -279,7 +279,7 @@ fn consume_budget(budget: &mut CopyBudget, size: u64) -> Result<(), String> {
     Ok(())
 }
 
-fn find_skill_roots(directory: &Path, depth: usize) -> Result<Vec<PathBuf>, String> {
+pub(crate) fn find_skill_roots(directory: &Path, depth: usize) -> Result<Vec<PathBuf>, String> {
     if depth > MAX_DEPTH {
         return Err("技能目录层级超过安全上限。".to_string());
     }

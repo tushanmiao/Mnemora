@@ -112,8 +112,12 @@ pub fn validate_git_ref(value: &str) -> Result<String, String> {
     Ok(trimmed.to_string())
 }
 
-/// 搜索关键词构造：附加 topic 限定，减少「名字像但其实无关」的命中。
-fn build_query(kind: RemotePackageKind, query: &str) -> Result<String, String> {
+/// 搜索关键词构造。
+///
+/// 早期实现强制追加 `topic:mnemora-*`，结果只有专门为 Mnemora 打过标签的
+/// 仓库才能出现，标准 Agent Skill 和 Codex 插件几乎全部被排除。这里改成
+/// GitHub 仓库名称、描述和 README 搜索；包格式是否兼容由下载后的解析器确认。
+fn build_query(_kind: RemotePackageKind, query: &str) -> Result<String, String> {
     let cleaned = query.trim();
     if cleaned.is_empty() {
         return Err("请提供搜索关键词。".to_string());
@@ -129,12 +133,7 @@ fn build_query(kind: RemotePackageKind, query: &str) -> Result<String, String> {
     {
         return Err("搜索关键词只能包含字母、数字、空格和 - _ . + # 符号。".to_string());
     }
-    let topic = match kind {
-        RemotePackageKind::Skill => "mnemora-skill",
-        RemotePackageKind::Plugin => "mnemora-plugin",
-        RemotePackageKind::Pet => "mnemora-pet",
-    };
-    Ok(format!("{cleaned} topic:{topic}"))
+    Ok(format!("{cleaned} in:name,description,readme"))
 }
 
 pub async fn search_repositories(
@@ -163,11 +162,15 @@ pub async fn search_repositories(
             .send(),
     )
     .await
-    .map_err(|_| "GitHub 搜索请求超时。".to_string())?
+    .map_err(|_| {
+        "GitHub 搜索请求超时。请检查“设置 → 关于 → 网络代理”，或直接粘贴 GitHub 仓库/目录地址。"
+            .to_string()
+    })?
     .map_err(|error| format!("GitHub 搜索请求失败：{error}"))?;
 
     let status = response.status();
-    if status == reqwest::StatusCode::FORBIDDEN || status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+    if status == reqwest::StatusCode::FORBIDDEN || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+    {
         return Err("GitHub 搜索接口触发速率限制，请稍后重试。".to_string());
     }
     if !status.is_success() {
@@ -272,9 +275,8 @@ fn extract_commit_sha(response: &Response) -> Option<String> {
         .ok()?;
     let stem = value.rsplit_once(".zip").map(|(head, _)| head)?;
     let sha = stem.rsplit('-').next()?;
-    let looks_like_sha = sha.len() >= 7
-        && sha.len() <= 40
-        && sha.bytes().all(|byte| byte.is_ascii_hexdigit());
+    let looks_like_sha =
+        sha.len() >= 7 && sha.len() <= 40 && sha.bytes().all(|byte| byte.is_ascii_hexdigit());
     looks_like_sha.then(|| sha.to_string())
 }
 
@@ -287,7 +289,10 @@ async fn read_bounded(
         .content_length()
         .is_some_and(|length| length > max_bytes as u64)
     {
-        return Err(format!("{label}响应过大（超过 {} MB）。", max_bytes / 1024 / 1024));
+        return Err(format!(
+            "{label}响应过大（超过 {} MB）。",
+            max_bytes / 1024 / 1024
+        ));
     }
     let mut output = Vec::new();
     while let Some(chunk) = response
@@ -296,7 +301,10 @@ async fn read_bounded(
         .map_err(|error| format!("读取{label}失败：{error}"))?
     {
         if output.len().saturating_add(chunk.len()) > max_bytes {
-            return Err(format!("{label}响应过大（超过 {} MB）。", max_bytes / 1024 / 1024));
+            return Err(format!(
+                "{label}响应过大（超过 {} MB）。",
+                max_bytes / 1024 / 1024
+            ));
         }
         output.extend_from_slice(&chunk);
     }
@@ -344,17 +352,20 @@ mod tests {
         assert!(build_query(RemotePackageKind::Skill, "a\"b").is_err());
         assert!(build_query(RemotePackageKind::Skill, "").is_err());
         let ok = build_query(RemotePackageKind::Plugin, "note helper").unwrap();
-        assert_eq!(ok, "note helper topic:mnemora-plugin");
+        assert_eq!(ok, "note helper in:name,description,readme");
     }
 
     #[test]
-    fn scopes_search_by_kind_topic() {
-        assert!(build_query(RemotePackageKind::Skill, "x")
-            .unwrap()
-            .ends_with("topic:mnemora-skill"));
-        assert!(build_query(RemotePackageKind::Pet, "x")
-            .unwrap()
-            .ends_with("topic:mnemora-pet"));
+    fn searches_standard_repositories_without_mnemora_topics() {
+        for kind in [
+            RemotePackageKind::Skill,
+            RemotePackageKind::Plugin,
+            RemotePackageKind::Pet,
+        ] {
+            let query = build_query(kind, "question-framing").unwrap();
+            assert_eq!(query, "question-framing in:name,description,readme");
+            assert!(!query.contains("mnemora-"));
+        }
     }
 
     #[test]
@@ -363,6 +374,9 @@ mod tests {
             assert!(validate_git_ref(value).is_err(), "value={value}");
         }
         assert_eq!(validate_git_ref("main").unwrap(), "main");
-        assert_eq!(validate_git_ref("release/v1.2.0").unwrap(), "release/v1.2.0");
+        assert_eq!(
+            validate_git_ref("release/v1.2.0").unwrap(),
+            "release/v1.2.0"
+        );
     }
 }

@@ -100,6 +100,39 @@ function errorText(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
+function stableId(value: string) {
+  return value
+    .toLocaleLowerCase("en-US")
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^[._-]+|[._-]+$/g, "")
+    .slice(0, 64);
+}
+
+function editorFromInstallQuery(query: string): EditorState {
+  const trimmed = query.trim();
+  if (!trimmed) return { ...EMPTY_EDITOR };
+  try {
+    const url = new URL(trimmed);
+    if (url.protocol === "https:" || (url.protocol === "http:" && ["localhost", "127.0.0.1", "::1"].includes(url.hostname))) {
+      const pathSegments = url.pathname.split("/").filter(Boolean);
+      const pathName = pathSegments[pathSegments.length - 1] ?? "mcp";
+      const id = stableId(`${url.hostname.split(".")[0]}-${pathName}`) || "mcp-server";
+      return { ...EMPTY_EDITOR, id, name: id, url: url.toString() };
+    }
+  } catch {
+    // 不是 URL 时按本地 stdio 命令预填，保存前仍由后端做完整校验。
+  }
+  const [command = "", ...args] = trimmed.split(/\s+/);
+  return {
+    ...EMPTY_EDITOR,
+    id: stableId(command) || "mcp-server",
+    name: stableId(command) || "MCP server",
+    transport: "stdio",
+    command,
+    args: args.join("\n"),
+  };
+}
+
 /** 状态点的语义色：就绪=成功，连接中=警告，失败/退避=危险，其余=中性。 */
 function statusDotClass(state: McpServerView["status"]["state"]) {
   if (state === "ready" || state === "cached") return "settings-dot-success";
@@ -108,7 +141,11 @@ function statusDotClass(state: McpServerView["status"]["state"]) {
   return "";
 }
 
-export function McpSettingsPanel() {
+export function McpSettingsPanel({
+  installRequest,
+}: {
+  installRequest?: { query: string; nonce: number } | null;
+}) {
   const [overview, setOverview] = useState<McpOverview>({ servers: [] });
   const [editor, setEditor] = useState<EditorState | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -125,6 +162,13 @@ export function McpSettingsPanel() {
   }, []);
 
   useEffect(() => { void load(); }, [load]);
+
+  useEffect(() => {
+    if (!installRequest) return;
+    setEditor(editorFromInstallQuery(installRequest.query));
+    setError(null);
+    setNotice("请核对 MCP 传输方式、地址或命令；保存后仍需显式启用。");
+  }, [installRequest]);
 
   const editingPluginServer = useMemo(() => editor?.originalId
     ? overview.servers.find((server) => server.id === editor.originalId)?.pluginId ?? null
