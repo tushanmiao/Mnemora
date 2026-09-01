@@ -22,8 +22,8 @@ benchmarks/memory/reports/*
 *.key.pub
 latest.json
 
-# Local development and learning documents
-md/**/*.md
+# Local development and learning documents. Keep the entire tree local-only.
+/md/
 
 # Diagnostic and preview artifacts produced while debugging UI work.
 # They are regenerable and reference sandbox-only paths.
