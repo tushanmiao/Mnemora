@@ -361,6 +361,7 @@ export const zhTranslations = {
   "storage.migrationFailed": "上次数据迁移未完成",
   "storage.usage": "空间占用",
   "storage.usageDescription": "按当前数据目录中的实际文件大小统计。",
+  "storage.categoryBreakdown": "{name}：{size}，占 {share}",
   "storage.previousCopy": "旧数据安全副本",
   "storage.previousCopyDescription": "确认新目录中的对话、笔记和附件均正常后，可以手动清理该目录。Mnemora 不会自动删除它。",
   "storage.category.conversations": "对话与附件",

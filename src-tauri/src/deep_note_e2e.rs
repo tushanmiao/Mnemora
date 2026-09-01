@@ -448,11 +448,7 @@ fn parse_conversation(
     let mut role: Option<ModelRole> = None;
     let mut buffer = Vec::<&str>::new();
     for line in markdown.lines() {
-        let next_role = match line.trim() {
-            "## 用户" => Some(ModelRole::User),
-            "## 助手" => Some(ModelRole::Assistant),
-            _ => None,
-        };
+        let next_role = conversation_role_marker(line);
         if let Some(next_role) = next_role {
             if let Some(current_role) = role.take() {
                 let content = buffer.join("\n").trim().to_string();
@@ -476,7 +472,10 @@ fn parse_conversation(
         parsed.truncate(limit.max(1));
     }
     if parsed.is_empty() {
-        return Err("Markdown 中没有找到精确的 `## 用户` / `## 助手` 对话段。".to_string());
+        return Err(
+            "Markdown 中没有找到 `## 用户` / `## 助手` 或 `# you asked` / `# gemini response` 对话段。"
+                .to_string(),
+        );
     }
     let messages = parsed
         .into_iter()
@@ -529,6 +528,17 @@ fn parse_conversation(
     };
     conversation.validate()?;
     Ok(conversation)
+}
+
+fn conversation_role_marker(line: &str) -> Option<ModelRole> {
+    let marker = line.trim();
+    if marker == "## 用户" || marker.eq_ignore_ascii_case("# you asked") {
+        Some(ModelRole::User)
+    } else if marker == "## 助手" || marker.eq_ignore_ascii_case("# gemini response") {
+        Some(ModelRole::Assistant)
+    } else {
+        None
+    }
 }
 
 fn parse_options() -> Result<Options, String> {

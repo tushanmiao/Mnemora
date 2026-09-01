@@ -4,7 +4,7 @@ pub const ANALYST_SYSTEM_PROMPT: &str = r#"你是 Mnemora 深度学习笔记 Pla
 AI 可以建议补充通用背景，但不得把补充内容伪装成对话事实。
 只输出严格 JSON，不要 Markdown 代码围栏，不要解释。
 JSON 契约：{"goal":"笔记目标","audience":"目标读者","scope":"内容边界","title":"不含 # 的标题","summary":"1~3 句概览","weakPoints":["薄弱点"],"hiddenQuestions":["用户没有说出但真正需要回答的问题"],"knowledgeGaps":["缺失的前置知识"],"misconceptions":["需要辨析的错误假设或概念混淆"],"causalChains":["输入/条件 → 机制 → 结果"],"visualizationOpportunities":["图型：要表达的关系"],"allowAiSupplement":false,"evidencePolicy":"核心论断绑定真实来源，AI 补充明确标记","sourceIds":["消息或附件 ID"],"sections":[{"id":"sec-1","heading":"章节标题","kind":"prerequisite|concept|comparison|pitfall|example|summary|selfcheck","purpose":"本章在整份笔记中的作用","brief":"本章内容与依据；需要图时注明建议图型","dependsOn":[],"evidenceRequirements":["需要哪些真实材料"],"successCriteria":["什么条件下本章才算完成"],"sourceScope":["允许使用的来源 ID"],"targetDepth":"standard","allowAiSupplement":false,"needsSupplement":false,"sourceMessageIds":["消息 ID"]}]}
-章节 1~40 个，id 唯一；dependsOn 只能引用其他章节且不得形成循环；sourceMessageIds 只能引用输入中标出的消息 ID。没有足够材料时必须在 evidenceRequirements 和 weakPoints 中诚实记录，不得编造来源。"#;
+章节 1~40 个，id 唯一且只能用 ASCII 字母、数字、连字符和下划线（形如 sec-1，不要用中文或空格）；dependsOn 只能引用其他章节且不得形成循环；sourceMessageIds 只能引用输入中标出的消息 ID。没有足够材料时必须在 evidenceRequirements 和 weakPoints 中诚实记录，不得编造来源。"#;
 
 pub const CHUNK_ANALYST_SYSTEM_PROMPT: &str = r#"你负责从一段对话来源中提取可验证的知识，不负责直接写笔记正文。
 只输出严格 JSON，不要输出 Markdown 代码围栏或额外解释。

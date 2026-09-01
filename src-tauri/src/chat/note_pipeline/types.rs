@@ -56,6 +56,34 @@ fn default_target_depth() -> String {
     "standard".to_string()
 }
 
+/// 与 `library::types::normalize_identifier` 的字符集保持一致：章节 id 最终要
+/// 通过那道校验才能落库，这里放宽任何一位都只是把失败推迟到写库时。
+const MAX_SECTION_ID_BYTES: usize = 128;
+
+fn is_canonical_section_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_SECTION_ID_BYTES
+        && value.chars().all(|character| {
+            character.is_ascii_alphanumeric() || character == '-' || character == '_'
+        })
+}
+
+/// 保留合规字符，其余压成单个连字符。全 ASCII 输出，所以字节数等于字符数。
+fn slugify_section_id(value: &str) -> String {
+    let mut slug = String::new();
+    for character in value.chars() {
+        if character.is_ascii_alphanumeric() || character == '-' || character == '_' {
+            slug.push(character);
+        } else if !slug.ends_with('-') {
+            slug.push('-');
+        }
+        if slug.len() >= MAX_SECTION_ID_BYTES {
+            break;
+        }
+    }
+    slug.trim_matches('-').to_string()
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct DeepNoteOutline {
@@ -151,6 +179,19 @@ impl DeepNoteOutline {
                 section.allow_ai_supplement = true;
             }
         }
+        // 章节 id 会被拼进 DAG 节点键（evidence:/draft:/validate:）并作为数据库
+        // 主键，只能用 ASCII 标识符字符。模型时常返回中文或带空格的 id——prompt
+        // 里只有一个 "sec-1" 的例子，这算不上模型的错。与其在落库时烧掉整次规划
+        // 调用、再抛一个不指名是哪章的错，这里确定性改写并同步重写依赖引用。
+        let renames = self.canonicalize_section_ids();
+        let ids = if renames.is_empty() {
+            ids
+        } else {
+            self.sections
+                .iter()
+                .map(|section| section.id.clone())
+                .collect()
+        };
         for section in &self.sections {
             for dependency in &section.depends_on {
                 if dependency == &section.id || !ids.contains(dependency) {
@@ -164,6 +205,55 @@ impl DeepNoteOutline {
         validate_section_dag(&self.sections)?;
         self.source_ids = normalize_string_list(&self.source_ids);
         Ok(self)
+    }
+
+    /// 把章节 id 收敛到 ASCII 标识符字符集，返回 `(原 id, 新 id)` 列表。
+    ///
+    /// 调用点刻意排在重复检查之后：重复的原始 id 是真实的模型错误，不该被改写
+    /// 掩盖成两个不同章节。改写对不同的原始 id 保证给出不同结果，所以也不会把
+    /// 两章并成一章。对已经合规的 id 是恒等操作，因此从数据库重放提纲时幂等。
+    fn canonicalize_section_ids(&mut self) -> Vec<(String, String)> {
+        let mut taken = self
+            .sections
+            .iter()
+            .filter(|section| is_canonical_section_id(&section.id))
+            .map(|section| section.id.clone())
+            .collect::<HashSet<_>>();
+        let mut renames = Vec::new();
+        for (index, section) in self.sections.iter_mut().enumerate() {
+            if is_canonical_section_id(&section.id) {
+                continue;
+            }
+            let slug = slugify_section_id(&section.id);
+            // 纯中文标题会 slug 成空串，退回顺序编号——正好是 prompt 里的示例形状。
+            let base = if slug.is_empty() {
+                format!("sec-{}", index.saturating_add(1))
+            } else {
+                slug
+            };
+            let mut candidate = base.clone();
+            let mut suffix = 2u32;
+            while !taken.insert(candidate.clone()) {
+                candidate = format!("{base}-{suffix}");
+                suffix = suffix.saturating_add(1);
+            }
+            renames.push((section.id.clone(), candidate.clone()));
+            section.id = candidate;
+        }
+        if !renames.is_empty() {
+            let map = renames
+                .iter()
+                .map(|(from, to)| (from.as_str(), to.as_str()))
+                .collect::<HashMap<_, _>>();
+            for section in &mut self.sections {
+                for dependency in &mut section.depends_on {
+                    if let Some(target) = map.get(dependency.as_str()) {
+                        *dependency = (*target).to_string();
+                    }
+                }
+            }
+        }
+        renames
     }
 
     pub fn select(&self, selected: &HashSet<String>) -> Result<Self, String> {
@@ -908,6 +998,111 @@ mod budget_tests {
         assert_eq!(budget.upstream_wall_clock_ms, 0);
         assert!(budget.run_wall_clock_ms > 0, "默认值必须是可用的正数上限");
         assert!(budget.section_wall_clock_ms > 0);
+    }
+}
+
+#[cfg(test)]
+mod section_id_tests {
+    use super::{compile_plan, DeepNoteOutline};
+    use std::collections::HashSet;
+
+    fn outline(sections: serde_json::Value) -> DeepNoteOutline {
+        serde_json::from_value(serde_json::json!({
+            "title": "测试笔记",
+            "sections": sections,
+        }))
+        .expect("提纲必须能反序列化")
+    }
+
+    /// 模型返回中文 id 时，整次规划调用不该白烧。
+    #[test]
+    fn chinese_section_ids_are_rewritten_instead_of_rejected() {
+        let outline = outline(serde_json::json!([
+            {"id": "第一章 概述", "heading": "概述", "kind": "concept", "brief": "讲清目标"},
+            {
+                "id": "第二章 细节",
+                "heading": "细节",
+                "kind": "concept",
+                "brief": "展开机制",
+                "dependsOn": ["第一章 概述"],
+            },
+        ]))
+        .validate(&HashSet::new())
+        .expect("中文 id 必须被改写而不是让整个提纲失败");
+
+        assert_eq!(outline.sections[0].id, "sec-1");
+        assert_eq!(outline.sections[1].id, "sec-2");
+        // 依赖引用必须跟着改，否则 DAG 编译会因悬空依赖失败。
+        assert_eq!(outline.sections[1].depends_on, vec!["sec-1".to_string()]);
+
+        // 真正的验收标准：改写后能编译出合法 DAG，节点键全部合规。
+        let plan = compile_plan("run-1", 1, outline, "hash", "initial-plan")
+            .expect("改写后的提纲必须能编译成 DAG");
+        for node in &plan.compiled_dag {
+            for segment in node.node_id.split(':') {
+                assert!(
+                    !segment.is_empty()
+                        && segment
+                            .chars()
+                            .all(|character| character.is_ascii_alphanumeric()
+                                || character == '-'
+                                || character == '_'),
+                    "节点键必须落在 ASCII 标识符字符集里：{}",
+                    node.node_id
+                );
+            }
+        }
+    }
+
+    /// 合规 id 必须原样保留：从数据库重放提纲会再次 validate，改写必须幂等。
+    #[test]
+    fn canonical_section_ids_survive_untouched() {
+        let outline = outline(serde_json::json!([
+            {"id": "sec-1", "heading": "概述", "kind": "concept", "brief": "讲清目标"},
+            {"id": "intro_2", "heading": "细节", "kind": "concept", "brief": "展开机制"},
+        ]))
+        .validate(&HashSet::new())
+        .expect("合规 id 必须通过");
+        assert_eq!(outline.sections[0].id, "sec-1");
+        assert_eq!(outline.sections[1].id, "intro_2");
+
+        let replayed = outline
+            .clone()
+            .validate(&HashSet::new())
+            .expect("重放必须仍然通过");
+        assert_eq!(replayed.sections, outline.sections, "改写必须幂等");
+    }
+
+    /// 两个不同的中文 id 不能被并成同一章。
+    #[test]
+    fn distinct_ids_never_collapse_into_one_section() {
+        let outline = outline(serde_json::json!([
+            {"id": "章节", "heading": "甲", "kind": "concept", "brief": "第一节内容"},
+            {"id": "章节。", "heading": "乙", "kind": "concept", "brief": "第二节内容"},
+            {"id": "sec-1", "heading": "丙", "kind": "concept", "brief": "第三节内容"},
+        ]))
+        .validate(&HashSet::new())
+        .expect("不同 id 必须各自改写");
+        let ids = outline
+            .sections
+            .iter()
+            .map(|section| section.id.as_str())
+            .collect::<HashSet<_>>();
+        assert_eq!(ids.len(), 3, "改写后 id 必须仍然互不相同：{ids:?}");
+        // 已被占用的 sec-1 不能被抢走。
+        assert!(ids.contains("sec-1"));
+    }
+
+    /// 重复 id 是真实的模型错误，不能被改写掩盖成两个章节。
+    #[test]
+    fn duplicate_ids_still_fail() {
+        let error = outline(serde_json::json!([
+            {"id": "重复", "heading": "甲", "kind": "concept", "brief": "第一节内容"},
+            {"id": "重复", "heading": "乙", "kind": "concept", "brief": "第二节内容"},
+        ]))
+        .validate(&HashSet::new())
+        .expect_err("重复 id 必须仍然报错");
+        assert!(error.contains("重复章节 ID"), "实际错误：{error}");
     }
 }
 

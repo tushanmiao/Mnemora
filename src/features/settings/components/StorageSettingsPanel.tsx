@@ -34,20 +34,20 @@ const CATEGORY_ICONS: Record<KnownStorageCategoryId, typeof Database> = {
 };
 
 /**
- * 扇区配色取自工作区身份色，因此跟随主题预设与明暗模式，
- * 且与各自对应的工作区在视觉上呼应（对话=chat、文献=work…）。
- * prompts 与 sync 没有对应工作区，借用 warning / info 状态色补足颜色。
+ * 环形扇区可用的配色槽位数，与 `--chart-series-*` 一一对应。
+ *
+ * 8 是硬上限：这组颜色只在「相邻配对」下通过色盲与正常视觉的可分辨门槛，
+ * 而扇区按体积排序，所以下面按排名取色 —— 排名相邻即槽位相邻，校验前提才成立。
+ * 换色值必须重跑校验器，别靠眼睛判断；取值与结论见 tokens.css 的 --chart-series-*。
  */
-const CATEGORY_COLORS: Record<KnownStorageCategoryId, string> = {
-  english: "var(--workspace-english)",
-  conversations: "var(--workspace-chat)",
-  library: "var(--workspace-work)",
-  memory: "var(--workspace-overview)",
-  prompts: "var(--status-warning)",
-  skills: "var(--workspace-notes)",
-  usage: "var(--workspace-settings)",
-  sync: "var(--status-info)",
-};
+const CHART_SERIES_SLOTS = 8;
+
+/** 超出槽位的分类退回中性色：它们必然是尾部的极小片，不值得为此破坏配色可分辨性。 */
+const CHART_SERIES_OVERFLOW = "var(--color-faint)";
+
+function chartSeriesColor(rank: number) {
+  return rank < CHART_SERIES_SLOTS ? `var(--chart-series-${rank + 1})` : CHART_SERIES_OVERFLOW;
+}
 
 const CATEGORY_TRANSLATION_KEYS: Record<KnownStorageCategoryId, TranslationKey> = {
   conversations: "storage.category.conversations",
@@ -60,12 +60,16 @@ const CATEGORY_TRANSLATION_KEYS: Record<KnownStorageCategoryId, TranslationKey> 
   english: "storage.category.english",
 };
 
-/** 后端增加新目录时也不能把整个设置页渲染成 React #130。 */
+/**
+ * 后端增加新目录时也不能把整个设置页渲染成 React #130。
+ *
+ * 图标承担「这是什么」，颜色只承担「对应环上哪一段」，所以颜色不在这里定 ——
+ * 它由 `chartSeriesColor` 按体积排名给出。
+ */
 export function getStorageCategoryPresentation(id: string) {
   const knownId = id as KnownStorageCategoryId;
   return {
     Icon: CATEGORY_ICONS[knownId] ?? Database,
-    color: CATEGORY_COLORS[knownId] ?? "var(--color-text-secondary)",
     translationKey: (CATEGORY_TRANSLATION_KEYS as Partial<Record<string, TranslationKey>>)[id],
   };
 }
@@ -77,22 +81,99 @@ type StorageSlice = {
   color: string;
 };
 
-/**
- * 用 conic-gradient 画环形图：占比本身是「部分与整体」的关系，
- * 一根按总量缩放的条形在 385MB 对 1.4KB 这种量级差下，
- * 小项会全部塌成看不见的一丝。
- * 零字节分类不进渐变（画不出扇区），但仍留在图例里说明「确实是 0」。
- */
-function donutGradient(slices: StorageSlice[]) {
-  const drawable = slices.filter((slice) => slice.share > 0);
-  if (drawable.length === 0) return "var(--color-border-soft)";
+type StorageDonutSegment = StorageSlice & {
+  offset: number;
+};
+
+/** 每个 SVG 圆弧使用 0–1 的 pathLength，offset 就是前面分类累计的占比。 */
+export function buildStorageDonutSegments(slices: StorageSlice[]): StorageDonutSegment[] {
   let cursor = 0;
-  const stops = drawable.map((slice) => {
-    const from = cursor;
-    cursor += slice.share * 100;
-    return `${slice.color} ${from}% ${cursor}%`;
+  return slices.filter((slice) => slice.share > 0).map((slice) => {
+    const segment = { ...slice, offset: cursor };
+    cursor += slice.share;
+    return segment;
   });
-  return `conic-gradient(from -90deg, ${stops.join(", ")})`;
+}
+
+/**
+ * 环形几何：圆心、半径与描边宽度都在这里定，SVG 与标注共用同一套数字。
+ *
+ * viewBox 比环大一圈，留给引线和文字：左右各留到 `cx ± (labelRadius + 52)`
+ * ——52 是四个中文字在 11px 下的宽度，够最长的分类名「英语学习」不被裁掉。
+ */
+const DONUT = { cx: 144, cy: 106, radius: 62, band: 28, labelRadius: 86 } as const;
+
+/** cx/cy 取 width/2、height/2，中心挖空的定位才能在 CSS 里写成对称百分比。 */
+const DONUT_VIEWBOX = { width: 288, height: 212 } as const;
+
+/**
+ * 相邻扇区之间留 2px 底色缝（规范的 mark spec）。
+ *
+ * pathLength 归一到 1，所以 2px 换算成占比要除以环的周长。
+ */
+const DONUT_GAP_SHARE = 2 / (2 * Math.PI * DONUT.radius);
+
+/**
+ * 扇区描边的 dash 参数。
+ *
+ * 缝是从扇区里减出来的，所以极小片先判一次：减完只剩不到半条缝就不减了，
+ * 否则 1% 的分类会被缝吃光，环上直接消失。
+ */
+export function donutSegmentDash(share: number) {
+  const visible = share - DONUT_GAP_SHARE > DONUT_GAP_SHARE / 2 ? share - DONUT_GAP_SHARE : share;
+  return `${visible} ${Math.max(0, 1 - visible)}`;
+}
+
+/**
+ * 低于这个占比就不在环上直接标注。
+ *
+ * 规范要求标注「有选择性」：每段都标反而没人读，且极小片的引线会互相压叠。
+ * 落选的分类由图例和悬停承载，信息不丢。
+ */
+const DONUT_LABEL_MIN_SHARE = 0.06;
+
+export type StorageDonutLabel = {
+  id: string;
+  share: number;
+  /** 引线起点（贴着环外沿）与文字锚点，均为 viewBox 坐标。 */
+  line: { x1: number; y1: number; x2: number; y2: number };
+  x: number;
+  y: number;
+  anchor: "start" | "end";
+};
+
+/**
+ * 算出值得直接标注的扇区，以及每条标注的引线和文字位置。
+ *
+ * 角度从 12 点起顺时针，与描边的 `strokeDashoffset` 起点一致；文字按左右半圆
+ * 换锚点，避免伸出 viewBox。
+ */
+export function buildStorageDonutLabels(
+  segments: StorageDonutSegment[],
+  minShare = DONUT_LABEL_MIN_SHARE,
+): StorageDonutLabel[] {
+  return segments
+    .filter((segment) => segment.share >= minShare)
+    .map((segment) => {
+      const angle = (segment.offset + segment.share / 2) * Math.PI * 2;
+      const sin = Math.sin(angle);
+      const cos = Math.cos(angle);
+      const outer = DONUT.radius + DONUT.band / 2;
+      const anchor: "start" | "end" = sin >= 0 ? "start" : "end";
+      return {
+        id: segment.id,
+        share: segment.share,
+        line: {
+          x1: DONUT.cx + outer * sin,
+          y1: DONUT.cy - outer * cos,
+          x2: DONUT.cx + DONUT.labelRadius * sin,
+          y2: DONUT.cy - DONUT.labelRadius * cos,
+        },
+        x: DONUT.cx + DONUT.labelRadius * sin + (sin >= 0 ? 5 : -5),
+        y: DONUT.cy - DONUT.labelRadius * cos,
+        anchor,
+      };
+    });
 }
 
 /** 小于 0.1% 的分类标成 <0.1% 而不是 0.0%，避免看起来像没占空间。 */
@@ -109,6 +190,7 @@ export function StorageSettingsPanel() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [activeCategoryId, setActiveCategoryId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -130,13 +212,30 @@ export function StorageSettingsPanel() {
     const total = status?.totalBytes ?? 0;
     return [...(status?.categories ?? [])]
       .sort((left, right) => right.bytes - left.bytes)
-      .map((category) => ({
+      // 取色在排序之后：颜色跟随体积排名，与扇区绘制顺序严格一致。
+      .map((category, rank) => ({
         id: category.id,
         bytes: category.bytes,
         share: total > 0 ? category.bytes / total : 0,
-        color: getStorageCategoryPresentation(category.id).color,
+        color: chartSeriesColor(rank),
       }));
   }, [status?.categories, status?.totalBytes]);
+  const donutSegments = useMemo(() => buildStorageDonutSegments(slices), [slices]);
+  const donutLabels = useMemo(() => buildStorageDonutLabels(donutSegments), [donutSegments]);
+  const activeSlice = activeCategoryId === null
+    ? null
+    : slices.find((slice) => slice.id === activeCategoryId) ?? null;
+
+  const categoryName = useCallback((id: string) => {
+    const { translationKey } = getStorageCategoryPresentation(id);
+    return translationKey ? t(translationKey) : id;
+  }, [t]);
+
+  const categoryLabel = useCallback((slice: StorageSlice) => t("storage.categoryBreakdown", {
+    name: categoryName(slice.id),
+    size: formatBytes(slice.bytes),
+    share: formatShare(slice.share),
+  }), [categoryName, t]);
 
   const startMigration = useCallback(async (destination: string) => {
     if (!status || destination === status.currentPath) return;
@@ -249,22 +348,87 @@ export function StorageSettingsPanel() {
                 </div>
               </div>
               <div className="storage-usage-chart">
-                <div
-                  className="storage-donut"
-                  style={{ background: donutGradient(slices) }}
-                  role="img"
-                  aria-label={t("storage.usageDescription")}
-                >
-                  <div className="storage-donut-hole">
-                    <strong>{formatBytes(status.totalBytes)}</strong>
-                    <span>{t("storage.usage")}</span>
+                <div className="storage-donut" onPointerLeave={() => setActiveCategoryId(null)}>
+                  <svg
+                    className="storage-donut-svg"
+                    viewBox={`0 0 ${DONUT_VIEWBOX.width} ${DONUT_VIEWBOX.height}`}
+                    role="group"
+                    aria-label={t("storage.usageDescription")}
+                  >
+                    {/* 只转描边组：文字若跟着转 90° 就没法读了 */}
+                    <g transform={`rotate(-90 ${DONUT.cx} ${DONUT.cy})`}>
+                      <circle
+                        className="storage-donut-track"
+                        cx={DONUT.cx}
+                        cy={DONUT.cy}
+                        r={DONUT.radius}
+                        pathLength="1"
+                      />
+                      {donutSegments.map((segment) => {
+                        const isActive = activeCategoryId === segment.id;
+                        return (
+                          <circle
+                            key={segment.id}
+                            className="storage-donut-segment"
+                            data-active={isActive ? "true" : undefined}
+                            data-muted={activeCategoryId !== null && !isActive ? "true" : undefined}
+                            cx={DONUT.cx}
+                            cy={DONUT.cy}
+                            r={DONUT.radius}
+                            pathLength="1"
+                            strokeDasharray={donutSegmentDash(segment.share)}
+                            strokeDashoffset={-segment.offset}
+                            style={{ stroke: segment.color }}
+                            tabIndex={0}
+                            role="img"
+                            aria-label={categoryLabel(segment)}
+                            onPointerEnter={() => setActiveCategoryId(segment.id)}
+                            onFocus={() => setActiveCategoryId(segment.id)}
+                            onBlur={() => setActiveCategoryId(null)}
+                          >
+                            <title>{categoryLabel(segment)}</title>
+                          </circle>
+                        );
+                      })}
+                    </g>
+                    {donutLabels.map((label) => (
+                      <g
+                        key={label.id}
+                        className="storage-donut-label"
+                        data-active={activeCategoryId === label.id ? "true" : undefined}
+                        data-muted={activeCategoryId !== null && activeCategoryId !== label.id ? "true" : undefined}
+                      >
+                        <line x1={label.line.x1} y1={label.line.y1} x2={label.line.x2} y2={label.line.y2} />
+                        <text x={label.x} y={label.y} textAnchor={label.anchor}>
+                          <tspan className="storage-donut-label-name">{categoryName(label.id)}</tspan>
+                          <tspan className="storage-donut-label-share" x={label.x} dy="13">
+                            {formatShare(label.share)}
+                          </tspan>
+                        </text>
+                      </g>
+                    ))}
+                  </svg>
+                  <div className="storage-donut-hole" data-active={activeSlice ? "true" : undefined} aria-live="polite" aria-atomic="true">
+                    <strong title={activeSlice ? categoryName(activeSlice.id) : undefined}>
+                      {activeSlice ? categoryName(activeSlice.id) : formatBytes(status.totalBytes)}
+                    </strong>
+                    <span>
+                      {activeSlice
+                        ? `${formatBytes(activeSlice.bytes)} · ${formatShare(activeSlice.share)}`
+                        : t("storage.usage")}
+                    </span>
                   </div>
                 </div>
                 <ul className="storage-usage-legend">
                   {slices.map((slice) => {
                     const { Icon, translationKey } = getStorageCategoryPresentation(slice.id);
                     return (
-                      <li key={slice.id}>
+                      <li
+                        key={slice.id}
+                        data-active={activeCategoryId === slice.id ? "true" : undefined}
+                        onPointerEnter={() => setActiveCategoryId(slice.id)}
+                        onPointerLeave={() => setActiveCategoryId(null)}
+                      >
                         {/* 图标本身就是色标：再单独放一个色块是同一信息编码两次，白占宽度 */}
                         <Icon size={15} style={{ color: slice.color }} />
                         <span>{translationKey ? t(translationKey) : slice.id}</span>

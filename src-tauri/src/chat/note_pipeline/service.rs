@@ -86,7 +86,7 @@ const PLANNER_FALLBACK_RETRIES: u8 = 1;
 const FAST_PLANNER_OUTPUT_TOKENS: u32 = 1_024;
 const SECTION_OUTPUT_TOKEN_LIMIT: u32 = 2_048;
 const SECTION_SOURCE_TOKEN_LIMIT: u64 = 3_000;
-const FAST_PLANNER_SYSTEM_PROMPT: &str = r#"You are the outline planner for a study note. Return exactly one valid JSON object and no markdown. Use only the supplied ledger and message IDs. Identify the unspoken question, missing prerequisite, confused causal link, or misconception that actually blocks understanding. Prefer causal mechanisms over empty abstraction. Record Mermaid opportunities as 'diagram type | cognitive question | target section'. Choose by semantics instead of defaulting to flowchart: mindmap for hierarchy, stateDiagram-v2 for lifecycle, sequenceDiagram for interactions, erDiagram for entities, classDiagram for types, gantt/timeline for real schedules, journey for execution experience, requirementDiagram for requirements, and xychart-beta/pie only for sourced numeric data. Keep the outline concise: 4 to 8 sections. Required shape: {"goal":"","audience":"","scope":"","title":"","summary":"","weakPoints":[],"hiddenQuestions":[],"knowledgeGaps":[],"misconceptions":[],"causalChains":[],"visualizationOpportunities":[],"allowAiSupplement":false,"evidencePolicy":"","sourceIds":[],"sections":[{"id":"sec-1","heading":"","kind":"prerequisite|concept|comparison|pitfall|example|summary|selfcheck","purpose":"","brief":"","dependsOn":[],"evidenceRequirements":[],"successCriteria":[],"sourceScope":[],"targetDepth":"standard","allowAiSupplement":false,"needsSupplement":false,"sourceMessageIds":[]}]}. Every sourceMessageIds value must be copied from the ledger. Do not invent facts, IDs, schedules, or numbers."#;
+const FAST_PLANNER_SYSTEM_PROMPT: &str = r#"You are the outline planner for a study note. Return exactly one valid JSON object and no markdown. Use only the supplied ledger and message IDs. Identify the unspoken question, missing prerequisite, confused causal link, or misconception that actually blocks understanding. Prefer causal mechanisms over empty abstraction. Record Mermaid opportunities as 'diagram type | cognitive question | target section'. Choose by semantics instead of defaulting to flowchart: mindmap for hierarchy, stateDiagram-v2 for lifecycle, sequenceDiagram for interactions, erDiagram for entities, classDiagram for types, gantt/timeline for real schedules, journey for execution experience, requirementDiagram for requirements, and xychart-beta/pie only for sourced numeric data. Keep the outline concise: 4 to 8 sections. Required shape: {"goal":"","audience":"","scope":"","title":"","summary":"","weakPoints":[],"hiddenQuestions":[],"knowledgeGaps":[],"misconceptions":[],"causalChains":[],"visualizationOpportunities":[],"allowAiSupplement":false,"evidencePolicy":"","sourceIds":[],"sections":[{"id":"sec-1","heading":"","kind":"prerequisite|concept|comparison|pitfall|example|summary|selfcheck","purpose":"","brief":"","dependsOn":[],"evidenceRequirements":[],"successCriteria":[],"sourceScope":[],"targetDepth":"standard","allowAiSupplement":false,"needsSupplement":false,"sourceMessageIds":[]}]}. Section ids must be unique and use only ASCII letters, digits, hyphens, and underscores (like sec-1) — never CJK characters or spaces. Every sourceMessageIds value must be copied from the ledger. Do not invent facts, IDs, schedules, or numbers."#;
 const OUTLINE_SIZE_SUFFIX: &str =
     "Prefer 6 to 12 sections and never exceed 12 sections. Keep every field concise.";
 const DEFAULT_CHUNK_TARGET_TOKENS: u64 = 16_000;
@@ -268,6 +268,12 @@ struct ChunkDigestJobResult {
     prompt_hash: String,
     semantic_calls: u32,
     result: Result<ChunkDigest, String>,
+    /// 失败是否由超时类错误（本地超时或网关 504）引起。
+    ///
+    /// `should_retry_note_model_call` 刻意否决了这类错误的 HTTP 层重试，理由是
+    /// 「交还给管线缩小载荷后再试」。orchestrator 需要这一位才能兑现那半个承诺：
+    /// 只有超时才值得切小重投，格式错误再切也还是错。
+    timed_out: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -3589,6 +3595,7 @@ async fn execute_chunk_digest_job(
     // 超时后再投一份同样大的载荷，只会再等一个 timeout_ms（Chunk 档位是 300s），
     // 白白多花一次语义调用额度。
     let mut initial_timed_out = false;
+    let mut repair_timed_out = false;
     let initial = match model_call_with_runtime(
         state,
         run,
@@ -3627,11 +3634,15 @@ async fn execute_chunk_digest_job(
                 channel,
             )
             .await
-            .map_err(|error| format!("{initial_error}；JSON 修复失败：{}", error.message))
+            .map_err(|error| {
+                repair_timed_out = is_timeout_like(error.kind);
+                format!("{initial_error}；JSON 修复失败：{}", error.message)
+            })
             .and_then(|raw| parse_json_object::<ChunkDigest>(&raw).and_then(ChunkDigest::validate))
         }
         Err(error) => Err(error),
     };
+    let timed_out = result.is_err() && (initial_timed_out || repair_timed_out);
 
     if let Ok(digest) = &result {
         let digest_json = serde_json::to_string(digest)
@@ -3653,6 +3664,8 @@ async fn execute_chunk_digest_job(
                 prompt_hash: job.prompt_hash,
                 semantic_calls,
                 result: Err(error),
+                // 落库失败与载荷大小无关，切小重投没有意义。
+                timed_out: false,
             };
         }
     }
@@ -3663,7 +3676,222 @@ async fn execute_chunk_digest_job(
         prompt_hash: job.prompt_hash,
         semantic_calls,
         result,
+        timed_out,
     }
+}
+
+/// 超时的分块低于这个字符数就不再切：切到几百字还超时，说明问题不在载荷大小，
+/// 继续切只会把一次失败放大成很多次失败。
+const MIN_SHRINKABLE_CHUNK_CHARS: usize = 2_000;
+
+/// 把一个分块按字符数对半切开，尽量落在换行处，失败返回 `None`。
+///
+/// 两半都继承父块的 `message_ids`：按文本切会切断消息边界，而 `merge_chunk_digest`
+/// 会用 `message_ids` 过滤模型报回的来源 ID——继承全集才不会误删证据。
+fn split_chunk_in_half(
+    chunk: &ConversationChunk,
+) -> Option<(ConversationChunk, ConversationChunk)> {
+    let excerpt = chunk.source.excerpt.as_str();
+    if excerpt.chars().count() < MIN_SHRINKABLE_CHUNK_CHARS {
+        return None;
+    }
+    let midpoint = excerpt
+        .char_indices()
+        .nth(excerpt.chars().count() / 2)
+        .map(|(index, _)| index)?;
+    // 优先切在换行，避免把一行对话劈成两半。找不到就用字符中点。
+    let split_at = excerpt[..midpoint]
+        .rfind('\n')
+        .map(|index| index + 1)
+        .filter(|index| *index > 0)
+        .unwrap_or(midpoint);
+    let (head, tail) = excerpt.split_at(split_at);
+    if head.trim().is_empty() || tail.trim().is_empty() {
+        return None;
+    }
+    let half = |text: &str, part: u8| {
+        let excerpt = text.to_string();
+        ConversationChunk {
+            source: DeepNoteSourceChunk {
+                chunk_id: content_addressed_chunk_id(&excerpt),
+                content_hash: stable_hash(&excerpt),
+                location: format!("{}（缩小重试 {}/2）", chunk.source.location, part),
+                excerpt,
+                ..chunk.source.clone()
+            },
+            message_ids: chunk.message_ids.clone(),
+            // 按字符占比折算：只用于进度显示和预算估算，不参与正确性。
+            estimated_tokens: chunk
+                .estimated_tokens
+                .saturating_mul(text.chars().count() as u64)
+                .saturating_div((excerpt_chars(chunk)).max(1)),
+        }
+    };
+    Some((half(head, 1), half(tail, 2)))
+}
+
+fn excerpt_chars(chunk: &ConversationChunk) -> u64 {
+    chunk.source.excerpt.chars().count() as u64
+}
+
+/// 把两个半块的摘要并成一个，供原下标使用。
+///
+/// 只做字段级拼接：`merge_chunk_digest` 之后还会按父块的 `message_ids` 过滤并
+/// 去重，所以这里不需要自己去重。
+fn combine_chunk_digests(head: ChunkDigest, tail: ChunkDigest) -> ChunkDigest {
+    let summary = match (
+        head.summary.trim().is_empty(),
+        tail.summary.trim().is_empty(),
+    ) {
+        (true, _) => tail.summary,
+        (_, true) => head.summary,
+        _ => format!("{}\n{}", head.summary, tail.summary),
+    };
+    let join = |mut first: Vec<String>, second: Vec<String>| {
+        first.extend(second);
+        first
+    };
+    ChunkDigest {
+        summary,
+        canonical_terms: join(head.canonical_terms, tail.canonical_terms),
+        verified_facts: join(head.verified_facts, tail.verified_facts),
+        covered_topics: join(head.covered_topics, tail.covered_topics),
+        open_questions: join(head.open_questions, tail.open_questions),
+        conflicts: join(head.conflicts, tail.conflicts),
+        global_constraints: join(head.global_constraints, tail.global_constraints),
+        source_message_ids: join(head.source_message_ids, tail.source_message_ids),
+    }
+}
+
+/// 把超时的分块各切成两半重投一轮，返回真正救回来的原始下标。
+///
+/// 两半都成功才算救回：只拿到一半会让账本缺半段内容却自称完整，比继续报错更糟。
+/// 每个半块按自己的内容哈希独立落检查点，所以即便这一轮又超时，下次运行仍能复用
+/// 已经成功的那一半。
+#[allow(clippy::too_many_arguments)]
+async fn retry_timed_out_chunks_smaller(
+    state: &AppState,
+    run: &NotePipelineRun,
+    runtime: &mut DeepNoteRuntimeState,
+    chunks: &[ConversationChunk],
+    timed_out_indexes: &[usize],
+    digests: &mut [Option<ChunkDigest>],
+    cancellation: &CancellationToken,
+    channel: &Channel<NotePipelineProgress>,
+) -> Result<HashSet<usize>, String> {
+    let mut halves = Vec::new();
+    for index in timed_out_indexes {
+        let Some(chunk) = chunks.get(*index) else {
+            continue;
+        };
+        if let Some((head, tail)) = split_chunk_in_half(chunk) {
+            halves.push((*index, head, tail));
+        }
+    }
+    if halves.is_empty() {
+        return Ok(HashSet::new());
+    }
+    let _ = state.library_repository.append_note_pipeline_event(
+        &run.id,
+        "chunkDigestShrinkRetry",
+        Some("recon-source"),
+        &serde_json::json!({
+            "timedOutChunkCount": timed_out_indexes.len(),
+            "shrinkableChunkCount": halves.len(),
+            "reason": "upstreamTimeout",
+        })
+        .to_string(),
+    );
+    progress(
+        state,
+        channel,
+        &run.id,
+        NotePipelinePhase::Analyzing,
+        None,
+        None,
+        format!("{} 个来源分块上游超时，正在切小重试", halves.len()),
+    );
+
+    // 每个半块两次调用（首投 + JSON 修复），两半共四次。
+    let reserved = (halves.len() as u32).saturating_mul(4);
+    reserve_parallel_semantic_calls(state, &run.id, runtime, reserved)?;
+    let mut jobs = Vec::new();
+    for (index, head, tail) in halves {
+        for (part, chunk) in [(0usize, head), (1usize, tail)] {
+            let user_prompt = chunk_analysis_prompt(&chunk);
+            let system_prompt = system_prompt_with_skill_profile(
+                state,
+                &run.id,
+                runtime,
+                DeepNoteSkillProfileKind::Planner,
+                Some("recon-source"),
+                CHUNK_ANALYST_SYSTEM_PROMPT,
+            );
+            let prompt_hash = stable_hash(format!(
+                "chunk-digest-v4\0{}\0{}\0{}\0{}\0{}",
+                run.provider_id,
+                run.model_id,
+                run.max_output_tokens.min(CHUNK_OUTPUT_TOKEN_LIMIT),
+                system_prompt,
+                user_prompt
+            ));
+            jobs.push((
+                index,
+                part,
+                ChunkDigestJob {
+                    // 这里的 index 只用于回填 halves 结果，重投期间不索引 digests。
+                    index: jobs.len(),
+                    chunk,
+                    system_prompt,
+                    user_prompt,
+                    prompt_hash,
+                },
+            ));
+        }
+    }
+
+    let parallelism = usize::from(runtime.budget.max_parallel_chunks.max(1));
+    let mut collected = HashMap::<usize, [Option<ChunkDigest>; 2]>::new();
+    let mut results = stream::iter(jobs.into_iter().map(|(index, part, job)| async move {
+        let output = execute_chunk_digest_job(state, run, job, cancellation, Some(channel)).await;
+        (index, part, output)
+    }))
+    .buffer_unordered(parallelism);
+    while let Some((index, part, output)) = results.next().await {
+        release_unused_parallel_semantic_calls(runtime, 2, output.semantic_calls);
+        match output.result {
+            Ok(digest) => {
+                collected.entry(index).or_default()[part] = Some(digest);
+            }
+            Err(error) if error.starts_with(RUN_BUDGET_EXHAUSTED_PREFIX) => {
+                drop(results);
+                return Err(error);
+            }
+            // 切小之后仍失败：保留原始失败信息，不追加噪音。
+            Err(_) => {}
+        }
+    }
+
+    let mut recovered = HashSet::new();
+    for (index, parts) in collected {
+        let [Some(head), Some(tail)] = parts else {
+            continue;
+        };
+        digests[index] = Some(combine_chunk_digests(head, tail));
+        recovered.insert(index);
+    }
+    if !recovered.is_empty() {
+        let _ = state.library_repository.append_note_pipeline_event(
+            &run.id,
+            "chunkDigestShrinkRecovered",
+            Some("recon-source"),
+            &serde_json::json!({
+                "recoveredChunkCount": recovered.len(),
+            })
+            .to_string(),
+        );
+    }
+    Ok(recovered)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3832,7 +4060,8 @@ async fn build_chunked_ledger(
         ),
     );
 
-    let mut failures = Vec::new();
+    let mut failures = Vec::<(usize, String)>::new();
+    let mut timed_out_indexes = Vec::<usize>::new();
     let mut run_budget_error = None;
     let mut results = stream::iter(
         jobs.into_iter()
@@ -3877,7 +4106,14 @@ async fn build_chunked_ledger(
                 run_budget_error = Some(error);
                 break;
             }
-            Err(error) => failures.push(format!("{}：{}", output.chunk_id, error)),
+            Err(error) => {
+                if output.timed_out {
+                    // 先记下来，等这一轮全部落地再统一缩小重投：此刻并发流还在跑，
+                    // 立即重投会和剩余任务抢并发额度和上游配额。
+                    timed_out_indexes.push(output.index);
+                }
+                failures.push((output.index, format!("{}：{}", output.chunk_id, error)));
+            }
         }
         runtime.context_budget.processed_chunk_count =
             digests.iter().filter(|digest| digest.is_some()).count();
@@ -3894,11 +4130,52 @@ async fn build_chunked_ledger(
     if let Some(error) = run_budget_error {
         return Err(error);
     }
+    // 兑现 `should_retry_note_model_call` 那半个承诺：超时被否决 HTTP 层重试后，
+    // 由管线把载荷切小再投。只做一轮、只切一半、只针对超时——不是为了穷尽重试，
+    // 而是不让一次网关 504 把其余十几块已完成的工作连坐成整次失败。
+    if !timed_out_indexes.is_empty() && !cancellation.is_cancelled() {
+        // 这一轮是补救，不是主路径：除了预算耗尽这类终态错误，其余失败一律咽下，
+        // 让下面报出原始的分块失败原因。否则补救过程中的次生错误会顶替掉真正有
+        // 诊断价值的那一条。
+        let recovered = match retry_timed_out_chunks_smaller(
+            state,
+            run,
+            runtime,
+            &chunks,
+            &timed_out_indexes,
+            &mut digests,
+            cancellation,
+            channel,
+        )
+        .await
+        {
+            Ok(recovered) => recovered,
+            Err(error) if error.starts_with(RUN_BUDGET_EXHAUSTED_PREFIX) => return Err(error),
+            Err(_) => HashSet::new(),
+        };
+        if !recovered.is_empty() {
+            failures.retain(|(index, _)| !recovered.contains(index));
+            let processed_ids = chunks
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| digests[*index].is_some())
+                .flat_map(|(_, chunk)| chunk.message_ids.iter().cloned())
+                .collect::<HashSet<_>>();
+            runtime.context_budget.processed_chunk_count =
+                digests.iter().filter(|digest| digest.is_some()).count();
+            runtime.context_budget.processed_message_count = processed_ids.len();
+            save_runtime_state(state, &run.id, runtime)?;
+        }
+    }
     if !failures.is_empty() {
         return Err(format!(
             "{} 个来源分块生成失败；已完成分块的检查点已保留：{}",
             failures.len(),
-            failures.join("；")
+            failures
+                .into_iter()
+                .map(|(_, message)| message)
+                .collect::<Vec<_>>()
+                .join("；")
         ));
     }
 
@@ -5456,6 +5733,28 @@ async fn run_analysis_task<R: Runtime>(
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
+        // 先编译并持久化计划，再把阶段翻成 awaiting_outline。
+        //
+        // 反过来会让阶段撒谎：`save_note_pipeline_outline` 在自己的事务里就把阶段
+        // 设成 awaiting_outline，而计划此刻只在内存里。任何按阶段判断状态的消费方
+        // （get_detail、e2e、崩溃后的恢复）都会看到「等待确认提纲」却拿不到计划；
+        // 若进程正好在这个窗口里退出，run 会永久卡在这个自相矛盾的状态上。
+        // `save_note_pipeline_outline` 不修改 current_plan_version，所以这里可以
+        // 提前用 run 上的版本号编译。
+        let mut plan_version = compile_plan(
+            &run_id,
+            run.current_plan_version.saturating_add(1).max(1),
+            outline,
+            &run.input_snapshot_hash,
+            if adjustment.trim().is_empty() {
+                "initial-plan"
+            } else {
+                adjustment.trim()
+            },
+        )?;
+        runtime.plan_version = Some(plan_version.clone());
+        runtime.budget = budget_for_drafting(&runtime.budget, plan_version.plan.sections.len());
+        save_runtime_state(&state, &run_id, &runtime)?;
         let saved = {
             let _guard = state.library_operations.lock().await;
             let current = state.library_repository.get_note_pipeline_run(&run_id)?;
@@ -5478,21 +5777,12 @@ async fn run_analysis_task<R: Runtime>(
                 .library_repository
                 .save_note_pipeline_outline(&run_id, &outline_json, sections)?
         };
-        let mut plan_version = compile_plan(
-            &run_id,
-            saved.current_plan_version.saturating_add(1).max(1),
-            outline,
-            &run.input_snapshot_hash,
-            if adjustment.trim().is_empty() {
-                "initial-plan"
-            } else {
-                adjustment.trim()
-            },
-        )?;
-        plan_version.created_at = saved.updated_at;
-        runtime.plan_version = Some(plan_version.clone());
-        runtime.budget = budget_for_drafting(&runtime.budget, plan_version.plan.sections.len());
-        save_runtime_state(&state, &run_id, &runtime)?;
+        // created_at 对齐提纲落库时刻，仅用于展示排序；计划本身已经持久化。
+        if plan_version.created_at != saved.updated_at {
+            plan_version.created_at = saved.updated_at;
+            runtime.plan_version = Some(plan_version.clone());
+            save_runtime_state(&state, &run_id, &runtime)?;
+        }
         let _ = state.library_repository.append_note_pipeline_event(
             &run_id,
             "outlineReady",
@@ -8940,15 +9230,16 @@ mod tests {
 
     use super::{
         analyze_markdown_fences, await_note_pipeline_cancellable, can_pause_phase,
-        chunk_analysis_prompt, collect_top_level_mermaid_blocks, compact_ledger_for_planner,
-        content_addressed_chunk_id, context_budget, conversation_chunks,
-        deep_note_content_signature, edge_label_has_trailing_quote, er_attribute_has_compound_key,
-        evidence_for_plan, flowchart_label_needs_quotes, has_mermaid_lint_warning, input_snapshot,
-        ledger_has_real_output, lint_mermaid_syntax, merge_chunk_digest,
-        normalize_generated_markdown, normalize_math_fences, pack_adjacent_attachment_chunks,
-        phase_expects_background_worker, pipeline_failure_payload, record_section_active_ms, request_byte_limit,
-        reset_failed_nodes, section_wall_clock_exhausted, should_fallback_to_chunked_planner,
-        should_retry_note_model_call, snapshot_conversation_after_validation,
+        chunk_analysis_prompt, collect_top_level_mermaid_blocks, combine_chunk_digests,
+        compact_ledger_for_planner, content_addressed_chunk_id, context_budget,
+        conversation_chunks, deep_note_content_signature, edge_label_has_trailing_quote,
+        er_attribute_has_compound_key, evidence_for_plan, flowchart_label_needs_quotes,
+        has_mermaid_lint_warning, input_snapshot, ledger_has_real_output, lint_mermaid_syntax,
+        merge_chunk_digest, normalize_generated_markdown, normalize_math_fences,
+        pack_adjacent_attachment_chunks, phase_expects_background_worker, pipeline_failure_payload,
+        record_section_active_ms, request_byte_limit, reset_failed_nodes,
+        section_wall_clock_exhausted, should_fallback_to_chunked_planner,
+        should_retry_note_model_call, snapshot_conversation_after_validation, split_chunk_in_half,
         split_text_by_token_budget, token_estimate_units, validate_global_drafts,
         validate_recovery_snapshot, validate_section_markdown, AdaptiveBudgetSnapshot, ChunkDigest,
         ConversationChunk, REQUEST_BYTE_LIMIT, VISION_REQUEST_BYTE_LIMIT,
@@ -9184,6 +9475,94 @@ mod tests {
             has_mermaid_lint_warning(&report),
             "warnings 进不了修订循环的话，第 2 层就是死代码"
         );
+    }
+
+    fn shrinkable_chunk(excerpt: String) -> ConversationChunk {
+        ConversationChunk {
+            estimated_tokens: super::estimate_text_tokens(&excerpt),
+            source: DeepNoteSourceChunk {
+                chunk_id: super::content_addressed_chunk_id(&excerpt),
+                source_kind: DeepNoteSourceKind::Text,
+                source_id: "conversation-1".to_string(),
+                message_id: None,
+                attachment_id: None,
+                library_item_id: None,
+                location: "12 条消息".to_string(),
+                content_hash: super::stable_hash(&excerpt),
+                excerpt,
+                ocr_confidence: None,
+            },
+            message_ids: vec!["message-1".to_string(), "message-2".to_string()],
+        }
+    }
+
+    /// 网关 504 后切小重投的前提：切开不能丢字符，否则账本会缺内容却自称完整。
+    #[test]
+    fn splitting_a_chunk_preserves_every_character() {
+        let excerpt = (0..400)
+            .map(|index| format!("第 {index} 行：远程解释器与并行执行的配置说明。"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let chunk = shrinkable_chunk(excerpt.clone());
+        let (head, tail) = split_chunk_in_half(&chunk).expect("足够长的分块必须可切");
+
+        assert_eq!(
+            format!("{}{}", head.source.excerpt, tail.source.excerpt),
+            excerpt,
+            "切开再拼必须与原文逐字节相同"
+        );
+        assert!(!head.source.excerpt.trim().is_empty());
+        assert!(!tail.source.excerpt.trim().is_empty());
+        // 优先切在换行：两半都不该以半行开头。
+        assert!(tail.source.excerpt.starts_with("第 "));
+        // 两半必须继承父块的 message_ids，否则 merge_chunk_digest 会把证据过滤掉。
+        assert_eq!(head.message_ids, chunk.message_ids);
+        assert_eq!(tail.message_ids, chunk.message_ids);
+        // 各自内容寻址，才能独立落检查点、下次运行复用。
+        assert_ne!(head.source.content_hash, tail.source.content_hash);
+        assert_ne!(head.source.chunk_id, chunk.source.chunk_id);
+    }
+
+    /// 切到很小还超时说明问题不在载荷大小，继续切只会放大失败次数。
+    #[test]
+    fn tiny_chunks_are_not_split_further() {
+        assert!(
+            split_chunk_in_half(&shrinkable_chunk("短内容".repeat(20))).is_none(),
+            "低于下限的分块不该再切"
+        );
+    }
+
+    /// 合并两半摘要不能丢字段，否则救回来的分块内容不完整。
+    #[test]
+    fn combining_half_digests_keeps_both_sides() {
+        let half = |suffix: &str| ChunkDigest {
+            summary: format!("摘要 {suffix}"),
+            canonical_terms: vec![format!("术语 {suffix}")],
+            verified_facts: vec![format!("事实 {suffix}")],
+            covered_topics: vec![format!("主题 {suffix}")],
+            open_questions: vec![format!("问题 {suffix}")],
+            conflicts: vec![format!("冲突 {suffix}")],
+            global_constraints: vec![format!("约束 {suffix}")],
+            source_message_ids: vec![format!("message-{suffix}")],
+        };
+        let merged = combine_chunk_digests(half("甲"), half("乙"));
+        assert_eq!(merged.summary, "摘要 甲\n摘要 乙");
+        for (field, values) in [
+            ("canonicalTerms", &merged.canonical_terms),
+            ("verifiedFacts", &merged.verified_facts),
+            ("coveredTopics", &merged.covered_topics),
+            ("openQuestions", &merged.open_questions),
+            ("conflicts", &merged.conflicts),
+            ("globalConstraints", &merged.global_constraints),
+            ("sourceMessageIds", &merged.source_message_ids),
+        ] {
+            assert_eq!(values.len(), 2, "{field} 丢了一半");
+        }
+
+        // 一半为空摘要时不该留下空行。
+        let mut empty = half("乙");
+        empty.summary = String::new();
+        assert_eq!(combine_chunk_digests(half("甲"), empty).summary, "摘要 甲");
     }
 
     #[test]
@@ -10053,6 +10432,24 @@ mod tests {
                 "{kind:?} 不应以相同路由原样重试"
             );
         }
+
+        // 分块也被否决 HTTP 层重试，所以「缩小载荷」必须真的存在，否则一次网关
+        // 504 就会直接判整次运行失败。这条断言把接盘方钉在测试里：只否决重试而
+        // 不缩小载荷，是这个测试名字曾经承诺过却没兑现的事。
+        assert!(!should_retry_note_model_call(
+            "deepNoteChunk",
+            &gateway_timeout
+        ));
+        let chunk = shrinkable_chunk(
+            (0..200)
+                .map(|index| format!("第 {index} 行：足够长的来源正文，用于触发切分。"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        assert!(
+            split_chunk_in_half(&chunk).is_some(),
+            "超时分块必须可以切小重投，否决 HTTP 重试才不会变成直接失败"
+        );
     }
 
     fn signature_of(

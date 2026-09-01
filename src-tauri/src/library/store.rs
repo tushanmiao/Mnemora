@@ -65,6 +65,8 @@ use super::{
     },
 };
 
+use super::types::normalize_dag_node_identifier;
+
 /// 同一份输入允许的深度笔记重生成次数上限。设这个上限只为防止 `next_free_idempotency_key`
 /// 在数据异常时退化成无界扫描；正常使用远达不到。
 const MAX_IDEMPOTENCY_GENERATIONS: u32 = 512;
@@ -2493,9 +2495,12 @@ impl LibraryRepository {
         let mut normalized = Vec::with_capacity(sections.len());
         let mut ids = std::collections::HashSet::new();
         for section in sections {
-            let section_id = normalize_identifier("章节 ID", &section.section_id)?;
+            // 提纲进来之前已由 DeepNoteOutline::canonicalize_section_ids 收敛过字符集，
+            // 这里是兜底。带上原始 id：不指名是哪一章的话，这条错误几乎无法排查。
+            let section_id = normalize_identifier("章节 ID", &section.section_id)
+                .map_err(|error| format!("{error}（章节 id：{}）", section.section_id))?;
             if !ids.insert(section_id.clone()) {
-                return Err("深度笔记提纲包含重复章节 ID。".to_string());
+                return Err(format!("深度笔记提纲包含重复章节 ID：{section_id}。"));
             }
             if section.section_json.is_empty()
                 || section.section_json.len() > MAX_NOTE_PIPELINE_JSON_BYTES
@@ -2650,6 +2655,7 @@ impl LibraryRepository {
             .map_err(|error| format!("重置深度笔记 DAG 失败：{error}"))?;
         let now = now_millis_i64();
         for (node_id, node_type, section_id, depends_on_json, status, input_hash) in nodes_json {
+            let node_id = normalize_dag_node_identifier(node_id)?;
             transaction
                 .execute(
                     "INSERT INTO note_pipeline_nodes (
@@ -2729,169 +2735,6 @@ impl LibraryRepository {
         Ok(restored)
     }
 
-    pub fn update_note_pipeline_node_state(
-        &self,
-        run_id: &str,
-        plan_version: u32,
-        node_id: &str,
-        status: &str,
-        attempt_count: u8,
-        evidence_ids: &[String],
-        output_ref: Option<&str>,
-        validation_json: &str,
-        error_message: Option<&str>,
-    ) -> Result<(), String> {
-        let run_id = normalize_identifier("任务 ID", run_id)?;
-        let node_id = normalize_identifier("DAG 节点 ID", node_id)?;
-        let evidence_ids_json = serde_json::to_string(evidence_ids)
-            .map_err(|error| format!("序列化深度笔记 DAG 证据失败：{error}"))?;
-        let mut connection = self.open_connection()?;
-        let transaction = connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(|error| format!("开始更新深度笔记 DAG 节点失败：{error}"))?;
-        let now = now_millis_i64();
-        let current = transaction
-            .query_row(
-                "SELECT status, state_version, execution_version
-                 FROM note_pipeline_nodes
-                 WHERE run_id = ? AND plan_version = ? AND node_id = ?",
-                params![run_id, i64::from(plan_version), node_id],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, i64>(1)?,
-                        row.get::<_, i64>(2)?,
-                    ))
-                },
-            )
-            .optional()
-            .map_err(|error| format!("读取深度笔记 DAG 节点状态失败：{error}"))?
-            .ok_or_else(|| format!("深度笔记 DAG 节点不存在：{node_id}"))?;
-        let current_status = DeepNoteNodeStatus::parse(&current.0)?;
-        let target_status = DeepNoteNodeStatus::parse(status)?;
-        let worker_instance_id = current_task_instance_id();
-        if current_status == target_status {
-            let changed = transaction
-                .execute(
-                    "UPDATE note_pipeline_nodes
-                     SET attempt_count = ?, evidence_ids_json = ?, output_ref = ?,
-                         validation_json = ?, error_message = ?, updated_at = ?
-                     WHERE run_id = ? AND plan_version = ? AND node_id = ?
-                       AND state_version = ? AND execution_version = ?",
-                    params![
-                        i64::from(attempt_count),
-                        evidence_ids_json,
-                        output_ref,
-                        validation_json,
-                        error_message,
-                        now,
-                        run_id,
-                        i64::from(plan_version),
-                        node_id,
-                        current.1,
-                        current.2,
-                    ],
-                )
-                .map_err(|error| format!("更新深度笔记 DAG 节点检查点失败：{error}"))?;
-            if changed != 1 {
-                return Err(format!(
-                    "深度笔记 DAG 节点版本已变化，拒绝迟到 Worker：{node_id}"
-                ));
-            }
-            transaction
-                .commit()
-                .map_err(|error| format!("提交深度笔记 DAG 节点检查点失败：{error}"))?;
-            return Ok(());
-        }
-        let transition = DagNodeMachine::transition_to_with_checkpoint(
-            current_status,
-            target_status,
-            output_ref.is_some_and(|value| !value.trim().is_empty()),
-        )
-        .map_err(|error| format!("拒绝深度笔记 DAG 节点状态转换：{error}"))?;
-        if transition.next_state != target_status {
-            return Err("DAG 状态机结果与请求目标不一致，拒绝写入。".to_string());
-        }
-        let changed = transaction
-            .execute(
-                "UPDATE note_pipeline_nodes
-                 SET status = ?, attempt_count = ?, evidence_ids_json = ?, output_ref = ?,
-                     validation_json = ?, error_message = ?, state_version = state_version + 1,
-                     updated_at = ?
-                 WHERE run_id = ? AND plan_version = ? AND node_id = ?
-                   AND status = ? AND state_version = ? AND execution_version = ?",
-                params![
-                    target_status.as_str(),
-                    i64::from(attempt_count),
-                    evidence_ids_json,
-                    output_ref,
-                    validation_json,
-                    error_message,
-                    now,
-                    run_id,
-                    i64::from(plan_version),
-                    node_id,
-                    current_status.as_str(),
-                    current.1,
-                    current.2,
-                ],
-            )
-            .map_err(|error| format!("更新深度笔记 DAG 节点失败：{error}"))?;
-        if changed == 0 {
-            return Err(format!(
-                "深度笔记 DAG 节点状态版本已变化，拒绝迟到 Worker：{node_id}"
-            ));
-        }
-        let sequence: i64 = transaction
-            .query_row(
-                "SELECT last_event_sequence + 1 FROM note_pipeline_runs WHERE id = ?",
-                params![run_id],
-                |row| row.get(0),
-            )
-            .map_err(|error| format!("读取深度笔记 DAG 事件序号失败：{error}"))?;
-        let run_changed = transaction
-            .execute(
-                "UPDATE note_pipeline_runs
-                 SET last_event_sequence = ?, heartbeat_at = ?, updated_at = ?
-                 WHERE id = ? AND last_event_sequence = ?",
-                params![sequence, now, now, run_id, sequence.saturating_sub(1)],
-            )
-            .map_err(|error| format!("更新深度笔记任务时间失败：{error}"))?;
-        if run_changed != 1 {
-            return Err("深度笔记 DAG 事件序号发生并发冲突。".to_string());
-        }
-        let payload = serde_json::json!({
-            "reason": transition.reason,
-            "attemptCount": attempt_count,
-            "stateVersion": current.1.saturating_add(1),
-            "executionVersion": current.2,
-        })
-        .to_string();
-        transaction
-            .execute(
-                "INSERT INTO note_pipeline_events (
-                    run_id, sequence, event_type, node_id, payload_json, created_at,
-                    command_id, from_phase, to_phase, execution_version, runtime_instance_id
-                 ) VALUES (?, ?, 'nodeStateTransition', ?, ?, ?, NULL, ?, ?, ?, ?)",
-                params![
-                    run_id,
-                    sequence,
-                    node_id,
-                    payload,
-                    now,
-                    current_status.as_str(),
-                    target_status.as_str(),
-                    current.2,
-                    worker_instance_id.as_deref(),
-                ],
-            )
-            .map_err(|error| format!("保存深度笔记 DAG 状态事件失败：{error}"))?;
-        transaction
-            .commit()
-            .map_err(|error| format!("提交深度笔记 DAG 节点状态失败：{error}"))?;
-        Ok(())
-    }
-
     /// 原子保存一个调度快照中的全部节点。
     ///
     /// 任何节点校验或 CAS 失败都会回滚整批更新，避免节点表出现“前半批已提交、
@@ -2919,7 +2762,7 @@ impl LibraryRepository {
         let mut sequence = initial_sequence;
 
         for node in nodes {
-            let node_id = normalize_identifier("DAG 节点 ID", &node.node_id)?;
+            let node_id = normalize_dag_node_identifier(&node.node_id)?;
             let evidence_ids_json = serde_json::to_string(&node.evidence_ids)
                 .map_err(|error| format!("序列化深度笔记 DAG 证据失败：{error}"))?;
             let current = transaction
@@ -9546,6 +9389,14 @@ mod tests {
                         "ready".to_string(),
                         "input-2".to_string(),
                     ),
+                    (
+                        "evidence:section-1".to_string(),
+                        "extractEvidence".to_string(),
+                        Some("section-1".to_string()),
+                        "[\"recon-source\"]".to_string(),
+                        "ready".to_string(),
+                        "input-3".to_string(),
+                    ),
                 ],
             )
             .unwrap();
@@ -9614,13 +9465,30 @@ mod tests {
             .unwrap();
         assert_eq!(restored[0].status, DeepNoteNodeStatus::Completed);
         assert_eq!(restored[0].output_ref.as_deref(), Some("input-snapshot"));
+
+        let section_checkpoint = DeepNoteDagNode {
+            node_id: "evidence:section-1".to_string(),
+            node_type: DeepNoteNodeType::ExtractEvidence,
+            section_id: Some("section-1".to_string()),
+            depends_on: vec!["recon-source".to_string()],
+            status: DeepNoteNodeStatus::Completed,
+            attempt_count: 1,
+            evidence_ids: vec!["evidence-1".to_string()],
+            input_hash: "input-3".to_string(),
+            output_ref: Some("evidence:section-1".to_string()),
+            validation_json: String::new(),
+            error_message: None,
+        };
+        repository
+            .update_note_pipeline_nodes_state(&run.id, 1, &[section_checkpoint])
+            .unwrap();
         let events = repository.list_note_pipeline_events(&run.id, 10).unwrap();
         assert_eq!(
             events
                 .iter()
                 .filter(|event| event.1 == "nodeStateTransition")
                 .count(),
-            1
+            2
         );
         let _ = fs::remove_dir_all(directory);
     }
@@ -9877,17 +9745,25 @@ mod tests {
                 ],
             )
             .unwrap();
+        // 走生产代码在用的批量接口：单节点版本已随死代码删除，用批量版做同样的
+        // 状态准备，顺带让这个测试覆盖真正被调用的那条路径。
         repository
-            .update_note_pipeline_node_state(
+            .update_note_pipeline_nodes_state(
                 &run.id,
                 1,
-                "node-completed",
-                "completed",
-                2,
-                &["evidence-1".to_string()],
-                Some("section:completed"),
-                "{\"valid\":true}",
-                None,
+                &[DeepNoteDagNode {
+                    node_id: "node-completed".to_string(),
+                    node_type: DeepNoteNodeType::DraftSection,
+                    section_id: Some("completed".to_string()),
+                    depends_on: Vec::new(),
+                    status: DeepNoteNodeStatus::Completed,
+                    attempt_count: 2,
+                    evidence_ids: vec!["evidence-1".to_string()],
+                    input_hash: "completed-input".to_string(),
+                    output_ref: Some("section:completed".to_string()),
+                    validation_json: "{\"valid\":true}".to_string(),
+                    error_message: None,
+                }],
             )
             .unwrap();
         {

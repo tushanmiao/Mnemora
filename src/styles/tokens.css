@@ -83,6 +83,25 @@
   --workspace-accent-strong: var(--workspace-chat-strong);
   --workspace-accent-soft: var(--workspace-chat-soft);
 
+  /*
+   * 图表分类色：只编码「这是哪一段」，与 workspace/status 语义色互不借用。
+   *
+   * 顺序是固定的，也是色盲安全的机制本身，不要重排、不要循环取用。这 8 个值经
+   * 校验器在相邻配对下通过明度带、色度下限、CVD 间距（最差 9.1）与正常视觉下限
+   * （最差 19.6）。#1baf7a/#eda100/#e87ba4 对白底不足 3:1，规范要求的补偿通道是
+   * 图例：每个分类都在那里列出名称、字节和占比，且用文字色而非扇区色，所以
+   * 「这是什么」从不依赖分辨出低对比的颜色。
+   * 刻意不放进 themes.css 的 preset：22 份变体没人校验得过来。
+   */
+  --chart-series-1: #2a78d6;
+  --chart-series-2: #eb6834;
+  --chart-series-3: #1baf7a;
+  --chart-series-4: #eda100;
+  --chart-series-5: #e87ba4;
+  --chart-series-6: #008300;
+  --chart-series-7: #4a3aa7;
+  --chart-series-8: #e34948;
+
   --shadow-menu: 0 10px 28px rgb(35 48 40 / 14%);
   --shadow-panel: -12px 0 28px rgb(35 48 40 / 14%);
   --shadow-composer: 0 6px 20px rgb(42 56 47 / 8%);
@@ -166,6 +185,19 @@
   --workspace-english-soft: #382c1a;
   --workspace-settings: #9cbcbd;
   --workspace-settings-soft: #233132;
+
+  /*
+   * 暗色的分类色是另选的一组，不是亮色的自动翻转：同样过一遍校验器
+   * （CVD 最差 8.4，正常视觉最差 19.3，对最亮的暗底 #372d31 也成立）。
+   */
+  --chart-series-1: #3987e5;
+  --chart-series-2: #d95926;
+  --chart-series-3: #199e70;
+  --chart-series-4: #c98500;
+  --chart-series-5: #d55181;
+  --chart-series-6: #008300;
+  --chart-series-7: #9085e9;
+  --chart-series-8: #e66767;
 
   --shadow-menu: 0 12px 30px rgb(0 0 0 / 34%);
   --shadow-panel: -12px 0 28px rgb(0 0 0 / 34%);

@@ -7,7 +7,7 @@ export const ANALYST_SYSTEM_PROMPT = [
   "只输出严格 JSON，不要 Markdown 代码围栏，不要解释。",
   "JSON 契约：",
   '{"title":"不含 # 的标题","summary":"1~3 句概览","weakPoints":["薄弱点"],"sections":[{"id":"sec-1","heading":"章节标题","kind":"prerequisite|concept|comparison|pitfall|example|summary|selfcheck","brief":"本章内容与依据","needsSupplement":false,"sourceMessageIds":["消息 ID"]}]}',
-  "章节 1~40 个，id 唯一；sourceMessageIds 只能引用输入中标出的消息 ID。",
+  "章节 1~40 个，id 唯一且只能用 ASCII 字母、数字、连字符和下划线（形如 sec-1，不要用中文或空格）；sourceMessageIds 只能引用输入中标出的消息 ID。",
 ].join("\n");
 
 export const STRICT_JSON_RETRY_SUFFIX = [

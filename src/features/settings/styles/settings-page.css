@@ -826,9 +826,10 @@
   display: grid;
   min-width: 0;
   padding: 18px 20px;
-  grid-template-columns: 168px minmax(0, 1fr);
+  /* 288px 是环 + 两侧标注的宽度，见 StorageSettingsPanel 的 DONUT_VIEWBOX */
+  grid-template-columns: minmax(0, 288px) minmax(0, 1fr);
   align-items: center;
-  gap: clamp(20px, 4vw, 48px);
+  gap: clamp(12px, 2vw, 28px);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-panel);
   background: var(--color-surface-raised);
@@ -836,30 +837,73 @@
 
 .storage-donut {
   position: relative;
-  width: 168px;
-  height: 168px;
+  width: 100%;
+  max-width: 288px;
+  /* 等比缩放，挖空的百分比 inset 才能一直贴住内径 */
+  aspect-ratio: 288 / 212;
   flex: 0 0 auto;
-  border-radius: 50%;
+}
+
+.storage-donut-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.storage-donut-track,
+.storage-donut-segment {
+  fill: none;
+  stroke-width: 28;
+}
+
+.storage-donut-track {
+  stroke: var(--color-border-soft);
+}
+
+.storage-donut-segment {
+  cursor: help;
+  transition: opacity var(--duration-fast) var(--ease-out), filter var(--duration-fast) var(--ease-out);
+}
+
+.storage-donut-segment[data-muted="true"] {
+  opacity: 0.38;
+}
+
+.storage-donut-segment:is([data-active="true"], :focus-visible) {
+  stroke-width: 32;
+  filter: brightness(1.08);
+}
+
+.storage-donut-segment:focus-visible {
+  outline: none;
 }
 
 /* 中心挖空成环：实心饼里塞不进总量数字，而总量是这里最该先读到的数 */
+/* inset 按内径 48px（radius 62 − band/2）在 288×212 容器里对称算出 */
 .storage-donut-hole {
   position: absolute;
-  inset: 25%;
+  inset: 27.36% 33.33%;
   display: grid;
   place-content: center;
   gap: 2px;
   border-radius: 50%;
+  /* 激活时 stroke-width 28→32，内沿会侵入 2px，靠这层底色盖平 */
   background: var(--color-surface-raised);
   text-align: center;
 }
 
 .storage-donut-hole strong {
+  display: block;
+  max-width: 92px;
+  overflow: hidden;
   color: var(--color-text);
   font-size: 17px;
   font-weight: 680;
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.01em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .storage-donut-hole span {
@@ -867,12 +911,56 @@
   font-size: var(--font-size-meta);
 }
 
+.storage-donut-hole[data-active="true"] strong {
+  font-size: var(--font-size-label);
+}
+
+.storage-donut-hole[data-active="true"] span {
+  color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 环上直接标注：不悬停也能读出「哪段是什么」，同时兜住扇区色低于 3:1 的对比 */
+.storage-donut-label {
+  transition: opacity var(--duration-fast) var(--ease-out);
+  pointer-events: none;
+}
+
+.storage-donut-label line {
+  stroke: var(--color-border);
+  stroke-width: 1;
+}
+
+.storage-donut-label text {
+  fill: var(--color-text-secondary);
+  font-size: 11px;
+}
+
+.storage-donut-label-name {
+  fill: var(--color-text);
+  font-weight: 620;
+}
+
+.storage-donut-label-share {
+  fill: var(--color-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.storage-donut-label[data-muted="true"] {
+  opacity: 0.4;
+}
+
+.storage-donut-label[data-active="true"] line {
+  stroke: var(--color-text-secondary);
+}
+
 .storage-usage-legend {
   display: grid;
   min-width: 0;
   margin: 0;
   padding: 0;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  /* min() 是必需的：裸 minmax(240px, …) 会把 240px 当下限，窄了就撑破容器而不是换行 */
+  grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr));
   gap: 2px 28px;
   list-style: none;
 }
@@ -888,6 +976,17 @@
 }
 
 .storage-usage-legend li:last-child { border-bottom: 0; }
+
+.storage-usage-legend li[data-active="true"] {
+  background: var(--workspace-settings-soft);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .storage-donut-segment,
+  .storage-donut-label {
+    transition: none;
+  }
+}
 
 .storage-usage-legend svg { flex: 0 0 auto; }
 

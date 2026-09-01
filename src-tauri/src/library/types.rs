@@ -973,6 +973,40 @@ pub fn normalize_identifier(label: &str, value: &str) -> Result<String, String> 
     Ok(value.to_string())
 }
 
+/// DAG 节点使用 `类型:章节-id` 作为稳定键；章节 id 本身仍沿用普通标识符规则。
+///
+/// 这里不能复用 `normalize_identifier`：编译器生成的 `evidence:section-1`、
+/// `draft:section-1` 与 `validate:section-1` 都包含一个有语义的冒号。校验仍保持
+/// 收敛，只允许一个分隔符，避免路径字符、控制字符或空片段混入持久化键。
+pub fn normalize_dag_node_identifier(value: &str) -> Result<String, String> {
+    const MAX_DAG_NODE_ID_BYTES: usize = 144;
+
+    let value = value.trim();
+    if value.is_empty() || value.len() > MAX_DAG_NODE_ID_BYTES {
+        return Err("DAG 节点 ID无效。".to_string());
+    }
+    let mut segments = value.split(':');
+    let Some(kind) = segments.next() else {
+        return Err("DAG 节点 ID无效。".to_string());
+    };
+    let section = segments.next();
+    if segments.next().is_some()
+        || !is_identifier_segment(kind)
+        || section.is_some_and(|segment| !is_identifier_segment(segment))
+    {
+        // 带上原值：这条错误只报字符集不合法、不报是哪个节点时，线上几乎没法定位。
+        return Err(format!("DAG 节点 ID包含不允许的字符：{value}。"));
+    }
+    Ok(value.to_string())
+}
+
+fn is_identifier_segment(value: &str) -> bool {
+    !value.is_empty()
+        && value.chars().all(|character| {
+            character.is_ascii_alphanumeric() || character == '-' || character == '_'
+        })
+}
+
 fn normalize_text(
     label: &str,
     value: &str,
@@ -1133,5 +1167,54 @@ mod tests {
             summarized_until_message_id: None,
         };
         assert!(invalid_ai_source.normalize_and_validate().is_err());
+    }
+
+    /// DAG 节点键形如 `draft:sec-1`：冒号有语义，必须放行，但只放行一个。
+    #[test]
+    fn dag_node_identifier_allows_exactly_one_semantic_colon() {
+        for valid in [
+            "analyze-input",
+            "evidence:sec-1",
+            "draft:sec-1",
+            "validate:sec-1",
+            "persist-note",
+            "validate:intro_2",
+        ] {
+            assert_eq!(
+                super::normalize_dag_node_identifier(valid).as_deref(),
+                Ok(valid),
+                "合法节点键被拒：{valid}"
+            );
+        }
+
+        for invalid in [
+            "",                 // 空
+            ":sec-1",           // 空类型段
+            "draft:",           // 空章节段
+            "draft:sec:1",      // 两个冒号
+            "draft:第一章",     // 非 ASCII
+            "draft:sec 1",      // 中间空格
+            "../draft:sec-1",   // 路径字符
+            "draft:sec-1;drop", // 分号
+        ] {
+            assert!(
+                super::normalize_dag_node_identifier(invalid).is_err(),
+                "非法节点键被放行：{invalid:?}"
+            );
+        }
+
+        // 两端空白会被 trim 吃掉，这是既有行为，记录下来避免后续误改。
+        assert_eq!(
+            super::normalize_dag_node_identifier(" draft:sec-1\n").as_deref(),
+            Ok("draft:sec-1")
+        );
+    }
+
+    /// 报错必须带上原值，否则线上只能看到「包含不允许的字符」无法定位。
+    #[test]
+    fn dag_node_identifier_error_names_the_offending_value() {
+        let error = super::normalize_dag_node_identifier("draft:第一章")
+            .expect_err("非 ASCII 章节段必须被拒");
+        assert!(error.contains("draft:第一章"), "实际错误：{error}");
     }
 }
