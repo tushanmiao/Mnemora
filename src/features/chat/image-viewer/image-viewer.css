@@ -58,6 +58,17 @@
   outline: none;
 }
 
+/* 重置按钮在 100% 时禁用：留着能点但没效果，用户会以为重置坏了。 */
+.image-viewer-icon-button:disabled {
+  color: var(--color-faint);
+  cursor: default;
+}
+
+.image-viewer-icon-button:disabled:hover {
+  color: var(--color-faint);
+  background: transparent;
+}
+
 .image-viewer-zoom {
   width: 46px;
   color: var(--color-muted);
@@ -71,9 +82,13 @@
   flex: 1;
   padding: 22px;
   overflow: auto;
+  /* 滚到边界时不要把滚动传给聊天列表，也不要触发触控板的返回手势 */
+  overscroll-behavior: contain;
   background: color-mix(in srgb, var(--color-app) 92%, #000 8%);
 }
 
+/* 图像放得下时居中；放不下时（data-zoomed）改为从左上角排布，
+   否则 flex 居中会把溢出的部分推到滚动区之外，永远滚不到。 */
 .image-viewer-canvas {
   position: relative;
   display: flex;
@@ -100,6 +115,7 @@
   object-fit: contain;
 }
 
+/* 读图失败与导出结果可能同时出现，所以纵向叠放而不是各自 fixed 到同一个角。 */
 .image-viewer-notice {
   position: fixed;
   right: 16px;
@@ -110,6 +126,22 @@
   color: var(--color-muted);
   background: var(--color-surface-raised);
   font-size: 11px;
+}
+
+.image-viewer-notice ~ .image-viewer-notice {
+  bottom: 52px;
+}
+
+.image-viewer-spin {
+  animation: image-viewer-spin 0.9s linear infinite;
+}
+
+@keyframes image-viewer-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .image-viewer-spin { animation: none; }
 }
 
 @media (max-width: 620px) {

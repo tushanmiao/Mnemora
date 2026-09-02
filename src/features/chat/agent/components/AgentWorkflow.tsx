@@ -15,6 +15,7 @@ import type { AgentRunStatus, WorkflowStep } from "../../../../types/workflow";
 import { useI18n } from "../../../../i18n/I18nProvider";
 import { resolveToolApproval } from "../../api/chat";
 import { projectAgentWorkflow } from "../projections/workflowProjection";
+import { ToolQuestionForm } from "./ToolQuestionForm";
 import "../styles/agent-workflow.css";
 
 type AgentWorkflowProps = {
@@ -155,7 +156,13 @@ function WorkflowStepRow({
           <ToolStepDetail tool={tool} language={language} />
         ) : null}
 
-        {tool?.status === "awaitingApproval" && tool.approvalId ? (
+        {tool?.status === "awaitingApproval" && tool.approvalId && tool.interrupt?.kind === "question" ? (
+          <ToolQuestionForm
+            approvalId={tool.approvalId}
+            questions={tool.interrupt.questions}
+            disabled={resolvingApprovalId !== null}
+          />
+        ) : tool?.status === "awaitingApproval" && tool.approvalId ? (
           <div className="agent-workflow-approval">
             <ShieldAlert size={14} aria-hidden="true" />
             <span>{t("chat.workflowApprovalPrompt")}</span>

@@ -6,7 +6,7 @@ import {
   type ChatCompletionRequest,
   type ModelStreamEvent,
 } from "../api/chat";
-import type { ChatMessage } from "../../../types/chat";
+import type { ChatMessage, ToolTrace } from "../../../types/chat";
 import type { Conversation } from "../../../types/conversation";
 import {
   appendStreamingDelta,
@@ -66,7 +66,10 @@ export function useStreamingRun({
           reasoning: streamedMessage?.reasoning || message.reasoning,
           status: terminal.status,
           usage: terminal.usage ?? message.usage,
-          toolTraces: message.toolTraces?.map(({ approvalId: _approvalId, ...trace }) => trace),
+          // 两个字段都只在等待期间有意义：留着会让历史消息渲染出一个永远无人应答的弹窗。
+          toolTraces: message.toolTraces?.map(
+            ({ approvalId: _approvalId, interrupt: _interrupt, ...trace }) => trace,
+          ),
           agentEvents: message.agentEvents?.slice(-256),
           agentRunId: run.runId,
           errorMessage: terminal.errorMessage,
@@ -149,9 +152,15 @@ export function useStreamingRun({
         // reasoning 时创建新片段，才能在投影中恢复“思考 → 工具 → 思考”。
         run.reasoningEventId = null;
         updateMessageMetadata(run, (message) => {
-          const nextTrace = {
+          const nextTrace: ToolTrace = {
             ...event.trace,
             approvalId: event.type === "toolApprovalRequested" ? event.approvalId : undefined,
+            // 中断种类只在事件上，轨迹本身不持久化它：等待结束后弹窗就该消失。
+            interrupt: event.type !== "toolApprovalRequested"
+              ? undefined
+              : event.kind === "question"
+                ? { kind: "question", questions: event.questions }
+                : { kind: "approval" },
           };
           const traces = message.toolTraces ?? [];
           const existing = traces.findIndex((trace) => trace.callId === nextTrace.callId);

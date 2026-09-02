@@ -28,11 +28,12 @@ use crate::{
     chat::agent::{
         self,
         run_machine::{AgentRunEvent, ToolCallEvent},
-        SkillRunCache, ToolRuntimeContext, ToolTraceSnapshot, ToolTraceStatus,
+        SkillRunCache, ToolInterruptKind, ToolQuestion, ToolQuestionAnswer, ToolRisk,
+        ToolRuntimeContext, ToolTraceSnapshot, ToolTraceStatus,
     },
     request_debug::{self, RequestDebugRecordInput, RequestDebugRequest, RequestDebugResponse},
     settings::types::{ApiProtocol, AuthScheme, ModelPricing, ModelSettings, ProviderKind},
-    state::{AppState, PendingToolApproval},
+    state::{AppState, PendingToolApproval, ToolInterruptResponse},
     usage::{self, UsageRecordInput},
 };
 
@@ -206,7 +207,7 @@ pub async fn complete_with_execution(
         .operation
         .clone()
         .unwrap_or_else(|| "chatComplete".to_string());
-    let prepared = prepare_call(state, request).await?;
+    let prepared = prepare_call(state, request, false).await?;
     let context = ProviderRequestContext {
         protocol: prepared.target.protocol,
         auth_scheme: prepared.target.auth_scheme,
@@ -289,7 +290,7 @@ pub async fn stream(
     let run_id = request.run_id.trim().to_string();
     let conversation_id = request.conversation_id.trim().to_string();
     let message_id = request.message_id.trim().to_string();
-    let prepared = prepare_call(state, request.completion).await?;
+    let prepared = prepare_call(state, request.completion, true).await?;
     let context = ProviderRequestContext {
         protocol: prepared.target.protocol,
         auth_scheme: prepared.target.auth_scheme,
@@ -1507,6 +1508,11 @@ async fn execute_agent_tool(
             output_truncated: None,
             error_kind: None,
         };
+        // 提问工具的入参本身就是要展示的问题；解析失败按普通审批处理，界面至少还能用。
+        let interrupt = match parse_tool_questions(&call.name, &call.arguments) {
+            Some(questions) => ToolInterruptKind::Question { questions },
+            None => ToolInterruptKind::Approval,
+        };
         let (sender, receiver) = oneshot::channel();
         state.pending_tool_approvals.lock().await.insert(
             approval_id.clone(),
@@ -1517,6 +1523,7 @@ async fn execute_agent_tool(
                 execution_version,
                 state_version: tool_state_version,
                 expires_at_ms: expires_at_ms.unwrap_or_default(),
+                interrupt: interrupt.clone(),
             },
         );
         let sent = on_event.send(ModelStreamEvent::ToolApprovalRequested {
@@ -1525,6 +1532,7 @@ async fn execute_agent_tool(
             message_id: message_id.to_string(),
             approval_id: approval_id.clone(),
             trace,
+            interrupt,
         });
         if sent.is_err() {
             state
@@ -1551,13 +1559,31 @@ async fn execute_agent_tool(
             return rejected_tool("无法向界面发送工具审批请求。", call);
         }
         // 审批对象不能因前端失联永久留在 Rust 状态中。五分钟未响应按拒绝处理。
-        let approval_outcome =
+        let (approval_outcome, answers) =
             wait_for_tool_approval(receiver, cancellation, TOOL_APPROVAL_TIMEOUT).await;
         state
             .pending_tool_approvals
             .lock()
             .await
             .remove(&approval_id);
+        // 提问工具没有「执行」这一步：用户的选择本身就是结果，直接回给模型。
+        if approval_outcome == ToolApprovalOutcome::Answered {
+            return answered_tool(
+                state,
+                run_id,
+                conversation_id,
+                message_id,
+                on_event,
+                AnsweredTool {
+                    call,
+                    answers,
+                    risk,
+                    argument_summary: argument_summary.clone(),
+                    execution_version,
+                    tool_state_version,
+                },
+            );
+        }
         if approval_outcome != ToolApprovalOutcome::Approved {
             let (event, status, message, error_kind) = match approval_outcome {
                 ToolApprovalOutcome::Rejected => (
@@ -1584,7 +1610,7 @@ async fn execute_agent_tool(
                     "工具审批通道已关闭。",
                     "approvalChannelClosed",
                 ),
-                ToolApprovalOutcome::Approved => unreachable!(),
+                ToolApprovalOutcome::Approved | ToolApprovalOutcome::Answered => unreachable!(),
             };
             if let Some(event) = event {
                 let _ = state.library_repository.transition_agent_tool_call(
@@ -1814,28 +1840,158 @@ async fn execute_agent_tool(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ToolApprovalOutcome {
     Approved,
+    Answered,
     Rejected,
     Cancelled,
     TimedOut,
     ChannelClosed,
 }
 
+/// 答案单独回传，让 `ToolApprovalOutcome` 保持 `Copy`——它在下游被 `!=` 反复比较。
 async fn wait_for_tool_approval(
-    receiver: oneshot::Receiver<bool>,
+    receiver: oneshot::Receiver<ToolInterruptResponse>,
     cancellation: &CancellationToken,
     timeout: Duration,
-) -> ToolApprovalOutcome {
+) -> (ToolApprovalOutcome, Vec<ToolQuestionAnswer>) {
     tokio::select! {
         biased;
-        _ = cancellation.cancelled() => ToolApprovalOutcome::Cancelled,
+        _ = cancellation.cancelled() => (ToolApprovalOutcome::Cancelled, Vec::new()),
         decision = tokio::time::timeout(timeout, receiver) => {
             match decision {
-                Err(_) => ToolApprovalOutcome::TimedOut,
-                Ok(Ok(true)) => ToolApprovalOutcome::Approved,
-                Ok(Ok(false)) => ToolApprovalOutcome::Rejected,
-                Ok(Err(_)) => ToolApprovalOutcome::ChannelClosed,
+                Err(_) => (ToolApprovalOutcome::TimedOut, Vec::new()),
+                Ok(Ok(ToolInterruptResponse::Approval(true))) => {
+                    (ToolApprovalOutcome::Approved, Vec::new())
+                }
+                Ok(Ok(ToolInterruptResponse::Approval(false))) => {
+                    (ToolApprovalOutcome::Rejected, Vec::new())
+                }
+                Ok(Ok(ToolInterruptResponse::Answers(answers))) => {
+                    (ToolApprovalOutcome::Answered, answers)
+                }
+                Ok(Err(_)) => (ToolApprovalOutcome::ChannelClosed, Vec::new()),
             }
         },
+    }
+}
+
+/// 从提问工具的入参里取出要展示的问题。
+///
+/// 返回 `None` 表示「这不是提问工具，或入参不可用」，调用方退回普通审批流程 ——
+/// 界面至少还能让用户放行或拒绝，不会卡死在一个渲染不出来的弹窗上。
+fn parse_tool_questions(name: &str, arguments: &serde_json::Value) -> Option<Vec<ToolQuestion>> {
+    if name != crate::chat::agent::catalog::ASK_USER_TOOL_NAME {
+        return None;
+    }
+    let questions = arguments.get("questions")?.as_array()?;
+    if questions.is_empty() || questions.len() > crate::chat::agent::catalog::ASK_USER_MAX_QUESTIONS
+    {
+        return None;
+    }
+    let parsed = questions
+        .iter()
+        .map(|value| serde_json::from_value::<ToolQuestion>(value.clone()).ok())
+        .collect::<Option<Vec<_>>>()?;
+    if parsed.iter().any(|question| !question.is_renderable()) {
+        return None;
+    }
+    // header 是回答的主键：重了前端就只剩一个控件，却要交回两条同名答案，模型
+    // 无从分辨哪条对应哪题。宁可退回普通审批，也不要渲染一个答不对题的弹窗。
+    let mut headers = parsed
+        .iter()
+        .map(|question| question.header.trim())
+        .collect::<Vec<_>>();
+    headers.sort_unstable();
+    headers.dedup();
+    if headers.len() != parsed.len() {
+        return None;
+    }
+    Some(parsed)
+}
+
+/// 提问工具收尾所需的上下文。字段多到值得单独成结构，免得参数表变成十个位置参数。
+struct AnsweredTool<'a> {
+    call: &'a ModelToolCall,
+    answers: Vec<ToolQuestionAnswer>,
+    risk: ToolRisk,
+    argument_summary: String,
+    execution_version: u32,
+    tool_state_version: u32,
+}
+
+/// 把用户的选择落库并回给模型。
+///
+/// 不进执行队列：提问工具没有副作用，用户的选择就是它的返回值。
+fn answered_tool(
+    state: &AppState,
+    run_id: &str,
+    conversation_id: &str,
+    message_id: &str,
+    on_event: &Channel<ModelStreamEvent>,
+    context: AnsweredTool<'_>,
+) -> agent::ToolExecution {
+    let AnsweredTool {
+        call,
+        answers,
+        risk,
+        argument_summary,
+        execution_version,
+        tool_state_version,
+    } = context;
+    // 序列化失败不该让整轮挂掉：退回纯文本，模型仍能读懂用户选了什么。
+    let content = serde_json::to_string(&answers).unwrap_or_else(|_| {
+        answers
+            .iter()
+            .map(|answer| format!("{}：{}", answer.header, answer.values.join("、")))
+            .collect::<Vec<_>>()
+            .join("\n")
+    });
+    let preview = answers
+        .iter()
+        .map(|answer| format!("{}：{}", answer.header, answer.values.join("、")))
+        .collect::<Vec<_>>()
+        .join("；");
+    let _ = state.library_repository.transition_agent_tool_call(
+        run_id,
+        &call.id,
+        ToolCallEvent::Succeeded,
+        execution_version,
+        Some(tool_state_version.saturating_add(1)),
+        None,
+        None,
+    );
+    let _ = state.library_repository.transition_agent_run(
+        run_id,
+        AgentRunEvent::ApprovalsResolved,
+        None,
+        &serde_json::json!({ "callId": call.id, "answered": true }).to_string(),
+        None,
+    );
+    let _ = emit_tool_trace(
+        on_event,
+        run_id,
+        conversation_id,
+        message_id,
+        ToolTraceSnapshot {
+            call_id: call.id.clone(),
+            name: call.name.clone(),
+            status: ToolTraceStatus::Answered,
+            risk,
+            argument_summary,
+            preview: Some(preview.clone()),
+            duration_ms: Some(0),
+            input_chars: Some(call.arguments.to_string().chars().count()),
+            output_chars: Some(content.chars().count()),
+            output_truncated: Some(false),
+            error_kind: None,
+        },
+    );
+    agent::ToolExecution {
+        output_chars: content.chars().count(),
+        content,
+        preview,
+        is_error: false,
+        activated_skill_id: None,
+        output_truncated: false,
     }
 }
 
@@ -2091,6 +2247,8 @@ fn validate_context_budget(
 async fn prepare_call(
     state: &AppState,
     mut request: ChatCompletionRequest,
+    // 传给工具披露：只有流式请求能弹出提问界面。
+    streaming: bool,
 ) -> Result<PreparedCall, ModelError> {
     let provider_id = request.provider_id.trim().to_string();
     let model_id = request.model_id.trim().to_string();
@@ -2196,7 +2354,12 @@ async fn prepare_call(
         } else {
             None
         };
-        agent::configure_model_request(&mut model_request, &tool_context, l1_memory.as_deref());
+        agent::configure_model_request(
+            &mut model_request,
+            &tool_context,
+            l1_memory.as_deref(),
+            streaming,
+        );
         append_agent_runtime_prompt(&mut model_request, agent_round_limit(state));
     }
     // Tool schema、Skill 正文和运行时提示都可能显著增大输入，必须在最终请求成形后校验。
@@ -2365,23 +2528,73 @@ pub async fn resolve_tool_approval(
     approval_id: &str,
     approved: bool,
 ) -> Result<bool, ModelError> {
+    let event = if approved {
+        ToolCallEvent::Approved
+    } else {
+        ToolCallEvent::Rejected
+    };
+    resolve_tool_interrupt(
+        state,
+        approval_id,
+        event,
+        ToolInterruptResponse::Approval(approved),
+    )
+    .await
+}
+
+/// 用户对提问工具的作答。
+///
+/// 落库记 `Answered` 而不是 `Approved`：审计轨迹里「回答了问题」和「批准了危险操作」
+/// 不是一回事，混用会让事后追溯失真。
+pub async fn resolve_tool_question(
+    state: &AppState,
+    approval_id: &str,
+    answers: Vec<ToolQuestionAnswer>,
+) -> Result<bool, ModelError> {
+    if answers.is_empty() {
+        return Err(ModelError::invalid_configuration(
+            "提问工具至少要有一个回答。",
+        ));
+    }
+    resolve_tool_interrupt(
+        state,
+        approval_id,
+        ToolCallEvent::Answered,
+        ToolInterruptResponse::Answers(answers),
+    )
+    .await
+}
+
+/// 审批与提问共用的收尾：过期判定、CAS 落库、唤醒 Worker。
+async fn resolve_tool_interrupt(
+    state: &AppState,
+    approval_id: &str,
+    event: ToolCallEvent,
+    response: ToolInterruptResponse,
+) -> Result<bool, ModelError> {
     crate::settings::types::validate_stable_id("Approval ID", approval_id.trim())
         .map_err(ModelError::invalid_configuration)?;
-    let pending = state
-        .pending_tool_approvals
-        .lock()
-        .await
-        .remove(approval_id.trim());
-    let Some(pending) = pending else {
-        return Ok(false);
+    // 取出前先核对种类：拿「回答」去结掉一个审批，会让模型收到一份它以为执行过的
+    // 假结果；反过来用「批准」结掉提问则会跳过用户的选择。两者都保持挂起更安全。
+    let pending = {
+        let mut pending_approvals = state.pending_tool_approvals.lock().await;
+        let Some(existing) = pending_approvals.get(approval_id.trim()) else {
+            return Ok(false);
+        };
+        if !response.matches(&existing.interrupt) {
+            return Err(ModelError::invalid_configuration(
+                "工具中断的响应类型与请求不符。",
+            ));
+        }
+        pending_approvals
+            .remove(approval_id.trim())
+            .expect("entry exists under the same lock guard")
     };
     let now = usage::now_ms();
     let decision = if now >= pending.expires_at_ms {
         ToolCallEvent::TimedOut
-    } else if approved {
-        ToolCallEvent::Approved
     } else {
-        ToolCallEvent::Rejected
+        event
     };
     if state
         .library_repository
@@ -2401,7 +2614,7 @@ pub async fn resolve_tool_approval(
     if decision == ToolCallEvent::TimedOut {
         return Ok(false);
     }
-    Ok(pending.sender.send(approved).is_ok())
+    Ok(pending.sender.send(response).is_ok())
 }
 
 fn retry_policy(state: &AppState) -> RetryPolicy {
@@ -2606,12 +2819,14 @@ mod tests {
         },
     };
     use crate::chat::{
+        agent::types::ToolQuestionAnswer,
         conversation_types::{AiPermissionMode, StoredChatAttachment},
         types::{ChatCompletionRequest, ChatModelMessage, ChatWorkspaceMode},
     };
     use crate::settings::types::{
         ModelCapabilities, ModelSettings, ProviderKind, ProviderModelConfig,
     };
+    use crate::state::ToolInterruptResponse;
     use tokio::sync::oneshot;
     use tokio_util::sync::CancellationToken;
 
@@ -3166,14 +3381,15 @@ mod tests {
     #[tokio::test]
     async fn tool_approval_rejection_and_cancellation_never_approve() {
         let (sender, receiver) = oneshot::channel();
-        sender.send(false).unwrap();
+        sender.send(ToolInterruptResponse::Approval(false)).unwrap();
         assert_eq!(
             super::wait_for_tool_approval(
                 receiver,
                 &CancellationToken::new(),
                 Duration::from_secs(1),
             )
-            .await,
+            .await
+            .0,
             super::ToolApprovalOutcome::Rejected,
         );
 
@@ -3181,7 +3397,9 @@ mod tests {
         let cancellation = CancellationToken::new();
         cancellation.cancel();
         assert_eq!(
-            super::wait_for_tool_approval(receiver, &cancellation, Duration::from_secs(1)).await,
+            super::wait_for_tool_approval(receiver, &cancellation, Duration::from_secs(1))
+                .await
+                .0,
             super::ToolApprovalOutcome::Cancelled,
         );
     }
@@ -3195,9 +3413,85 @@ mod tests {
                 &CancellationToken::new(),
                 Duration::from_millis(1),
             )
-            .await,
+            .await
+            .0,
             super::ToolApprovalOutcome::TimedOut,
         );
+    }
+
+    /// 不合规的提问载荷要退回普通工具路径，不能挂起等一个渲染不出来的弹窗。
+    #[test]
+    fn unrenderable_question_payloads_never_open_a_dialog() {
+        let name = crate::chat::agent::catalog::ASK_USER_TOOL_NAME;
+        let one_option = serde_json::json!({
+            "questions": [{
+                "question": "存到哪里？",
+                "header": "存储位置",
+                "multiSelect": false,
+                "options": [{ "label": "默认目录", "description": "跟随系统" }],
+            }],
+        });
+        assert!(super::parse_tool_questions(name, &one_option).is_none());
+
+        let blank_header = serde_json::json!({
+            "questions": [{
+                "question": "存到哪里？",
+                "header": "   ",
+                "multiSelect": false,
+                "options": [
+                    { "label": "默认目录", "description": "跟随系统" },
+                    { "label": "自定义目录", "description": "自己选" },
+                ],
+            }],
+        });
+        assert!(super::parse_tool_questions(name, &blank_header).is_none());
+
+        assert!(
+            super::parse_tool_questions(name, &serde_json::json!({ "questions": [] })).is_none()
+        );
+    }
+
+    /// 换个工具名调同样的载荷，不该被当成提问。
+    #[test]
+    fn only_the_ask_user_tool_opens_a_question_dialog() {
+        let payload = serde_json::json!({
+            "questions": [{
+                "question": "存到哪里？",
+                "header": "存储位置",
+                "multiSelect": false,
+                "options": [
+                    { "label": "默认目录", "description": "跟随系统" },
+                    { "label": "自定义目录", "description": "自己选" },
+                ],
+            }],
+        });
+        assert!(super::parse_tool_questions("workspace_read", &payload).is_none());
+        assert_eq!(
+            super::parse_tool_questions(crate::chat::agent::catalog::ASK_USER_TOOL_NAME, &payload)
+                .map(|questions| questions.len()),
+            Some(1),
+        );
+    }
+
+    /// 回答要原样送到执行层：丢了答案，模型就只知道「用户答了」而不知道答了什么。
+    #[tokio::test]
+    async fn tool_question_answers_reach_the_caller_intact() {
+        let (sender, receiver) = oneshot::channel();
+        sender
+            .send(ToolInterruptResponse::Answers(vec![ToolQuestionAnswer {
+                header: "存储位置".to_string(),
+                values: vec!["自定义目录".to_string()],
+            }]))
+            .unwrap();
+        let (outcome, answers) = super::wait_for_tool_approval(
+            receiver,
+            &CancellationToken::new(),
+            Duration::from_secs(1),
+        )
+        .await;
+        assert_eq!(outcome, super::ToolApprovalOutcome::Answered);
+        assert_eq!(answers.len(), 1);
+        assert_eq!(answers[0].values, vec!["自定义目录".to_string()]);
     }
 
     #[tokio::test]

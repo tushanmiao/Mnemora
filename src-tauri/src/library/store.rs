@@ -5821,6 +5821,7 @@ fn tool_call_event_name(event: ToolCallEvent) -> &'static str {
     match event {
         ToolCallEvent::ApprovalRequired => "toolApprovalRequired",
         ToolCallEvent::Approved => "toolApproved",
+        ToolCallEvent::Answered => "toolAnswered",
         ToolCallEvent::Rejected => "toolRejected",
         ToolCallEvent::Enqueued => "toolEnqueued",
         ToolCallEvent::Started => "toolStarted",

@@ -165,6 +165,9 @@ pub enum ModelStreamEvent {
         message_id: String,
         approval_id: String,
         trace: crate::chat::agent::ToolTraceSnapshot,
+        /// 审批还是提问。扁平展开成 `kind` 字段，前端按它二选一渲染。
+        #[serde(flatten)]
+        interrupt: crate::chat::agent::ToolInterruptKind,
     },
     SkillActivated {
         run_id: String,

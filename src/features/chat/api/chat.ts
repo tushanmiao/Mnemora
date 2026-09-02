@@ -1,5 +1,12 @@
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
-import type { AiPermissionMode, MessageRole, ModelUsage, ToolTrace } from "../../../types/chat";
+import type {
+  AiPermissionMode,
+  MessageRole,
+  ModelUsage,
+  ToolInterrupt,
+  ToolQuestionAnswer,
+  ToolTrace,
+} from "../../../types/chat";
 import type { ChatAttachment } from "../../../types/attachment";
 import type { ReasoningEffort } from "../../../data/modelMatching";
 
@@ -157,7 +164,7 @@ export type ModelStreamEvent =
       messageId: string;
       approvalId: string;
       trace: ToolTrace;
-    }
+    } & ToolInterrupt
   | {
       type: "skillActivated";
       runId: string;
@@ -229,6 +236,15 @@ export function cancelChatStream(runId: string): Promise<boolean> {
 export function resolveToolApproval(approvalId: string, approved: boolean): Promise<boolean> {
   if (!isTauri()) return Promise.resolve(false);
   return invoke<boolean>("chat_tool_approval_resolve", { approvalId, approved });
+}
+
+/** 提交一次提问工具的回答；与审批分开，因为载荷不同且后端按种类校验。 */
+export function resolveToolQuestion(
+  approvalId: string,
+  answers: ToolQuestionAnswer[],
+): Promise<boolean> {
+  if (!isTauri()) return Promise.resolve(false);
+  return invoke<boolean>("chat_tool_question_resolve", { approvalId, answers });
 }
 
 export function getAgentRunSnapshot(runId: string): Promise<AgentRunSnapshot | null> {

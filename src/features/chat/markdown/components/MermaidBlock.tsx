@@ -41,7 +41,6 @@ export function MermaidBlock({ code, streaming = false }: MermaidBlockProps) {
   const [showSource, setShowSource] = useState(false);
   const [retryKey, setRetryKey] = useState(0);
   const [themeRevision, setThemeRevision] = useState(0);
-  const [overflowed, setOverflowed] = useState(false);
   const surfaceRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -102,7 +101,6 @@ export function MermaidBlock({ code, streaming = false }: MermaidBlockProps) {
     setStatus("loading");
     setError("");
     setRawError("");
-    setOverflowed(false);
     const currentId = `mnemora-mermaid-${++renderSequence}`;
     const paint = mermaidSvgPaint(host);
     const timer = window.setTimeout(() => {
@@ -152,11 +150,13 @@ export function MermaidBlock({ code, streaming = false }: MermaidBlockProps) {
     }
 
     let frame: number | null = null;
+    // 只为让 CSS 知道图表是否被横向压缩（`data-mermaid-overflow`）而测量；
+    // 放大入口不再依赖它，密集的小图同样需要能点开。
     const measure = () => {
       if (frame !== null) return;
       frame = window.requestAnimationFrame(() => {
         frame = null;
-        setOverflowed(syncMermaidOverflow(block, surface, mounted));
+        syncMermaidOverflow(block, surface, mounted);
       });
     };
     measure();
@@ -185,7 +185,7 @@ export function MermaidBlock({ code, streaming = false }: MermaidBlockProps) {
   const openDiagram = () => {
     const surface = surfaceRef.current;
     const mounted = surface?.querySelector<SVGSVGElement>(":scope > svg");
-    if (!surface || !mounted || !overflowed) return;
+    if (!surface || !mounted) return;
     openImage({
       src: createMermaidPreviewSource(mounted, surface),
       alt: "Mermaid 图表",
@@ -213,7 +213,9 @@ export function MermaidBlock({ code, streaming = false }: MermaidBlockProps) {
           <button type="button" className="markdown-enhanced-action" title={copied ? "已复制" : "复制 Mermaid 源代码"} aria-label={copied ? "已复制" : "复制 Mermaid 源代码"} onClick={() => void copySource()}>
             {copied ? <Check size={14} /> : <Copy size={14} />}
           </button>
-          {status === "ready" && overflowed && !showSource ? (
+          {/* 不再要求 overflowed：没超宽的密集小图同样需要放大看清，
+              原先的门槛让这类图根本点不开。 */}
+          {status === "ready" && !showSource ? (
             <button
               type="button"
               className="markdown-enhanced-action"
@@ -255,7 +257,7 @@ export function MermaidBlock({ code, streaming = false }: MermaidBlockProps) {
           className="markdown-mermaid-surface"
           role="img"
           aria-label="Mermaid 图表"
-          tabIndex={overflowed ? 0 : -1}
+          tabIndex={0}
         />
       ) : null}
     </div>

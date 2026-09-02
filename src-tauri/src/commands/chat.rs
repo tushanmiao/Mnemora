@@ -8,7 +8,7 @@ use tauri::{ipc::Channel, State};
 use crate::{
     ai::error::ModelError,
     chat::{
-        agent::types::AgentRunSnapshot,
+        agent::types::{AgentRunSnapshot, ToolQuestionAnswer},
         service,
         types::{
             ChatCompletionRequest, ChatCompletionResponse, ChatStreamRequest, ModelStreamEvent,
@@ -57,4 +57,17 @@ pub async fn chat_tool_approval_resolve(
     approved: bool,
 ) -> Result<bool, ModelError> {
     service::resolve_tool_approval(&state, &approval_id, approved).await
+}
+
+/// 提问工具的回答通道。
+///
+/// 与审批分开是因为载荷不同：审批只有一个布尔值，回答要带每问的选项。共用一个
+/// 命令就得让前端传一个「要么 approved 要么 answers」的联合体，签名会更难用。
+#[tauri::command]
+pub async fn chat_tool_question_resolve(
+    state: State<'_, AppState>,
+    approval_id: String,
+    answers: Vec<ToolQuestionAnswer>,
+) -> Result<bool, ModelError> {
+    service::resolve_tool_question(&state, &approval_id, answers).await
 }

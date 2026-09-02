@@ -194,17 +194,19 @@
 
 .usage-chart-column { display: grid; min-width: 0; grid-template-rows: minmax(0, 1fr) 20px; }
 .usage-chart-bar { display: flex; min-height: 0; align-items: flex-end; }
+/* 输入/输出借用分类色的前两槽：蓝（输入）vs 橙（输出），符合「进/出」的直觉。
+   用令牌而不是写死 oklch()，深色变体由 tokens.css 在 [data-theme="dark"] 下接管。 */
 .usage-chart-stack { display: flex; width: 100%; flex-direction: column; overflow: hidden; border-radius: 2px 2px 0 0; }
-.usage-chart-stack i { display: block; width: 100%; background: var(--workspace-chat); }
-.usage-chart-stack u { display: block; width: 100%; background: var(--workspace-work); }
+.usage-chart-stack i { display: block; width: 100%; background: var(--chart-series-2); }
+.usage-chart-stack u { display: block; width: 100%; background: var(--chart-series-1); }
 .usage-chart-bar:hover .usage-chart-stack { filter: brightness(1.12); }
 .usage-chart-column small { overflow: hidden; color: var(--color-faint); font-size: var(--font-size-micro); text-align: center; white-space: nowrap; }
 
 .usage-chart-legend { display: flex; margin-top: 7px; gap: 14px; color: var(--color-muted); font-size: var(--font-size-meta); }
 .usage-chart-legend span { display: inline-flex; align-items: center; gap: 5px; }
 .usage-chart-legend i { width: 9px; height: 9px; border-radius: 2px; }
-.usage-swatch-input { background: var(--workspace-work); }
-.usage-swatch-output { background: var(--workspace-chat); }
+.usage-swatch-input { background: var(--chart-series-1); }
+.usage-swatch-output { background: var(--chart-series-2); }
 
 .usage-empty-inline { grid-column: 1 / -1; color: var(--color-faint); font-size: var(--font-size-label); }
 
@@ -235,7 +237,15 @@
 .usage-model-row span { color: var(--color-muted); font-size: 10px; }
 .usage-model-row b { font-size: 12px; text-align: right; }
 .usage-model-meter { height: 6px; border-radius: 3px; background: var(--color-border-soft); overflow: hidden; }
-.usage-model-meter span { display: block; height: 100%; border-radius: 3px; background: var(--workspace-chat); }
+.usage-model-meter span { display: block; height: 100%; border-radius: 3px; background: var(--chart-series-1); }
+/* 分类色按行序取槽位；令牌从 1 起编号，与 tokens.css 保持一致 */
+.usage-model-meter span[data-rank="1"] { background: var(--chart-series-2); }
+.usage-model-meter span[data-rank="2"] { background: var(--chart-series-3); }
+.usage-model-meter span[data-rank="3"] { background: var(--chart-series-4); }
+.usage-model-meter span[data-rank="4"] { background: var(--chart-series-5); }
+.usage-model-meter span[data-rank="5"] { background: var(--chart-series-6); }
+.usage-model-meter span[data-rank="6"] { background: var(--chart-series-7); }
+.usage-model-meter span[data-rank="7"] { background: var(--chart-series-8); }
 
 .usage-records-section {
   min-width: 0;

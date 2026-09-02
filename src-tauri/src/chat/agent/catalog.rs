@@ -59,6 +59,8 @@ pub enum ToolResourceCost {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolHandler {
+    /// 提问工具。真正的执行体是审批通道 —— 走到 handler 说明用户那一关已经过了。
+    AskUser,
     SearchTools,
     InspectTool,
     SearchSkills,
@@ -103,6 +105,11 @@ pub enum ToolApprovalPolicy {
     ReadOnly,
     MemoryRead,
     Sensitive,
+    /// 三种权限模式下都必须回到用户。
+    ///
+    /// 其余档位在 `FullAccess` 下一律放行，因为那一档的语义是「别再问我」。提问工具
+    /// 的语义恰好相反 —— 自动放行等于拿不到答案，工具就废了。
+    AlwaysAsk,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -703,7 +710,85 @@ fn memory_modify_schema() -> Value {
     })
 }
 
+/// 提问工具的名字。服务层要按它认出中断类型，所以是常量而非字面量。
+pub const ASK_USER_TOOL_NAME: &str = "ask_user_question";
+
+/// 一次最多问几道题。再多用户就开始乱点了。
+pub const ASK_USER_MAX_QUESTIONS: usize = 4;
+
+/// 每题最多几个选项。窄侧栏排得下的上限，「其他」由前端追加、不计入。
+pub const ASK_USER_MAX_OPTIONS: usize = 4;
+
+fn ask_user_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "questions": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": ASK_USER_MAX_QUESTIONS,
+                "description": "要问用户的问题，1~4 道。",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "question": {
+                            "type": "string",
+                            "description": "完整的问题，具体、以问号结尾。"
+                        },
+                        "header": {
+                            "type": "string",
+                            "description": "界面上的短标签，不超过 12 个字，例如「配色方案」。"
+                        },
+                        "options": {
+                            "type": "array",
+                            "minItems": 2,
+                            "maxItems": ASK_USER_MAX_OPTIONS,
+                            "description": "互斥的候选项，2~4 个。不要自己加「其他」，界面会补。",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "label": {
+                                        "type": "string",
+                                        "description": "选项文字，1~5 个词。推荐项放第一个并在末尾写「（推荐）」。"
+                                    },
+                                    "description": {
+                                        "type": "string",
+                                        "description": "选它会发生什么，或它的取舍。"
+                                    }
+                                },
+                                "required": ["label", "description"],
+                                "additionalProperties": false
+                            }
+                        },
+                        "multiSelect": {
+                            "type": "boolean",
+                            "description": "选项可以并存时设为 true。"
+                        }
+                    },
+                    "required": ["question", "header", "options"],
+                    "additionalProperties": false
+                }
+            }
+        },
+        "required": ["questions"],
+        "additionalProperties": false
+    })
+}
+
 pub static TOOL_ENTRIES: &[ToolEntry] = &[
+    ToolEntry {
+        name: ASK_USER_TOOL_NAME,
+        description: "在需求出现歧义、不同理解会导致做出不同东西时，让用户在少数几个候选方案里做选择。只在答案会改变接下来的做法时用；有惯例默认值或能自己查清的事不要问。",
+        input_schema: ask_user_schema,
+        namespace: ToolNamespace::Discovery,
+        handler: ToolHandler::AskUser,
+        risk: ToolRisk::BuiltinRead,
+        read_only: true,
+        parallel_safe: false,
+        approval: ToolApprovalPolicy::AlwaysAsk,
+        resource_cost: ToolResourceCost::Low,
+        max_output_chars: DEFAULT_OUTPUT_LIMIT,
+    },
     ToolEntry {
         name: "search_tools",
         description: "按任务关键词搜索当前会话可用工具的轻量目录；命中后必须先 inspect_tool 查看契约，不能直接猜参数执行。",

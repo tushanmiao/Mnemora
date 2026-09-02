@@ -3,6 +3,7 @@ pub mod app_update;
 pub mod attachments;
 pub mod chat;
 pub mod conversations;
+pub mod diagrams;
 pub mod english;
 pub mod english_learning;
 pub mod html_preview;

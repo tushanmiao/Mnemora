@@ -303,6 +303,103 @@
   opacity: 0.55;
 }
 
+/* 提问弹窗比审批条高得多，所以纵向排列而不是复用 .agent-workflow-approval 的单行。 */
+.agent-workflow-question {
+  display: flex;
+  min-width: 0;
+  margin-top: 7px;
+  padding: 9px;
+  flex-direction: column;
+  gap: 9px;
+  border-radius: 5px;
+  color: var(--workflow-reasoning);
+  background: color-mix(in srgb, var(--workflow-reasoning) 11%, var(--color-surface-raised));
+  font-size: 12px;
+}
+
+.agent-workflow-question-prompt {
+  display: flex;
+  margin: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.agent-workflow-question-group {
+  display: flex;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  flex-direction: column;
+  gap: 5px;
+  border: 0;
+}
+
+.agent-workflow-question-group legend {
+  padding: 0 0 4px;
+  color: var(--color-text);
+  font-weight: 600;
+}
+
+.agent-workflow-question-option {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  gap: 7px;
+  cursor: pointer;
+}
+
+.agent-workflow-question-option input {
+  margin-top: 2px;
+  flex: 0 0 auto;
+  accent-color: var(--color-accent);
+}
+
+.agent-workflow-question-option span {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  color: var(--color-text-secondary);
+}
+
+.agent-workflow-question-option small {
+  color: var(--color-muted);
+}
+
+.agent-workflow-question-other {
+  min-height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 5px;
+  color: var(--color-text);
+  background: var(--color-surface);
+}
+
+.agent-workflow-question-error {
+  margin: 0;
+  color: var(--color-danger);
+}
+
+.agent-workflow-question .agent-workflow-approve {
+  min-height: 28px;
+  padding: 0 9px;
+  align-self: flex-start;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  color: var(--color-on-accent);
+  background: var(--color-accent);
+  cursor: pointer;
+}
+
+.agent-workflow-question .agent-workflow-approve:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+.agent-workflow-question-group:disabled .agent-workflow-question-option {
+  cursor: wait;
+  opacity: 0.55;
+}
+
 .agent-workflow-spin {
   animation: agent-workflow-spin 1s linear infinite;
 }

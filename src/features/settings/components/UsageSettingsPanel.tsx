@@ -348,10 +348,10 @@ export function UsageSettingsPanel() {
             </div>
           </div>
           <div className="usage-model-list">
-            {distributionRows.length === 0 ? <div className="usage-empty">当前范围内还没有用量记录</div> : distributionRows.map((item) => (
+            {distributionRows.length === 0 ? <div className="usage-empty">当前范围内还没有用量记录</div> : distributionRows.map((item, index) => (
               <div className="usage-model-row" key={item.id}>
                 <div><strong>{item.label}</strong><span>{item.providerName} · {item.requestCount} 次 · {formatCost(item.costUsd)}</span></div>
-                <div className="usage-model-meter"><span style={{ width: `${Math.max(1, item.totalTokens / maxDistributionTokens * 100)}%` }} /></div>
+                <div className="usage-model-meter"><span style={{ width: `${Math.max(1, item.totalTokens / maxDistributionTokens * 100)}%` }} data-rank={index % 8} /></div>
                 <b>{formatNumber(item.totalTokens)}</b>
               </div>
             ))}

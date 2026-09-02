@@ -94,7 +94,37 @@ export interface ToolTrace {
   errorKind?: string;
   /** 仅当前运行等待审批时存在，Rust 持久化会忽略该临时字段。 */
   approvalId?: string;
+  /** 仅当前运行等待用户时存在：决定渲染审批按钮还是提问弹窗。 */
+  interrupt?: ToolInterrupt;
 }
+
+/** 提问工具里的一个选项。「其他」不在其中，由前端固定追加。 */
+export interface ToolQuestionOption {
+  label: string;
+  description: string;
+}
+
+export interface ToolQuestion {
+  question: string;
+  header: string;
+  options: ToolQuestionOption[];
+  multiSelect: boolean;
+}
+
+/** 用户对一个问题的回答；`values` 可能是自填的「其他」文本，不限于给定选项。 */
+export interface ToolQuestionAnswer {
+  header: string;
+  values: string[];
+}
+
+/**
+ * 等待用户的两种理由，与 Rust 的 `ToolInterruptKind` 一一对应。
+ *
+ * 后端用 `#[serde(flatten)]` 把 `kind` 摊到事件顶层，所以这里也按 `kind` 判别。
+ */
+export type ToolInterrupt =
+  | { kind: "approval" }
+  | { kind: "question"; questions: ToolQuestion[] };
 
 /**
  * Agent 活动只保存顺序和对既有快照的引用，避免把 reasoning、Skill、Tool

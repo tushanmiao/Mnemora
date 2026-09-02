@@ -184,6 +184,9 @@ pub enum ToolCallState {
     Proposed,
     AwaitingApproval,
     Approved,
+    /// 用户回答了提问工具。刻意不复用 `Approved`：审计上「批准一次删库」和
+    /// 「在两个方案里选了 B」不是同一件事，混成一个状态就查不出区别了。
+    Answered,
     Queued,
     Running,
     Completed,
@@ -199,6 +202,7 @@ impl ToolCallState {
             Self::Proposed => "proposed",
             Self::AwaitingApproval => "awaitingApproval",
             Self::Approved => "approved",
+            Self::Answered => "answered",
             Self::Queued => "queued",
             Self::Running => "running",
             Self::Completed => "completed",
@@ -214,6 +218,7 @@ impl ToolCallState {
             "proposed" => Ok(Self::Proposed),
             "awaitingApproval" => Ok(Self::AwaitingApproval),
             "approved" => Ok(Self::Approved),
+            "answered" => Ok(Self::Answered),
             "queued" => Ok(Self::Queued),
             "running" => Ok(Self::Running),
             "completed" => Ok(Self::Completed),
@@ -230,6 +235,7 @@ impl ToolCallState {
 pub enum ToolCallEvent {
     ApprovalRequired,
     Approved,
+    Answered,
     Rejected,
     Enqueued,
     Started,
@@ -258,14 +264,22 @@ impl StateMachine for ToolCallMachine {
             (S::Proposed, E::ApprovalRequired) => S::AwaitingApproval,
             (S::Proposed, E::Enqueued) => S::Queued,
             (S::AwaitingApproval, E::Approved) => S::Approved,
+            (S::AwaitingApproval, E::Answered) => S::Answered,
             (S::AwaitingApproval, E::Rejected) => S::Rejected,
             (S::AwaitingApproval, E::TimedOut) => S::TimedOut,
             (S::Approved, E::Enqueued) => S::Queued,
+            // 提问工具的答案就是它的产出，回答完直接进队列执行（handler 只做回显）。
+            (S::Answered, E::Enqueued) => S::Queued,
             (S::Queued, E::Started) => S::Running,
             (S::Running, E::Succeeded) => S::Completed,
             (S::Running, E::Failed) => S::Failed,
             (
-                S::Proposed | S::AwaitingApproval | S::Approved | S::Queued | S::Running,
+                S::Proposed
+                | S::AwaitingApproval
+                | S::Approved
+                | S::Answered
+                | S::Queued
+                | S::Running,
                 E::Cancelled,
             ) => S::Cancelled,
             _ => {
@@ -287,6 +301,42 @@ impl StateMachine for ToolCallMachine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn answering_a_question_is_distinct_from_approving_a_tool() {
+        // 回答走自己的状态，不能悄悄落到 Approved 上，否则审计查不出区别。
+        let answered = ToolCallMachine::transition(
+            ToolCallState::AwaitingApproval,
+            &ToolCallEvent::Answered,
+            &(),
+        )
+        .unwrap();
+        assert_eq!(answered.next_state, ToolCallState::Answered);
+        assert_eq!(ToolCallState::Answered.as_str(), "answered");
+        assert_eq!(
+            ToolCallState::parse("answered").unwrap(),
+            ToolCallState::Answered
+        );
+        // 回答完要能继续执行，否则 handler 永远拿不到答案。
+        assert_eq!(
+            ToolCallMachine::transition(answered.next_state, &ToolCallEvent::Enqueued, &())
+                .unwrap()
+                .next_state,
+            ToolCallState::Queued
+        );
+        // 回答后取消仍然合法：用户可以答完又中止整个 run。
+        assert_eq!(
+            ToolCallMachine::transition(ToolCallState::Answered, &ToolCallEvent::Cancelled, &())
+                .unwrap()
+                .next_state,
+            ToolCallState::Cancelled
+        );
+        // 没在等待用户时收到回答是非法的，别让乱序事件把状态带歪。
+        assert!(
+            ToolCallMachine::transition(ToolCallState::Running, &ToolCallEvent::Answered, &())
+                .is_err()
+        );
+    }
 
     #[test]
     fn approval_and_cancel_race_is_safe() {

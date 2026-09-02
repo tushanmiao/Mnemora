@@ -13,7 +13,8 @@
     "memory:isolation-review": "node scripts/memory/evaluate-isolation.mjs",
     "skills:provenance": "node scripts/skills/sync-provenance.mjs",
     "skills:provenance:check": "node scripts/skills/sync-provenance.mjs --check",
-    "settings:verify-css": "node scripts/verify-settings-classes.mjs"
+    "settings:verify-css": "node scripts/verify-settings-classes.mjs",
+    "css:verify-tokens": "node scripts/check-css-tokens.mjs"
   },
   "dependencies": {
     "@codemirror/commands": "^6.11.0",

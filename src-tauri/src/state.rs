@@ -13,6 +13,7 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use crate::ai::concurrency::ProviderConcurrencyPool;
+use crate::chat::agent::{ToolInterruptKind, ToolQuestionAnswer};
 use crate::chat::storage::ConversationRepository;
 use crate::english::{learning::EnglishLearningRepository, EnglishRepository};
 use crate::library::LibraryRepository;
@@ -97,14 +98,37 @@ pub struct ActiveNotePipelineRun {
     started_at_ms: u64,
 }
 
+/// 用户对一次工具中断的答复：放行与否，或者一组问题的回答。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ToolInterruptResponse {
+    Approval(bool),
+    Answers(Vec<ToolQuestionAnswer>),
+}
+
+impl ToolInterruptResponse {
+    /// 这份答复是否回应了对应种类的中断。
+    pub fn matches(&self, interrupt: &ToolInterruptKind) -> bool {
+        matches!(
+            (self, interrupt),
+            (Self::Approval(_), ToolInterruptKind::Approval)
+                | (Self::Answers(_), ToolInterruptKind::Question { .. })
+        )
+    }
+}
+
 /// 内存中的一次性审批通道只负责唤醒 Worker；审批身份和 CAS 版本同时持久化到 SQLite。
+///
+/// 提问工具复用同一条通道：等待、超时、取消、前端失联的处理和审批完全一致，
+/// 差别只在送回来的载荷和最终落库的事件。
 pub struct PendingToolApproval {
-    pub sender: oneshot::Sender<bool>,
+    pub sender: oneshot::Sender<ToolInterruptResponse>,
     pub run_id: String,
     pub call_id: String,
     pub execution_version: u32,
     pub state_version: u32,
     pub expires_at_ms: u64,
+    /// 前端据此决定渲染审批按钮还是选项组。
+    pub interrupt: ToolInterruptKind,
 }
 
 #[derive(Debug, Clone)]
@@ -586,5 +610,25 @@ mod tests {
         assert!(second.is_cancelled());
         assert_eq!(runs.len(), 2);
         assert_eq!(cancel_chat_run_tokens(&runs), 2);
+    }
+
+    /// 两种中断共用一条通道，所以要靠种类比对挡住错配：拿「回答」结掉一个审批，
+    /// 等于让模型收到一份它以为执行过的假结果。
+    #[test]
+    fn responses_only_match_their_own_interrupt_kind() {
+        use super::{ToolInterruptKind, ToolInterruptResponse};
+        use crate::chat::agent::types::ToolQuestionAnswer;
+
+        let approval = ToolInterruptResponse::Approval(true);
+        let answers = ToolInterruptResponse::Answers(vec![ToolQuestionAnswer {
+            header: "存储位置".to_string(),
+            values: vec!["默认目录".to_string()],
+        }]);
+        let question_kind = ToolInterruptKind::Question { questions: vec![] };
+
+        assert!(approval.matches(&ToolInterruptKind::Approval));
+        assert!(answers.matches(&question_kind));
+        assert!(!approval.matches(&question_kind));
+        assert!(!answers.matches(&ToolInterruptKind::Approval));
     }
 }

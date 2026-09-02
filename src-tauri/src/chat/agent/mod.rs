@@ -23,4 +23,7 @@ pub use registry::{
     requires_approval, tool_provenance, tool_risk, validate_disclosed_tool_calls, SkillRunCache,
     ToolRuntimeContext,
 };
-pub use types::{ToolExecution, ToolTraceSnapshot, ToolTraceStatus};
+pub use types::{
+    ToolExecution, ToolInterruptKind, ToolQuestion, ToolQuestionAnswer, ToolRisk,
+    ToolTraceSnapshot, ToolTraceStatus,
+};
