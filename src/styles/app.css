@@ -165,10 +165,10 @@ button {
   animation: workspace-loading-pulse 1.6s ease-in-out infinite;
 }
 
-.workspace-loading-title { width: min(260px, 58%); height: 24px; }
+.workspace-loading-title { width: min(260px, 58%); height: var(--control-height-sm); }
 .workspace-loading-subtitle { width: min(420px, 76%); height: 11px; margin-top: 12px; }
 .workspace-loading-lines { display: grid; gap: 18px; margin-top: 48px; }
-.workspace-loading-lines span { width: 100%; height: 42px; }
+.workspace-loading-lines span { width: 100%; height: var(--control-height-3xl); }
 .workspace-loading-lines span:nth-child(2) { width: 92%; }
 .workspace-loading-lines span:nth-child(3) { width: 97%; }
 .workspace-loading-lines span:nth-child(4) { width: 84%; }
@@ -208,7 +208,7 @@ button {
   min-height: 34px;
   align-items: center;
   gap: 6px;
-  padding: 0 12px;
+  padding: 0 var(--control-padding-xl);
   border: 1px solid var(--color-border);
   border-radius: 6px;
   background: var(--color-surface-raised);
@@ -222,7 +222,7 @@ button {
 .icon-button {
   display: inline-grid;
   width: 34px;
-  height: 34px;
+  height: var(--control-height-xl);
   padding: 0;
   place-items: center;
   border: 0;
@@ -346,7 +346,7 @@ select:focus-visible {
   cursor: pointer;
   font: inherit;
   font-size: 11px;
-  font-weight: 650;
+  font-weight: var(--weight-strong);
 }
 
 .app-toast-cancel:hover { background: var(--color-hover); }

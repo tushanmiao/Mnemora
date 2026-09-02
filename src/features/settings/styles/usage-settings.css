@@ -62,7 +62,7 @@
 .usage-hero-item span { color: var(--color-muted); font-size: var(--font-size-meta); }
 .usage-hero-item strong {
   font-size: 25px;
-  font-weight: 660;
+  font-weight: var(--weight-strong);
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.01em;
   line-height: 1.15;
@@ -76,13 +76,27 @@
 
 .usage-composition-bar {
   display: flex;
-  height: 10px;
+  /* 10px 太细，四段各自的色块看不清；14px 让每段都有可辨识的面积 */
+  height: 14px;
   overflow: hidden;
   border-radius: var(--radius-pill);
   background: var(--color-border-soft);
 }
 
-.usage-composition-bar span { display: block; height: 100%; }
+/*
+ * 相邻段之间留 2px 底色缝（dataviz 的 mark spec）。
+ * 只给「非首段」加左边框，首段不留，否则条子左端会缺一小块。
+ * 缝比纯靠颜色更能把段分开，且在色盲和打印下同样有效。
+ */
+.usage-composition-bar span {
+  display: block;
+  height: 100%;
+  box-sizing: border-box;
+}
+
+.usage-composition-bar span + span {
+  border-left: 2px solid var(--color-surface-raised);
+}
 
 .usage-composition-legend {
   display: grid;
@@ -95,13 +109,19 @@
 
 .usage-composition-legend li {
   display: grid;
-  grid-template-columns: 9px minmax(0, 1fr) auto auto;
+  grid-template-columns: 11px minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 7px;
   font-size: var(--font-size-label);
 }
 
-.usage-composition-legend i { width: 9px; height: 9px; border-radius: 2px; }
+/* 9px 的色块在深浅同相的两段之间几乎分不出来，放大到 11px 并加一圈描边 */
+.usage-composition-legend i {
+  width: 11px;
+  height: 11px;
+  border-radius: 3px;
+  box-shadow: inset 0 0 0 1px rgb(0 0 0 / 12%);
+}
 .usage-composition-legend span { overflow: hidden; color: var(--color-text-secondary); text-overflow: ellipsis; white-space: nowrap; }
 .usage-composition-legend b { font-variant-numeric: tabular-nums; }
 .usage-composition-legend em { min-width: 30px; color: var(--color-faint); font-size: var(--font-size-meta); font-style: normal; text-align: right; }
@@ -127,7 +147,7 @@
 .usage-quality summary {
   display: flex;
   min-height: 38px;
-  padding: 0 13px;
+  padding: 0 var(--control-padding-xl);
   align-items: center;
   gap: 9px;
   cursor: pointer;
@@ -208,7 +228,24 @@
 .usage-swatch-input { background: var(--chart-series-1); }
 .usage-swatch-output { background: var(--chart-series-2); }
 
-.usage-empty-inline { grid-column: 1 / -1; color: var(--color-faint); font-size: var(--font-size-label); }
+/*
+ * 空态只有一段文字，必须退出 grid 布局。
+ *
+ * `grid-column: 1 / -1` 只让这个 li 在父网格里横跨整行，管不到它自己内部——
+ * li 继承了图例项的 `display: grid` 与 `11px | 1fr | auto | auto` 四列模板，
+ * 于是文本作为唯一子项落进第一列（11px，色块的宽度），六个汉字各占一行，
+ * 盒子被撑到 115px 高。实测：`grid-template-columns = 11px 868px 0px 0px`，
+ * 文本 span 宽 11px。
+ *
+ * 选择器必须带上父类：`.usage-composition-legend li` 的优先级是 (0,1,1)，
+ * 单独写 `.usage-empty-inline` 只有 (0,1,0)，会被压掉——排在后面也没用。
+ */
+.usage-composition-legend li.usage-empty-inline {
+  display: block;
+  grid-column: 1 / -1;
+  color: var(--color-faint);
+  font-size: var(--font-size-label);
+}
 
 .usage-section {
   margin-top: 18px;
@@ -264,7 +301,7 @@
   background: var(--color-surface-raised);
 }
 .usage-table { width: 100%; min-width: 760px; border-collapse: collapse; font-size: 11px; }
-.usage-table th { position: sticky; top: 0; z-index: 1; height: 36px; padding: 0 11px; color: var(--color-muted); background: var(--color-sidebar); text-align: left; font-weight: 650; }
+.usage-table th { position: sticky; top: 0; z-index: 1; height: var(--control-height-xl); padding: 0 var(--control-padding-lg); color: var(--color-muted); background: var(--color-sidebar); text-align: left; font-weight: var(--weight-strong); }
 .usage-table td { height: 48px; padding: 7px 11px; border-top: 1px solid var(--color-border-soft); }
 .usage-table th,
 .usage-table td { white-space: nowrap; }
@@ -273,7 +310,7 @@
 .usage-filters { display: flex; margin-top: 10px; gap: 8px; flex-wrap: wrap; }
 .usage-filters .settings-input { width: auto; min-width: 150px; }
 .usage-load-more { display: flex; margin: 12px auto 0; }
-.usage-status { display: inline-flex; min-height: 22px; padding: 0 7px; align-items: center; border-radius: 4px; font-style: normal; }
+.usage-status { display: inline-flex; min-height: 22px; padding: 0 var(--control-padding-sm); align-items: center; border-radius: 4px; font-style: normal; }
 .usage-status-success { color: var(--color-accent); background: var(--color-accent-soft); }
 .usage-status-error { color: var(--color-danger); background: var(--color-danger-soft); }
 .usage-status-stopped { color: var(--color-text-secondary); background: var(--color-active); }

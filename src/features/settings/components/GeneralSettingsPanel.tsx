@@ -42,6 +42,7 @@ import "../styles/theme-preview.generated.css";
 import { FONT_PRESET_VALUES } from "../utils/fontSettings";
 import { useI18n } from "../../../i18n/I18nProvider";
 import { EditableRangeControl } from "./EditableRangeControl";
+import { BackgroundImagePicker } from "./BackgroundImagePicker";
 
 type Feedback = { kind: "success" | "error"; message: string } | null;
 
@@ -57,6 +58,29 @@ type GeneralSettingsPanelProps = {
 };
 
 const TOKEN_OPTIONS = [4_096, 8_192, 16_384, 32_768, 65_536, 131_072];
+
+/**
+ * 渐变背景预设。
+ *
+ * 之前只有一个空输入框，用户得自己手打 CSS —— 而 `linear-gradient` 的语法门槛
+ * 足够高到没人会去试。这些是可点选的起点，按「天空 / 风景 / 材质」三组意图排列。
+ * 三组的差别不是色相，是明度落差：天空组落差大（有方向感），材质组落差极小
+ * （安静、不抢内容）。
+ */
+const BACKGROUND_PRESETS: Array<{ label: string; css: string }> = [
+  { label: "晨雾", css: "linear-gradient(170deg, #dbeafe 0%, #eff6ff 45%, #fdf4e7 100%)" },
+  { label: "暮色", css: "linear-gradient(190deg, #1e1b4b 0%, #4c1d95 55%, #831843 100%)" },
+  {
+    label: "极光",
+    css: "radial-gradient(at 20% 15%, #134e4a 0%, transparent 55%), radial-gradient(at 80% 70%, #1e1b4b 0%, transparent 60%), #0f172a",
+  },
+  { label: "远山", css: "linear-gradient(to bottom, #e0f2fe 0%, #f0f9ff 40%, #ecfdf5 70%, #f7fee7 100%)" },
+  { label: "深林", css: "linear-gradient(165deg, #052e16 0%, #14532d 50%, #1c1917 100%)" },
+  { label: "沙丘", css: "linear-gradient(155deg, #fef3c7 0%, #fed7aa 50%, #fecaca 100%)" },
+  { label: "宣纸", css: "radial-gradient(at 30% 20%, #fffbeb 0%, transparent 50%), #fefce8" },
+  { label: "石墨", css: "conic-gradient(from 210deg at 70% 30%, #27272a 0%, #18181b 40%, #09090b 100%)" },
+];
+
 const MAX_AVATAR_BYTES = 2 * 1024 * 1024;
 const ACCEPTED_AVATAR_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 type TranslationKey = Parameters<ReturnType<typeof useI18n>["t"]>[0];
@@ -385,6 +409,29 @@ export function GeneralSettingsPanel({
                     aria-label={t("general.backgroundPreview")}
                   />
                   {backgroundError ? <span className="theme-background-error">{backgroundError}</span> : null}
+                </div>
+              </SettingRow>
+              <SettingRow label={t("general.backgroundImage")} description={t("general.backgroundImageDescription")} stack>
+                <BackgroundImagePicker
+                  currentCss={draft.themeBackground.css}
+                  onSelect={(css) => updateThemeBackground({ css })}
+                />
+              </SettingRow>
+              <SettingRow label={t("general.backgroundPresets")} stack>
+                <div className="background-preset-grid">
+                  {BACKGROUND_PRESETS.map((preset) => (
+                    <button
+                      key={preset.label}
+                      type="button"
+                      className="background-preset"
+                      data-active={draft.themeBackground.css.trim() === preset.css ? "true" : undefined}
+                      aria-pressed={draft.themeBackground.css.trim() === preset.css}
+                      onClick={() => updateThemeBackground({ css: preset.css })}
+                    >
+                      <span className="background-preset-swatch" style={{ background: preset.css }} />
+                      <span>{preset.label}</span>
+                    </button>
+                  ))}
                 </div>
               </SettingRow>
               <SettingRow label={t("general.surfaceOpacity")}>

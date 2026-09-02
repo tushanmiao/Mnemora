@@ -30,8 +30,8 @@
 
 .mnemora-pdf-annotation-colors {
   display: flex;
-  height: 30px;
-  padding: 0 4px;
+  height: var(--control-height-lg);
+  padding: 0 var(--control-padding-xs);
   align-items: center;
   gap: 3px;
   border-right: 1px solid var(--color-border-soft);
@@ -67,7 +67,7 @@
 .mnemora-pdf-toolbar .icon-button {
   display: inline-flex;
   width: 30px;
-  height: 30px;
+  height: var(--control-height-lg);
   align-items: center;
   justify-content: center;
   gap: 0;
@@ -116,8 +116,8 @@
 
 .mnemora-pdf-page-input input {
   width: 42px;
-  height: 28px;
-  padding: 0 5px;
+  height: var(--control-height-md);
+  padding: 0 var(--control-padding-xs);
   border: 1px solid var(--color-border);
   border-radius: 4px;
   color: var(--color-text);
@@ -152,8 +152,8 @@
 .mnemora-pdf-search-bar input {
   min-width: 0;
   flex: 1;
-  height: 29px;
-  padding: 0 8px;
+  height: var(--control-height-md);
+  padding: 0 var(--control-padding-md);
   border: 1px solid var(--color-border);
   border-radius: 4px;
   color: var(--color-text);
@@ -162,8 +162,8 @@
 }
 
 .mnemora-pdf-search-bar > button:not(.icon-button) {
-  height: 29px;
-  padding: 0 11px;
+  height: var(--control-height-md);
+  padding: 0 var(--control-padding-lg);
   border: 1px solid var(--color-border);
   border-radius: 4px;
   color: var(--color-text-secondary);
@@ -227,7 +227,7 @@
 .mnemora-pdf-annotation-error button {
   display: grid;
   width: 24px;
-  height: 24px;
+  height: var(--control-height-sm);
   padding: 0;
   place-items: center;
   border: 0;
@@ -240,7 +240,7 @@
   position: fixed;
   z-index: 160;
   display: flex;
-  height: 34px;
+  height: var(--control-height-xl);
   padding: 3px;
   align-items: center;
   gap: 2px;
@@ -254,7 +254,7 @@
 .mnemora-pdf-selection-toolbar button {
   display: grid;
   width: 27px;
-  height: 27px;
+  height: var(--control-height-sm);
   padding: 0;
   place-items: center;
   border: 0;
@@ -285,7 +285,7 @@
 
 .mnemora-pdf-selection-toolbar .mnemora-pdf-selection-color-button {
   width: 27px;
-  height: 27px;
+  height: var(--control-height-sm);
 }
 
 .mnemora-pdf-selection-color-button[aria-expanded="true"] {
@@ -309,7 +309,7 @@
 
 .mnemora-pdf-selection-toolbar .mnemora-pdf-selection-color-option {
   width: 20px;
-  height: 20px;
+  height: var(--control-height-xs);
   border: 2px solid transparent;
   border-radius: 50%;
   background: var(--pdf-annotation-color);

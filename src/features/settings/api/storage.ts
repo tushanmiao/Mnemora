@@ -9,7 +9,8 @@ export type KnownStorageCategoryId =
   | "skills"
   | "usage"
   | "sync"
-  | "english";
+  | "english"
+  | "backgrounds";
 
 export interface StorageCategoryUsage {
   // 后端为了兼容新增数据目录会返回字符串；界面必须为未来分类保留降级显示。

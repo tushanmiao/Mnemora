@@ -1,6 +1,7 @@
 pub mod app_settings;
 pub mod app_update;
 pub mod attachments;
+pub mod backgrounds;
 pub mod chat;
 pub mod conversations;
 pub mod diagrams;

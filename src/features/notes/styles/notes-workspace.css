@@ -11,7 +11,7 @@
 .notes-browser-toolbar {
   display: flex;
   min-width: 0;
-  padding: 0 24px;
+  padding: 0 var(--control-padding-5xl);
   align-items: center;
   gap: 12px;
   overflow-x: auto;
@@ -26,8 +26,8 @@
 .notes-back-button,
 .notes-create-button {
   display: inline-flex;
-  height: 32px;
-  padding: 0 10px;
+  height: var(--control-height-lg);
+  padding: 0 var(--control-padding-lg);
   align-items: center;
   gap: 6px;
   border: 1px solid var(--color-border);
@@ -72,7 +72,7 @@
 .notes-groups-nav > header button {
   display: inline-grid;
   width: 30px;
-  height: 30px;
+  height: var(--control-height-lg);
   padding: 0;
   place-items: center;
   border: 0;
@@ -98,7 +98,7 @@
 .notes-group-row .notes-group-remove {
   display: none;
   width: 26px;
-  height: 26px;
+  height: var(--control-height-sm);
   margin-right: 2px;
   padding: 0;
   place-items: center;
@@ -115,7 +115,7 @@
   display: grid;
   width: 100%;
   min-height: 34px;
-  padding: 0 8px;
+  padding: 0 var(--control-padding-md);
   grid-template-columns: 17px minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
@@ -158,8 +158,8 @@
 
 .notes-sort-control {
   display: flex;
-  height: 32px;
-  padding: 0 7px;
+  height: var(--control-height-lg);
+  padding: 0 var(--control-padding-sm);
   align-items: center;
   gap: 5px;
   border: 1px solid var(--color-border);
@@ -192,7 +192,7 @@
 .notes-table-row {
   display: grid;
   min-width: 0;
-  padding: 0 20px;
+  padding: 0 var(--control-padding-4xl);
   grid-template-columns: minmax(0, 1fr) 108px 150px 138px 84px 36px;
   align-items: center;
   gap: 10px;
@@ -242,8 +242,8 @@
 .notes-table-title-editor input {
   width: 100%;
   min-width: 0;
-  height: 29px;
-  padding: 0 7px;
+  height: var(--control-height-md);
+  padding: 0 var(--control-padding-sm);
   border: 1px solid var(--color-accent);
   border-radius: 5px;
   outline: 0;
@@ -262,8 +262,8 @@
 
 .notes-table-row select {
   width: 100%;
-  height: 28px;
-  padding: 0 6px;
+  height: var(--control-height-md);
+  padding: 0 var(--control-padding-sm);
   border: 1px solid var(--color-border);
   border-radius: 4px;
   color: var(--color-text-secondary);
@@ -279,7 +279,7 @@
 .notes-table-more {
   display: inline-grid;
   width: 28px;
-  height: 28px;
+  height: var(--control-height-md);
   padding: 0;
   place-items: center;
   border: 0;
@@ -309,8 +309,8 @@
 .notes-row-menu button {
   display: flex;
   width: 100%;
-  height: 30px;
-  padding: 0 9px;
+  height: var(--control-height-lg);
+  padding: 0 var(--control-padding-md);
   align-items: center;
   gap: 7px;
   border: 0;
@@ -419,12 +419,12 @@
 }
 .notes-title-wrap { display: flex; min-width: 0; flex: 1; align-items: center; gap: 8px; color: var(--color-accent); }
 .notes-toolbar > .notes-back-button { flex: 0 0 auto; }
-.notes-title-wrap input { width: 100%; min-width: 0; border: 0; outline: 0; color: var(--color-text); background: transparent; font-size: 13px; font-weight: 650; }
+.notes-title-wrap input { width: 100%; min-width: 0; border: 0; outline: 0; color: var(--color-text); background: transparent; font-size: 13px; font-weight: var(--weight-strong); }
 .notes-toolbar-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 4px; }
 .notes-toolbar-actions > button {
   display: inline-grid;
   width: 32px;
-  height: 32px;
+  height: var(--control-height-lg);
   padding: 0;
   place-items: center;
   border: 0;
@@ -448,8 +448,8 @@
 }
 .notes-mode-tabs button {
   display: inline-flex;
-  height: 26px;
-  padding: 0 9px;
+  height: var(--control-height-sm);
+  padding: 0 var(--control-padding-md);
   align-items: center;
   gap: 5px;
   border: 0;
@@ -464,9 +464,9 @@
 
 .notes-search {
   display: flex;
-  height: 42px;
+  height: var(--control-height-3xl);
   margin: 8px 10px 5px;
-  padding: 0 9px;
+  padding: 0 var(--control-padding-md);
   align-items: center;
   gap: 7px;
   border: 1px solid var(--color-border);
@@ -606,7 +606,7 @@ button.note-source-chip:hover { color: var(--color-accent); background: var(--co
 
 .notes-markdown-preview .markdown-content li::marker {
   color: var(--color-accent);
-  font-weight: 650;
+  font-weight: var(--weight-strong);
 }
 .notes-markdown-preview .markdown-content li + li { margin-top: 6px; }
 .notes-markdown-preview .markdown-content ul,
@@ -638,7 +638,7 @@ button.note-source-chip:hover { color: var(--color-accent); background: var(--co
   border: 1px solid var(--color-border);
   color: var(--color-text);
   background: var(--color-accent-soft);
-  font-weight: 650;
+  font-weight: var(--weight-strong);
 }
 .notes-markdown-preview .markdown-content td {
   border: 1px solid var(--color-border-soft);
@@ -655,7 +655,7 @@ button.note-source-chip:hover { color: var(--color-accent); background: var(--co
 }
 
 .notes-empty { display: grid; min-height: 0; flex: 1; place-items: center; align-content: center; gap: 10px; color: var(--color-muted); font-size: 11px; }
-.notes-empty button { height: 31px; padding: 0 10px; border: 1px solid var(--color-accent); border-radius: 5px; color: var(--color-on-accent); background: var(--color-accent); }
+.notes-empty button { height: var(--control-height-lg); padding: 0 var(--control-padding-lg); border: 1px solid var(--color-accent); border-radius: 5px; color: var(--color-on-accent); background: var(--color-accent); }
 
 .notes-selection-menu {
   position: absolute;
@@ -668,14 +668,14 @@ button.note-source-chip:hover { color: var(--color-accent); background: var(--co
   background: var(--color-surface-raised);
   box-shadow: var(--shadow-menu);
 }
-.notes-selection-menu button { display: inline-flex; height: 28px; padding: 0 8px; align-items: center; gap: 5px; border: 0; border-radius: 4px; color: var(--color-text-secondary); background: transparent; font-size: 10px; }
+.notes-selection-menu button { display: inline-flex; height: var(--control-height-md); padding: 0 var(--control-padding-md); align-items: center; gap: 5px; border: 0; border-radius: 4px; color: var(--color-text-secondary); background: transparent; font-size: 10px; }
 .notes-selection-menu button:hover { color: var(--color-accent); background: var(--color-hover); }
 
 .notes-statusbar {
   display: flex;
   flex: 0 0 auto;
   min-height: 26px;
-  padding: 0 12px;
+  padding: 0 var(--control-padding-xl);
   align-items: center;
   justify-content: flex-end;
   gap: 14px;
@@ -716,7 +716,7 @@ button.note-source-chip:hover { color: var(--color-accent); background: var(--co
 .notes-context-close {
   display: grid;
   width: 32px;
-  height: 32px;
+  height: var(--control-height-lg);
   margin: 7px 4px;
   padding: 0;
   place-items: center;
@@ -730,4 +730,4 @@ button.note-source-chip:hover { color: var(--color-accent); background: var(--co
 .notes-load-error { gap: 8px; padding: 24px; text-align: center; }
 .notes-load-error strong { color: var(--color-text); font-size: 14px; }
 .notes-load-error span { max-width: 520px; color: var(--color-muted); font-size: 11px; }
-.notes-load-error button { display: inline-flex; height: 32px; padding: 0 11px; align-items: center; gap: 6px; border: 0; border-radius: 5px; color: var(--color-on-accent); background: var(--color-accent); cursor: pointer; font-size: 11px; }
+.notes-load-error button { display: inline-flex; height: var(--control-height-lg); padding: 0 var(--control-padding-lg); align-items: center; gap: 6px; border: 0; border-radius: 5px; color: var(--color-on-accent); background: var(--color-accent); cursor: pointer; font-size: 11px; }

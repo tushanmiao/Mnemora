@@ -23,7 +23,7 @@
 }
 
 .deep-note-workspace-title { min-width: 0; }
-.deep-note-workspace-title span { display: flex; align-items: center; gap: 6px; color: var(--color-accent); font-size: 12px; font-weight: 700; text-transform: uppercase; }
+.deep-note-workspace-title span { display: flex; align-items: center; gap: 6px; color: var(--color-accent); font-size: 12px; font-weight: var(--weight-heading); text-transform: uppercase; }
 .deep-note-workspace-title h1 { overflow: hidden; margin: 2px 0 0; font-size: 16px; line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; }
 .deep-note-run-status { display: flex; align-items: center; gap: 7px; color: var(--color-muted); font-size: 12px; }
 .deep-note-status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--color-accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 16%, transparent); }
@@ -34,7 +34,7 @@
 .deep-note-run-status[data-tone="danger"] { color: var(--color-danger); }
 .deep-note-run-status[data-tone="danger"] .deep-note-status-dot { background: var(--color-danger); box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-danger) 16%, transparent); }
 .deep-note-run-actions { display: flex; align-items: center; gap: 8px; }
-.deep-note-run-actions .settings-button { min-width: 76px; height: 34px; }
+.deep-note-run-actions .settings-button { min-width: 76px; height: var(--control-height-xl); }
 .deep-note-stop-button:hover:not(:disabled) { border-color: var(--color-danger); color: var(--color-danger); background: var(--color-danger-soft); }
 
 .deep-note-run-pane {
@@ -104,7 +104,7 @@
 .deep-note-progress-overview[data-tone="warning"] { border-color: color-mix(in srgb, var(--color-warning) 45%, var(--color-border-soft)); background: color-mix(in srgb, var(--color-warning) 8%, var(--color-surface)); }
 .deep-note-progress-overview[data-tone="danger"] { border-color: color-mix(in srgb, var(--color-danger) 45%, var(--color-border-soft)); background: color-mix(in srgb, var(--color-danger) 7%, var(--color-surface)); }
 .deep-note-progress-overview[data-tone="muted"] { border-color: var(--color-border-soft); background: var(--color-app); }
-.deep-note-progress-icon { display: grid; place-items: center; align-self: start; width: 28px; height: 28px; color: var(--color-accent); }
+.deep-note-progress-icon { display: grid; place-items: center; align-self: start; width: 28px; height: var(--control-height-md); color: var(--color-accent); }
 .deep-note-progress-overview[data-tone="success"] .deep-note-progress-icon { color: var(--color-success); }
 .deep-note-progress-overview[data-tone="warning"] .deep-note-progress-icon { color: var(--color-warning); }
 .deep-note-progress-overview[data-tone="danger"] .deep-note-progress-icon { color: var(--color-danger); }
@@ -121,7 +121,7 @@
 .deep-note-runtime-diagnosis dl { display: flex; flex: 0 0 auto; gap: 16px; margin: 0; }
 .deep-note-runtime-diagnosis dl div { display: grid; gap: 2px; }
 .deep-note-runtime-diagnosis dt { color: var(--color-muted); font-size: 12px; }
-.deep-note-runtime-diagnosis dd { margin: 0; font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.deep-note-runtime-diagnosis dd { margin: 0; font-size: 12px; font-weight: var(--weight-heading); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .deep-note-runtime-diagnosis[data-tone="warning"] strong,
 .deep-note-runtime-diagnosis[data-tone="warning"] dd { color: var(--color-warning); }
 .deep-note-runtime-diagnosis[data-tone="danger"] strong,
@@ -136,7 +136,7 @@
 .deep-note-progress-stats { display: flex; flex-wrap: wrap; gap: 8px 18px; margin: 10px 0 0; }
 .deep-note-progress-stats div { display: flex; gap: 5px; font-size: 12px; }
 .deep-note-progress-stats dt { color: var(--color-muted); }
-.deep-note-progress-stats dd { margin: 0; color: var(--color-text); font-variant-numeric: tabular-nums; font-weight: 700; }
+.deep-note-progress-stats dd { margin: 0; color: var(--color-text); font-variant-numeric: tabular-nums; font-weight: var(--weight-heading); }
 .deep-note-terminal-message { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 9px; max-width: 960px; margin: -8px auto 20px; padding: 10px 0; border-bottom: 1px solid var(--color-border-soft); }
 .deep-note-terminal-message.is-error { color: var(--color-danger); }
 .deep-note-terminal-message.is-warning { color: var(--color-warning); }
@@ -150,7 +150,7 @@
 .deep-note-plan-intro { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; margin: 0; padding: 14px 12px 18px; }
 .deep-note-plan-intro div { padding-top: 8px; border-top: 2px solid var(--color-accent); }
 .deep-note-plan-intro div:nth-child(2) { border-top-color: var(--color-warning); }
-.deep-note-plan-intro span { color: var(--color-muted); font-size: 12px; font-weight: 700; text-transform: uppercase; }
+.deep-note-plan-intro span { color: var(--color-muted); font-size: 12px; font-weight: var(--weight-heading); text-transform: uppercase; }
 .deep-note-plan-intro p { margin: 5px 0 0; font-size: 14px; line-height: 1.55; }
 .deep-note-section-toolbar { display: flex; align-items: center; justify-content: space-between; max-width: 960px; margin: 0 auto 9px; }
 .deep-note-section-toolbar strong { font-size: 14px; }
@@ -340,7 +340,7 @@
   justify-content: space-between;
   min-height: 44px;
   gap: 12px;
-  padding: 0 11px;
+  padding: 0 var(--control-padding-lg);
 }
 .deep-note-dag-header > button {
   display: flex;
@@ -407,7 +407,7 @@
 }
 .deep-note-dag-node:hover { border-color: var(--color-accent); background: var(--color-hover); }
 .deep-note-dag-node:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -3px; }
-.deep-note-dag-node-title { overflow: hidden; font-size: 12px; font-weight: 700; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
+.deep-note-dag-node-title { overflow: hidden; font-size: 12px; font-weight: var(--weight-heading); line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
 .deep-note-dag-node-meta { display: flex; align-items: center; gap: 5px; overflow: hidden; color: var(--color-muted); font-size: 12px; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; }
 .deep-note-dag-node[data-status="completed"] { border-color: color-mix(in srgb, var(--color-success) 55%, var(--color-border)); background: color-mix(in srgb, var(--color-success) 5%, var(--color-surface)); }
 .deep-note-dag-node[data-status="completed"] .deep-note-dag-node-meta i { background: var(--color-success); }
@@ -447,10 +447,10 @@
 .deep-note-event-log-header > button svg { color: var(--color-muted); transform: rotate(-90deg); transition: transform 160ms ease-out; }
 .deep-note-event-log-header > button svg[data-open="true"] { transform: rotate(0); }
 .deep-note-event-log-header > button strong { font-size: 14px; }
-.deep-note-event-log-header > button span { color: var(--color-muted); font-size: 12px; font-weight: 400; }
+.deep-note-event-log-header > button span { color: var(--color-muted); font-size: 12px; font-weight: var(--weight-body); }
 .deep-note-event-log-header > div { display: flex; align-items: center; gap: 7px; }
 .deep-note-event-log-header > div > span { color: var(--color-success); font-size: 12px; }
-.deep-note-event-log-header .icon-button { width: 30px; height: 30px; }
+.deep-note-event-log-header .icon-button { width: 30px; height: var(--control-height-lg); }
 .deep-note-event-list { display: grid; max-height: 360px; overflow: auto; margin: 0; padding: 3px 0 10px; list-style: none; }
 .deep-note-event-list li { display: grid; grid-template-columns: 68px 8px minmax(0, 1fr) auto; align-items: start; gap: 8px; padding: 8px 4px; border-top: 1px solid var(--color-border-soft); }
 .deep-note-event-list time,
@@ -481,7 +481,7 @@
 .deep-note-model-recovery .deep-note-pane-heading { margin-top: 0; color: var(--color-danger); }
 .deep-note-model-recovery > p { margin: -3px 0 10px; color: var(--color-muted); font-size: 12px; line-height: 1.5; }
 .deep-note-model-recovery label { display: grid; gap: 5px; margin-bottom: 9px; color: var(--color-muted); font-size: 12px; }
-.deep-note-model-recovery select { width: 100%; min-height: 34px; padding: 0 8px; border: 1px solid var(--color-border); border-radius: 5px; background: var(--color-surface-raised); color: var(--color-text); }
+.deep-note-model-recovery select { width: 100%; min-height: 34px; padding: 0 var(--control-padding-md); border: 1px solid var(--color-border); border-radius: 5px; background: var(--color-surface-raised); color: var(--color-text); }
 .deep-note-model-recovery button { width: 100%; }
 .deep-note-model-recovery-empty { color: var(--color-danger) !important; }
 .deep-note-model-recovery.is-diagnostic { border-top-color: color-mix(in srgb, var(--color-warning) 40%, var(--color-border-soft)); }
@@ -490,7 +490,7 @@
 .deep-note-workflow-list { display: grid; margin: 0; padding: 0; list-style: none; }
 .deep-note-workflow-list li { position: relative; display: grid; grid-template-columns: 24px minmax(0, 1fr); gap: 9px; min-height: 58px; padding: 0 0 12px; }
 .deep-note-workflow-list li:not(:last-child)::after { position: absolute; top: 23px; bottom: 0; left: 11px; width: 1px; background: var(--color-border-soft); content: ""; }
-.deep-note-workflow-marker { z-index: 1; display: grid; place-items: center; width: 23px; height: 23px; border: 1px solid var(--color-border); border-radius: 50%; background: var(--color-surface); color: var(--color-muted); }
+.deep-note-workflow-marker { z-index: 1; display: grid; place-items: center; width: 23px; height: var(--control-height-xs); border: 1px solid var(--color-border); border-radius: 50%; background: var(--color-surface); color: var(--color-muted); }
 .deep-note-workflow-list li[data-status="active"] .deep-note-workflow-marker { border-color: var(--color-accent); background: var(--color-accent-soft); color: var(--color-accent); }
 .deep-note-workflow-list li[data-status="completed"] .deep-note-workflow-marker { border-color: var(--color-success); background: var(--color-success-soft); color: var(--color-success); }
 .deep-note-workflow-list li[data-status="paused"] .deep-note-workflow-marker,

@@ -15,8 +15,8 @@
 
 .work-library-actions button {
   display: flex;
-  height: 34px;
-  padding: 0 9px;
+  height: var(--control-height-xl);
+  padding: 0 var(--control-padding-md);
   align-items: center;
   justify-content: center;
   gap: 7px;
@@ -25,7 +25,7 @@
   color: var(--color-text-secondary);
   background: var(--color-surface-raised);
   font-size: 11px;
-  font-weight: 600;
+  font-weight: var(--weight-emphasis);
   cursor: pointer;
 }
 
@@ -42,9 +42,9 @@
 
 .work-library-search {
   display: flex;
-  height: 34px;
+  height: var(--control-height-xl);
   margin-top: 6px;
-  padding: 0 9px;
+  padding: 0 var(--control-padding-md);
   align-items: center;
   gap: 7px;
   border: 1px solid var(--color-border);
@@ -91,7 +91,7 @@
 .work-tree-heading {
   display: flex;
   min-height: 28px;
-  padding: 0 8px;
+  padding: 0 var(--control-padding-md);
   align-items: center;
   gap: 7px;
   color: var(--color-text-secondary);
@@ -100,7 +100,7 @@
 .work-tree-heading strong {
   overflow: hidden;
   font-size: 11px;
-  font-weight: 700;
+  font-weight: var(--weight-heading);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -126,7 +126,7 @@
 .work-tree-item {
   display: flex;
   width: 100%;
-  height: 34px;
+  height: var(--control-height-xl);
   padding: 0 9px 0 28px;
   align-items: center;
   gap: 9px;
@@ -146,7 +146,7 @@
 .work-tree-item-active {
   color: var(--color-text);
   background: var(--color-active);
-  font-weight: 650;
+  font-weight: var(--weight-strong);
 }
 
 .work-tree-item-active svg {
@@ -178,8 +178,8 @@
 
 .work-collection-editor input {
   min-width: 0;
-  height: 28px;
-  padding: 0 7px;
+  height: var(--control-height-md);
+  padding: 0 var(--control-padding-sm);
   border: 1px solid var(--color-accent);
   border-radius: 5px;
   outline: 0;
@@ -192,7 +192,7 @@
 .work-collection-more {
   display: grid;
   width: 26px;
-  height: 26px;
+  height: var(--control-height-sm);
   padding: 0;
   place-items: center;
   border: 0;
@@ -225,7 +225,7 @@
   margin-left: auto;
   color: var(--color-faint);
   font-size: 10px;
-  font-weight: 500;
+  font-weight: var(--weight-subtle);
 }
 
 .work-collection-more {
@@ -256,8 +256,8 @@
 .work-collection-menu button {
   display: flex;
   width: 100%;
-  height: 31px;
-  padding: 0 7px;
+  height: var(--control-height-lg);
+  padding: 0 var(--control-padding-sm);
   align-items: center;
   gap: 7px;
   border: 0;
@@ -369,7 +369,7 @@
 .work-sidebar-collapsed-popover header button {
   display: grid;
   width: 25px;
-  height: 25px;
+  height: var(--control-height-sm);
   padding: 0;
   place-items: center;
   border: 0;
@@ -386,9 +386,9 @@
 
 .work-collapsed-picker-search {
   display: flex;
-  height: 31px;
+  height: var(--control-height-lg);
   margin: 4px 0;
-  padding: 0 8px;
+  padding: 0 var(--control-padding-md);
   align-items: center;
   gap: 6px;
   border: 1px solid var(--color-border);
@@ -414,7 +414,7 @@
 .work-sidebar-collapsed-popover > button {
   display: flex;
   min-height: 32px;
-  padding: 0 8px;
+  padding: 0 var(--control-padding-md);
   align-items: center;
   gap: 8px;
   border: 0;

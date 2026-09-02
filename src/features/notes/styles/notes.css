@@ -9,7 +9,7 @@
 .pdf-notes-panel > header {
   display: flex;
   min-height: 46px;
-  padding: 0 14px;
+  padding: 0 var(--control-padding-2xl);
   align-items: center;
   gap: 7px;
   border-bottom: 1px solid var(--color-border-soft);
@@ -50,7 +50,7 @@
 }
 
 .pdf-notes-panel input {
-  height: 31px;
+  height: var(--control-height-lg);
 }
 
 .pdf-notes-panel textarea {
@@ -66,8 +66,8 @@
 
 .pdf-notes-panel form > button {
   display: inline-flex;
-  height: 31px;
-  padding: 0 10px;
+  height: var(--control-height-lg);
+  padding: 0 var(--control-padding-lg);
   align-items: center;
   justify-content: center;
   justify-self: end;
@@ -98,8 +98,8 @@
 }
 
 .pdf-notes-error button {
-  height: 24px;
-  padding: 0 7px;
+  height: var(--control-height-sm);
+  padding: 0 var(--control-padding-sm);
   border: 1px solid currentColor;
   border-radius: 4px;
   color: inherit;
@@ -155,7 +155,7 @@
 .pdf-note-list-item > div button {
   display: grid;
   width: 27px;
-  height: 27px;
+  height: var(--control-height-sm);
   padding: 0;
   place-items: center;
   border: 0;
@@ -178,7 +178,7 @@
   display: grid;
   min-width: 620px;
   min-height: 56px;
-  padding: 0 18px;
+  padding: 0 var(--control-padding-3xl);
   grid-template-columns: minmax(260px, 2fr) minmax(160px, 1fr) 120px 40px;
   align-items: center;
   gap: 12px;
@@ -240,7 +240,7 @@
 .note-library-delete {
   display: grid;
   width: 28px;
-  height: 28px;
+  height: var(--control-height-md);
   padding: 0;
   place-items: center;
   border: 0;
@@ -321,8 +321,8 @@
 
 .note-workspace > header button {
   display: inline-flex;
-  height: 30px;
-  padding: 0 9px;
+  height: var(--control-height-lg);
+  padding: 0 var(--control-padding-md);
   align-items: center;
   gap: 5px;
   border: 1px solid var(--color-border);
@@ -388,7 +388,7 @@
 
 .note-workspace-outline > header {
   display: flex;
-  padding: 0 12px;
+  padding: 0 var(--control-padding-xl);
   align-items: center;
   gap: 7px;
   border-bottom: 1px solid var(--color-border-soft);
@@ -421,7 +421,7 @@
   padding: 12px clamp(26px, 4vw, 68px) 8px;
   border-bottom: 1px solid var(--color-border-soft);
   font-size: 20px;
-  font-weight: 680;
+  font-weight: var(--weight-heading);
   flex: 0 0 58px;
 }
 

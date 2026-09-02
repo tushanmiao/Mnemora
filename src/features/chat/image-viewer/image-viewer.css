@@ -41,7 +41,7 @@
 .image-viewer-icon-button {
   display: grid;
   width: 32px;
-  height: 32px;
+  height: var(--control-height-lg);
   padding: 0;
   place-items: center;
   border: 0;

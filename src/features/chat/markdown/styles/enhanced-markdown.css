@@ -1,7 +1,7 @@
 .markdown-enhanced-action {
   display: grid;
   width: 28px;
-  height: 28px;
+  height: var(--control-height-md);
   padding: 0;
   place-items: center;
   border: 0;
@@ -82,7 +82,10 @@
 .markdown-mermaid-surface {
   --mermaid-surface-background: var(--color-surface-raised);
   --mermaid-node-fill: var(--color-surface-raised);
-  --mermaid-node-stroke: var(--color-border);
+  /* 不用 --color-border：那是给 1px UI 分隔线设计的，对表面只有约 1.6:1，
+     画成节点方框时框线几乎看不见。#8b8b99 对亮底 3.36:1、对暗底 3.93:1，
+     与 mermaidSvgPaint 里的 border 保持同一个值，避免兜底规则和内嵌样式打架。 */
+  --mermaid-node-stroke: #8b8b99;
   --mermaid-ink: var(--color-text);
   --mermaid-line: var(--color-muted);
   --radius-md: 5px;
@@ -116,35 +119,46 @@
  * template mount, leaving SVG's black default fill and start-aligned labels.
  * These app-owned rules are the display fallback; Mermaid still owns parsing,
  * layout, viewBox and edge geometry.
+ *
+ * 选择器覆盖全部会用到的图表类型，不只是 flowchart —— 原先只写 svg.flowchart，
+ * 于是状态图、时序图、类图在样式表被丢掉时会直接退回 SVG 默认的黑填充。
  */
-.markdown-mermaid-surface > svg.flowchart g.node > :is(rect, circle, ellipse, polygon, path),
-.markdown-mermaid-surface > svg.flowchart g.cluster > :is(rect, polygon, path) {
+.markdown-mermaid-surface > svg:is(.flowchart, .statediagram, .classDiagram, .sequenceDiagram, .er, .mindmap) g.node > :is(rect, circle, ellipse, polygon, path),
+.markdown-mermaid-surface > svg:is(.flowchart, .statediagram, .classDiagram, .sequenceDiagram, .er, .mindmap) g.cluster > :is(rect, polygon, path),
+/* 状态图把框画在 g.node 内层的 rect.basic 上，不是 g.node 的直接子元素，
+   所以要单独点名，否则 17 个状态框仍然拿着 1.59:1 的旧描边。 */
+.markdown-mermaid-surface > svg.statediagram :is(rect.basic, .statediagram-state > rect, .statediagram-cluster > rect),
+.markdown-mermaid-surface > svg.statediagram g.node :is(rect, circle, ellipse, polygon) {
   fill: var(--mermaid-node-fill) !important;
   stroke: var(--mermaid-node-stroke) !important;
   stroke-width: 1px;
 }
 
-.markdown-mermaid-surface > svg.flowchart :is(.node, .cluster-label, .edgeLabel) text,
-.markdown-mermaid-surface > svg.flowchart :is(.node, .cluster-label, .edgeLabel) tspan {
+.markdown-mermaid-surface > svg:is(.flowchart, .statediagram, .classDiagram, .sequenceDiagram, .er, .mindmap) :is(.node, .cluster-label, .edgeLabel, .nodeLabel, .stateLabel) text,
+.markdown-mermaid-surface > svg:is(.flowchart, .statediagram, .classDiagram, .sequenceDiagram, .er, .mindmap) :is(.node, .cluster-label, .edgeLabel, .nodeLabel, .stateLabel) tspan {
   fill: var(--mermaid-ink) !important;
   font-family: var(--reading-font-family) !important;
-  font-size: 13px !important;
   text-anchor: middle;
 }
 
-.markdown-mermaid-surface > svg.flowchart :is(path.flowchart-link, g.edgePath > path.path) {
+.markdown-mermaid-surface > svg:is(.flowchart, .statediagram, .classDiagram, .sequenceDiagram, .er, .mindmap) :is(path.flowchart-link, g.edgePath > path.path, path.transition, .relation) {
   fill: none !important;
   stroke: var(--mermaid-line) !important;
 }
 
-.markdown-mermaid-surface > svg.flowchart marker :is(path, polygon) {
+.markdown-mermaid-surface > svg:is(.flowchart, .statediagram, .classDiagram, .sequenceDiagram, .er, .mindmap) marker :is(path, polygon) {
   fill: var(--mermaid-line) !important;
   stroke: var(--mermaid-line) !important;
 }
 
-.markdown-mermaid-surface > svg.flowchart :is(.labelBkg, .edgeLabel rect, .edgeLabel polygon) {
+/*
+ * 边标签底色必须完全不透明。Mermaid 的状态图给它 opacity: 0.5，于是转移线
+ * 从文字里穿过去，标签和线糊成一团 —— 这是「乱」最直接的来源。
+ */
+.markdown-mermaid-surface > svg:is(.flowchart, .statediagram, .classDiagram, .sequenceDiagram, .er, .mindmap) :is(.labelBkg, .edgeLabel rect, .edgeLabel polygon, .edgeLabel rect.background) {
   fill: var(--mermaid-node-fill) !important;
   stroke: none !important;
+  opacity: 1 !important;
 }
 
 .markdown-mermaid-surface:focus-visible {

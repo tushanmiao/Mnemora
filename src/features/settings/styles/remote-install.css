@@ -43,7 +43,7 @@
 .remote-install-header h2 {
   margin: 0;
   font-size: 16px;
-  font-weight: 680;
+  font-weight: var(--weight-heading);
 }
 
 .remote-install-header span {
@@ -57,7 +57,7 @@
 .remote-install-close {
   display: grid;
   width: 32px;
-  height: 32px;
+  height: var(--control-height-lg);
   flex: 0 0 auto;
   padding: 0;
   place-items: center;
@@ -136,7 +136,7 @@
   overflow: hidden;
   color: var(--color-text);
   font-size: var(--font-size-row);
-  font-weight: 650;
+  font-weight: var(--weight-strong);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -234,7 +234,7 @@
 .remote-preview-caps strong {
   color: var(--color-text);
   font-size: var(--font-size-label);
-  font-weight: 620;
+  font-weight: var(--weight-emphasis);
   overflow-wrap: anywhere;
 }
 

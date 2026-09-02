@@ -4,7 +4,7 @@
 .memory-diagnostics h2 { display: flex; margin: 0; align-items: center; gap: 7px; font-size: 13px; }
 .memory-diagnostics header span { color: var(--color-muted); font-size: 10px; }
 .memory-diagnostics-actions { display: flex; align-items: center; gap: 5px; }
-.memory-diagnostics-actions select { height: 30px; padding: 0 7px; border: 1px solid var(--color-border); border-radius: 5px; color: var(--color-text); background: var(--color-surface-raised); font-size: 11px; }
+.memory-diagnostics-actions select { height: var(--control-height-lg); padding: 0 var(--control-padding-sm); border: 1px solid var(--color-border); border-radius: 5px; color: var(--color-text); background: var(--color-surface-raised); font-size: 11px; }
 .memory-diagnostics-summary { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 1px; overflow: hidden; border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-border-soft); }
 .memory-diagnostics-summary > div { display: grid; min-width: 0; padding: 9px 10px; gap: 4px; background: var(--color-surface-raised); }
 .memory-diagnostics-summary span, .memory-process-list small { color: var(--color-muted); font-size: 9px; }

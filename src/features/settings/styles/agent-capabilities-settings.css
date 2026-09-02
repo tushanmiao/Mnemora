@@ -42,7 +42,7 @@
 .agent-editor-card > header strong {
   color: var(--color-text);
   font-size: 14px;
-  font-weight: 680;
+  font-weight: var(--weight-heading);
 }
 
 .agent-editor-card > header span {
@@ -61,7 +61,7 @@
 .agent-icon-button {
   display: grid;
   width: 32px;
-  height: 32px;
+  height: var(--control-height-lg);
   flex: 0 0 auto;
   padding: 0;
   place-items: center;
@@ -91,7 +91,7 @@
   gap: 6px;
   color: var(--color-text-secondary);
   font-size: var(--font-size-label);
-  font-weight: 620;
+  font-weight: var(--weight-emphasis);
 }
 
 .agent-form-grid .agent-form-wide { grid-column: 1 / -1; }
@@ -175,7 +175,7 @@
 .agent-tool-list summary {
   padding: 9px 0 2px;
   cursor: pointer;
-  font-weight: 620;
+  font-weight: var(--weight-emphasis);
 }
 
 .agent-tool-list > div {

@@ -1,6 +1,20 @@
 const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
 const OVERFLOW_TOLERANCE_PX = 1;
 
+/**
+ * 允许把图表压缩到的最小比例。
+ *
+ * Mermaid 的 `useMaxWidth` 会把整张图等比塞进容器宽度，字号跟着一起缩。一张
+ * 2400px 宽的状态机落到 868px 的正文栏里意味着缩到 0.36 —— 13px 的字实际渲染
+ * 成 4.7px，笔画糊成一团，还会被子像素抗锯齿染上彩色伪影。那正是「同样的
+ * mermaid 在 VS Code 里好看、在这里很丑」的全部原因：VS Code 的图在宽面板里
+ * 不需要这么压。
+ *
+ * 0.85 是「13px 字仍有 11px」的下限。低于这个比例就不再压缩，改为保留尺寸并
+ * 让容器横向滚动 —— 宁可让用户横向拖，也不要给一张读不了的图。
+ */
+const MIN_LEGIBLE_SCALE = 0.85;
+
 export type MermaidIntrinsicSize = {
   x: number;
   y: number;
@@ -21,9 +35,29 @@ export function mountMermaidSvg(host: HTMLElement, source: string) {
 
   const size = readMermaidIntrinsicSize(svg);
   svg.style.height = "auto";
-  svg.style.maxWidth = "100%";
   svg.style.maxHeight = "none";
-  svg.style.width = size ? `${size.width}px` : "auto";
+
+  if (!size) {
+    svg.style.width = "auto";
+    svg.style.maxWidth = "100%";
+  } else {
+    const contentWidth = readContentWidth(host);
+    const fitScale = contentWidth > 0 ? contentWidth / size.width : 1;
+    if (fitScale >= 1) {
+      // 图比栏窄：按原尺寸显示，不放大（放大只会让线条变粗、文字发虚）。
+      svg.style.width = `${size.width}px`;
+      svg.style.maxWidth = "100%";
+    } else if (fitScale >= MIN_LEGIBLE_SCALE) {
+      // 压一点还能读：交给 maxWidth 贴合栏宽。
+      svg.style.width = `${size.width}px`;
+      svg.style.maxWidth = "100%";
+    } else {
+      // 压下去就读不了了：钉在可读下限，超出的部分由 overflow-x 滚动承载。
+      svg.style.width = `${Math.round(size.width * MIN_LEGIBLE_SCALE)}px`;
+      svg.style.maxWidth = "none";
+    }
+  }
+
   svg.setAttribute("aria-hidden", "true");
   host.replaceChildren(svg);
   return svg;
@@ -92,6 +126,9 @@ export function readMermaidIntrinsicSize(svg: SVGSVGElement): MermaidIntrinsicSi
 }
 
 function readContentWidth(host: HTMLElement) {
+  // 宿主可能还没进文档（挂载期），或在测试里是个精简替身；测不出宽度时返回 0，
+  // 调用方据此退回「按原尺寸 + maxWidth 贴合」的保守路径。
+  if (typeof host.getBoundingClientRect !== "function") return host.clientWidth ?? 0;
   const styles = host.ownerDocument.defaultView?.getComputedStyle(host);
   const horizontalInsets = styles
     ? (Number.parseFloat(styles.borderLeftWidth) || 0)

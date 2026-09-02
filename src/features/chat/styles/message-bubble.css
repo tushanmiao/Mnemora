@@ -26,7 +26,7 @@
 .message-avatar {
   display: grid;
   width: 32px;
-  height: 32px;
+  height: var(--control-height-lg);
   flex: 0 0 32px;
   place-items: center;
   border-radius: 50%;
@@ -82,7 +82,7 @@
 
 .chat-workspace-panel .message-avatar {
   width: 28px;
-  height: 28px;
+  height: var(--control-height-md);
   flex-basis: 28px;
 }
 
@@ -109,9 +109,9 @@
 
 .message-user-expand {
   display: flex;
-  height: 28px;
+  height: var(--control-height-md);
   margin: 5px -5px -5px auto;
-  padding: 0 6px;
+  padding: 0 var(--control-padding-sm);
   align-items: center;
   gap: 4px;
   border: 0;
@@ -160,7 +160,7 @@
 
 .message-edit-actions .icon-button {
   width: 30px;
-  height: 30px;
+  height: var(--control-height-lg);
 }
 
 .message-edit-save {
@@ -235,8 +235,8 @@
   display: grid;
   min-width: 0;
   max-width: min(100%, 340px);
-  height: 28px;
-  padding: 0 7px;
+  height: var(--control-height-md);
+  padding: 0 var(--control-padding-sm);
   grid-template-columns: 14px minmax(0, 1fr) auto;
   align-items: center;
   gap: 5px;
@@ -314,7 +314,7 @@
 .message-action {
   display: grid;
   width: 27px;
-  height: 27px;
+  height: var(--control-height-sm);
   padding: 0;
   place-items: center;
   border: 0;
@@ -400,7 +400,7 @@
 .message-quote-fab button {
   display: inline-flex;
   min-height: 28px;
-  padding: 0 8px;
+  padding: 0 var(--control-padding-md);
   align-items: center;
   gap: 5px;
   border: 0;

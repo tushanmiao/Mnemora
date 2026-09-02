@@ -38,7 +38,7 @@
   overflow: hidden;
   margin: 0;
   font-size: 14px;
-  font-weight: 650;
+  font-weight: var(--weight-strong);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -79,8 +79,8 @@
 .work-sort-menu button {
   display: grid;
   width: 100%;
-  height: 32px;
-  padding: 0 7px;
+  height: var(--control-height-lg);
+  padding: 0 var(--control-padding-sm);
   grid-template-columns: 16px minmax(0, 1fr) 14px;
   align-items: center;
   gap: 7px;
@@ -118,7 +118,7 @@
 
 .work-library-notice button {
   width: 24px;
-  height: 24px;
+  height: var(--control-height-sm);
   padding: 0;
   border: 0;
   border-radius: 5px;
@@ -170,7 +170,7 @@
 
 .work-library-columns span {
   overflow: hidden;
-  padding: 0 9px;
+  padding: 0 var(--control-padding-md);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -209,7 +209,7 @@
 
 .work-library-row > span {
   overflow: hidden;
-  padding: 0 9px;
+  padding: 0 var(--control-padding-md);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -228,7 +228,7 @@
 
 .work-library-title-cell strong {
   overflow: hidden;
-  font-weight: 600;
+  font-weight: var(--weight-emphasis);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -251,7 +251,7 @@
 .work-library-row-actions > button {
   display: grid;
   width: 28px;
-  height: 28px;
+  height: var(--control-height-md);
   padding: 0;
   place-items: center;
   border: 0;
@@ -304,19 +304,19 @@
 .work-library-collection-menu > span {
   display: flex;
   min-height: 28px;
-  padding: 0 7px;
+  padding: 0 var(--control-padding-sm);
   align-items: center;
   gap: 8px;
   color: var(--color-muted);
   font-size: 10px;
-  font-weight: 650;
+  font-weight: var(--weight-strong);
 }
 
 .work-library-collection-menu label {
   display: grid;
   min-width: 0;
   min-height: 30px;
-  padding: 0 7px;
+  padding: 0 var(--control-padding-sm);
   grid-template-columns: 16px minmax(0, 1fr);
   align-items: center;
   gap: 7px;
@@ -350,8 +350,8 @@
 .work-library-row-menu button {
   display: flex;
   width: 100%;
-  height: 32px;
-  padding: 0 7px;
+  height: var(--control-height-lg);
+  padding: 0 var(--control-padding-sm);
   align-items: center;
   gap: 8px;
   border: 0;
@@ -404,7 +404,7 @@
 .work-pdf-resource > button {
   display: inline-flex;
   min-height: 34px;
-  padding: 0 12px;
+  padding: 0 var(--control-padding-xl);
   align-items: center;
   justify-content: center;
   gap: 7px;
@@ -414,7 +414,7 @@
   background: var(--color-surface-raised);
   cursor: pointer;
   font-size: 11px;
-  font-weight: 600;
+  font-weight: var(--weight-emphasis);
 }
 
 .work-library-state button:hover,
@@ -456,7 +456,7 @@
   overflow-wrap: anywhere;
   color: var(--color-text-secondary);
   font-size: 14px;
-  font-weight: 650;
+  font-weight: var(--weight-strong);
 }
 
 .work-library-empty p {
@@ -491,7 +491,7 @@
   margin: 0;
   overflow-wrap: anywhere;
   font-size: 20px;
-  font-weight: 680;
+  font-weight: var(--weight-heading);
 }
 
 .work-pdf-resource dl {

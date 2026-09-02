@@ -40,6 +40,7 @@ const MANAGED_DIRECTORIES: &[(&str, &str)] = &[
     ("usage", "usage"),
     ("sync", "sync"),
     ("english", "english"),
+    ("backgrounds", "backgrounds"),
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

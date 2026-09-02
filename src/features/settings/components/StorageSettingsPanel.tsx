@@ -6,6 +6,7 @@ import {
   FolderCog,
   FolderOpen,
   HardDrive,
+  Image,
   LoaderCircle,
   MessageSquareText,
   RefreshCw,
@@ -31,6 +32,7 @@ const CATEGORY_ICONS: Record<KnownStorageCategoryId, typeof Database> = {
   usage: HardDrive,
   sync: RefreshCw,
   english: Database,
+  backgrounds: Image,
 };
 
 /**
@@ -58,6 +60,7 @@ const CATEGORY_TRANSLATION_KEYS: Record<KnownStorageCategoryId, TranslationKey> 
   usage: "storage.category.usage",
   sync: "storage.category.sync",
   english: "storage.category.english",
+  backgrounds: "storage.category.backgrounds",
 };
 
 /**

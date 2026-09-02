@@ -25,7 +25,7 @@
 .markdown-content h6 {
   margin: 20px 0 8px;
   color: var(--color-text);
-  font-weight: 680;
+  font-weight: var(--weight-heading);
   line-height: 1.35;
 }
 
@@ -129,7 +129,7 @@
 
 .markdown-code-toolbar {
   display: flex;
-  height: 34px;
+  height: var(--control-height-xl);
   padding: 0 5px 0 12px;
   align-items: center;
   justify-content: space-between;
@@ -148,7 +148,7 @@
 .markdown-copy-button {
   display: grid;
   width: 28px;
-  height: 28px;
+  height: var(--control-height-md);
   padding: 0;
   place-items: center;
   border: 0;
@@ -245,7 +245,7 @@
 .markdown-content th {
   color: var(--color-text);
   background: var(--color-hover);
-  font-weight: 650;
+  font-weight: var(--weight-strong);
 }
 
 .markdown-content tbody tr:nth-child(even) {

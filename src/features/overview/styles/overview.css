@@ -22,7 +22,7 @@
   margin: 0;
   color: var(--color-text);
   font-size: 26px;
-  font-weight: 680;
+  font-weight: var(--weight-heading);
   line-height: 1.2;
 }
 
@@ -37,7 +37,7 @@
 .overview-icon-button {
   display: grid;
   width: 34px;
-  height: 34px;
+  height: var(--control-height-xl);
   flex: 0 0 34px;
   padding: 0;
   place-items: center;
@@ -66,7 +66,7 @@
 .overview-state button {
   display: inline-flex;
   min-height: 34px;
-  padding: 0 12px;
+  padding: 0 var(--control-padding-xl);
   align-items: center;
   justify-content: center;
   gap: 7px;
@@ -76,7 +76,7 @@
   background: var(--color-surface-raised);
   cursor: pointer;
   font-size: 12px;
-  font-weight: 600;
+  font-weight: var(--weight-emphasis);
 }
 
 .overview-actions button:hover,
@@ -116,7 +116,7 @@
 .overview-index-heading h2 {
   margin: 0;
   font-size: 16px;
-  font-weight: 680;
+  font-weight: var(--weight-heading);
 }
 
 .overview-index-heading > div > span {
@@ -160,7 +160,7 @@
   color: var(--color-muted);
   background: var(--color-surface-layer);
   font-size: 11px;
-  font-weight: 650;
+  font-weight: var(--weight-strong);
   line-height: 1.4;
 }
 
@@ -224,7 +224,7 @@
   z-index: 1;
   display: grid;
   width: 24px;
-  height: 22px;
+  height: var(--control-height-xs);
   place-items: center;
   color: var(--color-muted);
   background: var(--color-surface);
@@ -235,7 +235,7 @@
 .overview-activity-icon {
   display: grid;
   width: 28px;
-  height: 28px;
+  height: var(--control-height-md);
   place-items: center;
   border-radius: var(--radius-control);
   color: var(--overview-item-accent);
@@ -257,7 +257,7 @@
 
 .overview-activity-copy strong {
   font-size: 13px;
-  font-weight: 640;
+  font-weight: var(--weight-strong);
 }
 
 .overview-activity-copy span {
@@ -276,7 +276,7 @@
 
 .overview-activity-meta > span {
   color: var(--overview-item-accent);
-  font-weight: 650;
+  font-weight: var(--weight-strong);
 }
 
 .overview-activity-open {

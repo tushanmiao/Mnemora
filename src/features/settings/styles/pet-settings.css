@@ -78,7 +78,7 @@
 .pet-preview-bubble strong {
   overflow: hidden;
   font-size: var(--font-size-label);
-  font-weight: 650;
+  font-weight: var(--weight-strong);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -106,7 +106,7 @@
   margin: 0;
   color: var(--color-text);
   font-size: clamp(19px, 2vw, 25px);
-  font-weight: 700;
+  font-weight: var(--weight-heading);
   line-height: 1.2;
 }
 
@@ -144,7 +144,7 @@
   overflow: hidden;
   color: var(--color-text);
   font-size: var(--font-size-label);
-  font-weight: 620;
+  font-weight: var(--weight-emphasis);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -240,7 +240,7 @@
   white-space: nowrap;
 }
 
-.pet-library-copy strong { font-size: var(--font-size-row); font-weight: 650; }
+.pet-library-copy strong { font-size: var(--font-size-row); font-weight: var(--weight-strong); }
 .pet-library-copy small { color: var(--color-muted); font-size: var(--font-size-micro); }
 
 /* 右侧留出 40px 给绝对定位的删除按钮，否则长文案会被压在按钮底下 */
@@ -258,7 +258,7 @@
   bottom: 7px;
   display: grid;
   width: 26px;
-  height: 26px;
+  height: var(--control-height-sm);
   padding: 0;
   place-items: center;
   border: 0;

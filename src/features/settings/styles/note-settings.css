@@ -41,7 +41,7 @@
   margin: 0;
   color: var(--color-text);
   font-size: 1.45em;
-  font-weight: 680;
+  font-weight: var(--weight-heading);
   line-height: 1.25;
 }
 

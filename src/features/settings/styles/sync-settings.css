@@ -80,7 +80,7 @@
 .sync-result-row strong {
   color: var(--color-text);
   font-size: var(--font-size-label);
-  font-weight: 620;
+  font-weight: var(--weight-emphasis);
   overflow-wrap: anywhere;
 }
 

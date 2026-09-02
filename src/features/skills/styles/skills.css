@@ -23,8 +23,8 @@
 .skills-header-actions { display: flex; margin-left: auto; align-items: center; gap: 6px; }
 .skills-header-actions > button:not(.icon-button) {
   display: inline-flex;
-  height: 34px;
-  padding: 0 11px;
+  height: var(--control-height-xl);
+  padding: 0 var(--control-padding-lg);
   align-items: center;
   gap: 6px;
   border: 1px solid var(--color-border);
@@ -44,8 +44,8 @@
 .skills-search {
   display: flex;
   width: min(360px, 42%);
-  height: 36px;
-  padding: 0 10px;
+  height: var(--control-height-xl);
+  padding: 0 var(--control-padding-lg);
   align-items: center;
   gap: 8px;
   border: 1px solid var(--color-border);
@@ -56,8 +56,8 @@
 .skills-search input { width: 100%; border: 0; outline: 0; color: var(--color-text); background: transparent; }
 .skills-filters { display: flex; gap: 3px; }
 .skills-filters button {
-  height: 32px;
-  padding: 0 9px;
+  height: var(--control-height-lg);
+  padding: 0 var(--control-padding-md);
   border: 0;
   border-radius: 5px;
   color: var(--color-muted);
@@ -100,13 +100,13 @@
 .skill-row-main { display: grid; min-width: 0; padding: 12px 14px; align-content: center; flex: 1; gap: 4px; border: 0; background: transparent; cursor: pointer; text-align: left; }
 .skill-row-main strong { font-size: 13px; }
 .skill-row-main small { overflow: hidden; color: var(--color-text-secondary); font-size: 12px; line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }
-.skill-source { width: fit-content; color: var(--color-accent); font-size: 10px; font-weight: 650; }
+.skill-source { width: fit-content; color: var(--color-accent); font-size: 10px; font-weight: var(--weight-strong); }
 .skill-meta { overflow: hidden; color: var(--color-muted); font-family: Consolas, monospace; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
-.skill-row-actions { display: flex; padding: 0 12px; align-items: center; gap: 6px; }
+.skill-row-actions { display: flex; padding: 0 var(--control-padding-xl); align-items: center; gap: 6px; }
 .skill-delete { color: var(--color-danger); }
-.skill-restore { height: 30px; padding: 0 9px; border: 1px solid var(--color-border); border-radius: 5px; background: transparent; cursor: pointer; font-size: 11px; }
+.skill-restore { height: var(--control-height-lg); padding: 0 var(--control-padding-md); border: 1px solid var(--color-border); border-radius: 5px; background: transparent; cursor: pointer; font-size: 11px; }
 
-.skill-switch { position: relative; width: 34px; height: 20px; cursor: pointer; }
+.skill-switch { position: relative; width: 34px; height: var(--control-height-xs); cursor: pointer; }
 .skill-switch input { position: absolute; opacity: 0; }
 .skill-switch span { position: absolute; inset: 0; border-radius: 10px; background: var(--color-border); transition: background 140ms ease; }
 .skill-switch span::after { position: absolute; top: 3px; left: 3px; width: 14px; height: 14px; border-radius: 50%; background: #fff; content: ""; transition: transform 140ms ease; }
@@ -129,8 +129,8 @@
 .skill-provenance-heading h3 { margin: 0; }
 .skill-provenance-heading button {
   display: inline-flex;
-  height: 30px;
-  padding: 0 8px;
+  height: var(--control-height-lg);
+  padding: 0 var(--control-padding-md);
   align-items: center;
   gap: 5px;
   border: 1px solid var(--color-border);
@@ -143,7 +143,7 @@
 .skill-provenance-heading button:hover { color: var(--color-text); background: var(--color-active); }
 .skill-provenance dl { margin: 10px 0 0; }
 .skill-provenance p { display: grid; margin: 10px 0 0; gap: 3px; color: var(--color-text-secondary); font-size: 11px; line-height: 1.55; }
-.skill-provenance p strong { color: var(--color-muted); font-size: 10px; font-weight: 600; }
+.skill-provenance p strong { color: var(--color-muted); font-size: 10px; font-weight: var(--weight-emphasis); }
 .skill-detail pre { max-height: 420px; margin: 0; padding: 12px; overflow: auto; border: 1px solid var(--color-border-soft); border-radius: 6px; color: var(--color-text-secondary); background: var(--color-app); font: 11px/1.55 Consolas, monospace; white-space: pre-wrap; word-break: break-word; }
 .skill-detail ul { display: grid; margin: 0; padding: 0; gap: 5px; list-style: none; }
 .skill-detail li { display: flex; min-width: 0; justify-content: space-between; gap: 10px; color: var(--color-text-secondary); font-size: 11px; }

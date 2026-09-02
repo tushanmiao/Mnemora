@@ -125,9 +125,9 @@
 .work-note-conversation-switcher > button {
   display: grid;
   width: 100%;
-  height: 30px;
+  height: var(--control-height-lg);
   min-width: 0;
-  padding: 0 7px;
+  padding: 0 var(--control-padding-sm);
   grid-template-columns: 15px minmax(0, 1fr) 13px;
   align-items: center;
   gap: 5px;
@@ -294,8 +294,8 @@
 .work-literature-scope-button,
 .work-literature-page-button {
   display: inline-flex;
-  height: 28px;
-  padding: 0 7px;
+  height: var(--control-height-md);
+  padding: 0 var(--control-padding-sm);
   align-items: center;
   gap: 5px;
   border: 1px solid var(--color-border);
@@ -468,7 +468,7 @@
 
 .work-context-rail .icon-button {
   width: 32px;
-  height: 32px;
+  height: var(--control-height-lg);
 }
 
 .work-context-tool-list {
@@ -534,8 +534,8 @@
 .work-context-menu button {
   display: flex;
   width: 100%;
-  height: 34px;
-  padding: 0 8px;
+  height: var(--control-height-xl);
+  padding: 0 var(--control-padding-md);
   align-items: center;
   gap: 8px;
   border: 0;
@@ -574,7 +574,7 @@
 .work-context-empty h2 {
   color: var(--color-text-secondary);
   font-size: 13px;
-  font-weight: 650;
+  font-weight: var(--weight-strong);
 }
 
 .work-context-empty p {
@@ -607,7 +607,7 @@
 
 .work-context-info h2 {
   font-size: 13px;
-  font-weight: 650;
+  font-weight: var(--weight-strong);
 }
 
 .work-context-info header span {
@@ -684,7 +684,7 @@
 }
 
 .work-library-item-info input {
-  height: 32px;
+  height: var(--control-height-lg);
 }
 
 .work-library-item-info textarea {
@@ -713,8 +713,8 @@
 .work-library-info-favorite {
   display: flex;
   width: 100%;
-  height: 32px;
-  padding: 0 8px;
+  height: var(--control-height-lg);
+  padding: 0 var(--control-padding-md);
   align-items: center;
   gap: 6px;
   border: 1px solid var(--color-border);
@@ -743,7 +743,7 @@
 }
 
 .work-library-item-info legend {
-  padding: 0 4px;
+  padding: 0 var(--control-padding-xs);
   color: var(--color-muted);
   font-size: 10px;
 }
@@ -782,7 +782,7 @@
 .work-library-info-save {
   display: flex;
   width: 100%;
-  height: 34px;
+  height: var(--control-height-xl);
   align-items: center;
   justify-content: center;
   gap: 7px;
@@ -792,7 +792,7 @@
   background: var(--color-accent);
   cursor: pointer;
   font-size: 11px;
-  font-weight: 650;
+  font-weight: var(--weight-strong);
 }
 
 .work-library-info-save:hover {

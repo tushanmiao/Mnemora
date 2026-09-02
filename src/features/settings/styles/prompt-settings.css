@@ -42,7 +42,7 @@
   gap: 6px;
   color: var(--color-text-secondary);
   font-size: var(--font-size-label);
-  font-weight: 620;
+  font-weight: var(--weight-emphasis);
 }
 
 .prompt-settings-textarea {
@@ -106,7 +106,7 @@
 .prompt-settings-delete {
   display: grid;
   width: 30px;
-  height: 30px;
+  height: var(--control-height-lg);
   padding: 0;
   place-items: center;
   border: 0;

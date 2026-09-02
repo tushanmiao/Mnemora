@@ -10,6 +10,61 @@
   --space-6: 24px;
   --space-8: 32px;
   --space-10: 40px;
+
+  /*
+   * 密度阶梯：控件高度与内边距的唯一来源。
+   *
+   * 之前这两个维度散落在 52 个 CSS 文件里 —— 控件高度有 18 种取值且几乎连续
+   * （20–44px 只缺 7 个整数），水平内边距 17 种（7/8/9/10/11px 各十几处）。
+   * 那不是设计决策，是每次写组件时随手估的，后果是主题改不到密度。
+   *
+   * 阶梯取 2px 步长而不是 4px：4px 步长会让 87/151 处控件位移、最大 4px；
+   * 2px 只动 20 处、最大 1px。位移越小，回归时需要逐条确认的条目越少。
+   *
+   * 命名按用途而不是按数值（`--control-height-md` 而非 `--h-32`），
+   * 这样阶段三换密度档位时只改这里的值，组件不用动。
+   */
+  --control-height-xs: 20px;   /* 极小图标按钮：色板、开关内的圆点 */
+  --control-height-sm: 24px;   /* 小图标按钮：卡片角上的删除、展开 */
+  --control-height-md: 28px;   /* 工具栏按钮、标签页 */
+  --control-height-lg: 30px;   /* 输入框、下拉、常规按钮 */
+  --control-height-xl: 34px;   /* 主按钮、列表行 */
+  --control-height-2xl: 38px;  /* 大输入框、搜索栏 */
+  --control-height-3xl: 42px;  /* 头部工具条 */
+
+  --control-padding-2xs: 2px;
+  --control-padding-xs: 4px;
+  --control-padding-sm: 6px;
+  --control-padding-md: 8px;
+  --control-padding-lg: 10px;
+  --control-padding-xl: 12px;
+  --control-padding-2xl: 14px;
+  --control-padding-3xl: 16px;
+  /* 20/24px 保留自己的档位：它们是容器级留白（页头、面板边距），
+     不是控件内边距。归并到 16px 会让页头明显变窄，属于设计变更而非收敛。 */
+  --control-padding-4xl: 20px;
+  --control-padding-5xl: 24px;
+
+  /*
+   * 字重节奏：三级 + 一个正文级。
+   *
+   * 收敛前有 13 种取值，其中 500/550/590/610/640/660/720 各只用过一次 ——
+   * 那不是层次设计，是每次写组件时随手填的。层次靠三级就够：正文、强调、标题。
+   *
+   * 取值沿用出现最多的三个（600/650/680），因为它们已经占了 79/119 处，
+   * 收敛到它们身上位移最小。`--weight-body: 400` 给需要显式压回常规的地方
+   * （下拉里的 API 名、textarea 继承字重时）。
+   *
+   * 阶段三换字重档位（flat / moderate / strong）时只改这四个值。
+   */
+  --weight-body: 400;
+  /* 500/550 那两处夹在正文与强调之间（小字号的次要标签），按最近档位会被拉到
+     600 而明显变粗，所以留一个中间档。 */
+  --weight-subtle: 525;
+  --weight-emphasis: 600;
+  --weight-strong: 650;
+  --weight-heading: 680;
+
   --radius-control: 5px;
   --radius-panel: 7px;
   --radius-pill: 999px;
@@ -101,6 +156,21 @@
   --chart-series-6: #008300;
   --chart-series-7: #4a3aa7;
   --chart-series-8: #e34948;
+
+  /*
+   * 「部分-整体」型堆叠条的次级色。
+   *
+   * 用量页的 Token 构成是两层归属：输入 = 新输入 + 缓存读取，
+   * 输出 = 回答 + 思考。分类色只编码「哪一段」，表达不了这种从属关系，
+   * 所以次级项沿主色同一色相压低明度：同相表示同组，明度区分子项。
+   *
+   * 实测（OKLab ΔE×100 / WCAG）：相邻段最差 ΔE 16.0，四段对白底
+   * 3.20–8.37:1 全部过 3:1，且组内 16.0 < 跨组 33.6 —— 分组看得出来。
+   * 旧写法借用 --workspace-* 语义色，回答↔思考只有 ΔE 7.5、缓存读取对
+   * 表面 1.16:1 几乎隐形，那才是「区分不明显」的根因。
+   */
+  --chart-series-1-sub: #1f4e89;
+  --chart-series-2-sub: #9e5235;
 
   --shadow-menu: 0 10px 28px rgb(35 48 40 / 14%);
   --shadow-panel: -12px 0 28px rgb(35 48 40 / 14%);
@@ -198,6 +268,13 @@
   --chart-series-6: #008300;
   --chart-series-7: #9085e9;
   --chart-series-8: #e66767;
+
+  /*
+   * 暗色下次级项要往「更浅」走：同色相压暗会撞上暗表面，对比过不了 3:1。
+   * 实测相邻段最差 ΔE 16.0，四段对 #2f2f3a 为 3.40–6.51:1，组内 16.0 < 跨组 31.8。
+   */
+  --chart-series-1-sub: #83b9fe;
+  --chart-series-2-sub: #f99977;
 
   --shadow-menu: 0 12px 30px rgb(0 0 0 / 34%);
   --shadow-panel: -12px 0 28px rgb(0 0 0 / 34%);

@@ -382,7 +382,10 @@ export function mermaidSvgPaint(host: HTMLElement): MermaidSvgPaint {
   const alternateCanvas = dark ? "#30363c" : "#eceff1";
   const foreground = readColor("--color-text", dark ? "#edf0f2" : "#202427");
   const mutedForeground = readColor("--color-muted", dark ? "#adb7bc" : "#687276");
-  const border = readColor("--color-border", dark ? "#626a74" : "#d4d8dc");
+  // 图表描边不能借用 `--color-border`：那个令牌是给 1px UI 分隔线设计的，
+  // 对表面只有约 1.6:1，画成节点方框时框线几乎看不见，图看着像一堆飘着的文字。
+  // #8b8b99 对白底 3.36:1、对 #2f2f3a 暗底 3.93:1，两边都过 3:1。
+  const border = "#8b8b99";
   const line = dark ? "#969ea5" : "#62686e";
   return {
     canvas,

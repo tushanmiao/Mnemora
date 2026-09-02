@@ -38,8 +38,8 @@
 }
 
 .memory-tabs button {
-  height: 31px;
-  padding: 0 11px;
+  height: var(--control-height-lg);
+  padding: 0 var(--control-padding-lg);
   border: 0;
   border-radius: var(--radius-control);
   color: var(--color-muted);

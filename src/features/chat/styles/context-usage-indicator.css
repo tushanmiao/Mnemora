@@ -5,7 +5,7 @@
 .context-usage-trigger {
   display: grid;
   width: 34px;
-  height: 34px;
+  height: var(--control-height-xl);
   padding: 0;
   place-items: center;
   border: 0;
@@ -20,7 +20,7 @@
 .context-usage-ring {
   display: grid;
   width: 20px;
-  height: 20px;
+  height: var(--control-height-xs);
   padding: 4px;
   place-items: center;
   border-radius: 50%;

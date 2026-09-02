@@ -5,8 +5,8 @@
 
 .debug-enable-button {
   display: inline-flex;
-  height: 36px;
-  padding: 0 11px;
+  height: var(--control-height-xl);
+  padding: 0 var(--control-padding-lg);
   align-items: center;
   gap: 8px;
   border: 1px solid var(--color-border);

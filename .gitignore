@@ -33,6 +33,10 @@ theme-preview/
 usage-preview/
 commit-paths.txt
 
+# Scratch space for render probes and other intermediate artifacts.
+# Cleaned up manually, never committed.
+/temp/
+
 # Desktop agent session settings
 .claude/
 __pycache__/

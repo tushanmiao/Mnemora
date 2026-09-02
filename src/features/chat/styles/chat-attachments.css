@@ -40,7 +40,7 @@
 .chat-attachment-image-fallback,
 .chat-attachment-file-icon {
   width: 44px;
-  height: 44px;
+  height: var(--control-height-3xl);
   flex: 0 0 44px;
   border-radius: 5px;
 }
@@ -92,7 +92,7 @@
 .chat-attachment-copy strong {
   color: var(--color-text);
   font-size: 12px;
-  font-weight: 600;
+  font-weight: var(--weight-emphasis);
 }
 
 .chat-attachment-copy small {
@@ -107,7 +107,7 @@
   right: 4px;
   display: grid;
   width: 24px;
-  height: 24px;
+  height: var(--control-height-sm);
   padding: 0;
   place-items: center;
   border: 0;

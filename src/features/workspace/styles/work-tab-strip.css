@@ -1,7 +1,7 @@
 .work-tab-strip {
   display: flex;
   min-width: 0;
-  height: 44px;
+  height: var(--control-height-3xl);
   padding: 0 8px 0 10px;
   align-items: center;
   gap: 4px;
@@ -28,7 +28,7 @@
   display: flex;
   min-width: 126px;
   max-width: 220px;
-  height: 36px;
+  height: var(--control-height-xl);
   margin-top: 7px;
   align-items: center;
   border: 1px solid transparent;
@@ -63,7 +63,7 @@
   display: flex;
   min-width: 0;
   height: 100%;
-  padding: 0 10px;
+  padding: 0 var(--control-padding-lg);
   align-items: center;
   flex: 1;
   gap: 7px;
@@ -72,7 +72,7 @@
   background: transparent;
   cursor: pointer;
   font-size: 12px;
-  font-weight: 600;
+  font-weight: var(--weight-emphasis);
   text-align: left;
 }
 
@@ -91,7 +91,7 @@
   z-index: 1;
   display: grid;
   width: 24px;
-  height: 24px;
+  height: var(--control-height-sm);
   margin-right: 4px;
   padding: 0;
   place-items: center;
@@ -131,8 +131,8 @@
 .work-tab-overflow-menu button {
   display: flex;
   width: 100%;
-  height: 34px;
-  padding: 0 8px;
+  height: var(--control-height-xl);
+  padding: 0 var(--control-padding-md);
   align-items: center;
   gap: 8px;
   border: 0;

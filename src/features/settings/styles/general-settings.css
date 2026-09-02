@@ -27,7 +27,7 @@
 .theme-preset-group-label {
   color: var(--color-faint);
   font-size: var(--font-size-meta);
-  font-weight: 600;
+  font-weight: var(--weight-emphasis);
   letter-spacing: 0.06em;
 }
 
@@ -140,7 +140,7 @@
   flex-direction: column;
   justify-content: center;
   flex: 1;
-  padding: 0 4px;
+  padding: 0 var(--control-padding-xs);
   gap: 3px;
   border: 1px solid var(--preset-border, rgb(0 0 0 / 10%));
   border-radius: var(--preset-radius, 5px);
@@ -201,8 +201,8 @@
 
 .editable-range-value input {
   width: 64px;
-  height: 30px;
-  padding: 0 6px;
+  height: var(--control-height-lg);
+  padding: 0 var(--control-padding-sm);
   border: 1px solid var(--color-accent);
   border-radius: var(--radius-control);
   outline: 0;
@@ -273,6 +273,126 @@
   width: min(300px, 100%);
 }
 
+/* ── 背景图片选择器 ── */
+
+.background-picker {
+  display: grid;
+  width: 100%;
+  gap: 10px;
+}
+
+.background-picker-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.background-picker-note {
+  color: var(--color-faint);
+  font-size: var(--font-size-meta);
+}
+
+.background-picker-grid {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  /* 缩略图按 16:9 排，与全屏壁纸的比例一致，选的时候就能预判裁切 */
+  grid-template-columns: repeat(auto-fill, minmax(128px, 1fr));
+  gap: 8px;
+  list-style: none;
+}
+
+.background-picker-grid li {
+  position: relative;
+  aspect-ratio: 16 / 9;
+}
+
+.background-picker-thumb {
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  background-position: center;
+  background-size: cover;
+  background-repeat: no-repeat;
+  cursor: pointer;
+}
+
+.background-picker-grid li[data-active="true"] .background-picker-thumb {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 2px var(--color-accent-soft);
+}
+
+/* 删除按钮只在悬停或键盘聚焦时出现：常驻会盖住缩略图内容 */
+.background-picker-remove {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  display: grid;
+  width: 22px;
+  height: var(--control-height-xs);
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: var(--radius-control);
+  opacity: 0;
+  color: #ffffff;
+  background: rgb(0 0 0 / 55%);
+  cursor: pointer;
+  transition: opacity var(--duration-fast) var(--ease-out);
+}
+
+.background-picker-grid li:hover .background-picker-remove,
+.background-picker-remove:focus-visible {
+  opacity: 1;
+}
+
+/* ── 渐变预设 ── */
+
+.background-preset-grid {
+  display: grid;
+  width: 100%;
+  grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
+  gap: 8px;
+}
+
+.background-preset {
+  display: grid;
+  padding: 0;
+  gap: 5px;
+  border: 0;
+  color: var(--color-text-secondary);
+  background: transparent;
+  font-size: var(--font-size-meta);
+  cursor: pointer;
+  text-align: center;
+}
+
+.background-preset-swatch {
+  height: var(--control-height-3xl);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+}
+
+.background-preset[data-active="true"] {
+  color: var(--color-text);
+}
+
+.background-preset[data-active="true"] .background-preset-swatch {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 2px var(--color-accent-soft);
+}
+
+.background-preset:focus-visible .background-preset-swatch {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .background-picker-remove { transition: none; }
+}
+
 .profile-avatar-row,
 .working-directory-row {
   display: flex;
@@ -284,7 +404,7 @@
 .profile-avatar-preview {
   display: grid;
   width: 38px;
-  height: 38px;
+  height: var(--control-height-2xl);
   flex: 0 0 38px;
   overflow: hidden;
   place-items: center;
@@ -293,7 +413,7 @@
   color: var(--color-text-secondary);
   background: var(--color-sidebar);
   font-size: var(--font-size-label);
-  font-weight: 700;
+  font-weight: var(--weight-heading);
 }
 
 .profile-avatar-preview img {

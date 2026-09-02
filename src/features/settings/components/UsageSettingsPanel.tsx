@@ -179,11 +179,14 @@ export function UsageSettingsPanel() {
   const freshInput = Math.max(0, stats.inputTokens - cachedInput);
   const visibleOutput = Math.max(0, stats.outputTokens - stats.reasoningTokens);
   const compositionTotal = Math.max(1, freshInput + cachedInput + visibleOutput + stats.reasoningTokens);
+  // 配色编码的是两层归属：输入两段同为蓝相、输出两段同为橙相，次级项压一档明度。
+  // 旧写法借用 --workspace-* 语义色，回答↔思考只有 ΔE 7.5、缓存读取对表面 1.16:1，
+  // 那才是「四段区分不明显」的根因。取值与实测数据见 tokens.css。
   const composition = [
-    { key: "fresh", label: "新输入", value: freshInput, color: "var(--workspace-work)" },
-    { key: "cached", label: "缓存读取", value: cachedInput, color: "var(--workspace-work-soft)" },
-    { key: "answer", label: "回答", value: visibleOutput, color: "var(--workspace-chat)" },
-    { key: "reasoning", label: "思考", value: stats.reasoningTokens, color: "var(--workspace-notes)" },
+    { key: "fresh", label: "新输入", value: freshInput, color: "var(--chart-series-1)" },
+    { key: "cached", label: "缓存读取", value: cachedInput, color: "var(--chart-series-1-sub)" },
+    { key: "answer", label: "回答", value: visibleOutput, color: "var(--chart-series-2)" },
+    { key: "reasoning", label: "思考", value: stats.reasoningTokens, color: "var(--chart-series-2-sub)" },
   ].filter((part) => part.value > 0);
 
   const failedRequests = stats.failedRequests + stats.stoppedRequests;
