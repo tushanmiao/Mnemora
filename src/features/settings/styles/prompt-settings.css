@@ -50,7 +50,7 @@
   min-height: 132px;
   padding: 9px 11px;
   resize: vertical;
-  border: 1px solid var(--color-border);
+  border: var(--control-border);
   border-radius: var(--radius-control);
   outline: 0;
   color: var(--color-text);

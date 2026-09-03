@@ -30,7 +30,7 @@
   padding: 0 var(--control-padding-lg);
   align-items: center;
   gap: 6px;
-  border: 1px solid var(--color-border);
+  border: var(--control-border);
   border-radius: 5px;
   color: var(--color-text-secondary);
   background: transparent;
@@ -170,6 +170,7 @@
 
 .notes-sort-control:focus-within {
   border-color: var(--color-accent);
+  box-shadow: var(--control-focus-ring);
 }
 
 .notes-sort-control select {
@@ -264,10 +265,10 @@
   width: 100%;
   height: var(--control-height-md);
   padding: 0 var(--control-padding-sm);
-  border: 1px solid var(--color-border);
+  border: var(--control-border);
   border-radius: 4px;
   color: var(--color-text-secondary);
-  background: var(--color-surface-raised);
+  background: var(--control-fill);
   font-size: 10px;
 }
 

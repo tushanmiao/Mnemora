@@ -113,7 +113,9 @@
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 14px;
-  border: 1px solid var(--color-border-soft);
+  border: var(--surface-border-soft);
+
+  box-shadow: var(--surface-shadow);
   border-radius: var(--radius-panel);
   background: var(--color-surface-raised);
 }
@@ -215,7 +217,9 @@
   padding: 12px 14px;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 12px 20px;
-  border: 1px solid var(--color-border-soft);
+  border: var(--surface-border-soft);
+
+  box-shadow: var(--surface-shadow);
   border-radius: var(--radius-panel);
   background: var(--color-surface-raised);
 }

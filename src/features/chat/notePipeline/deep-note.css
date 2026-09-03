@@ -56,7 +56,7 @@
 .deep-note-section-item em { color: var(--color-accent); font-size: 11px; font-style: normal; }
 
 .deep-note-requirement { display: grid; gap: 7px; padding: 0 22px 18px; font-size: 12px; font-weight: var(--weight-emphasis); }
-.deep-note-requirement textarea { min-height: 78px; resize: vertical; padding: 10px 12px; border: 1px solid var(--color-border); border-radius: 10px; background: var(--color-app); color: var(--color-text); font: inherit; font-weight: var(--weight-body); line-height: 1.5; }
+.deep-note-requirement textarea { min-height: 78px; resize: vertical; padding: 10px 12px; border: var(--control-border); border-radius: 10px; background: var(--color-app); color: var(--color-text); font: inherit; font-weight: var(--weight-body); line-height: 1.5; }
 .deep-note-dialog-footer { align-items: center; border-top: 1px solid var(--color-border-soft); color: var(--color-muted); font-size: 12px; }
 .deep-note-dialog-footer > div { display: flex; gap: 9px; }
 
@@ -103,10 +103,10 @@
 .note-edit-diff-toolbar span { margin-right: auto; }
 .note-edit-diff-toolbar button {
   padding: 4px 8px;
-  border: 1px solid var(--color-border);
+  border: var(--control-border);
   border-radius: 5px;
   color: var(--color-text-secondary);
-  background: var(--color-surface-raised);
+  background: var(--control-fill);
   cursor: pointer;
   font-size: 10px;
 }
@@ -139,6 +139,7 @@
 .note-edit-source-units > div:first-child svg { color: var(--color-accent); }
 .note-edit-source-units > div:first-child span { color: var(--color-muted); }
 .note-edit-source-unit-list { display: flex; flex-wrap: wrap; gap: 6px; }
-.note-edit-source-unit-list span { display: inline-flex; align-items: center; gap: 5px; padding: 5px 8px; border: 1px solid var(--color-border-soft); border-radius: 999px; color: var(--color-text-secondary); background: var(--color-surface-raised); font-size: 10px; }
+.note-edit-source-unit-list span { display: inline-flex; align-items: center; gap: 5px; padding: 5px 8px; border: var(--surface-border-soft);
+ box-shadow: var(--surface-shadow); border-radius: 999px; color: var(--color-text-secondary); background: var(--color-surface-raised); font-size: 10px; }
 .note-edit-source-unit-list span[data-status="covered"] svg { color: var(--color-success); }
 .note-edit-source-units small { color: var(--color-muted); line-height: 1.5; }

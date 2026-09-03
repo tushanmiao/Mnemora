@@ -29,7 +29,9 @@
   display: grid;
   padding: 20px clamp(18px, 2vw, 26px) 22px;
   gap: 10px;
-  border: 1px solid var(--color-border);
+  border: var(--surface-border);
+
+  box-shadow: var(--surface-shadow);
   border-radius: var(--radius-panel);
   background: var(--color-surface-raised);
   font-family: var(--note-font-family);

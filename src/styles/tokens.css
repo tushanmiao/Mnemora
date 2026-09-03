@@ -73,6 +73,41 @@
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
 }
 .app-shell {
+  /*
+   * 表面策略：决定「靠什么区分一块表面的边界」。
+   *
+   * 三种互斥取值，由主题家族在 themes.css 里覆盖。默认 outlined —— 那是当前
+   * 全应用的既有形态，所以默认值不改变任何观感。
+   *
+   *   outlined  1px 可见边框 + 无阴影 + 控件无填充   工程感、信息密度高
+   *   elevated  无边框 + 明显投影 + 控件无填充       卡片感、层次清楚
+   *   filled    无边框 + 无阴影 + 控件有填充底色      平面感、安静
+   *
+   * 一处必须说明的边界：这三者**都不满足** WCAG 1.4.11 的 3:1 非文本对比。
+   * 实测 21/22 个主题组合的 `--border-default` 只有 1.5–1.7:1，候选填充底色
+   * 也在 1.1–1.7:1 —— 两者同一量级。也就是说 filled 并没有比 outlined
+   * 更不可访问，它们共享同一个既有基线。把基线提到 3:1 是一次独立的
+   * 可访问性改造（会改变全应用 376 处边框的外观），不在主题重构范围内；
+   * 当前由「高对比」主题承担合规职责，它是唯一 border/raised ≥ 3:1 的一套。
+   * 体检脚本：temp/audit-border-contrast.mjs。
+   */
+  --surface-border: 1px solid var(--color-border);
+  --surface-border-soft: 1px solid var(--color-border-soft);
+  --surface-shadow: none;
+  /* 表面自有底色。filled 下要与页面底色拉开色差，其余策略等同于 raised。 */
+  --surface-fill: var(--color-surface-raised);
+
+  /*
+   * 控件静息底色。
+   *
+   * outlined/elevated 下等于表面色（控件靠边框区分）；filled 下换成一层
+   * 可感知的填充，边框同时收为 0。聚焦态一律靠 box-shadow 环表达 ——
+   * 有 8 处聚焦态只改 border-color，filled 下会失去提示，所以那些必须补环。
+   */
+  --control-fill: var(--color-surface-raised);
+  --control-border: 1px solid var(--color-border);
+  --control-focus-ring: 0 0 0 2px var(--color-accent-soft);
+
   --ui-font-family: "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
   --ui-font-size: 14px;
   --font-size-micro: 10px;

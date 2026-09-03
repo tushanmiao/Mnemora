@@ -152,6 +152,13 @@ def emit(name, spec):
         mat = spec.get("material", {})
         for k, v in (mat.get("dark" if dark else "light", {})).items():
             lines.append(f"  --{k}: {v};")
+        # 家族维度：密度、表面策略、字重节奏。空 dict 表示「用 tokens.css 的默认档」，
+        # 所以 comfortable / outlined / moderate 不会产出任何覆盖 —— 单一来源。
+        import presets as _P
+        for group, key in (("DENSITY", "density"), ("STRATEGY", "strategy"), ("WEIGHT", "weight")):
+            table = getattr(_P, group).get(spec.get(key), {})
+            for k, v in table.items():
+                lines.append(f"  --{k}: {v};")
         lines.append("}")
         out.append("\n".join(lines))
     return "\n\n".join(out)

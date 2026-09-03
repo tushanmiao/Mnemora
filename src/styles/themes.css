@@ -7,164 +7,7 @@
  */
 
 
-/* ---- dawn (light) ---- */
-.app-shell[data-theme-preset="dawn"] {
-  --surface-app: #e9f1f8;
-  --surface-content: #f8fcff;
-  --surface-raised: #ffffff;
-  --surface-sidebar: #e0eaf2;
-  --surface-rail: #123143;
-  --surface-hover: #dce7ef;
-  --surface-selected: #cedce8;
-  --surface-user: #e2eff6;
-  --text-primary: #1a242c;
-  --text-secondary: #485158;
-  --text-muted: #687076;
-  --text-faint: #8f979d;
-  --border-default: #c2d0da;
-  --border-subtle: #dde7ef;
-  --workspace-overview: #725f8f;
-  --workspace-overview-soft: #f0eafb;
-  --workspace-overview-strong: #574374;
-  --workspace-chat: #006f91;
-  --workspace-chat-soft: #d8f2ff;
-  --workspace-chat-strong: #00526c;
-  --workspace-notes: #29588f;
-  --workspace-notes-soft: #e2efff;
-  --workspace-notes-strong: #063d74;
-  --workspace-work: #00625d;
-  --workspace-work-soft: #d9f4f1;
-  --workspace-work-strong: #004541;
-  --workspace-english: #885961;
-  --workspace-english-soft: #fae9eb;
-  --workspace-english-strong: #6d3e47;
-  --workspace-settings: #5d6755;
-  --workspace-settings-soft: #ebefe8;
-  --workspace-settings-strong: #434d3a;
-  --radius-control: 5px;
-  --radius-panel: 7px;
-  --shadow-menu: 0 10px 26px rgb(16 22 38 / 13%);
-  --shadow-panel: -12px 0 26px rgb(16 22 38 / 13%);
-  --shadow-composer: 0 5px 16px rgb(16 22 38 / 8%);
-}
-.app-shell[data-theme="dark"][data-theme-preset="dawn"] {
-  --surface-app: #0e1820;
-  --surface-content: #1c262d;
-  --surface-raised: #293238;
-  --surface-sidebar: #162028;
-  --surface-rail: #020810;
-  --surface-hover: #303941;
-  --surface-selected: #3e4951;
-  --surface-user: #202e34;
-  --text-primary: #edf6fd;
-  --text-secondary: #c5cfd7;
-  --text-muted: #9ca6ae;
-  --text-faint: #7a838a;
-  --border-default: #404e59;
-  --border-subtle: #2b3741;
-  --workspace-overview: #cfbcef;
-  --workspace-overview-soft: #32293f;
-  --workspace-overview-strong: #e8dbff;
-  --workspace-chat: #73c7eb;
-  --workspace-chat-soft: #083343;
-  --workspace-chat-strong: #9ee1ff;
-  --workspace-notes: #86b1e5;
-  --workspace-notes-soft: #1c2f47;
-  --workspace-notes-strong: #a4ccfc;
-  --workspace-work: #66bdb5;
-  --workspace-work-soft: #093633;
-  --workspace-work-strong: #8bd7cf;
-  --workspace-english: #e2b0b8;
-  --workspace-english-soft: #3d282b;
-  --workspace-english-strong: #fccdd4;
-  --workspace-settings: #aeb9a4;
-  --workspace-settings-soft: #2b3027;
-  --workspace-settings-strong: #cad4c0;
-  --shadow-menu: 0 12px 30px rgb(0 0 0 / 40%);
-  --shadow-panel: -12px 0 28px rgb(0 0 0 / 40%);
-  --shadow-composer: 0 8px 22px rgb(0 0 0 / 28%);
-}
-
-/* ---- lamp (light) ---- */
-.app-shell[data-theme-preset="lamp"] {
-  --surface-app: #f6ece2;
-  --surface-content: #fdf8f4;
-  --surface-raised: #fffdfc;
-  --surface-sidebar: #eee3d8;
-  --surface-rail: #271a12;
-  --surface-hover: #ece0d3;
-  --surface-selected: #e4d4c3;
-  --surface-user: #f6e7dc;
-  --text-primary: #2c2014;
-  --text-secondary: #584e43;
-  --text-muted: #766d63;
-  --text-faint: #9d948b;
-  --border-default: #dacbbb;
-  --border-subtle: #eee3d8;
-  --workspace-overview: #5a7247;
-  --workspace-overview-soft: #e8f1e2;
-  --workspace-overview-strong: #3f572b;
-  --workspace-chat: #915319;
-  --workspace-chat-soft: #ffe9d9;
-  --workspace-chat-strong: #713a00;
-  --workspace-notes: #6f5100;
-  --workspace-notes-soft: #f7ecd8;
-  --workspace-notes-strong: #4f3900;
-  --workspace-work: #7e3e42;
-  --workspace-work-soft: #ffe7e7;
-  --workspace-work-strong: #632328;
-  --workspace-english: #3c7374;
-  --workspace-english-soft: #e1f1f2;
-  --workspace-english-strong: #1a585a;
-  --workspace-settings: #6b5e6d;
-  --workspace-settings-soft: #f0ecf1;
-  --workspace-settings-strong: #504453;
-  --radius-control: 5px;
-  --radius-panel: 7px;
-  --shadow-menu: 0 10px 26px rgb(16 22 38 / 13%);
-  --shadow-panel: -12px 0 26px rgb(16 22 38 / 13%);
-  --shadow-composer: 0 5px 16px rgb(16 22 38 / 8%);
-}
-
-.app-shell[data-theme="dark"][data-theme-preset="lamp"] {
-  --surface-app: #1d160e;
-  --surface-content: #2a231c;
-  --surface-raised: #352f29;
-  --surface-sidebar: #241d16;
-  --surface-rail: #0c0602;
-  --surface-hover: #3d3730;
-  --surface-selected: #4d463e;
-  --surface-user: #322923;
-  --text-primary: #f9f3ed;
-  --text-secondary: #d3ccc5;
-  --text-muted: #aaa39c;
-  --text-faint: #87807a;
-  --border-default: #544a40;
-  --border-subtle: #3c342b;
-  --workspace-overview: #b7d0a4;
-  --workspace-overview-soft: #27321f;
-  --workspace-overview-strong: #d4ebc2;
-  --workspace-chat: #e6ad82;
-  --workspace-chat-soft: #412814;
-  --workspace-chat-strong: #ffcaa2;
-  --workspace-notes: #c6a970;
-  --workspace-notes-soft: #392c11;
-  --workspace-notes-strong: #dfc591;
-  --workspace-work: #d89899;
-  --workspace-work-soft: #412526;
-  --workspace-work-strong: #f1b5b5;
-  --workspace-english: #97cbcc;
-  --workspace-english-soft: #1b3334;
-  --workspace-english-strong: #b6e6e7;
-  --workspace-settings: #beafc1;
-  --workspace-settings-soft: #322c34;
-  --workspace-settings-strong: #d8cbdb;
-  --shadow-menu: 0 12px 30px rgb(0 0 0 / 40%);
-  --shadow-panel: -12px 0 28px rgb(0 0 0 / 40%);
-  --shadow-composer: 0 8px 22px rgb(0 0 0 / 28%);
-}
-
-/* ---- graphite (light) ---- */
+/* ---- graphite (workshop) ---- */
 .app-shell[data-theme-preset="graphite"] {
   --surface-app: #eef0f3;
   --surface-content: #fafbfc;
@@ -198,11 +41,27 @@
   --workspace-settings: #55695b;
   --workspace-settings-soft: #e9f0ea;
   --workspace-settings-strong: #3a4f40;
-  --radius-control: 5px;
-  --radius-panel: 7px;
-  --shadow-menu: 0 10px 26px rgb(16 22 38 / 13%);
-  --shadow-panel: -12px 0 26px rgb(16 22 38 / 13%);
-  --shadow-composer: 0 5px 16px rgb(16 22 38 / 8%);
+  --radius-control: 4px;
+  --radius-panel: 5px;
+  --shadow-menu: 0 6px 16px rgb(18 22 30 / 12%);
+  --shadow-panel: -8px 0 16px rgb(18 22 30 / 10%);
+  --shadow-composer: 0 2px 6px rgb(18 22 30 / 7%);
+  --control-height-xs: 18px;
+  --control-height-sm: 22px;
+  --control-height-md: 26px;
+  --control-height-lg: 28px;
+  --control-height-xl: 30px;
+  --control-height-2xl: 34px;
+  --control-height-3xl: 38px;
+  --control-padding-sm: 5px;
+  --control-padding-md: 7px;
+  --control-padding-lg: 8px;
+  --control-padding-xl: 10px;
+  --control-padding-2xl: 12px;
+  --control-padding-3xl: 14px;
+  --weight-emphasis: 500;
+  --weight-strong: 560;
+  --weight-heading: 600;
 }
 
 .app-shell[data-theme="dark"][data-theme-preset="graphite"] {
@@ -238,9 +97,136 @@
   --workspace-settings: #a4bcab;
   --workspace-settings-soft: #27312a;
   --workspace-settings-strong: #c1d7c7;
-  --shadow-menu: 0 12px 30px rgb(0 0 0 / 40%);
-  --shadow-panel: -12px 0 28px rgb(0 0 0 / 40%);
-  --shadow-composer: 0 8px 22px rgb(0 0 0 / 28%);
+  --shadow-menu: 0 8px 20px rgb(0 0 0 / 42%);
+  --shadow-panel: -8px 0 18px rgb(0 0 0 / 38%);
+  --shadow-composer: 0 3px 8px rgb(0 0 0 / 26%);
+  --control-height-xs: 18px;
+  --control-height-sm: 22px;
+  --control-height-md: 26px;
+  --control-height-lg: 28px;
+  --control-height-xl: 30px;
+  --control-height-2xl: 34px;
+  --control-height-3xl: 38px;
+  --control-padding-sm: 5px;
+  --control-padding-md: 7px;
+  --control-padding-lg: 8px;
+  --control-padding-xl: 10px;
+  --control-padding-2xl: 12px;
+  --control-padding-3xl: 14px;
+  --weight-emphasis: 500;
+  --weight-strong: 560;
+  --weight-heading: 600;
+}
+
+/* ---- dawn (workshop) ---- */
+.app-shell[data-theme-preset="dawn"] {
+  --surface-app: #e9f1f8;
+  --surface-content: #f8fcff;
+  --surface-raised: #ffffff;
+  --surface-sidebar: #e0eaf2;
+  --surface-rail: #123143;
+  --surface-hover: #dce7ef;
+  --surface-selected: #cedce8;
+  --surface-user: #e2eff6;
+  --text-primary: #1a242c;
+  --text-secondary: #485158;
+  --text-muted: #687076;
+  --text-faint: #8f979d;
+  --border-default: #c2d0da;
+  --border-subtle: #dde7ef;
+  --workspace-overview: #725f8f;
+  --workspace-overview-soft: #f0eafb;
+  --workspace-overview-strong: #574374;
+  --workspace-chat: #006f91;
+  --workspace-chat-soft: #d8f2ff;
+  --workspace-chat-strong: #00526c;
+  --workspace-notes: #29588f;
+  --workspace-notes-soft: #e2efff;
+  --workspace-notes-strong: #063d74;
+  --workspace-work: #00625d;
+  --workspace-work-soft: #d9f4f1;
+  --workspace-work-strong: #004541;
+  --workspace-english: #885961;
+  --workspace-english-soft: #fae9eb;
+  --workspace-english-strong: #6d3e47;
+  --workspace-settings: #5d6755;
+  --workspace-settings-soft: #ebefe8;
+  --workspace-settings-strong: #434d3a;
+  --radius-control: 4px;
+  --radius-panel: 5px;
+  --shadow-menu: 0 6px 16px rgb(18 22 30 / 12%);
+  --shadow-panel: -8px 0 16px rgb(18 22 30 / 10%);
+  --shadow-composer: 0 2px 6px rgb(18 22 30 / 7%);
+  --control-height-xs: 18px;
+  --control-height-sm: 22px;
+  --control-height-md: 26px;
+  --control-height-lg: 28px;
+  --control-height-xl: 30px;
+  --control-height-2xl: 34px;
+  --control-height-3xl: 38px;
+  --control-padding-sm: 5px;
+  --control-padding-md: 7px;
+  --control-padding-lg: 8px;
+  --control-padding-xl: 10px;
+  --control-padding-2xl: 12px;
+  --control-padding-3xl: 14px;
+  --weight-emphasis: 500;
+  --weight-strong: 560;
+  --weight-heading: 600;
+}
+
+.app-shell[data-theme="dark"][data-theme-preset="dawn"] {
+  --surface-app: #0e1820;
+  --surface-content: #1c262d;
+  --surface-raised: #293238;
+  --surface-sidebar: #162028;
+  --surface-rail: #020810;
+  --surface-hover: #303941;
+  --surface-selected: #3e4951;
+  --surface-user: #202e34;
+  --text-primary: #edf6fd;
+  --text-secondary: #c5cfd7;
+  --text-muted: #9ca6ae;
+  --text-faint: #7a838a;
+  --border-default: #404e59;
+  --border-subtle: #2b3741;
+  --workspace-overview: #cfbcef;
+  --workspace-overview-soft: #32293f;
+  --workspace-overview-strong: #e8dbff;
+  --workspace-chat: #73c7eb;
+  --workspace-chat-soft: #083343;
+  --workspace-chat-strong: #9ee1ff;
+  --workspace-notes: #86b1e5;
+  --workspace-notes-soft: #1c2f47;
+  --workspace-notes-strong: #a4ccfc;
+  --workspace-work: #66bdb5;
+  --workspace-work-soft: #093633;
+  --workspace-work-strong: #8bd7cf;
+  --workspace-english: #e2b0b8;
+  --workspace-english-soft: #3d282b;
+  --workspace-english-strong: #fccdd4;
+  --workspace-settings: #aeb9a4;
+  --workspace-settings-soft: #2b3027;
+  --workspace-settings-strong: #cad4c0;
+  --shadow-menu: 0 8px 20px rgb(0 0 0 / 42%);
+  --shadow-panel: -8px 0 18px rgb(0 0 0 / 38%);
+  --shadow-composer: 0 3px 8px rgb(0 0 0 / 26%);
+  --control-height-xs: 18px;
+  --control-height-sm: 22px;
+  --control-height-md: 26px;
+  --control-height-lg: 28px;
+  --control-height-xl: 30px;
+  --control-height-2xl: 34px;
+  --control-height-3xl: 38px;
+  --control-padding-sm: 5px;
+  --control-padding-md: 7px;
+  --control-padding-lg: 8px;
+  --control-padding-xl: 10px;
+  --control-padding-2xl: 12px;
+  --control-padding-3xl: 14px;
+  --weight-emphasis: 500;
+  --weight-strong: 560;
+  --weight-heading: 600;
 }
 
 /* ---- xuan (paper) ---- */
@@ -282,6 +268,28 @@
   --shadow-menu: 0 6px 18px rgb(48 40 26 / 14%);
   --shadow-panel: -8px 0 18px rgb(48 40 26 / 12%);
   --shadow-composer: 0 1px 0 rgb(48 40 26 / 7%);
+  --control-height-xs: 22px;
+  --control-height-sm: 26px;
+  --control-height-md: 32px;
+  --control-height-lg: 36px;
+  --control-height-xl: 40px;
+  --control-height-2xl: 44px;
+  --control-height-3xl: 48px;
+  --control-padding-sm: 8px;
+  --control-padding-md: 10px;
+  --control-padding-lg: 13px;
+  --control-padding-xl: 16px;
+  --control-padding-2xl: 18px;
+  --control-padding-3xl: 20px;
+  --surface-border: 0;
+  --surface-border-soft: 0;
+  --surface-shadow: none;
+  --surface-fill: var(--surface-hover);
+  --control-border: 0;
+  --control-fill: var(--surface-hover);
+  --weight-emphasis: 620;
+  --weight-strong: 700;
+  --weight-heading: 780;
 }
 
 .app-shell[data-theme="dark"][data-theme-preset="xuan"] {
@@ -320,6 +328,28 @@
   --shadow-menu: 0 8px 22px rgb(0 0 0 / 44%);
   --shadow-panel: -8px 0 20px rgb(0 0 0 / 40%);
   --shadow-composer: 0 1px 0 rgb(0 0 0 / 30%);
+  --control-height-xs: 22px;
+  --control-height-sm: 26px;
+  --control-height-md: 32px;
+  --control-height-lg: 36px;
+  --control-height-xl: 40px;
+  --control-height-2xl: 44px;
+  --control-height-3xl: 48px;
+  --control-padding-sm: 8px;
+  --control-padding-md: 10px;
+  --control-padding-lg: 13px;
+  --control-padding-xl: 16px;
+  --control-padding-2xl: 18px;
+  --control-padding-3xl: 20px;
+  --surface-border: 0;
+  --surface-border-soft: 0;
+  --surface-shadow: none;
+  --surface-fill: var(--surface-hover);
+  --control-border: 0;
+  --control-fill: var(--surface-hover);
+  --weight-emphasis: 620;
+  --weight-strong: 700;
+  --weight-heading: 780;
 }
 
 /* ---- cyanotype (paper) ---- */
@@ -361,6 +391,28 @@
   --shadow-menu: 0 6px 18px rgb(48 40 26 / 14%);
   --shadow-panel: -8px 0 18px rgb(48 40 26 / 12%);
   --shadow-composer: 0 1px 0 rgb(48 40 26 / 7%);
+  --control-height-xs: 22px;
+  --control-height-sm: 26px;
+  --control-height-md: 32px;
+  --control-height-lg: 36px;
+  --control-height-xl: 40px;
+  --control-height-2xl: 44px;
+  --control-height-3xl: 48px;
+  --control-padding-sm: 8px;
+  --control-padding-md: 10px;
+  --control-padding-lg: 13px;
+  --control-padding-xl: 16px;
+  --control-padding-2xl: 18px;
+  --control-padding-3xl: 20px;
+  --surface-border: 0;
+  --surface-border-soft: 0;
+  --surface-shadow: none;
+  --surface-fill: var(--surface-hover);
+  --control-border: 0;
+  --control-fill: var(--surface-hover);
+  --weight-emphasis: 620;
+  --weight-strong: 700;
+  --weight-heading: 780;
 }
 
 .app-shell[data-theme="dark"][data-theme-preset="cyanotype"] {
@@ -399,6 +451,28 @@
   --shadow-menu: 0 8px 22px rgb(0 0 0 / 44%);
   --shadow-panel: -8px 0 20px rgb(0 0 0 / 40%);
   --shadow-composer: 0 1px 0 rgb(0 0 0 / 30%);
+  --control-height-xs: 22px;
+  --control-height-sm: 26px;
+  --control-height-md: 32px;
+  --control-height-lg: 36px;
+  --control-height-xl: 40px;
+  --control-height-2xl: 44px;
+  --control-height-3xl: 48px;
+  --control-padding-sm: 8px;
+  --control-padding-md: 10px;
+  --control-padding-lg: 13px;
+  --control-padding-xl: 16px;
+  --control-padding-2xl: 18px;
+  --control-padding-3xl: 20px;
+  --surface-border: 0;
+  --surface-border-soft: 0;
+  --surface-shadow: none;
+  --surface-fill: var(--surface-hover);
+  --control-border: 0;
+  --control-fill: var(--surface-hover);
+  --weight-emphasis: 620;
+  --weight-strong: 700;
+  --weight-heading: 780;
 }
 
 /* ---- paper (paper) ---- */
@@ -440,6 +514,28 @@
   --shadow-menu: 0 6px 18px rgb(48 40 26 / 14%);
   --shadow-panel: -8px 0 18px rgb(48 40 26 / 12%);
   --shadow-composer: 0 1px 0 rgb(48 40 26 / 7%);
+  --control-height-xs: 22px;
+  --control-height-sm: 26px;
+  --control-height-md: 32px;
+  --control-height-lg: 36px;
+  --control-height-xl: 40px;
+  --control-height-2xl: 44px;
+  --control-height-3xl: 48px;
+  --control-padding-sm: 8px;
+  --control-padding-md: 10px;
+  --control-padding-lg: 13px;
+  --control-padding-xl: 16px;
+  --control-padding-2xl: 18px;
+  --control-padding-3xl: 20px;
+  --surface-border: 0;
+  --surface-border-soft: 0;
+  --surface-shadow: none;
+  --surface-fill: var(--surface-hover);
+  --control-border: 0;
+  --control-fill: var(--surface-hover);
+  --weight-emphasis: 620;
+  --weight-strong: 700;
+  --weight-heading: 780;
 }
 
 .app-shell[data-theme="dark"][data-theme-preset="paper"] {
@@ -478,9 +574,31 @@
   --shadow-menu: 0 8px 22px rgb(0 0 0 / 44%);
   --shadow-panel: -8px 0 20px rgb(0 0 0 / 40%);
   --shadow-composer: 0 1px 0 rgb(0 0 0 / 30%);
+  --control-height-xs: 22px;
+  --control-height-sm: 26px;
+  --control-height-md: 32px;
+  --control-height-lg: 36px;
+  --control-height-xl: 40px;
+  --control-height-2xl: 44px;
+  --control-height-3xl: 48px;
+  --control-padding-sm: 8px;
+  --control-padding-md: 10px;
+  --control-padding-lg: 13px;
+  --control-padding-xl: 16px;
+  --control-padding-2xl: 18px;
+  --control-padding-3xl: 20px;
+  --surface-border: 0;
+  --surface-border-soft: 0;
+  --surface-shadow: none;
+  --surface-fill: var(--surface-hover);
+  --control-border: 0;
+  --control-fill: var(--surface-hover);
+  --weight-emphasis: 620;
+  --weight-strong: 700;
+  --weight-heading: 780;
 }
 
-/* ---- mnemora (color) ---- */
+/* ---- mnemora (card) ---- */
 .app-shell[data-theme-preset="mnemora"] {
   --surface-app: #efeffa;
   --surface-content: #fbfbff;
@@ -519,6 +637,9 @@
   --shadow-menu: 0 14px 36px rgb(28 24 46 / 15%);
   --shadow-panel: -14px 0 34px rgb(28 24 46 / 15%);
   --shadow-composer: 0 8px 26px rgb(28 24 46 / 10%);
+  --surface-border: 0;
+  --surface-border-soft: 0;
+  --surface-shadow: 0 1px 2px rgb(0 0 0 / 6%), 0 3px 10px rgb(0 0 0 / 7%);
 }
 
 .app-shell[data-theme="dark"][data-theme-preset="mnemora"] {
@@ -557,88 +678,12 @@
   --shadow-menu: 0 16px 40px rgb(0 0 0 / 46%);
   --shadow-panel: -14px 0 36px rgb(0 0 0 / 44%);
   --shadow-composer: 0 10px 28px rgb(0 0 0 / 32%);
+  --surface-border: 0;
+  --surface-border-soft: 0;
+  --surface-shadow: 0 1px 2px rgb(0 0 0 / 6%), 0 3px 10px rgb(0 0 0 / 7%);
 }
 
-/* ---- forest (color) ---- */
-.app-shell[data-theme-preset="forest"] {
-  --surface-app: #e9f3ea;
-  --surface-content: #f8fcf8;
-  --surface-raised: #ffffff;
-  --surface-sidebar: #e1ece2;
-  --surface-rail: #082f1c;
-  --surface-hover: #dde9dd;
-  --surface-selected: #cfdfd0;
-  --surface-user: #e1f1e9;
-  --text-primary: #1b261c;
-  --text-secondary: #495349;
-  --text-muted: #687269;
-  --text-faint: #909990;
-  --border-default: #c3d3c4;
-  --border-subtle: #dee9de;
-  --workspace-overview: #397090;
-  --workspace-overview-soft: #e0f0fb;
-  --workspace-overview-strong: #175575;
-  --workspace-chat: #007851;
-  --workspace-chat-soft: #daf5e6;
-  --workspace-chat-strong: #00593b;
-  --workspace-notes: #00655f;
-  --workspace-notes-soft: #d8f5f1;
-  --workspace-notes-strong: #004743;
-  --workspace-work: #4c5d17;
-  --workspace-work-soft: #eaf1dc;
-  --workspace-work-strong: #344200;
-  --workspace-english: #6f6087;
-  --workspace-english-soft: #f0ebf8;
-  --workspace-english-strong: #55456c;
-  --workspace-settings: #706052;
-  --workspace-settings-soft: #f2ece7;
-  --workspace-settings-strong: #554637;
-  --radius-control: 8px;
-  --radius-panel: 12px;
-  --shadow-menu: 0 14px 36px rgb(28 24 46 / 15%);
-  --shadow-panel: -14px 0 34px rgb(28 24 46 / 15%);
-  --shadow-composer: 0 8px 26px rgb(28 24 46 / 10%);
-}
-
-.app-shell[data-theme="dark"][data-theme-preset="forest"] {
-  --surface-app: #0f1b10;
-  --surface-content: #1d281e;
-  --surface-raised: #2a332a;
-  --surface-sidebar: #172218;
-  --surface-rail: #020a03;
-  --surface-hover: #303b31;
-  --surface-selected: #3f4b40;
-  --surface-user: #202f27;
-  --text-primary: #eff7ef;
-  --text-secondary: #c6d1c7;
-  --text-muted: #9da89e;
-  --text-faint: #7b857b;
-  --border-default: #405142;
-  --border-subtle: #2c3a2d;
-  --workspace-overview: #9acff0;
-  --workspace-overview-soft: #193140;
-  --workspace-overview-strong: #c4e8ff;
-  --workspace-chat: #80cea8;
-  --workspace-chat-soft: #113626;
-  --workspace-chat-strong: #a2e8c5;
-  --workspace-notes: #65c0b8;
-  --workspace-notes-soft: #073633;
-  --workspace-notes-strong: #8ad9d2;
-  --workspace-work: #a2b478;
-  --workspace-work-soft: #2a3217;
-  --workspace-work-strong: #becf98;
-  --workspace-english: #c6b7df;
-  --workspace-english-soft: #312b3c;
-  --workspace-english-strong: #e1d4f9;
-  --workspace-settings: #c4b1a0;
-  --workspace-settings-soft: #352d25;
-  --workspace-settings-strong: #deccbd;
-  --shadow-menu: 0 16px 40px rgb(0 0 0 / 46%);
-  --shadow-panel: -14px 0 36px rgb(0 0 0 / 44%);
-  --shadow-composer: 0 10px 28px rgb(0 0 0 / 32%);
-}
-
-/* ---- ocean (color) ---- */
+/* ---- ocean (card) ---- */
 .app-shell[data-theme-preset="ocean"] {
   --surface-app: #e6f3f8;
   --surface-content: #f6fcff;
@@ -677,6 +722,9 @@
   --shadow-menu: 0 14px 36px rgb(28 24 46 / 15%);
   --shadow-panel: -14px 0 34px rgb(28 24 46 / 15%);
   --shadow-composer: 0 8px 26px rgb(28 24 46 / 10%);
+  --surface-border: 0;
+  --surface-border-soft: 0;
+  --surface-shadow: 0 1px 2px rgb(0 0 0 / 6%), 0 3px 10px rgb(0 0 0 / 7%);
 }
 
 .app-shell[data-theme="dark"][data-theme-preset="ocean"] {
@@ -715,9 +763,194 @@
   --shadow-menu: 0 16px 40px rgb(0 0 0 / 46%);
   --shadow-panel: -14px 0 36px rgb(0 0 0 / 44%);
   --shadow-composer: 0 10px 28px rgb(0 0 0 / 32%);
+  --surface-border: 0;
+  --surface-border-soft: 0;
+  --surface-shadow: 0 1px 2px rgb(0 0 0 / 6%), 0 3px 10px rgb(0 0 0 / 7%);
 }
 
-/* ---- rose (color) ---- */
+/* ---- lamp (card) ---- */
+.app-shell[data-theme-preset="lamp"] {
+  --surface-app: #f6ece2;
+  --surface-content: #fdf8f4;
+  --surface-raised: #fffdfc;
+  --surface-sidebar: #eee3d8;
+  --surface-rail: #271a12;
+  --surface-hover: #ece0d3;
+  --surface-selected: #e4d4c3;
+  --surface-user: #f6e7dc;
+  --text-primary: #2c2014;
+  --text-secondary: #584e43;
+  --text-muted: #766d63;
+  --text-faint: #9d948b;
+  --border-default: #dacbbb;
+  --border-subtle: #eee3d8;
+  --workspace-overview: #5a7247;
+  --workspace-overview-soft: #e8f1e2;
+  --workspace-overview-strong: #3f572b;
+  --workspace-chat: #915319;
+  --workspace-chat-soft: #ffe9d9;
+  --workspace-chat-strong: #713a00;
+  --workspace-notes: #6f5100;
+  --workspace-notes-soft: #f7ecd8;
+  --workspace-notes-strong: #4f3900;
+  --workspace-work: #7e3e42;
+  --workspace-work-soft: #ffe7e7;
+  --workspace-work-strong: #632328;
+  --workspace-english: #3c7374;
+  --workspace-english-soft: #e1f1f2;
+  --workspace-english-strong: #1a585a;
+  --workspace-settings: #6b5e6d;
+  --workspace-settings-soft: #f0ecf1;
+  --workspace-settings-strong: #504453;
+  --radius-control: 8px;
+  --radius-panel: 12px;
+  --shadow-menu: 0 14px 36px rgb(28 24 46 / 15%);
+  --shadow-panel: -14px 0 34px rgb(28 24 46 / 15%);
+  --shadow-composer: 0 8px 26px rgb(28 24 46 / 10%);
+  --surface-border: 0;
+  --surface-border-soft: 0;
+  --surface-shadow: 0 1px 2px rgb(0 0 0 / 6%), 0 3px 10px rgb(0 0 0 / 7%);
+}
+
+.app-shell[data-theme="dark"][data-theme-preset="lamp"] {
+  --surface-app: #1d160e;
+  --surface-content: #2a231c;
+  --surface-raised: #352f29;
+  --surface-sidebar: #241d16;
+  --surface-rail: #0c0602;
+  --surface-hover: #3d3730;
+  --surface-selected: #4d463e;
+  --surface-user: #322923;
+  --text-primary: #f9f3ed;
+  --text-secondary: #d3ccc5;
+  --text-muted: #aaa39c;
+  --text-faint: #87807a;
+  --border-default: #544a40;
+  --border-subtle: #3c342b;
+  --workspace-overview: #b7d0a4;
+  --workspace-overview-soft: #27321f;
+  --workspace-overview-strong: #d4ebc2;
+  --workspace-chat: #e6ad82;
+  --workspace-chat-soft: #412814;
+  --workspace-chat-strong: #ffcaa2;
+  --workspace-notes: #c6a970;
+  --workspace-notes-soft: #392c11;
+  --workspace-notes-strong: #dfc591;
+  --workspace-work: #d89899;
+  --workspace-work-soft: #412526;
+  --workspace-work-strong: #f1b5b5;
+  --workspace-english: #97cbcc;
+  --workspace-english-soft: #1b3334;
+  --workspace-english-strong: #b6e6e7;
+  --workspace-settings: #beafc1;
+  --workspace-settings-soft: #322c34;
+  --workspace-settings-strong: #d8cbdb;
+  --shadow-menu: 0 16px 40px rgb(0 0 0 / 46%);
+  --shadow-panel: -14px 0 36px rgb(0 0 0 / 44%);
+  --shadow-composer: 0 10px 28px rgb(0 0 0 / 32%);
+  --surface-border: 0;
+  --surface-border-soft: 0;
+  --surface-shadow: 0 1px 2px rgb(0 0 0 / 6%), 0 3px 10px rgb(0 0 0 / 7%);
+}
+
+/* ---- forest (plain) ---- */
+.app-shell[data-theme-preset="forest"] {
+  --surface-app: #e9f3ea;
+  --surface-content: #f8fcf8;
+  --surface-raised: #ffffff;
+  --surface-sidebar: #e1ece2;
+  --surface-rail: #082f1c;
+  --surface-hover: #dde9dd;
+  --surface-selected: #cfdfd0;
+  --surface-user: #e1f1e9;
+  --text-primary: #1b261c;
+  --text-secondary: #495349;
+  --text-muted: #687269;
+  --text-faint: #909990;
+  --border-default: #c3d3c4;
+  --border-subtle: #dee9de;
+  --workspace-overview: #397090;
+  --workspace-overview-soft: #e0f0fb;
+  --workspace-overview-strong: #175575;
+  --workspace-chat: #007851;
+  --workspace-chat-soft: #daf5e6;
+  --workspace-chat-strong: #00593b;
+  --workspace-notes: #00655f;
+  --workspace-notes-soft: #d8f5f1;
+  --workspace-notes-strong: #004743;
+  --workspace-work: #4c5d17;
+  --workspace-work-soft: #eaf1dc;
+  --workspace-work-strong: #344200;
+  --workspace-english: #6f6087;
+  --workspace-english-soft: #f0ebf8;
+  --workspace-english-strong: #55456c;
+  --workspace-settings: #706052;
+  --workspace-settings-soft: #f2ece7;
+  --workspace-settings-strong: #554637;
+  --radius-control: 6px;
+  --radius-panel: 8px;
+  --shadow-menu: 0 8px 22px rgb(24 24 32 / 10%);
+  --shadow-panel: -10px 0 22px rgb(24 24 32 / 9%);
+  --shadow-composer: 0 2px 8px rgb(24 24 32 / 6%);
+  --surface-border: 0;
+  --surface-border-soft: 0;
+  --surface-shadow: none;
+  --surface-fill: var(--surface-hover);
+  --control-border: 0;
+  --control-fill: var(--surface-hover);
+  --weight-emphasis: 500;
+  --weight-strong: 560;
+  --weight-heading: 600;
+}
+
+.app-shell[data-theme="dark"][data-theme-preset="forest"] {
+  --surface-app: #0f1b10;
+  --surface-content: #1d281e;
+  --surface-raised: #2a332a;
+  --surface-sidebar: #172218;
+  --surface-rail: #020a03;
+  --surface-hover: #303b31;
+  --surface-selected: #3f4b40;
+  --surface-user: #202f27;
+  --text-primary: #eff7ef;
+  --text-secondary: #c6d1c7;
+  --text-muted: #9da89e;
+  --text-faint: #7b857b;
+  --border-default: #405142;
+  --border-subtle: #2c3a2d;
+  --workspace-overview: #9acff0;
+  --workspace-overview-soft: #193140;
+  --workspace-overview-strong: #c4e8ff;
+  --workspace-chat: #80cea8;
+  --workspace-chat-soft: #113626;
+  --workspace-chat-strong: #a2e8c5;
+  --workspace-notes: #65c0b8;
+  --workspace-notes-soft: #073633;
+  --workspace-notes-strong: #8ad9d2;
+  --workspace-work: #a2b478;
+  --workspace-work-soft: #2a3217;
+  --workspace-work-strong: #becf98;
+  --workspace-english: #c6b7df;
+  --workspace-english-soft: #312b3c;
+  --workspace-english-strong: #e1d4f9;
+  --workspace-settings: #c4b1a0;
+  --workspace-settings-soft: #352d25;
+  --workspace-settings-strong: #deccbd;
+  --shadow-menu: 0 10px 26px rgb(0 0 0 / 40%);
+  --shadow-panel: -10px 0 24px rgb(0 0 0 / 36%);
+  --shadow-composer: 0 3px 10px rgb(0 0 0 / 24%);
+  --surface-border: 0;
+  --surface-border-soft: 0;
+  --surface-shadow: none;
+  --surface-fill: var(--surface-hover);
+  --control-border: 0;
+  --control-fill: var(--surface-hover);
+  --weight-emphasis: 500;
+  --weight-strong: 560;
+  --weight-heading: 600;
+}
+
+/* ---- rose (plain) ---- */
 .app-shell[data-theme-preset="rose"] {
   --surface-app: #f8edf1;
   --surface-content: #fffafb;
@@ -751,11 +984,20 @@
   --workspace-settings: #5d6277;
   --workspace-settings-soft: #ebedf4;
   --workspace-settings-strong: #43485c;
-  --radius-control: 8px;
-  --radius-panel: 12px;
-  --shadow-menu: 0 14px 36px rgb(28 24 46 / 15%);
-  --shadow-panel: -14px 0 34px rgb(28 24 46 / 15%);
-  --shadow-composer: 0 8px 26px rgb(28 24 46 / 10%);
+  --radius-control: 6px;
+  --radius-panel: 8px;
+  --shadow-menu: 0 8px 22px rgb(24 24 32 / 10%);
+  --shadow-panel: -10px 0 22px rgb(24 24 32 / 9%);
+  --shadow-composer: 0 2px 8px rgb(24 24 32 / 6%);
+  --surface-border: 0;
+  --surface-border-soft: 0;
+  --surface-shadow: none;
+  --surface-fill: var(--surface-hover);
+  --control-border: 0;
+  --control-fill: var(--surface-hover);
+  --weight-emphasis: 500;
+  --weight-strong: 560;
+  --weight-heading: 600;
 }
 
 .app-shell[data-theme="dark"][data-theme-preset="rose"] {
@@ -791,9 +1033,18 @@
   --workspace-settings: #adb4cc;
   --workspace-settings-soft: #2b2e38;
   --workspace-settings-strong: #c9cfe6;
-  --shadow-menu: 0 16px 40px rgb(0 0 0 / 46%);
-  --shadow-panel: -14px 0 36px rgb(0 0 0 / 44%);
-  --shadow-composer: 0 10px 28px rgb(0 0 0 / 32%);
+  --shadow-menu: 0 10px 26px rgb(0 0 0 / 40%);
+  --shadow-panel: -10px 0 24px rgb(0 0 0 / 36%);
+  --shadow-composer: 0 3px 10px rgb(0 0 0 / 24%);
+  --surface-border: 0;
+  --surface-border-soft: 0;
+  --surface-shadow: none;
+  --surface-fill: var(--surface-hover);
+  --control-border: 0;
+  --control-fill: var(--surface-hover);
+  --weight-emphasis: 500;
+  --weight-strong: 560;
+  --weight-heading: 600;
 }
 
 /* ---- highContrast (access) ---- */
@@ -835,6 +1086,9 @@
   --shadow-menu: 0 0 0 1px #000000;
   --shadow-panel: 0 0 0 1px #000000;
   --shadow-composer: 0 0 0 1px #000000;
+  --weight-emphasis: 620;
+  --weight-strong: 700;
+  --weight-heading: 780;
 }
 
 .app-shell[data-theme="dark"][data-theme-preset="highContrast"] {
@@ -873,6 +1127,9 @@
   --shadow-menu: 0 0 0 1px #ffffff;
   --shadow-panel: 0 0 0 1px #ffffff;
   --shadow-composer: 0 0 0 1px #ffffff;
+  --weight-emphasis: 620;
+  --weight-strong: 700;
+  --weight-heading: 780;
 }
 
 /* Compatibility aliases keep feature CSS stable while the palette stays token-driven. */

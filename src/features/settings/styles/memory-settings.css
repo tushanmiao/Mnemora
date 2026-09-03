@@ -23,7 +23,9 @@
   flex: 1;
   grid-template-rows: auto minmax(220px, 1fr) auto;
   overflow: hidden;
-  border: 1px solid var(--color-border);
+  border: var(--surface-border);
+
+  box-shadow: var(--surface-shadow);
   border-radius: var(--radius-panel);
   background: var(--color-surface-raised);
 }

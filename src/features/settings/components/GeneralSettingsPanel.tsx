@@ -87,9 +87,10 @@ type TranslationKey = Parameters<ReturnType<typeof useI18n>["t"]>[0];
 // 主题按家族分组：同一家族共享材质性格（边界、圆角、阴影），
 // 家族之间才换整套调色，所以分组本身就是有信息量的结构。
 const THEME_PRESET_GROUPS: { labelKey: TranslationKey; presets: ThemePreset[] }[] = [
-  { labelKey: "general.themeGroupLight", presets: ["dawn", "lamp", "graphite"] },
+  { labelKey: "general.themeGroupWorkshop", presets: ["graphite", "dawn"] },
   { labelKey: "general.themeGroupPaper", presets: ["xuan", "cyanotype", "paper"] },
-  { labelKey: "general.themeGroupColor", presets: ["mnemora", "forest", "ocean", "rose"] },
+  { labelKey: "general.themeGroupCard", presets: ["mnemora", "ocean", "lamp"] },
+  { labelKey: "general.themeGroupPlain", presets: ["forest", "rose"] },
   { labelKey: "general.themeGroupAccess", presets: ["highContrast"] },
 ];
 const THEME_PRESET_LABEL: Record<ThemePreset, { name: TranslationKey; hint: TranslationKey }> = {

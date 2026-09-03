@@ -131,10 +131,10 @@
   grid-template-columns: 15px minmax(0, 1fr) 13px;
   align-items: center;
   gap: 5px;
-  border: 1px solid var(--color-border);
+  border: var(--control-border);
   border-radius: 5px;
   color: var(--color-text-secondary);
-  background: var(--color-surface-raised);
+  background: var(--control-fill);
   cursor: pointer;
   font-size: var(--font-size-micro);
 }
@@ -298,10 +298,10 @@
   padding: 0 var(--control-padding-sm);
   align-items: center;
   gap: 5px;
-  border: 1px solid var(--color-border);
+  border: var(--control-border);
   border-radius: 5px;
   color: var(--color-text-secondary);
-  background: var(--color-surface-raised);
+  background: var(--control-fill);
   cursor: pointer;
   font-size: 10px;
   white-space: nowrap;
@@ -675,11 +675,11 @@
   width: 100%;
   min-width: 0;
   padding: 7px 8px;
-  border: 1px solid var(--color-border);
+  border: var(--control-border);
   border-radius: 5px;
   outline: 0;
   color: var(--color-text);
-  background: var(--color-surface-raised);
+  background: var(--control-fill);
   font-size: 11px;
 }
 
@@ -696,6 +696,7 @@
 .work-library-item-info input:focus,
 .work-library-item-info textarea:focus {
   border-color: var(--color-accent);
+  box-shadow: var(--control-focus-ring);
 }
 
 .work-library-item-info input:disabled,

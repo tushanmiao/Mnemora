@@ -296,7 +296,9 @@
   overflow: auto;
   overscroll-behavior: contain;
   scrollbar-gutter: stable both-edges;
-  border: 1px solid var(--color-border);
+  border: var(--surface-border);
+
+  box-shadow: var(--surface-shadow);
   border-radius: 8px;
   background: var(--color-surface-raised);
 }

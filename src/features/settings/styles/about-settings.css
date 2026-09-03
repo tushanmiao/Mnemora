@@ -81,7 +81,9 @@
   padding: 13px 14px;
   align-items: flex-start;
   gap: 11px;
-  border: 1px solid var(--color-border-soft);
+  border: var(--surface-border-soft);
+
+  box-shadow: var(--surface-shadow);
   border-radius: var(--radius-panel);
   background: var(--color-surface-raised);
 }

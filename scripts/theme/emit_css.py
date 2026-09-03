@@ -63,7 +63,7 @@ def main():
         spec = P.PRESETS[name]
         chunks.append(f"/* ---- {name} ({spec['group']}) ---- */\n" + G.emit(name, spec))
     chunks.append(ALIASES)
-    css = "\n\n".join(chunks) + "\n"
+    css = "\n\n".join(chunks).rstrip() + "\n"
     out = os.path.join(ROOT, "src", "styles", "themes.css")
     with open(out, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(css)

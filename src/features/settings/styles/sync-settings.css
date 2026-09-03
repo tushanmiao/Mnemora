@@ -53,7 +53,9 @@
   display: grid;
   min-width: 0;
   overflow: hidden;
-  border: 1px solid var(--color-border);
+  border: var(--surface-border);
+
+  box-shadow: var(--surface-shadow);
   border-radius: var(--radius-panel);
   background: var(--color-surface-raised);
 }

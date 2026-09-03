@@ -1,79 +1,7 @@
 {
- "dawn": {
-  "group": "light",
-  "radius": "7px",
-  "light": {
-   "surface-app": "#e9f1f8",
-   "surface-content": "#f8fcff",
-   "surface-raised": "#ffffff",
-   "surface-sidebar": "#e0eaf2",
-   "surface-rail": "#123143",
-   "border-default": "#c2d0da",
-   "text-primary": "#1a242c",
-   "text-muted": "#687076",
-   "workspace-overview": "#725f8f",
-   "workspace-chat": "#006f91",
-   "workspace-notes": "#29588f",
-   "workspace-work": "#00625d",
-   "workspace-english": "#885961",
-   "workspace-settings": "#5d6755"
-  },
-  "dark": {
-   "surface-app": "#0e1820",
-   "surface-content": "#1c262d",
-   "surface-raised": "#293238",
-   "surface-sidebar": "#162028",
-   "surface-rail": "#020810",
-   "border-default": "#404e59",
-   "text-primary": "#edf6fd",
-   "text-muted": "#9ca6ae",
-   "workspace-overview": "#cfbcef",
-   "workspace-chat": "#73c7eb",
-   "workspace-notes": "#86b1e5",
-   "workspace-work": "#66bdb5",
-   "workspace-english": "#e2b0b8",
-   "workspace-settings": "#aeb9a4"
-  }
- },
- "lamp": {
-  "group": "light",
-  "radius": "7px",
-  "light": {
-   "surface-app": "#f6ece2",
-   "surface-content": "#fdf8f4",
-   "surface-raised": "#fffdfc",
-   "surface-sidebar": "#eee3d8",
-   "surface-rail": "#271a12",
-   "border-default": "#dacbbb",
-   "text-primary": "#2c2014",
-   "text-muted": "#766d63",
-   "workspace-overview": "#5a7247",
-   "workspace-chat": "#915319",
-   "workspace-notes": "#6f5100",
-   "workspace-work": "#7e3e42",
-   "workspace-english": "#3c7374",
-   "workspace-settings": "#6b5e6d"
-  },
-  "dark": {
-   "surface-app": "#1d160e",
-   "surface-content": "#2a231c",
-   "surface-raised": "#352f29",
-   "surface-sidebar": "#241d16",
-   "surface-rail": "#0c0602",
-   "border-default": "#544a40",
-   "text-primary": "#f9f3ed",
-   "text-muted": "#aaa39c",
-   "workspace-overview": "#b7d0a4",
-   "workspace-chat": "#e6ad82",
-   "workspace-notes": "#c6a970",
-   "workspace-work": "#d89899",
-   "workspace-english": "#97cbcc",
-   "workspace-settings": "#beafc1"
-  }
- },
  "graphite": {
-  "group": "light",
-  "radius": "7px",
+  "group": "workshop",
+  "radius": "5px",
   "light": {
    "surface-app": "#eef0f3",
    "surface-content": "#fafbfc",
@@ -105,6 +33,42 @@
    "workspace-work": "#5dbbcd",
    "workspace-english": "#e6b1a6",
    "workspace-settings": "#a4bcab"
+  }
+ },
+ "dawn": {
+  "group": "workshop",
+  "radius": "5px",
+  "light": {
+   "surface-app": "#e9f1f8",
+   "surface-content": "#f8fcff",
+   "surface-raised": "#ffffff",
+   "surface-sidebar": "#e0eaf2",
+   "surface-rail": "#123143",
+   "border-default": "#c2d0da",
+   "text-primary": "#1a242c",
+   "text-muted": "#687076",
+   "workspace-overview": "#725f8f",
+   "workspace-chat": "#006f91",
+   "workspace-notes": "#29588f",
+   "workspace-work": "#00625d",
+   "workspace-english": "#885961",
+   "workspace-settings": "#5d6755"
+  },
+  "dark": {
+   "surface-app": "#0e1820",
+   "surface-content": "#1c262d",
+   "surface-raised": "#293238",
+   "surface-sidebar": "#162028",
+   "surface-rail": "#020810",
+   "border-default": "#404e59",
+   "text-primary": "#edf6fd",
+   "text-muted": "#9ca6ae",
+   "workspace-overview": "#cfbcef",
+   "workspace-chat": "#73c7eb",
+   "workspace-notes": "#86b1e5",
+   "workspace-work": "#66bdb5",
+   "workspace-english": "#e2b0b8",
+   "workspace-settings": "#aeb9a4"
   }
  },
  "xuan": {
@@ -216,7 +180,7 @@
   }
  },
  "mnemora": {
-  "group": "color",
+  "group": "card",
   "radius": "12px",
   "light": {
    "surface-app": "#efeffa",
@@ -251,44 +215,8 @@
    "workspace-settings": "#9cbcbd"
   }
  },
- "forest": {
-  "group": "color",
-  "radius": "12px",
-  "light": {
-   "surface-app": "#e9f3ea",
-   "surface-content": "#f8fcf8",
-   "surface-raised": "#ffffff",
-   "surface-sidebar": "#e1ece2",
-   "surface-rail": "#082f1c",
-   "border-default": "#c3d3c4",
-   "text-primary": "#1b261c",
-   "text-muted": "#687269",
-   "workspace-overview": "#397090",
-   "workspace-chat": "#007851",
-   "workspace-notes": "#00655f",
-   "workspace-work": "#4c5d17",
-   "workspace-english": "#6f6087",
-   "workspace-settings": "#706052"
-  },
-  "dark": {
-   "surface-app": "#0f1b10",
-   "surface-content": "#1d281e",
-   "surface-raised": "#2a332a",
-   "surface-sidebar": "#172218",
-   "surface-rail": "#020a03",
-   "border-default": "#405142",
-   "text-primary": "#eff7ef",
-   "text-muted": "#9da89e",
-   "workspace-overview": "#9acff0",
-   "workspace-chat": "#80cea8",
-   "workspace-notes": "#65c0b8",
-   "workspace-work": "#a2b478",
-   "workspace-english": "#c6b7df",
-   "workspace-settings": "#c4b1a0"
-  }
- },
  "ocean": {
-  "group": "color",
+  "group": "card",
   "radius": "12px",
   "light": {
    "surface-app": "#e6f3f8",
@@ -323,9 +251,81 @@
    "workspace-settings": "#b4b89f"
   }
  },
- "rose": {
-  "group": "color",
+ "lamp": {
+  "group": "card",
   "radius": "12px",
+  "light": {
+   "surface-app": "#f6ece2",
+   "surface-content": "#fdf8f4",
+   "surface-raised": "#fffdfc",
+   "surface-sidebar": "#eee3d8",
+   "surface-rail": "#271a12",
+   "border-default": "#dacbbb",
+   "text-primary": "#2c2014",
+   "text-muted": "#766d63",
+   "workspace-overview": "#5a7247",
+   "workspace-chat": "#915319",
+   "workspace-notes": "#6f5100",
+   "workspace-work": "#7e3e42",
+   "workspace-english": "#3c7374",
+   "workspace-settings": "#6b5e6d"
+  },
+  "dark": {
+   "surface-app": "#1d160e",
+   "surface-content": "#2a231c",
+   "surface-raised": "#352f29",
+   "surface-sidebar": "#241d16",
+   "surface-rail": "#0c0602",
+   "border-default": "#544a40",
+   "text-primary": "#f9f3ed",
+   "text-muted": "#aaa39c",
+   "workspace-overview": "#b7d0a4",
+   "workspace-chat": "#e6ad82",
+   "workspace-notes": "#c6a970",
+   "workspace-work": "#d89899",
+   "workspace-english": "#97cbcc",
+   "workspace-settings": "#beafc1"
+  }
+ },
+ "forest": {
+  "group": "plain",
+  "radius": "8px",
+  "light": {
+   "surface-app": "#e9f3ea",
+   "surface-content": "#f8fcf8",
+   "surface-raised": "#ffffff",
+   "surface-sidebar": "#e1ece2",
+   "surface-rail": "#082f1c",
+   "border-default": "#c3d3c4",
+   "text-primary": "#1b261c",
+   "text-muted": "#687269",
+   "workspace-overview": "#397090",
+   "workspace-chat": "#007851",
+   "workspace-notes": "#00655f",
+   "workspace-work": "#4c5d17",
+   "workspace-english": "#6f6087",
+   "workspace-settings": "#706052"
+  },
+  "dark": {
+   "surface-app": "#0f1b10",
+   "surface-content": "#1d281e",
+   "surface-raised": "#2a332a",
+   "surface-sidebar": "#172218",
+   "surface-rail": "#020a03",
+   "border-default": "#405142",
+   "text-primary": "#eff7ef",
+   "text-muted": "#9da89e",
+   "workspace-overview": "#9acff0",
+   "workspace-chat": "#80cea8",
+   "workspace-notes": "#65c0b8",
+   "workspace-work": "#a2b478",
+   "workspace-english": "#c6b7df",
+   "workspace-settings": "#c4b1a0"
+  }
+ },
+ "rose": {
+  "group": "plain",
+  "radius": "8px",
   "light": {
    "surface-app": "#f8edf1",
    "surface-content": "#fffafb",

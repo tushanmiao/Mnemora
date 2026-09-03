@@ -209,9 +209,9 @@ button {
   align-items: center;
   gap: 6px;
   padding: 0 var(--control-padding-xl);
-  border: 1px solid var(--color-border);
+  border: var(--control-border);
   border-radius: 6px;
-  background: var(--color-surface-raised);
+  background: var(--control-fill);
   cursor: pointer;
 }
 

@@ -3,7 +3,9 @@
   min-width: 0;
   margin: 14px 0;
   overflow: hidden;
-  border: 1px solid var(--color-border);
+  border: var(--surface-border);
+
+  box-shadow: var(--surface-shadow);
   border-radius: var(--radius-panel);
   background: var(--color-app);
 }
@@ -19,7 +21,7 @@
 .markdown-math-view-switch {
   display: inline-flex;
   padding: 2px;
-  border: 1px solid var(--color-border);
+  border: var(--control-border);
   border-radius: var(--radius-control);
   background: var(--color-surface);
 }

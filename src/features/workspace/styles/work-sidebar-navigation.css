@@ -20,10 +20,10 @@
   align-items: center;
   justify-content: center;
   gap: 7px;
-  border: 1px solid var(--color-border);
+  border: var(--control-border);
   border-radius: 6px;
   color: var(--color-text-secondary);
-  background: var(--color-surface-raised);
+  background: var(--control-fill);
   font-size: 11px;
   font-weight: var(--weight-emphasis);
   cursor: pointer;
@@ -55,6 +55,7 @@
 
 .work-library-search:focus-within {
   border-color: var(--color-accent);
+  box-shadow: var(--control-focus-ring);
 }
 
 .work-library-search input {
@@ -399,6 +400,7 @@
 
 .work-collapsed-picker-search:focus-within {
   border-color: var(--color-accent);
+  box-shadow: var(--control-focus-ring);
 }
 
 .work-collapsed-picker-search input {

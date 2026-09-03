@@ -19,7 +19,7 @@
   max-width: 100%;
   min-width: 0;
   padding: 8px;
-  border: 1px solid var(--color-border);
+  border: var(--surface-border);
   border-radius: 8px;
   background: var(--color-surface-raised);
   box-shadow: var(--shadow-composer);
@@ -30,6 +30,7 @@
 
 .composer-box:focus-within {
   border-color: color-mix(in srgb, var(--color-accent) 46%, var(--color-border));
+  box-shadow: var(--control-focus-ring);
 }
 
 .slash-command-menu {
