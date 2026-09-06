@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::memory::MemorySettings;
 
-pub const CURRENT_APP_SETTINGS_VERSION: u32 = 16;
+pub const CURRENT_APP_SETTINGS_VERSION: u32 = 18;
 pub const DEFAULT_GLOBAL_SYSTEM_PROMPT: &str = concat!(
     "你是 Mnemora 的学习与研究助手。\n",
     "优先直接回答问题，并根据复杂度使用清晰的标题、列表、表格或代码块。\n",
@@ -27,6 +27,38 @@ pub enum InterfaceLanguage {
     #[default]
     Zh,
     En,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct NoteEditorSettings {
+    pub default_mode: String,
+    pub autosave_enabled: bool,
+    pub autosave_delay_ms: u32,
+    pub line_numbers: bool,
+    pub word_wrap: bool,
+    pub tab_size: u8,
+    pub focus_mode: bool,
+    pub typewriter_mode: bool,
+    pub spellcheck: bool,
+    pub render_policy: String,
+}
+
+impl Default for NoteEditorSettings {
+    fn default() -> Self {
+        Self {
+            default_mode: "live".into(),
+            autosave_enabled: true,
+            autosave_delay_ms: 700,
+            line_numbers: true,
+            word_wrap: true,
+            tab_size: 2,
+            focus_mode: false,
+            typewriter_mode: false,
+            spellcheck: false,
+            render_policy: "auto".into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -234,6 +266,177 @@ impl UpdateProxySettings {
     }
 }
 
+/// 默认知识范围。Chat、Memory 和临时附件不属于任何知识源范围。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum KnowledgeScope {
+    #[default]
+    Library,
+    CurrentLiterature,
+    CurrentNote,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum KnowledgeRetrievalMode {
+    #[default]
+    Lexical,
+    Vector,
+    Hybrid,
+}
+
+impl KnowledgeRetrievalMode {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Lexical => "lexical",
+            Self::Vector => "vector",
+            Self::Hybrid => "hybrid",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum KnowledgeCloudConsentMode {
+    /// 每次需要把本地文献发送到云端时都询问。
+    #[default]
+    Ask,
+    /// 用户对单篇文献作出的持续同意；具体记录由知识库域保存。
+    Document,
+    /// 用户对当前本地知识库作出的全局同意；具体记录由知识库域保存。
+    Global,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum KnowledgeBatchStrategy {
+    #[default]
+    PageBatches,
+    ManualSplit,
+    Reject,
+}
+
+/// PDF/Markdown 知识库的非敏感策略。
+///
+/// MinerU Token 不得写入 AppSettings；桌面端后续通过 SecretStore 管理。索引
+/// 数据是可重建的派生数据，不能取代现有 library 业务表。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KnowledgeSettings {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub auto_retrieve: bool,
+    #[serde(default)]
+    pub default_scope: KnowledgeScope,
+    #[serde(default)]
+    pub retrieval_mode: KnowledgeRetrievalMode,
+    #[serde(default)]
+    pub embedding_provider: String,
+    #[serde(default)]
+    pub embedding_model: String,
+    #[serde(default = "default_knowledge_chunk_target")]
+    pub chunk_target_chars: u32,
+    #[serde(default = "default_knowledge_chunk_max")]
+    pub chunk_max_chars: u32,
+    #[serde(default = "default_knowledge_chunk_overlap")]
+    pub chunk_overlap_chars: u32,
+    #[serde(default = "default_knowledge_top_k")]
+    pub top_k: u8,
+    #[serde(default = "default_knowledge_context_bytes")]
+    pub context_max_bytes: u32,
+    #[serde(default)]
+    pub include_annotations: bool,
+    #[serde(default = "default_true")]
+    pub grounded_work: bool,
+    #[serde(default = "default_true")]
+    pub mineru_cloud_enabled: bool,
+    #[serde(default = "default_mineru_endpoint")]
+    pub mineru_endpoint: String,
+    #[serde(default = "default_mineru_model")]
+    pub mineru_model: String,
+    #[serde(default = "default_true")]
+    pub mineru_ocr_enabled: bool,
+    #[serde(default = "default_true")]
+    pub mineru_formula_enabled: bool,
+    #[serde(default = "default_true")]
+    pub mineru_table_enabled: bool,
+    #[serde(default = "default_true")]
+    pub mineru_figure_enabled: bool,
+    #[serde(default = "default_mineru_language")]
+    pub mineru_language: String,
+    #[serde(default)]
+    pub mineru_consent_mode: KnowledgeCloudConsentMode,
+    #[serde(default)]
+    pub auto_parse_imported_pdf: bool,
+    #[serde(default = "default_true")]
+    pub allow_local_text_fallback: bool,
+    #[serde(default = "default_remote_page_budget")]
+    pub remote_page_budget_per_day: u32,
+    #[serde(default = "default_remote_task_budget")]
+    pub remote_task_budget_per_day: u32,
+    #[serde(default)]
+    pub batch_strategy: KnowledgeBatchStrategy,
+    #[serde(default = "default_network_timeout_seconds")]
+    pub network_timeout_seconds: u16,
+    #[serde(default = "default_knowledge_concurrency")]
+    pub index_concurrency: u8,
+    #[serde(default = "default_true")]
+    pub markdown_assets_enabled: bool,
+    #[serde(default)]
+    pub embedding_enabled: bool,
+    #[serde(default)]
+    pub hybrid_enabled: bool,
+    #[serde(default)]
+    pub allow_remote_embedding: bool,
+    #[serde(default)]
+    pub external_mcp_enabled: bool,
+    #[serde(default)]
+    pub debug_retrieval: bool,
+}
+
+impl Default for KnowledgeSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            auto_retrieve: false,
+            default_scope: KnowledgeScope::Library,
+            retrieval_mode: KnowledgeRetrievalMode::Lexical,
+            embedding_provider: String::new(),
+            embedding_model: String::new(),
+            chunk_target_chars: default_knowledge_chunk_target(),
+            chunk_max_chars: default_knowledge_chunk_max(),
+            chunk_overlap_chars: default_knowledge_chunk_overlap(),
+            top_k: default_knowledge_top_k(),
+            context_max_bytes: default_knowledge_context_bytes(),
+            include_annotations: false,
+            grounded_work: true,
+            mineru_cloud_enabled: true,
+            mineru_endpoint: default_mineru_endpoint(),
+            mineru_model: default_mineru_model(),
+            mineru_ocr_enabled: true,
+            mineru_formula_enabled: true,
+            mineru_table_enabled: true,
+            mineru_figure_enabled: true,
+            mineru_language: default_mineru_language(),
+            mineru_consent_mode: KnowledgeCloudConsentMode::Ask,
+            auto_parse_imported_pdf: false,
+            allow_local_text_fallback: true,
+            remote_page_budget_per_day: default_remote_page_budget(),
+            remote_task_budget_per_day: default_remote_task_budget(),
+            batch_strategy: KnowledgeBatchStrategy::PageBatches,
+            network_timeout_seconds: default_network_timeout_seconds(),
+            index_concurrency: default_knowledge_concurrency(),
+            markdown_assets_enabled: true,
+            embedding_enabled: false,
+            hybrid_enabled: false,
+            allow_remote_embedding: false,
+            external_mcp_enabled: false,
+            debug_retrieval: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
@@ -269,6 +472,8 @@ pub struct AppSettings {
     pub note_chinese_font_family: ChineseFontFamily,
     #[serde(default)]
     pub note_latin_font_family: LatinFontFamily,
+    #[serde(default)]
+    pub note_editor: NoteEditorSettings,
     #[serde(default)]
     pub launch_at_startup: bool,
     #[serde(default = "default_true")]
@@ -315,6 +520,8 @@ pub struct AppSettings {
     pub update_proxy: UpdateProxySettings,
     #[serde(default)]
     pub memory: MemorySettings,
+    #[serde(default)]
+    pub knowledge: KnowledgeSettings,
 }
 
 fn current_version() -> u32 {
@@ -365,6 +572,54 @@ fn default_max_output_tokens() -> u32 {
     32_768
 }
 
+fn default_knowledge_chunk_target() -> u32 {
+    1_600
+}
+
+fn default_knowledge_chunk_max() -> u32 {
+    2_400
+}
+
+fn default_knowledge_chunk_overlap() -> u32 {
+    200
+}
+
+fn default_knowledge_top_k() -> u8 {
+    8
+}
+
+fn default_knowledge_context_bytes() -> u32 {
+    64 * 1024
+}
+
+fn default_mineru_endpoint() -> String {
+    "https://mineru.net/api/v4".to_string()
+}
+
+fn default_mineru_model() -> String {
+    "vlm".to_string()
+}
+
+fn default_mineru_language() -> String {
+    "ch".to_string()
+}
+
+fn default_remote_page_budget() -> u32 {
+    1_000
+}
+
+fn default_remote_task_budget() -> u32 {
+    20
+}
+
+fn default_network_timeout_seconds() -> u16 {
+    120
+}
+
+fn default_knowledge_concurrency() -> u8 {
+    2
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
@@ -384,6 +639,7 @@ impl Default for AppSettings {
             note_font_preset: FontPreset::System,
             note_chinese_font_family: ChineseFontFamily::System,
             note_latin_font_family: LatinFontFamily::System,
+            note_editor: NoteEditorSettings::default(),
             launch_at_startup: false,
             retry_enabled: true,
             retry_attempts: 5,
@@ -402,6 +658,7 @@ impl Default for AppSettings {
             pet: PetSettings::default(),
             update_proxy: UpdateProxySettings::default(),
             memory: MemorySettings::default(),
+            knowledge: KnowledgeSettings::default(),
         }
     }
 }
@@ -409,6 +666,16 @@ impl Default for AppSettings {
 impl AppSettings {
     pub fn normalize_and_validate(mut self) -> Result<Self, String> {
         let source_version = self.version;
+        if !["live", "source", "read"].contains(&self.note_editor.default_mode.as_str())
+            || !["auto", "sourceOnly"].contains(&self.note_editor.render_policy.as_str())
+            || !(300..=5000).contains(&self.note_editor.autosave_delay_ms)
+            || ![2, 4, 8].contains(&self.note_editor.tab_size)
+        {
+            return Err("Invalid note editor settings".into());
+        }
+        if source_version < 18 {
+            self.note_editor.default_mode = "source".into();
+        }
         if self.version > CURRENT_APP_SETTINGS_VERSION {
             return Err(format!(
                 "App settings version {} is newer than supported version {}",
@@ -437,7 +704,17 @@ impl AppSettings {
         if source_version < 16 {
             self.pet.locked = true;
         }
+        if source_version < 17 {
+            // 知识库配置在 v17 首次加入；旧配置不能因为反序列化缺字段而
+            // 获得隐式的云端上传或远程 embedding 权限。
+            self.knowledge = KnowledgeSettings::default();
+        }
         self.pet.selected_pet_id = self.pet.selected_pet_id.trim().to_string();
+        self.knowledge.embedding_provider = self.knowledge.embedding_provider.trim().to_string();
+        self.knowledge.embedding_model = self.knowledge.embedding_model.trim().to_string();
+        self.knowledge.mineru_endpoint = self.knowledge.mineru_endpoint.trim().to_string();
+        self.knowledge.mineru_model = self.knowledge.mineru_model.trim().to_ascii_lowercase();
+        self.knowledge.mineru_language = self.knowledge.mineru_language.trim().to_string();
 
         if self.user_display_name.chars().count() > 100 {
             return Err("User display name is too long".to_string());
@@ -531,6 +808,84 @@ impl AppSettings {
                 .is_some_and(|value| !value.is_finite() || value.abs() > 100_000.0)
         {
             return Err("Pet window position is invalid".to_string());
+        }
+        if !(256..=8_192).contains(&self.knowledge.chunk_target_chars) {
+            return Err(
+                "Knowledge chunk target must be between 256 and 8192 characters".to_string(),
+            );
+        }
+        if self.knowledge.chunk_max_chars < self.knowledge.chunk_target_chars
+            || self.knowledge.chunk_max_chars > 16_384
+        {
+            return Err(
+                "Knowledge chunk maximum must be at least the target and no more than 16384 characters"
+                    .to_string(),
+            );
+        }
+        if self.knowledge.chunk_overlap_chars > self.knowledge.chunk_target_chars / 2 {
+            return Err("Knowledge chunk overlap cannot exceed half of the target".to_string());
+        }
+        if !(1..=50).contains(&self.knowledge.top_k) {
+            return Err("Knowledge top-k must be between 1 and 50".to_string());
+        }
+        if !(4 * 1024..=256 * 1024).contains(&self.knowledge.context_max_bytes) {
+            return Err("Knowledge context bytes must be between 4096 and 262144".to_string());
+        }
+        if !(1..=4).contains(&self.knowledge.index_concurrency) {
+            return Err("Knowledge index concurrency must be between 1 and 4".to_string());
+        }
+        if !(30..=600).contains(&self.knowledge.network_timeout_seconds) {
+            return Err("Knowledge network timeout must be between 30 and 600 seconds".to_string());
+        }
+        if !(1..=100_000).contains(&self.knowledge.remote_page_budget_per_day) {
+            return Err("Knowledge daily page budget must be between 1 and 100000".to_string());
+        }
+        if !(1..=1_000).contains(&self.knowledge.remote_task_budget_per_day) {
+            return Err("Knowledge daily task budget must be between 1 and 1000".to_string());
+        }
+        if self.knowledge.embedding_provider.len() > 256
+            || self.knowledge.embedding_model.len() > 256
+        {
+            return Err("Knowledge embedding provider or model is too long".to_string());
+        }
+        if self.knowledge.mineru_model != "vlm" && self.knowledge.mineru_model != "pipeline" {
+            return Err("MinerU model must be vlm or pipeline".to_string());
+        }
+        if self.knowledge.mineru_language.is_empty()
+            || self.knowledge.mineru_language.len() > 32
+            || !self.knowledge.mineru_language.chars().all(|character| {
+                character.is_ascii_alphanumeric()
+                    || matches!(character, ',' | '+' | '-' | '_' | ' ')
+            })
+        {
+            return Err("MinerU language list is invalid".to_string());
+        }
+        if self.knowledge.mineru_endpoint.len() > 2_048 {
+            return Err("MinerU endpoint is too long".to_string());
+        }
+        let endpoint = Url::parse(&self.knowledge.mineru_endpoint)
+            .map_err(|error| format!("Invalid MinerU endpoint: {error}"))?;
+        if endpoint.scheme() != "https" {
+            return Err("MinerU endpoint must use HTTPS".to_string());
+        }
+        if endpoint.host_str().is_none() {
+            return Err("MinerU endpoint must include a host".to_string());
+        }
+        if !endpoint.username().is_empty() || endpoint.password().is_some() {
+            return Err("MinerU endpoint cannot contain credentials".to_string());
+        }
+        if endpoint.query().is_some() || endpoint.fragment().is_some() {
+            return Err("MinerU endpoint cannot include a query or fragment".to_string());
+        }
+        if matches!(
+            self.knowledge.retrieval_mode,
+            KnowledgeRetrievalMode::Vector | KnowledgeRetrievalMode::Hybrid
+        ) && !self.knowledge.embedding_enabled
+        {
+            return Err("Vector or hybrid retrieval requires embedding to be enabled".to_string());
+        }
+        if self.knowledge.hybrid_enabled && !self.knowledge.embedding_enabled {
+            return Err("Hybrid retrieval cannot be enabled without embedding".to_string());
         }
         if !self.update_proxy.url.is_empty() {
             self.update_proxy.url = self.update_proxy.manual_url()?.to_string();
@@ -688,8 +1043,8 @@ fn validate_theme_background_urls(value: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppSettings, ThemeColor, ThemeMode, ThemePreset, UpdateProxyMode,
-        CURRENT_APP_SETTINGS_VERSION,
+        AppSettings, KnowledgeRetrievalMode, KnowledgeSettings, ThemeColor, ThemeMode, ThemePreset,
+        UpdateProxyMode, CURRENT_APP_SETTINGS_VERSION,
     };
 
     #[test]
@@ -719,6 +1074,91 @@ mod tests {
         assert!(!settings.memory.allow_model_write);
         assert_eq!(settings.update_proxy.mode, UpdateProxyMode::System);
         assert!(settings.update_proxy.url.is_empty());
+        assert!(settings.knowledge.enabled);
+        assert!(!settings.knowledge.auto_retrieve);
+        assert_eq!(settings.knowledge.chunk_target_chars, 1_600);
+        assert_eq!(settings.knowledge.chunk_max_chars, 2_400);
+        assert_eq!(settings.knowledge.chunk_overlap_chars, 200);
+        assert_eq!(settings.knowledge.top_k, 8);
+        assert_eq!(settings.knowledge.context_max_bytes, 64 * 1024);
+        assert_eq!(
+            settings.knowledge.retrieval_mode,
+            KnowledgeRetrievalMode::Lexical
+        );
+        assert!(settings.knowledge.mineru_cloud_enabled);
+        assert!(!settings.knowledge.embedding_enabled);
+        assert!(!settings.knowledge.allow_remote_embedding);
+    }
+
+    #[test]
+    fn version_sixteen_settings_receive_safe_knowledge_defaults() {
+        let value = serde_json::json!({
+            "version": 16,
+            "interfaceLanguage": "zh",
+            "theme": "system",
+            "fontSize": 14,
+            "noteFontSize": 16,
+            "noteLineHeight": 1.85,
+            "retryEnabled": true,
+            "retryAttempts": 5,
+            "maxOutputTokens": 32768
+        });
+        let settings: AppSettings = serde_json::from_value(value).unwrap();
+        let settings = settings.normalize_and_validate().unwrap();
+        assert_eq!(settings.version, CURRENT_APP_SETTINGS_VERSION);
+        assert_eq!(settings.knowledge, KnowledgeSettings::default());
+    }
+
+    #[test]
+    fn knowledge_settings_validate_chunk_retrieval_and_endpoint_limits() {
+        let invalid_target = AppSettings {
+            knowledge: KnowledgeSettings {
+                chunk_target_chars: 255,
+                ..KnowledgeSettings::default()
+            },
+            ..AppSettings::default()
+        };
+        assert!(invalid_target.normalize_and_validate().is_err());
+
+        let invalid_overlap = AppSettings {
+            knowledge: KnowledgeSettings {
+                chunk_overlap_chars: 801,
+                ..KnowledgeSettings::default()
+            },
+            ..AppSettings::default()
+        };
+        assert!(invalid_overlap.normalize_and_validate().is_err());
+
+        let invalid_vector = AppSettings {
+            knowledge: KnowledgeSettings {
+                retrieval_mode: KnowledgeRetrievalMode::Vector,
+                embedding_enabled: false,
+                ..KnowledgeSettings::default()
+            },
+            ..AppSettings::default()
+        };
+        assert!(invalid_vector.normalize_and_validate().is_err());
+
+        let invalid_endpoint = AppSettings {
+            knowledge: KnowledgeSettings {
+                mineru_endpoint: "http://localhost:8080/api/v4".to_string(),
+                ..KnowledgeSettings::default()
+            },
+            ..AppSettings::default()
+        };
+        assert!(invalid_endpoint.normalize_and_validate().is_err());
+
+        let valid = AppSettings {
+            knowledge: KnowledgeSettings {
+                retrieval_mode: KnowledgeRetrievalMode::Hybrid,
+                embedding_enabled: true,
+                hybrid_enabled: true,
+                mineru_endpoint: "https://example.com/api/v4".to_string(),
+                ..KnowledgeSettings::default()
+            },
+            ..AppSettings::default()
+        };
+        assert!(valid.normalize_and_validate().is_ok());
     }
 
     #[test]

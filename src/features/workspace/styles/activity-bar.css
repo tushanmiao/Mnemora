@@ -95,6 +95,18 @@
   outline-offset: -2px;
 }
 
+/* 待处理的工具审批/反问。审批有 300 秒后端超时，切走视图后必须还能看到它在等。 */
+.activity-bar-badge {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 8px;
+  height: 8px;
+  border: 1px solid var(--surface-rail);
+  border-radius: 50%;
+  background: var(--color-warning);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .activity-bar-item {
     transition: none;

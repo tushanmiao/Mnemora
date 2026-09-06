@@ -53,6 +53,12 @@ pub async fn save_model_settings(
     for provider in &mut settings.providers {
         if let Some(revision) = credential_revisions.get(&provider.id) {
             provider.credential_revision = *revision;
+        } else {
+            // A newly added or re-added provider starts a fresh credential
+            // generation.  Do not let a stale renderer snapshot manufacture
+            // an identity that could collide with vectors from an earlier
+            // provider instance using the same ID.
+            provider.credential_revision = 0;
         }
     }
     let settings = settings.normalize_and_validate()?;
@@ -91,6 +97,9 @@ pub async fn save_model_settings(
         .model_settings
         .write()
         .map_err(|_| "Model settings lock is unavailable".to_string())? = saved.clone();
+    if let Err(error) = state.reconcile_embedding_jobs().await {
+        eprintln!("Failed to reconcile embedding jobs after model settings save: {error}");
+    }
     Ok(saved)
 }
 
@@ -149,6 +158,9 @@ pub async fn set_provider_api_key(
     {
         eprintln!("Failed to reconcile DeepNote route profiles after credential update: {error}");
     }
+    if let Err(error) = state.reconcile_embedding_jobs().await {
+        eprintln!("Failed to reconcile embedding jobs after credential update: {error}");
+    }
     Ok(true)
 }
 
@@ -202,6 +214,9 @@ pub async fn delete_provider_api_key(
         .reconcile_deep_note_route_profiles(&snapshot)
     {
         eprintln!("Failed to reconcile DeepNote route profiles after credential delete: {error}");
+    }
+    if let Err(error) = state.reconcile_embedding_jobs().await {
+        eprintln!("Failed to reconcile embedding jobs after credential delete: {error}");
     }
     Ok(true)
 }

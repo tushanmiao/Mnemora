@@ -790,7 +790,7 @@ impl LibraryNoteCreate {
             .map(|value| normalize_identifier("文献 ID", value))
             .transpose()?;
         self.title = normalize_text("笔记标题", &self.title, MAX_NOTE_TITLE_CHARS, false)?;
-        self.content = normalize_multiline_text("笔记正文", &self.content, MAX_NOTE_CONTENT_CHARS)?;
+        self.content = validate_note_content(&self.content)?;
         self.group_name = self
             .group_name
             .as_deref()
@@ -844,7 +844,7 @@ impl LibraryNoteUpdate {
     pub fn normalize_and_validate(mut self) -> Result<Self, String> {
         self.note_id = normalize_identifier("笔记 ID", &self.note_id)?;
         self.title = normalize_text("笔记标题", &self.title, MAX_NOTE_TITLE_CHARS, false)?;
-        self.content = normalize_multiline_text("笔记正文", &self.content, MAX_NOTE_CONTENT_CHARS)?;
+        self.content = validate_note_content(&self.content)?;
         Ok(self)
     }
 }
@@ -1022,6 +1022,21 @@ fn normalize_text(
     }
     if value.chars().any(char::is_control) {
         return Err(format!("{label}包含不允许的控制字符。"));
+    }
+    Ok(value.to_string())
+}
+
+pub(crate) fn validate_note_content(value: &str) -> Result<String, String> {
+    if value.chars().count() > MAX_NOTE_CONTENT_CHARS
+        || value.len() > MAX_NOTE_IMPORT_BYTES as usize
+    {
+        return Err("NOTE_CONTENT_LIMIT: 笔记正文超过字符或字节上限。".to_string());
+    }
+    if value
+        .chars()
+        .any(|character| character.is_control() && !matches!(character, '\n' | '\r' | '\t'))
+    {
+        return Err("NOTE_CONTENT_INVALID: 笔记包含非法控制字符。".to_string());
     }
     Ok(value.to_string())
 }

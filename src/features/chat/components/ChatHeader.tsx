@@ -7,8 +7,10 @@ import {
   PanelRight,
   PanelRightClose,
   ListChecks,
+  MessageCirclePlus,
   ShieldCheck,
   Sun,
+  X,
 } from "lucide-react";
 import { AI_PERMISSION_LABELS, type AiPermissionMode } from "../../../types/chat";
 import { useI18n } from "../../../i18n/I18nProvider";
@@ -25,6 +27,8 @@ type ChatHeaderProps = {
   onPermissionChange: (permission: AiPermissionMode) => void;
   onToggleTheme: () => void;
   onClosePanel?: () => void;
+  onOpenQuickChat?: () => void;
+  onCloseWindow?: () => void;
   showTaskProgress?: boolean;
   onToggleTaskProgress?: (enabled: boolean) => void;
 };
@@ -38,6 +42,8 @@ export function ChatHeader({
   onPermissionChange,
   onToggleTheme,
   onClosePanel,
+  onOpenQuickChat,
+  onCloseWindow,
   showTaskProgress = true,
   onToggleTaskProgress,
 }: ChatHeaderProps) {
@@ -128,6 +134,17 @@ export function ChatHeader({
                 <ListChecks size={18} />
               </button>
             ) : null}
+            {onOpenQuickChat ? (
+              <button
+                className="icon-button"
+                type="button"
+                title={t("chat.openQuickChat")}
+                aria-label={t("chat.openQuickChat")}
+                onClick={onOpenQuickChat}
+              >
+                <MessageCirclePlus size={18} />
+              </button>
+            ) : null}
             <button
               className="icon-button"
               type="button"
@@ -142,6 +159,17 @@ export function ChatHeader({
             <button className="icon-button" type="button" title={t("chat.more")} aria-label={t("chat.more")}>
               <MoreHorizontal size={19} />
             </button>
+            {onCloseWindow ? (
+              <button
+                className="icon-button"
+                type="button"
+                title={t("chat.closeQuickChat")}
+                aria-label={t("chat.closeQuickChat")}
+                onClick={onCloseWindow}
+              >
+                <X size={18} />
+              </button>
+            ) : null}
           </>
         ) : null}
       </div>

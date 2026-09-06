@@ -33,6 +33,7 @@ const RemoteInstallDialog = lazy(() => import("./features/settings/components/Re
 import { useChatRuntime } from "./features/chat/hooks/useChatRuntime";
 import { estimateConversationContext } from "./features/chat/utils/contextUsage";
 import { activeContextMessages, contextSummaryPrompt } from "./features/chat/utils/contextCompression";
+import { pendingApprovalConversationIds } from "./features/chat/utils/pendingApprovals";
 import { Sidebar } from "./features/conversations/components/Sidebar";
 import { useConversations } from "./features/conversations/hooks/useConversations";
 import { exportStoredConversation } from "./features/conversations/api/conversations";
@@ -48,7 +49,7 @@ import {
 import type { AiPermissionMode } from "./types/chat";
 import { resolveConversationModel } from "./types/modelSettings";
 import { matchModelDefaults, resolveSupportsFunctionCalling, resolveSupportsReasoning, resolveSupportsVision } from "./data/modelMatching";
-import type { ActiveWorkNoteContext, WorkLibraryView } from "./features/workspace/types";
+import type { ActiveWorkNoteContext, WorkLibraryView, WorkspaceMode } from "./features/workspace/types";
 import { findWorkspaceView } from "./features/workspace/viewRegistry";
 import { ActivityBar } from "./features/workspace/components/ActivityBar";
 import { WorkspaceViewHost } from "./features/workspace/components/WorkspaceViewHost";
@@ -57,6 +58,7 @@ import { NotesViewRuntimeProvider } from "./features/workspace/runtime/NotesView
 import { WorkViewRuntimeProvider } from "./features/workspace/runtime/WorkViewRuntime";
 import { OverviewViewRuntimeProvider } from "./features/workspace/runtime/OverviewViewRuntime";
 import { DeepNoteViewRuntimeProvider } from "./features/workspace/runtime/DeepNoteViewRuntime";
+import { KnowledgeViewRuntimeProvider } from "./features/workspace/runtime/KnowledgeViewRuntime";
 import type { OverviewRecentItem } from "./features/overview/types";
 import { I18nProvider } from "./i18n/I18nProvider";
 import { ImageViewerProvider } from "./features/chat/image-viewer/ImageViewerContext";
@@ -71,6 +73,7 @@ import { releaseBackgroundResources } from "./runtime/resources/ResourceRegistry
 import { initializeWorkspaceLifecycle, subscribeWorkspaceLifecycle } from "./runtime/resources/WorkspaceLifecycle";
 import { nextPetStateExpiry, projectPetState } from "./features/pet/petState";
 import { speechController } from "./features/chat/speech/speechController";
+import { openQuickChat } from "./features/chat/api/quickChat";
 function App() {
   const appShellRef = useRef<HTMLElement>(null);
   const navigation = useWorkspaceNavigation();
@@ -302,7 +305,7 @@ function App() {
     currentConversation: conversations.currentConversation,
     currentModel,
     conversationsRef: conversations.conversationsRef,
-    requestInFlightRef: conversations.requestInFlightRef,
+    chatBusy: conversations.chatBusy,
     cacheConversation: conversations.cacheConversation,
     saveStableConversation: conversations.saveStableConversation,
     protectConversation: conversations.protectConversation,
@@ -315,6 +318,19 @@ function App() {
     || (workspaceMode === "work" && workContextPanelOpen && workContextView === "chat")
     || (workspaceMode === "notes" && notesContextPanelOpen)
   );
+
+  /**
+   * 有待处理的工具审批/反问但用户看不到它时，在活动栏的 Chat 入口打一个点。
+   *
+   * 审批有 300 秒后端超时，弹窗只在对应消息可见时渲染；不提示的话用户切走之后那次
+   * 中断会静默超时，从用户视角就是"Agent 自己放弃了"。
+   */
+  const attentionViews = useMemo(() => {
+    if (chatSurfaceVisible) return undefined;
+    const pending = pendingApprovalConversationIds(conversations.conversationsRef.current);
+    return pending.length > 0 ? new Set<WorkspaceMode>(["chat"]) : undefined;
+  }, [chatSurfaceVisible, conversations.conversationsRef, conversations.currentConversation]);
+
 
   useEffect(() => {
     if (chatSurfaceVisible) {
@@ -413,7 +429,8 @@ function App() {
   }, [conversations]);
 
   const handleModelChange = useCallback((providerId: string, modelId: string) => {
-    if (conversations.requestInFlightRef.current) return;
+    // 换模型只影响当前会话，别的会话在生成不该拦住它。
+    if (conversations.chatBusy.isBusy(conversations.currentConversationId)) return;
     const provider = settings.modelSettings.providers.find(
       (item) => item.enabled && item.id === providerId,
     );
@@ -488,6 +505,9 @@ function App() {
         theme: settings.resolvedTheme,
         onPermissionChange: handlePermissionChange,
         onToggleTheme: settings.toggleTheme,
+        onOpenQuickChat: () => {
+          void openQuickChat().catch((error) => console.error("打开快速聊天失败", error));
+        },
         showTaskProgress: settings.appSettings.showChatTaskProgress,
         onToggleTaskProgress: (enabled) => {
           void settings.saveAppSettings({ ...settings.appSettings, showChatTaskProgress: enabled });
@@ -729,6 +749,13 @@ function App() {
     },
   };
 
+  const knowledgeViewRuntime = {
+    knowledgeSettings: settings.appSettings.knowledge,
+    onOpenWork: () => changeWorkspaceMode("work"),
+    onOpenNotes: () => changeWorkspaceMode("notes"),
+    onOpenSettings: () => openSettings("knowledge"),
+  };
+
   return (
     <I18nProvider language={settings.appSettings.interfaceLanguage}>
     <main
@@ -748,6 +775,7 @@ function App() {
         settingsOpen={activeView === "settings"}
         onSelectView={changeWorkspaceMode}
         onOpenSettings={() => openSettings("general")}
+        attentionViews={attentionViews}
       />
       <TaskCenter
         chatMessage={latestAssistantMessage}
@@ -830,6 +858,7 @@ function App() {
         }}
         onLoadMoreConversations={conversations.loadMoreConversations}
         onOpenSkills={() => openSettings("skills")}
+        onOpenKnowledge={() => changeWorkspaceMode("knowledge")}
         onOpenPlugins={() => openSettings("plugins")}
         onWorkLibraryViewChange={changeWorkLibraryView}
         onWorkSearchQueryChange={setWorkSearchQuery}
@@ -880,47 +909,49 @@ function App() {
           <NotesViewRuntimeProvider value={notesViewRuntime}>
             <WorkViewRuntimeProvider value={workViewRuntime}>
               <OverviewViewRuntimeProvider value={overviewViewRuntime}>
-                <DeepNoteViewRuntimeProvider value={{
-                  detail: noteActions.deepNoteDetail,
-                  review: noteActions.deepNoteReview,
-                  progress: noteActions.deepNoteProgress,
-                  busy: noteActions.deepNoteReviewBusy,
-                  controlBusy: noteActions.deepNoteControlBusy,
-                  modelOptions: deepNoteModelOptions,
-                  onAdjust: (requirement) => {
-                    void noteActions.adjustDeepNoteOutline(requirement);
-                  },
-                  onConfirm: (selectedSectionIds) => {
-                    void noteActions.confirmDeepNoteOutline(selectedSectionIds);
-                  },
-                  onPause: () => {
-                    void noteActions.pauseDeepNote();
-                  },
-                  onResume: () => {
-                    void noteActions.resumeDeepNote();
-                  },
-                  onRetry: () => {
-                    void noteActions.retryDeepNote();
-                  },
-                  onRestart: () => {
-                    void noteActions.restartDeepNote();
-                  },
-                  onCancel: noteActions.cancelDeepNote,
-                  onAbandon: noteActions.abandonDeepNote,
-                  onSwitchModel: handleDeepNoteModelSwitch,
-                  onOpenNote: () => changeWorkspaceMode("notes"),
-                  onReturn: () => changeWorkspaceMode("chat"),
-                }}>
-                  <WorkspaceViewHost
-                    mode={workspaceMode}
-                    contextOpen={workspaceMode === "work"
-                      ? workContextPanelOpen
-                      : workspaceMode === "notes"
-                        ? notesContextPanelOpen
-                        : false}
-                    onReturnToChat={() => changeWorkspaceMode("chat")}
-                  />
-                </DeepNoteViewRuntimeProvider>
+                <KnowledgeViewRuntimeProvider value={knowledgeViewRuntime}>
+                  <DeepNoteViewRuntimeProvider value={{
+                    detail: noteActions.deepNoteDetail,
+                    review: noteActions.deepNoteReview,
+                    progress: noteActions.deepNoteProgress,
+                    busy: noteActions.deepNoteReviewBusy,
+                    controlBusy: noteActions.deepNoteControlBusy,
+                    modelOptions: deepNoteModelOptions,
+                    onAdjust: (requirement) => {
+                      void noteActions.adjustDeepNoteOutline(requirement);
+                    },
+                    onConfirm: (selectedSectionIds) => {
+                      void noteActions.confirmDeepNoteOutline(selectedSectionIds);
+                    },
+                    onPause: () => {
+                      void noteActions.pauseDeepNote();
+                    },
+                    onResume: () => {
+                      void noteActions.resumeDeepNote();
+                    },
+                    onRetry: () => {
+                      void noteActions.retryDeepNote();
+                    },
+                    onRestart: () => {
+                      void noteActions.restartDeepNote();
+                    },
+                    onCancel: noteActions.cancelDeepNote,
+                    onAbandon: noteActions.abandonDeepNote,
+                    onSwitchModel: handleDeepNoteModelSwitch,
+                    onOpenNote: () => changeWorkspaceMode("notes"),
+                    onReturn: () => changeWorkspaceMode("chat"),
+                  }}>
+                    <WorkspaceViewHost
+                      mode={workspaceMode}
+                      contextOpen={workspaceMode === "work"
+                        ? workContextPanelOpen
+                        : workspaceMode === "notes"
+                          ? notesContextPanelOpen
+                          : false}
+                      onReturnToChat={() => changeWorkspaceMode("chat")}
+                    />
+                  </DeepNoteViewRuntimeProvider>
+                </KnowledgeViewRuntimeProvider>
               </OverviewViewRuntimeProvider>
             </WorkViewRuntimeProvider>
           </NotesViewRuntimeProvider>

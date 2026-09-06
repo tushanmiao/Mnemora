@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useState } from "react";
-import { ArrowLeft, BarChart3, Bot, Brain, Bug, Cable, Cloud, Database, Info, MessageSquareText, NotebookPen, PawPrint, Plug, SlidersHorizontal, Sparkles } from "lucide-react";
+import { ArrowLeft, BarChart3, BookOpenCheck, Bot, Brain, Bug, Cable, Cloud, Database, Info, MessageSquareText, NotebookPen, PawPrint, Plug, SlidersHorizontal, Sparkles } from "lucide-react";
 import { RootErrorBoundary } from "../../../bootstrap/RootErrorBoundary";
 import type { AppSettings, SettingsBundle } from "../../../types/appSettings";
 import type { ModelSettings, ProviderApiKeyUpdate } from "../../../types/modelSettings";
@@ -29,6 +29,9 @@ const PluginSettingsPanel = lazy(() => import("./PluginSettingsPanel").then((mod
 const MemorySettingsPanel = lazy(() => import("./MemorySettingsPanel").then((module) => ({
   default: module.MemorySettingsPanel,
 })));
+const KnowledgeSettingsPanel = lazy(() => import("./KnowledgeSettingsPanel").then((module) => ({
+  default: module.KnowledgeSettingsPanel,
+})));
 const SyncSettingsPanel = lazy(() => import("./SyncSettingsPanel").then((module) => ({
   default: module.SyncSettingsPanel,
 })));
@@ -37,9 +40,9 @@ const StorageSettingsPanel = lazy(() => import("./StorageSettingsPanel").then((m
 const RequestDebugSettingsPanel = lazy(() => import("./RequestDebugSettingsPanel").then((module) => ({ default: module.RequestDebugSettingsPanel })));
 const AboutSettingsPanel = lazy(() => import("./AboutSettingsPanel").then((module) => ({ default: module.AboutSettingsPanel })));
 
-export type SettingsCategory = "general" | "pet" | "notes" | "models" | "skills" | "prompts" | "mcp" | "plugins" | "memory" | "storage" | "sync" | "usage" | "debug" | "about";
+export type SettingsCategory = "general" | "pet" | "notes" | "models" | "skills" | "prompts" | "mcp" | "plugins" | "memory" | "knowledge" | "storage" | "sync" | "usage" | "debug" | "about";
 
-const CATEGORY_KEYS: Record<SettingsCategory, "settings.general" | "settings.pet" | "settings.notes" | "settings.models" | "settings.skills" | "settings.prompts" | "settings.mcp" | "settings.plugins" | "settings.memory" | "settings.storage" | "settings.sync" | "settings.usage" | "settings.debug" | "settings.about"> = {
+const CATEGORY_KEYS: Record<SettingsCategory, "settings.general" | "settings.pet" | "settings.notes" | "settings.models" | "settings.skills" | "settings.prompts" | "settings.mcp" | "settings.plugins" | "settings.memory" | "settings.knowledge" | "settings.storage" | "settings.sync" | "settings.usage" | "settings.debug" | "settings.about"> = {
   general: "settings.general",
   pet: "settings.pet",
   notes: "settings.notes",
@@ -49,6 +52,7 @@ const CATEGORY_KEYS: Record<SettingsCategory, "settings.general" | "settings.pet
   mcp: "settings.mcp",
   plugins: "settings.plugins",
   memory: "settings.memory",
+  knowledge: "settings.knowledge",
   storage: "settings.storage",
   sync: "settings.sync",
   usage: "settings.usage",
@@ -84,6 +88,7 @@ export function SettingsPage(props: SettingsPageProps) {
   const { t } = useI18n();
   const activeCategory = props.activeCategory;
   const [memoryDirty, setMemoryDirty] = useState(false);
+  const [knowledgeDirty, setKnowledgeDirty] = useState(false);
 
   const changeCategory = useCallback((category: SettingsCategory) => {
     if (
@@ -92,9 +97,16 @@ export function SettingsPage(props: SettingsPageProps) {
       && memoryDirty
       && !window.confirm(t("settings.unsavedMemoryLeave"))
     ) return;
+    if (
+      category !== activeCategory
+      && activeCategory === "knowledge"
+      && knowledgeDirty
+      && !window.confirm(t("knowledgeSettings.unsavedLeave"))
+    ) return;
     setMemoryDirty(false);
+    setKnowledgeDirty(false);
     props.onCategoryChange(category);
-  }, [activeCategory, memoryDirty, props]);
+  }, [activeCategory, knowledgeDirty, memoryDirty, props, t]);
 
   const goBack = useCallback(() => {
     if (
@@ -102,9 +114,15 @@ export function SettingsPage(props: SettingsPageProps) {
       && memoryDirty
       && !window.confirm(t("settings.unsavedMemoryBack"))
     ) return;
+    if (
+      activeCategory === "knowledge"
+      && knowledgeDirty
+      && !window.confirm(t("knowledgeSettings.unsavedBack"))
+    ) return;
     setMemoryDirty(false);
+    setKnowledgeDirty(false);
     props.onBack();
-  }, [activeCategory, memoryDirty, props]);
+  }, [activeCategory, knowledgeDirty, memoryDirty, props, t]);
 
   const categories = [
     { id: "general", label: t("settings.general"), icon: SlidersHorizontal },
@@ -116,6 +134,7 @@ export function SettingsPage(props: SettingsPageProps) {
     { id: "mcp", label: t("settings.mcp"), icon: Cable },
     { id: "plugins", label: t("settings.plugins"), icon: Plug },
     { id: "memory", label: t("settings.memory"), icon: Brain },
+    { id: "knowledge", label: t("settings.knowledge"), icon: BookOpenCheck },
     { id: "storage", label: t("settings.storage"), icon: Database },
     { id: "sync", label: t("settings.sync"), icon: Cloud },
     { id: "usage", label: t("settings.usage"), icon: BarChart3 },
@@ -196,6 +215,14 @@ export function SettingsPage(props: SettingsPageProps) {
                 settings={props.appSettings}
                 onSaveSettings={props.onSaveAppSettings}
                 onDirtyChange={setMemoryDirty}
+              />
+            ) : activeCategory === "knowledge" ? (
+              <KnowledgeSettingsPanel
+                settings={props.appSettings}
+                modelSettings={props.settings}
+                initialError={props.appSettingsError}
+                onSave={props.onSaveAppSettings}
+                onDirtyChange={setKnowledgeDirty}
               />
             ) : activeCategory === "storage" ? (
               <StorageSettingsPanel />

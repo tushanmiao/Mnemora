@@ -5,6 +5,14 @@ import {
 
 type MarkdownUrlTransform = (value: string, key: string) => string;
 
+export function safeNoteAttachmentPath(value: string): string | null {
+  try {
+    const path = decodeURIComponent(value);
+    return path.startsWith("attachments/") && !/[\\\x00-\x1f?#:]/.test(path)
+      && path.split("/").every((part) => part !== ".." && part !== "." && part !== "") ? path : null;
+  } catch { return null; }
+}
+
 function noteAssetBaseUrl(value: string | null | undefined) {
   if (!value) return null;
   try {
@@ -26,7 +34,7 @@ export function createSafeNoteMarkdownUrlTransform(
 ): MarkdownUrlTransform {
   const baseUrl = noteAssetBaseUrl(assetBaseUrl);
   return (value, key) => {
-    if (key !== "src") return safeMarkdownUrlTransform(value);
+    if (key !== "src") return safeNoteAttachmentPath(value) ? value : safeMarkdownUrlTransform(value);
     const absolute = safeMarkdownImageUrlTransform(value);
     if (absolute) return absolute;
     if (!baseUrl || !value || value.startsWith("/") || value.startsWith("\\")) return "";

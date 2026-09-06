@@ -10,6 +10,11 @@ use zeroize::Zeroizing;
 use super::types::validate_stable_id;
 
 const SERVICE_NAME: &str = "com.mnemora.app.model-provider";
+// Keep MinerU credentials in a separate keyring namespace.  Reusing a model
+// provider id would make a provider rename or settings import accidentally
+// overwrite the document-processing credential.
+const MINERU_SERVICE_NAME: &str = "com.mnemora.app.mineru-cloud";
+const MINERU_ACCOUNT: &str = "api-token";
 
 #[derive(Clone, Copy, Default)]
 pub struct SecretStore;
@@ -66,6 +71,50 @@ impl SecretStore {
             )),
         }
     }
+
+    /// Read the MinerU Cloud token from the operating-system credential store.
+    /// The token is deliberately not part of AppSettings or any serializable
+    /// settings bundle.
+    pub fn get_mineru_token(&self) -> Result<Option<String>, String> {
+        let entry = mineru_entry()?;
+        match entry.get_password() {
+            Ok(token) => Ok(Some(token)),
+            Err(KeyringError::NoEntry) => Ok(None),
+            Err(error) => Err(format!(
+                "Failed to read MinerU token from system credentials: {error}"
+            )),
+        }
+    }
+
+    pub fn has_mineru_token(&self) -> Result<bool, String> {
+        let token = self.get_mineru_token()?.map(Zeroizing::new);
+        Ok(token
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty()))
+    }
+
+    pub fn set_mineru_token(&self, token: &str) -> Result<(), String> {
+        let token = token.trim();
+        if token.is_empty() {
+            return Err("MinerU token cannot be empty".to_string());
+        }
+        if token.len() > 16_384 || token.chars().any(char::is_control) {
+            return Err("MinerU token is invalid or too long".to_string());
+        }
+        mineru_entry()?
+            .set_password(token)
+            .map_err(|error| format!("Failed to save MinerU token to system credentials: {error}"))
+    }
+
+    pub fn delete_mineru_token(&self) -> Result<bool, String> {
+        match mineru_entry()?.delete_credential() {
+            Ok(()) => Ok(true),
+            Err(KeyringError::NoEntry) => Ok(false),
+            Err(error) => Err(format!(
+                "Failed to delete MinerU token from system credentials: {error}"
+            )),
+        }
+    }
 }
 
 fn entry(provider_id: &str) -> Result<Entry, String> {
@@ -73,6 +122,11 @@ fn entry(provider_id: &str) -> Result<Entry, String> {
     validate_stable_id("Provider ID", provider_id)?;
     Entry::new(SERVICE_NAME, provider_id)
         .map_err(|error| format!("Failed to open system credential entry: {error}"))
+}
+
+fn mineru_entry() -> Result<Entry, String> {
+    Entry::new(MINERU_SERVICE_NAME, MINERU_ACCOUNT)
+        .map_err(|error| format!("Failed to open MinerU system credential entry: {error}"))
 }
 
 #[cfg(test)]

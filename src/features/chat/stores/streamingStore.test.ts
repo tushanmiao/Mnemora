@@ -64,6 +64,24 @@ describe("streamingStore lifecycle", () => {
     expect(consumeStreamingMessage("message-1")).toEqual({ content: "", reasoning: "" });
   });
 
+  it("discards one runtime's entries while another runtime keeps streaming", () => {
+    // 副窗关闭时只能清理它自己那几条。原来 useStreamingRun 卸载调的是
+    // resetAllStreamingMessages()，会静默掐断主窗正在跑的流，而且只在
+    // "关副窗时主窗正在生成"这个时序下出现，极难复现。
+    startStreamingMessage("side-1");
+    startStreamingMessage("side-2");
+    startStreamingMessage("main-1");
+    appendStreamingDelta("side-1", "副窗一");
+    appendStreamingDelta("side-2", "副窗二");
+    appendStreamingDelta("main-1", "主窗");
+
+    for (const messageId of ["side-1", "side-2"]) discardStreamingMessage(messageId);
+
+    expect(consumeStreamingMessage("side-1")).toBeNull();
+    expect(consumeStreamingMessage("side-2")).toBeNull();
+    expect(consumeStreamingMessage("main-1")?.content).toBe("主窗");
+  });
+
   it("resets every active entry", () => {
     startStreamingMessage("message-1");
     startStreamingMessage("message-2");

@@ -3335,6 +3335,7 @@ async fn model_call_with_runtime_attachments(
                 role: ModelRole::User,
                 content: user_prompt,
                 attachments,
+                failed: false,
             }],
             options: ModelOptions {
                 temperature: None,

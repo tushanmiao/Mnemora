@@ -262,6 +262,14 @@ pub struct StoredNoteReference {
     pub note_title: String,
     pub revision_hash: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range_encoding: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub byte_start: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub byte_end: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start_line: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub end_line: Option<u32>,
@@ -280,6 +288,19 @@ impl StoredNoteReference {
         }
         if self.revision_hash.trim().is_empty() || self.revision_hash.len() > 160 {
             return Err("Note reference revision is invalid".to_string());
+        }
+        if self
+            .note_version
+            .as_ref()
+            .is_some_and(|value| value.parse::<i64>().map_or(true, |value| value < 1))
+        {
+            return Err("Note reference version is invalid".into());
+        }
+        match (&self.range_encoding, self.byte_start, self.byte_end) {
+            (None, None, None) => {}
+            (Some(encoding), Some(start), Some(end))
+                if encoding == "utf8CanonicalLf" && start < end && end <= 2 * 1024 * 1024 => {}
+            _ => return Err("Note reference byte range is invalid".into()),
         }
         if self.selected_text.trim().is_empty()
             || self.selected_text.len() > MAX_NOTE_REFERENCE_TEXT_BYTES

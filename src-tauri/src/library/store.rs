@@ -55,13 +55,13 @@ use super::{
         LibraryImportResult, LibraryItem, LibraryItemUpdate, LibraryListPage, LibraryListRequest,
         LibraryNote, LibraryNoteAttachment, LibraryNoteCreate, LibraryNoteGroup,
         LibraryNoteImportFailure, LibraryNoteImportResult, LibraryNoteRename, LibraryNoteSummary,
-        LibraryNoteUpdate,
-        LibraryReadingState, LibraryReadingStateUpdate, LibrarySort, LibraryView, NoteEditProposal,
-        NoteEditProposalCreate, NotePipelineChunkDigest, NotePipelinePhase, NotePipelineRun,
-        NotePipelineRunCreate, NotePipelineSection, NotePipelineSectionCreate,
-        NotePipelineSectionStatus, NoteSource, NoteSourceCreate, NoteSourceOrigin,
-        MAX_NOTE_IMPORT_BYTES, MAX_NOTE_IMPORT_FILES, MAX_NOTE_PIPELINE_JSON_BYTES,
-        MAX_NOTE_PIPELINE_SECTIONS, MAX_NOTE_SOURCES, MAX_PDF_RANGE_BYTES,
+        LibraryNoteUpdate, LibraryReadingState, LibraryReadingStateUpdate, LibrarySort,
+        LibraryView, NoteEditProposal, NoteEditProposalCreate, NotePipelineChunkDigest,
+        NotePipelinePhase, NotePipelineRun, NotePipelineRunCreate, NotePipelineSection,
+        NotePipelineSectionCreate, NotePipelineSectionStatus, NoteSource, NoteSourceCreate,
+        NoteSourceOrigin, MAX_NOTE_IMPORT_BYTES, MAX_NOTE_IMPORT_FILES,
+        MAX_NOTE_PIPELINE_JSON_BYTES, MAX_NOTE_PIPELINE_SECTIONS, MAX_NOTE_SOURCES,
+        MAX_PDF_RANGE_BYTES,
     },
 };
 
@@ -71,7 +71,7 @@ use super::types::normalize_dag_node_identifier;
 /// 在数据异常时退化成无界扫描；正常使用远达不到。
 const MAX_IDEMPOTENCY_GENERATIONS: u32 = 512;
 
-const LIBRARY_SCHEMA_VERSION: i64 = 18;
+const LIBRARY_SCHEMA_VERSION: i64 = 21;
 const NOTE_DIGEST_CACHE_TTL_MS: i64 = 30 * 24 * 60 * 60 * 1_000;
 const NOTE_DIGEST_CACHE_MAX_ENTRIES: i64 = 4_096;
 const NOTE_DIGEST_CACHE_MAX_LOOKUPS: usize = 256;
@@ -390,8 +390,7 @@ impl LibraryRepository {
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| format!("开始读取深度笔记路由容量状态失败：{error}"))?;
-        let profile =
-            load_or_create_route_profile(&transaction, identity, crate::usage::now_ms())?;
+        let profile = load_or_create_route_profile(&transaction, identity, crate::usage::now_ms())?;
         transaction
             .commit()
             .map_err(|error| format!("提交深度笔记路由容量状态失败：{error}"))?;
@@ -477,10 +476,14 @@ impl LibraryRepository {
                 {
                     None => RouteAvailability::Tombstoned,
                     Some(model) if !model.enabled => RouteAvailability::Disabled,
-                    Some(_) if matches!(
-                        profile.availability,
-                        RouteAvailability::Disabled | RouteAvailability::Tombstoned
-                    ) => RouteAvailability::Unknown,
+                    Some(_)
+                        if matches!(
+                            profile.availability,
+                            RouteAvailability::Disabled | RouteAvailability::Tombstoned
+                        ) =>
+                    {
+                        RouteAvailability::Unknown
+                    }
                     Some(_) => profile.availability,
                 },
             };
@@ -1238,8 +1241,13 @@ impl LibraryRepository {
                 params![
                     Uuid::new_v4().to_string(),
                     i64::try_from(notes.len()).unwrap_or(i64::MAX),
-                    i64::try_from(notes.len().saturating_sub(mismatched).saturating_sub(missing))
-                        .unwrap_or(i64::MAX),
+                    i64::try_from(
+                        notes
+                            .len()
+                            .saturating_sub(mismatched)
+                            .saturating_sub(missing)
+                    )
+                    .unwrap_or(i64::MAX),
                     i64::try_from(mismatched).unwrap_or(i64::MAX),
                     i64::try_from(missing).unwrap_or(i64::MAX),
                     now,
@@ -1559,13 +1567,8 @@ impl LibraryRepository {
         let note = self
             .get_note_with_connection(transaction, &existing_note_id)?
             .ok_or_else(|| "深度笔记任务引用的笔记已不存在。".to_string())?;
-        let payload = deep_note_completion_payload(
-            transaction,
-            run_id,
-            &existing_note_id,
-            degraded,
-            true,
-        )?;
+        let payload =
+            deep_note_completion_payload(transaction, run_id, &existing_note_id, degraded, true)?;
         transition_note_pipeline_phase_in_transaction(
             transaction,
             run_id,
@@ -3054,7 +3057,10 @@ impl LibraryRepository {
              FROM note_pipeline_chunk_digests
              WHERE provider_id = ? AND model_id = ? AND ({key_predicates})"
         );
-        let mut values = vec![Value::Text(provider_id.clone()), Value::Text(model_id.clone())];
+        let mut values = vec![
+            Value::Text(provider_id.clone()),
+            Value::Text(model_id.clone()),
+        ];
         for (content_hash, prompt_hash) in &normalized_keys {
             values.push(Value::Text(content_hash.clone()));
             values.push(Value::Text(prompt_hash.clone()));
@@ -3077,9 +3083,7 @@ impl LibraryRepository {
             })
             .map_err(|error| format!("查询深度笔记 Chunk 检查点失败：{error}"))?;
         let checkpoints = rows
-            .map(|row| {
-                row.map_err(|error| format!("读取深度笔记 Chunk 检查点失败：{error}"))
-            })
+            .map(|row| row.map_err(|error| format!("读取深度笔记 Chunk 检查点失败：{error}")))
             .collect::<Result<Vec<_>, _>>()?;
         drop(statement);
         for checkpoint in &checkpoints {
@@ -4175,51 +4179,53 @@ impl LibraryRepository {
             } else {
                 (raw.3.clone(), raw.5.clone(), String::new())
             };
-        let current = self
-            .get_note_with_connection(&transaction, &raw.0)?
-            .ok_or_else(|| "目标笔记不存在。".to_string())?;
-        if current.updated_at != i64_to_u64(raw.1) {
-            return Err("目标笔记已发生变化，请重新生成修改提案。".to_string());
-        }
-        let stored_directory = transaction
+        // Commit the confirmed text through the same recoverable operation as
+        // editor saves. A retried confirmation resumes this exact operation.
+        drop(transaction);
+        let operation_id = format!("proposal-{proposal_id}");
+        let request = if let Some(request) = self.note_save_request(&operation_id)? {
+            if request.title != new_title || request.markdown != new_content {
+                return Err("NOTE_OPERATION_MISMATCH: 提案确认内容与已保存操作不一致。".into());
+            }
+            request
+        } else {
+            let base = self.note_editing_snapshot(&raw.0)?;
+            if base.note.updated_at != i64_to_u64(raw.1)
+                || base.note.title != raw.2
+                || base.note.content != raw.4
+            {
+                return Err("目标笔记已发生变化，请重新生成修改提案。".into());
+            }
+            super::note_editing::SaveNoteRequest {
+                note_id: raw.0.clone(),
+                session_id: "ai-proposal".into(),
+                operation_id,
+                draft_generation: 0,
+                expected_note_version: base.note_version,
+                expected_content_hash: base.content_hash,
+                expected_disk_hash: base.disk_hash,
+                title: new_title,
+                markdown: new_content,
+                accept_external_change: false,
+                reason: "aiApply".into(),
+            }
+        };
+        let receipt = self.save_note_checked(request)?;
+        let updated_at =
+            i64::try_from(receipt.updated_at).map_err(|_| "笔记时间超出范围。".to_string())?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| format!("开始更新提案来源失败：{error}"))?;
+        let current_version: String = transaction
             .query_row(
-                "SELECT directory_path FROM library_notes WHERE id = ?",
-                params![raw.0],
-                |row| row.get::<_, Option<String>>(0),
+                "SELECT CAST(edit_version AS TEXT) FROM library_notes WHERE id=?",
+                [&raw.0],
+                |row| row.get(0),
             )
-            .map_err(|error| format!("读取笔记目录登记失败：{error}"))?;
-        let updated_at = now.max(raw.1.saturating_add(1));
-        let prepared = refresh_note_directory(
-            &self.root_directory,
-            stored_directory.as_deref(),
-            &raw.0,
-            &new_title,
-            &new_content,
-            i64_to_u64(updated_at),
-        )?;
-        let version_id = Uuid::new_v4().to_string();
-        transaction
-            .execute(
-                "INSERT INTO library_note_versions (id, note_id, title, content, reason, created_at)
-                 VALUES (?, ?, ?, ?, 'noteEdit', ?)",
-                params![version_id, raw.0, raw.2, raw.4, now],
-            )
-            .map_err(|error| format!("备份旧笔记版本失败：{error}"))?;
-        transaction
-            .execute(
-                "UPDATE library_notes
-                 SET title = ?, content = ?, directory_path = ?, content_hash = ?, updated_at = ?
-                 WHERE id = ?",
-                params![
-                    new_title,
-                    prepared.content,
-                    prepared.relative_directory,
-                    prepared.content_hash,
-                    updated_at,
-                    raw.0
-                ],
-            )
-            .map_err(|error| format!("应用笔记修改失败：{error}"))?;
+            .map_err(|error| format!("读取已应用笔记版本失败：{error}"))?;
+        if current_version != receipt.note_version {
+            return Err("目标笔记已发生变化，提案正文已保留，请重新核对来源。".into());
+        }
         let sources = if partial_replacement {
             vec![NoteSourceCreate {
                 section_id: "partial-edit".to_string(),
@@ -4470,102 +4476,31 @@ impl LibraryRepository {
 
     pub fn update_note(&self, update: LibraryNoteUpdate) -> Result<LibraryNote, String> {
         let update = update.normalize_and_validate()?;
-        let connection = self.open_connection()?;
-        let now = now_millis_i64();
-        let current = connection
-            .query_row(
-                "SELECT directory_path FROM library_notes WHERE id = ?",
-                params![update.note_id],
-                |row| row.get::<_, Option<String>>(0),
-            )
-            .optional()
-            .map_err(|error| format!("读取笔记目录登记失败：{error}"))?
-            .ok_or_else(|| "笔记不存在或所属文献位于回收站。".to_string())?;
-        let prepared = refresh_note_directory(
-            &self.root_directory,
-            current.as_deref(),
-            &update.note_id,
-            &update.title,
-            &update.content,
-            i64_to_u64(now),
-        )?;
-        let changed = connection
-            .execute(
-                "UPDATE library_notes
-                 SET title = ?, content = ?, directory_path = ?, content_hash = ?, updated_at = ?
-                 WHERE id = ? AND (
-                    item_id IS NULL OR EXISTS (
-                        SELECT 1 FROM library_items i
-                        WHERE i.id = library_notes.item_id AND i.deleted_at IS NULL
-                    )
-                 )",
-                params![
-                    update.title,
-                    prepared.content,
-                    prepared.relative_directory,
-                    prepared.content_hash,
-                    now,
-                    update.note_id,
-                ],
-            )
-            .map_err(|error| format!("更新文献笔记失败：{error}"))?;
-        if changed == 0 {
-            return Err("笔记不存在或所属文献位于回收站。".to_string());
-        }
-        self.get_note_with_connection(&connection, &update.note_id)?
-            .ok_or_else(|| "更新后的笔记不存在。".to_string())
+        let base = self.note_editing_snapshot(&update.note_id)?;
+        self.save_note_checked(super::note_editing::SaveNoteRequest {
+            note_id: update.note_id.clone(),
+            session_id: "library-writer".into(),
+            operation_id: Uuid::new_v4().to_string(),
+            draft_generation: 0,
+            expected_note_version: base.note_version,
+            expected_content_hash: base.content_hash,
+            expected_disk_hash: base.disk_hash,
+            title: update.title,
+            markdown: update.content,
+            accept_external_change: false,
+            reason: "explicitSave".into(),
+        })?;
+        self.get_note(&update.note_id)
     }
 
     pub fn rename_note(&self, rename: LibraryNoteRename) -> Result<LibraryNote, String> {
         let rename = rename.normalize_and_validate()?;
-        let connection = self.open_connection()?;
-        let now = now_millis_i64();
-        let current = connection
-            .query_row(
-                "SELECT content, directory_path FROM library_notes WHERE id = ?",
-                params![rename.note_id],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, Option<String>>(1)?,
-                    ))
-                },
-            )
-            .optional()
-            .map_err(|error| format!("读取笔记目录登记失败：{error}"))?
-            .ok_or_else(|| "笔记不存在或所属文献位于回收站。".to_string())?;
-        let prepared = refresh_note_directory(
-            &self.root_directory,
-            current.1.as_deref(),
-            &rename.note_id,
-            &rename.title,
-            &current.0,
-            i64_to_u64(now),
-        )?;
-        let changed = connection
-            .execute(
-                "UPDATE library_notes
-                 SET title = ?, directory_path = ?, content_hash = ?, updated_at = ?
-                 WHERE id = ? AND (
-                    item_id IS NULL OR EXISTS (
-                        SELECT 1 FROM library_items i
-                        WHERE i.id = library_notes.item_id AND i.deleted_at IS NULL
-                    )
-                 )",
-                params![
-                    rename.title,
-                    prepared.relative_directory,
-                    prepared.content_hash,
-                    now,
-                    rename.note_id
-                ],
-            )
-            .map_err(|error| format!("重命名文献笔记失败：{error}"))?;
-        if changed == 0 {
-            return Err("笔记不存在或所属文献位于回收站。".to_string());
-        }
-        self.get_note_with_connection(&connection, &rename.note_id)?
-            .ok_or_else(|| "重命名后的笔记不存在。".to_string())
+        let note = self.get_note(&rename.note_id)?;
+        self.update_note(LibraryNoteUpdate {
+            note_id: rename.note_id,
+            title: rename.title,
+            content: note.content,
+        })
     }
 
     pub fn delete_note(&self, note_id: &str) -> Result<bool, String> {
@@ -5063,7 +4998,8 @@ impl LibraryRepository {
             .busy_timeout(Duration::from_secs(5))
             .map_err(|error| format!("设置文献库等待时间失败：{error}"))?;
         configure_sqlite_concurrency(&connection)?;
-        migrate(&connection)
+        migrate(&connection)?;
+        self.recover_note_saves()
     }
 
     pub(crate) fn open_connection(&self) -> Result<Connection, String> {
@@ -6941,6 +6877,13 @@ fn migrate(connection: &Connection) -> Result<(), String> {
             )
             .map_err(|error| format!("升级全局 Chunk 摘要缓存失败：{error}"))?;
     }
+    if version <= 19 {
+        crate::knowledge::migrate_v19(connection)?;
+        crate::knowledge::migrate_v20(connection)?;
+    }
+    if version < 21 {
+        super::note_editing::migrate(&connection)?;
+    }
     Ok(())
 }
 
@@ -7933,10 +7876,7 @@ mod tests {
         let profile = repository
             .get_or_create_deep_note_route_profile(&first)
             .unwrap();
-        assert_eq!(
-            profile.learned_target_tokens,
-            INITIAL_ADAPTIVE_CHUNK_TOKENS
-        );
+        assert_eq!(profile.learned_target_tokens, INITIAL_ADAPTIVE_CHUNK_TOKENS);
         for _ in 0..3 {
             repository
                 .record_deep_note_route_outcome(
@@ -8443,6 +8383,91 @@ mod tests {
     }
 
     #[test]
+    fn initialize_repairs_legacy_v19_knowledge_character_offsets() {
+        let directory = test_directory("migration-v19-knowledge-offsets");
+        let library_directory = directory.join(LIBRARY_DIRECTORY_NAME);
+        fs::create_dir_all(&library_directory).unwrap();
+        let database_path = library_directory.join("library.sqlite3");
+        let connection = Connection::open(&database_path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE library_items (
+                    id TEXT PRIMARY KEY,
+                    item_type TEXT NOT NULL
+                 );
+                 CREATE TABLE library_notes (id TEXT PRIMARY KEY);",
+            )
+            .unwrap();
+        // Build a faithful v19 table first, then emulate the short-lived
+        // migration that omitted only the character-offset columns. Keeping
+        // every other column makes this an integration fixture instead of a
+        // synthetic two-column table that could fail for unrelated reasons.
+        crate::knowledge::schema::migrate_v19(&connection).unwrap();
+        connection
+            .execute_batch(
+                "DROP TRIGGER IF EXISTS knowledge_elements_char_range_insert;
+                 DROP TRIGGER IF EXISTS knowledge_elements_char_range_update;
+                 ALTER TABLE knowledge_elements RENAME TO knowledge_elements_legacy_full;
+                 CREATE TABLE knowledge_elements AS
+                 SELECT id, revision_id, parent_element_id, element_type, ordinal,
+                        provider_element_id, page_index, page_end, page_width, page_height,
+                        norm_x1, norm_y1, norm_x2, norm_y2,
+                        page_x1, page_y1, page_x2, page_y2,
+                        reading_order, line_start, line_end, byte_start, byte_end,
+                        heading_path_json, text, raw_text, ocr_text, formula_latex,
+                        table_html, table_json, caption, language, confidence,
+                        source_ref_json, metadata_json, content_hash, created_at
+                 FROM knowledge_elements_legacy_full
+                 WHERE 0;
+                 PRAGMA user_version = 19;",
+            )
+            .unwrap();
+        drop(connection);
+
+        // This exercises the real library startup path rather than calling the
+        // knowledge migration directly. A database can have recorded v19 while
+        // still missing the two columns from the first v19 build.
+        let repository = LibraryRepository::new(directory.clone());
+        repository.initialize().unwrap();
+        let connection = repository.open_connection().unwrap();
+        let version: i64 = connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, LIBRARY_SCHEMA_VERSION);
+        for column in ["char_start", "char_end"] {
+            let present: bool = connection
+                .query_row(
+                    "SELECT EXISTS(
+                        SELECT 1 FROM pragma_table_info('knowledge_elements') WHERE name = ?
+                     )",
+                    [column],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(present, "missing repaired column {column}");
+        }
+        connection
+            .execute(
+                "INSERT INTO knowledge_elements (id, char_start, char_end)
+                 VALUES ('legacy-valid', 0, 4)",
+                [],
+            )
+            .unwrap();
+        let error = connection
+            .execute(
+                "INSERT INTO knowledge_elements (id, char_start, char_end)
+                 VALUES ('legacy-invalid', 4, 0)",
+                [],
+            )
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("KNOWLEDGE_ELEMENT_CHAR_RANGE_INVALID"));
+
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
     fn migrates_v16_notes_and_deduplicates_sources_without_losing_content() {
         let directory = test_directory("migration-v17-note-files");
         let library_directory = directory.join("library");
@@ -8506,9 +8531,11 @@ mod tests {
             .unwrap();
         assert_eq!(version, LIBRARY_SCHEMA_VERSION);
         let preserved: String = connection
-            .query_row("SELECT content FROM library_notes WHERE id = 'note-1'", [], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT content FROM library_notes WHERE id = 'note-1'",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
         assert_eq!(preserved, "# preserved");
         let source_count: i64 = connection
@@ -9256,8 +9283,12 @@ mod tests {
             .find_note_pipeline_chunk_digests(&keys, "provider-1", "model-1")
             .unwrap();
         assert_eq!(checkpoints.len(), 2);
-        assert!(checkpoints.iter().any(|checkpoint| checkpoint.semantic_calls == 1));
-        assert!(checkpoints.iter().all(|checkpoint| checkpoint.updated_at > 0));
+        assert!(checkpoints
+            .iter()
+            .any(|checkpoint| checkpoint.semantic_calls == 1));
+        assert!(checkpoints
+            .iter()
+            .all(|checkpoint| checkpoint.updated_at > 0));
 
         let connection = reopened.open_connection().unwrap();
         connection
@@ -10228,7 +10259,8 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(versions, 2);
+        // The two AI confirmations and the manual edit all use versioned saves.
+        assert_eq!(versions, 3);
         let _ = fs::remove_dir_all(directory);
     }
 

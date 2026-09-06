@@ -6,6 +6,7 @@ import type { ModelSettings, ProviderApiKeyUpdate } from "../../../types/modelSe
 import { createInitialModelSettings } from "../../../types/modelSettings";
 import { loadApplicationSettings, saveApplicationSettings } from "../api/appSettings";
 import { isTauriRuntime, loadModelSettings, persistModelSettings } from "../api/modelSettings";
+import { publishNoteEditorPreferences } from "../../notes/runtime/noteEditorPreferences";
 
 export function useAppSettings() {
   const [appSettings, setAppSettings] = useState<AppSettings>(createInitialAppSettings);
@@ -17,6 +18,7 @@ export function useAppSettings() {
   ));
 
   const resolvedTheme = appSettings.theme === "system" ? systemTheme : appSettings.theme;
+  useEffect(() => publishNoteEditorPreferences(appSettings.noteEditor), [appSettings.noteEditor]);
 
   useEffect(() => {
     const media = window.matchMedia("(prefers-color-scheme: dark)");

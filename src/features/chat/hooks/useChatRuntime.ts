@@ -11,6 +11,7 @@ import type {
 } from "../../../types/chat";
 import type { ChatAttachment } from "../../../types/attachment";
 import type { Conversation } from "../../../types/conversation";
+import type { ChatBusyRegistry } from "../../conversations/utils/chatBusyRegistry";
 import type { SkillActivationSelection, SkillSummary } from "../../../types/skill";
 import type { WorkspaceMode } from "../../workspace/types";
 import type { ActiveWorkNoteContext } from "../../workspace/types";
@@ -54,7 +55,8 @@ type UseChatRuntimeOptions = {
   currentConversation: Conversation | null;
   currentModel: SelectedModel | null;
   conversationsRef: MutableRefObject<Conversation[]>;
-  requestInFlightRef: MutableRefObject<boolean>;
+  /** 按会话记录生成状态；主对话与副窗对话各自独立，互不阻塞。 */
+  chatBusy: ChatBusyRegistry;
   cacheConversation: (conversation: Conversation, updateSummary?: boolean) => void;
   saveStableConversation: (conversation: Conversation) => void;
   protectConversation: (conversationId: string) => void;
@@ -69,7 +71,7 @@ export function useChatRuntime({
   currentConversation,
   currentModel,
   conversationsRef,
-  requestInFlightRef,
+  chatBusy,
   cacheConversation,
   saveStableConversation,
   protectConversation,
@@ -98,7 +100,7 @@ export function useChatRuntime({
     if (appSettings.streamEnabled) {
       streaming.prepareStreamingMessage(assistantMessageId);
     }
-    requestInFlightRef.current = true;
+    chatBusy.begin(targetConversationId);
     setRequestInFlight(true);
     streaming.resetStopRequested();
     let runningConversation = initialRunningConversation;
@@ -131,11 +133,12 @@ export function useChatRuntime({
       }
       const modelMessages = toModelMessages(activeContextMessages(runningConversation));
       // 总览只是聚合页面，不会发起 Chat 请求；若运行时合同被复用，按普通 Chat 处理。
-      const completionWorkspaceMode = workspaceMode === "overview"
-        || workspaceMode === "english"
-        || workspaceMode === "deepNote"
-        ? "chat"
-        : workspaceMode;
+  const completionWorkspaceMode = workspaceMode === "overview"
+    || workspaceMode === "english"
+    || workspaceMode === "deepNote"
+    || workspaceMode === "knowledge"
+    ? "chat"
+    : workspaceMode;
       const completionRequest = {
         providerId: selectedModel.provider.id,
         modelId: selectedModel.model.id,
@@ -242,7 +245,7 @@ export function useChatRuntime({
         saveStableConversation(failedConversation);
       }
     } finally {
-      requestInFlightRef.current = false;
+      chatBusy.end(targetConversationId);
       setRequestInFlight(false);
       streaming.resetStopRequested();
       releaseConversation(targetConversationId);
@@ -254,7 +257,7 @@ export function useChatRuntime({
     conversationsRef,
     protectConversation,
     releaseConversation,
-    requestInFlightRef,
+    chatBusy,
     saveStableConversation,
     skills,
     streaming,
@@ -275,7 +278,7 @@ export function useChatRuntime({
       (!content && attachments.length === 0 && literatureReferences.length === 0 && noteReferences.length === 0)
       || !targetConversation
       || !selectedModel
-      || requestInFlightRef.current
+      || chatBusy.isBusy(targetConversation.id)
     ) return;
 
     const now = Date.now();
@@ -325,12 +328,12 @@ export function useChatRuntime({
       activatedSkillIds: activatedSkills.map((skill) => skill.id),
       slashSkillId: effectiveActivation.slashSkillId,
     });
-  }, [currentConversation, currentModel, requestInFlightRef, runPreparedGeneration, skills]);
+  }, [chatBusy, currentConversation, currentModel, runPreparedGeneration, skills]);
 
   const regenerateMessage = useCallback(async (messageId: string) => {
     const targetConversation = currentConversation;
     const selectedModel = currentModel;
-    if (!targetConversation || !selectedModel || requestInFlightRef.current) return;
+    if (!targetConversation || !selectedModel || chatBusy.isBusy(targetConversation.id)) return;
     const messageIndex = targetConversation.messages.findIndex((message) => message.id === messageId);
     if (messageIndex < 0 || targetConversation.messages[messageIndex].role !== "assistant") return;
     const history = targetConversation.messages.slice(0, messageIndex);
@@ -373,12 +376,12 @@ export function useChatRuntime({
       activatedSkillIds: activatedSkills.map((skill) => skill.id),
       slashSkillId: activatedSkills.find((skill) => skill.activation === "slash")?.id,
     });
-  }, [currentConversation, currentModel, requestInFlightRef, runPreparedGeneration, skills]);
+  }, [chatBusy, currentConversation, currentModel, runPreparedGeneration, skills]);
 
   const editMessage = useCallback(async (messageId: string, rawContent: string) => {
     const content = rawContent.trim();
     const targetConversation = currentConversation;
-    if (!targetConversation || requestInFlightRef.current) return;
+    if (!targetConversation || chatBusy.isBusy(targetConversation.id)) return;
     const messageIndex = targetConversation.messages.findIndex((message) => message.id === messageId);
     if (messageIndex < 0) return;
     const originalMessage = targetConversation.messages[messageIndex];
@@ -475,7 +478,7 @@ export function useChatRuntime({
     cacheConversation,
     currentConversation,
     currentModel,
-    requestInFlightRef,
+    chatBusy,
     runPreparedGeneration,
     saveStableConversation,
     skills,
@@ -483,7 +486,7 @@ export function useChatRuntime({
 
   const deleteMessage = useCallback((messageId: string) => {
     const targetConversation = currentConversation;
-    if (!targetConversation || requestInFlightRef.current) return;
+    if (!targetConversation || chatBusy.isBusy(targetConversation.id)) return;
     if (!targetConversation.messages.some((message) => message.id === messageId)) return;
     const now = Date.now();
     const nextConversation = resetCompression({
@@ -493,7 +496,7 @@ export function useChatRuntime({
     });
     cacheConversation(nextConversation);
     saveStableConversation(nextConversation);
-  }, [cacheConversation, currentConversation, requestInFlightRef, saveStableConversation]);
+  }, [cacheConversation, chatBusy, currentConversation, saveStableConversation]);
 
   const compactConversation = useCallback(async (focus = "") => {
     const targetConversation = currentConversation;
@@ -501,7 +504,7 @@ export function useChatRuntime({
     if (!targetConversation || !selectedModel) {
       return { executed: false, message: "当前没有可压缩的对话或模型。" };
     }
-    if (requestInFlightRef.current) {
+    if (chatBusy.isBusy(targetConversation.id)) {
       return { executed: false, message: "请先等待当前回复结束。" };
     }
     if (compressionCandidates(targetConversation).length === 0) {
@@ -509,7 +512,7 @@ export function useChatRuntime({
     }
 
     protectConversation(targetConversation.id);
-    requestInFlightRef.current = true;
+    chatBusy.begin(targetConversation.id);
     setRequestInFlight(true);
     try {
       const compression = await compressConversation(
@@ -538,7 +541,7 @@ export function useChatRuntime({
       const modelError = normalizeModelError(error);
       return { executed: false, message: `压缩失败：${modelError.message}` };
     } finally {
-      requestInFlightRef.current = false;
+      chatBusy.end(targetConversation.id);
       setRequestInFlight(false);
       releaseConversation(targetConversation.id);
     }
@@ -550,7 +553,7 @@ export function useChatRuntime({
     currentModel,
     protectConversation,
     releaseConversation,
-    requestInFlightRef,
+    chatBusy,
     saveStableConversation,
   ]);
 

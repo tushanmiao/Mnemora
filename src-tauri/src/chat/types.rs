@@ -63,6 +63,13 @@ pub struct ChatModelMessage {
     pub content: String,
     #[serde(default)]
     pub attachments: Vec<StoredChatAttachment>,
+    /// 这条助手消息没有交付完整回答（上游失败或被用户中断）。
+    ///
+    /// 它仍然会以占位形式进入上下文 —— 丢掉它会让 user/assistant 交替断开，尾部
+    /// 堆积多条未被回答的用户消息，模型可能去回答其中最早的那一条。但它**没有**
+    /// 消费掉那一轮用户贴的附件，所以计算未答尾部时必须跳过它。
+    #[serde(default)]
+    pub failed: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -393,17 +400,23 @@ impl ChatCompletionRequest {
             .messages
             .iter()
             .rposition(|message| message.role == ModelRole::User);
-        // 未答尾部：最后一条助手消息之后的用户消息。前端只会把 completed 的消息发给
-        // 后端，所以出现在这里的助手消息一定是成功回复；尾部消息（含图片）从未被模型
-        // 成功消费过。图片正文只对未答尾部发送——已被成功回答的历史图片降级为文字说明，
-        // 维持"不重复发送历史图片"的 token/内存设计；而中转站失败后重新提问时，
-        // 上一条带图消息仍在尾部，图片不会丢失（修复"失败后再问就胡说"的场景）。
-        let last_assistant_index = self
+        // 未答尾部：最后一条**成功交付**回答的助手消息之后的用户消息。
+        //
+        // 判据必须是「成功交付」而不是「是助手消息」。上游失败或被用户中断的轮次会以
+        // `failed` 占位形式留在上下文里（丢掉它会让交替断开，尾部堆积多条未被回答的
+        // 用户消息，模型可能去答最早的那一条），但那一轮**没有**真正消费掉用户贴的
+        // 附件 —— 若把占位也算成"已回答"，失败后重新提问时上一条带图消息就会被降级
+        // 成文字说明，图片丢失。
+        //
+        // 图片正文只对未答尾部发送：已被成功回答的历史图片降级为文字说明，维持
+        // "不重复发送历史图片"的 token/内存设计。
+        let last_delivered_assistant_index = self
             .messages
             .iter()
-            .rposition(|message| message.role == ModelRole::Assistant);
+            .rposition(|message| message.role == ModelRole::Assistant && !message.failed);
         let in_unanswered_tail = |message_index: usize| {
-            last_assistant_index.is_none_or(|assistant_index| message_index > assistant_index)
+            last_delivered_assistant_index
+                .is_none_or(|assistant_index| message_index > assistant_index)
         };
         let last_user_content = last_user_index.map(|index| self.messages[index].content.clone());
         if let Some(slash_skill_id) = self.slash_skill_id.as_deref() {
@@ -593,6 +606,7 @@ mod tests {
                 role: ModelRole::User,
                 content: content.to_string(),
                 attachments: Vec::new(),
+                failed: false,
             }],
             options: ModelOptions::default(),
         }
@@ -711,11 +725,13 @@ mod tests {
             role: ModelRole::Assistant,
             content: "旧回答".to_string(),
             attachments: Vec::new(),
+            failed: false,
         });
         request.messages.push(super::ChatModelMessage {
             role: ModelRole::User,
             content: "新问题".to_string(),
             attachments: vec![image_attachment("attachment-new", new_path)],
+            failed: false,
         });
 
         let model_request = request
@@ -736,10 +752,11 @@ mod tests {
     }
 
     #[test]
-    fn model_request_keeps_images_for_unanswered_tail_messages() {
-        // 中转站失败场景：带图消息没有得到成功回复（失败的助手消息不会被前端发来），
-        // 用户随后追问。此时带图消息仍在未答尾部，图片必须重新发送而不是降级为
-        // 文字说明——否则模型从未见过图，只能胡猜。
+    fn model_request_keeps_images_stranded_by_a_failed_turn() {
+        // 上游 429 场景。失败的助手消息**会**以 failed 占位形式发来（丢掉它会让
+        // user/assistant 交替断开，尾部堆积多条未被回答的用户消息，模型可能去答最早
+        // 那一条）。但占位没有消费掉用户的图片，所以未答尾部的判据必须跳过它，
+        // 图片要重新发送而不是降级成文字说明 —— 否则模型从未见过图，只能胡猜。
         let root = std::env::temp_dir().join(format!("mnemora-chat-retry-{}", Uuid::new_v4()));
         let repository = ConversationRepository::new(root.clone());
         let directory = repository.attachments_directory("conversation-1").unwrap();
@@ -753,11 +770,17 @@ mod tests {
         request.messages[0]
             .attachments
             .push(image_attachment("attachment-shot", image_path));
-        // 没有助手消息（上一轮失败被过滤），用户直接追问。
+        request.messages.push(super::ChatModelMessage {
+            role: ModelRole::Assistant,
+            content: "（这一轮回复失败，没有产生回答：HTTP 429）".to_string(),
+            attachments: Vec::new(),
+            failed: true,
+        });
         request.messages.push(super::ChatModelMessage {
             role: ModelRole::User,
-            content: "怎么没回答？再看一次".to_string(),
+            content: "识别网址".to_string(),
             attachments: Vec::new(),
+            failed: false,
         });
 
         let model_request = request
@@ -773,6 +796,9 @@ mod tests {
             "attachment-shot.png"
         );
         assert!(!model_request.messages[0].content.contains("历史图片附件"));
+        // 占位本身要留在上下文里维持交替，否则就回归到"三条连续用户消息"那个缺陷。
+        assert_eq!(model_request.messages.len(), 3);
+        assert_eq!(model_request.messages[1].role, ModelRole::Assistant);
         let _ = fs::remove_dir_all(root);
     }
 

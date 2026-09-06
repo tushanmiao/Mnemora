@@ -1,7 +1,15 @@
 import type { Conversation } from "../../../types/conversation";
 
-export const MAX_CACHED_CONVERSATIONS = 2;
-export const MAX_CACHED_TEXT_BYTES = 4 * 1024 * 1024;
+/**
+ * 前端同时保留正文的会话数上限。
+ *
+ * 取 3 是为副窗留位：主对话 + 副窗对话各占一个，再留一个 LRU 余量，这样在两个窗口
+ * 之间来回切换时不会每次都回读磁盘。两者都在 `protectedConversationIds` 里，所以真正
+ * 被这个上限约束的只有那个余量。
+ */
+export const MAX_CACHED_CONVERSATIONS = 3;
+/** 与会话数同比例放大：约 2 MB/会话。 */
+export const MAX_CACHED_TEXT_BYTES = 6 * 1024 * 1024;
 
 /**
  * 估算会话在前端缓存中的主要文本体积。

@@ -8,9 +8,7 @@ import {
 import {
   ArrowLeft,
   Bot,
-  Check,
   Copy,
-  Eye,
   FileCode2,
   LoaderCircle,
   ListTree,
@@ -29,11 +27,12 @@ import {
   type NotesLayout,
 } from "../utils/notesWorkspace";
 import { NoteSourcesBar } from "./NoteSourcesBar";
+import { NoteOutline } from "./NoteOutline";
 import type { MarkdownSourceEditorHandle } from "./MarkdownSourceEditor";
 
-const MarkdownNotePreview = lazy(() => import("./MarkdownNotePreview"));
-const MarkdownSourceEditor = lazy(() => import("./MarkdownSourceEditor").then((module) => ({
-  default: module.MarkdownSourceEditor,
+import type { NoteEditorMode } from "../api/noteEditing";
+const NoteMarkdownEditor = lazy(() => import("./NoteMarkdownEditor").then((module) => ({
+  default: module.NoteMarkdownEditor,
 })));
 
 export type NoteSelectionMenu = {
@@ -48,7 +47,7 @@ type NoteEditorProps = {
   activeNote: LibraryNote;
   title: string;
   content: string;
-  mode: "source" | "preview";
+  mode: NoteEditorMode;
   loading: boolean;
   saving: boolean;
   saved: boolean;
@@ -64,7 +63,7 @@ type NoteEditorProps = {
   previewRef: RefObject<HTMLDivElement | null>;
   onTitleChange: (title: string) => void;
   onContentChange: (content: string) => void;
-  onModeChange: (mode: "source" | "preview") => void;
+  onModeChange: (mode: NoteEditorMode) => void;
   onClose: () => void;
   onDelete: () => void;
   onToggleChat: () => void;
@@ -87,8 +86,6 @@ export function NoteEditor({
   content,
   mode,
   loading,
-  saving,
-  saved,
   error,
   chatOpen,
   chatBusy,
@@ -128,19 +125,7 @@ export function NoteEditor({
         <aside className="notes-outline-pane" aria-label="笔记大纲">
           <header><ListTree size={14} /><strong>大纲</strong><span>{outline.length}</span></header>
           <div>
-            {outline.length === 0 ? (
-              <p>没有检测到标题。使用 “#” 开头的标题行会出现在这里。</p>
-            ) : outline.map((item) => (
-              <button
-                type="button"
-                key={item.id}
-                style={{ paddingLeft: `${10 + (item.level - 1) * 13}px` }}
-                title={item.title}
-                onClick={() => onOutlineJump(item)}
-              >
-                {item.title}
-              </button>
-            ))}
+            <NoteOutline items={outline} onJump={onOutlineJump} />
           </div>
           <PanelResizeHandle
             edge="right"
@@ -161,7 +146,7 @@ export function NoteEditor({
           </button>
           <div className="notes-title-wrap">
             <FileCode2 size={16} />
-            <input value={title} aria-label="笔记标题" onChange={(event) => onTitleChange(event.target.value)} />
+            <input value={title} aria-label="笔记标题" readOnly={mode === "read"} onChange={(event) => onTitleChange(event.target.value)} />
           </div>
           <div className="notes-toolbar-actions">
             <button
@@ -174,14 +159,6 @@ export function NoteEditor({
             >
               <ListTree size={16} />
             </button>
-            <div className="notes-mode-tabs" role="tablist" aria-label="编辑模式">
-              <button type="button" role="tab" aria-selected={mode === "source"} className={mode === "source" ? "is-active" : ""} onClick={() => onModeChange("source")}>
-                <FileCode2 size={14} /><span>Markdown</span>
-              </button>
-              <button type="button" role="tab" aria-selected={mode === "preview"} className={mode === "preview" ? "is-active" : ""} onClick={() => onModeChange("preview")}>
-                <Eye size={14} /><span>预览</span>
-              </button>
-            </div>
             <button type="button" title="删除笔记" aria-label="删除笔记" onClick={onDelete}><Trash2 size={16} /></button>
             <button className={chatOpen ? "is-active" : ""} type="button" title={chatOpen ? "收起 AI" : "打开 AI"} aria-label={chatOpen ? "收起 AI" : "打开 AI"} onClick={onToggleChat}>
               {chatBusy ? <LoaderCircle className="is-spinning" size={16} /> : chatOpen ? <Bot size={16} /> : <PanelRightOpen size={16} />}
@@ -195,25 +172,22 @@ export function NoteEditor({
           <div className="notes-empty" role="status"><LoaderCircle className="is-spinning" size={24} />正在加载笔记</div>
         ) : (
           <div className="notes-document-host">
-            {mode === "source" ? (
               <Suspense fallback={<div className="notes-empty"><LoaderCircle className="is-spinning" size={20} />正在加载编辑器</div>}>
-                <MarkdownSourceEditor
+                <NoteMarkdownEditor
                   key={activeNote.id}
                   ref={editorRef}
+                  noteId={activeNote.id}
+                  directoryPath={activeNote.directoryPath}
+                  mode={mode}
+                  onModeChange={onModeChange}
                   value={content}
-                  ariaLabel="Markdown 源码编辑器"
                   onChange={onContentChange}
                   onSelectionChange={onSelectionClear}
                   onMouseUp={onSourceSelection}
+                  previewRef={previewRef}
+                  onPreviewMouseUp={onPreviewSelection}
                 />
               </Suspense>
-            ) : (
-              <div ref={previewRef} className="notes-preview-host" onMouseUp={onPreviewSelection}>
-                <Suspense fallback={<div className="notes-empty"><LoaderCircle className="is-spinning" size={20} />正在加载预览</div>}>
-                  <MarkdownNotePreview noteId={activeNote.id} content={content} directoryPath={activeNote.directoryPath} />
-                </Suspense>
-              </div>
-            )}
             {selectionMenu ? (
               <div className="notes-selection-menu" style={{ left: selectionMenu.left, top: selectionMenu.top }} onMouseDown={(event) => event.preventDefault()}>
                 <button type="button" onClick={() => { void navigator.clipboard?.writeText(selectionMenu.text); onSelectionClear(); }}><Copy size={13} />复制</button>
@@ -224,8 +198,7 @@ export function NoteEditor({
           </div>
         )}
         <footer className="notes-statusbar">
-          <span>{mode === "source" ? "Markdown 源码" : "渲染预览"}</span>
-          <span>{saving ? "自动保存中" : saved ? <><Check size={12} />已保存</> : "自动保存"}</span>
+          <span>{mode === "source" ? "Markdown 源码" : mode === "live" ? "实时编辑" : "阅读"}</span>
           <span>{stats.words} 词</span><span>{stats.characters} 字符</span><span>约 {stats.readingMinutes} 分钟</span>
         </footer>
       </main>

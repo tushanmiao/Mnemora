@@ -9,7 +9,7 @@ import {
 describe("workspace view registry", () => {
   it("keeps stable unique entries for the implemented views", () => {
     expect(WORKSPACE_VIEWS.map((view) => view.id)).toEqual([
-      "overview", "chat", "notes", "deepNote", "work", "english",
+      "overview", "chat", "notes", "deepNote", "work", "knowledge", "english",
     ]);
     expect(new Set(WORKSPACE_VIEWS.map((view) => view.id)).size).toBe(WORKSPACE_VIEWS.length);
     expect(WORKSPACE_VIEWS.every((view) => Boolean(view.labelKey))).toBe(true);
@@ -17,7 +17,7 @@ describe("workspace view registry", () => {
 
   it("sorts activity entries by order and resolves definitions", () => {
     expect(SORTED_WORKSPACE_VIEWS.map((view) => view.id)).toEqual([
-      "overview", "chat", "notes", "deepNote", "work", "english",
+      "overview", "chat", "notes", "deepNote", "work", "knowledge", "english",
     ]);
     expect(ACTIVITY_BAR_WORKSPACE_VIEWS.map((view) => view.id)).toEqual([
       "overview", "chat", "notes", "work", "english",
@@ -27,6 +27,8 @@ describe("workspace view registry", () => {
     expect(findWorkspaceView("deepNote")?.showInActivityBar).toBe(false);
     expect(findWorkspaceView("chat")?.aiPanel).toBe("primary");
     expect(findWorkspaceView("work")?.aiPanel).toBe("panel");
+    expect(findWorkspaceView("knowledge")?.contextSidebar).toBe(false);
+    expect(findWorkspaceView("knowledge")?.showInActivityBar).toBe(false);
     expect(findWorkspaceView("english")?.contextSidebar).toBe(false);
   });
 });

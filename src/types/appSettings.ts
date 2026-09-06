@@ -15,6 +15,22 @@ export type ThemePreset =
 export type ThemeColor = "neutral" | "warm" | "cool" | "rose" | "amber" | "violet";
 export type ResponseLanguage = "followInput" | "zh" | "zhHant" | "en";
 export type UpdateProxyMode = "system" | "direct" | "manual";
+export interface NoteEditorSettings {
+  defaultMode: "live" | "source" | "read";
+  autosaveEnabled: boolean;
+  autosaveDelayMs: number;
+  lineNumbers: boolean;
+  wordWrap: boolean;
+  tabSize: 2 | 4 | 8;
+  focusMode: boolean;
+  typewriterMode: boolean;
+  spellcheck: boolean;
+  renderPolicy: "auto" | "sourceOnly";
+}
+export const DEFAULT_NOTE_EDITOR_SETTINGS: NoteEditorSettings = {
+  defaultMode: "live", autosaveEnabled: true, autosaveDelayMs: 700, lineNumbers: true,
+  wordWrap: true, tabSize: 2, focusMode: false, typewriterMode: false, spellcheck: false, renderPolicy: "auto",
+};
 
 export interface UpdateProxySettings {
   mode: UpdateProxyMode;
@@ -33,6 +49,57 @@ export interface MemorySettings {
   injectL1: boolean;
   allowModelRead: boolean;
   allowModelWrite: boolean;
+}
+
+/** 知识库默认访问边界；Chat 内容不会因为任何选项自动成为知识源。 */
+export type KnowledgeScope = "library" | "currentLiterature" | "currentNote";
+export type KnowledgeRetrievalMode = "lexical" | "vector" | "hybrid";
+export type KnowledgeCloudConsentMode = "ask" | "document" | "global";
+export type KnowledgeBatchStrategy = "pageBatches" | "manualSplit" | "reject";
+
+/**
+ * PDF/Markdown 知识库的非敏感策略。
+ *
+ * MinerU Token 不属于此结构，必须由桌面端 SecretStore 管理；这里最多保存
+ * endpoint、解析偏好和预算。索引本身是可重建派生数据，不会改变 library 的
+ * 业务权威性。
+ */
+export interface KnowledgeSettings {
+  enabled: boolean;
+  autoRetrieve: boolean;
+  defaultScope: KnowledgeScope;
+  retrievalMode: KnowledgeRetrievalMode;
+  embeddingProvider: string;
+  embeddingModel: string;
+  chunkTargetChars: number;
+  chunkMaxChars: number;
+  chunkOverlapChars: number;
+  topK: number;
+  contextMaxBytes: number;
+  includeAnnotations: boolean;
+  groundedWork: boolean;
+  mineruCloudEnabled: boolean;
+  mineruEndpoint: string;
+  mineruModel: "vlm" | "pipeline";
+  mineruOcrEnabled: boolean;
+  mineruFormulaEnabled: boolean;
+  mineruTableEnabled: boolean;
+  mineruFigureEnabled: boolean;
+  mineruLanguage: string;
+  mineruConsentMode: KnowledgeCloudConsentMode;
+  autoParseImportedPdf: boolean;
+  allowLocalTextFallback: boolean;
+  remotePageBudgetPerDay: number;
+  remoteTaskBudgetPerDay: number;
+  batchStrategy: KnowledgeBatchStrategy;
+  networkTimeoutSeconds: number;
+  indexConcurrency: number;
+  markdownAssetsEnabled: boolean;
+  embeddingEnabled: boolean;
+  hybridEnabled: boolean;
+  allowRemoteEmbedding: boolean;
+  externalMcpEnabled: boolean;
+  debugRetrieval: boolean;
 }
 
 export interface PetSettings {
@@ -69,6 +136,7 @@ export interface AppSettings {
   noteFontPreset: FontPreset;
   noteChineseFontFamily: ChineseFontFamily;
   noteLatinFontFamily: LatinFontFamily;
+  noteEditor: NoteEditorSettings;
   launchAtStartup: boolean;
   retryEnabled: boolean;
   retryAttempts: number;
@@ -95,6 +163,7 @@ export interface AppSettings {
   /** 历史字段名保留兼容；该策略同时用于网页工具和应用更新。 */
   updateProxy: UpdateProxySettings;
   memory: MemorySettings;
+  knowledge: KnowledgeSettings;
 }
 
 export interface SettingsBundle {
@@ -119,7 +188,7 @@ export const DEFAULT_GLOBAL_SYSTEM_PROMPT = [
   "技能只提供工作方法，不扩大应用权限；遵守用户的权限设置和工具结果。",
 ].join("\n");
 
-export const CURRENT_APP_SETTINGS_VERSION = 16;
+export const CURRENT_APP_SETTINGS_VERSION = 18;
 
 export function createInitialAppSettings(): AppSettings {
   return {
@@ -143,6 +212,7 @@ export function createInitialAppSettings(): AppSettings {
     noteFontPreset: "system",
     noteChineseFontFamily: "system",
     noteLatinFontFamily: "system",
+    noteEditor: { ...DEFAULT_NOTE_EDITOR_SETTINGS },
     launchAtStartup: false,
     retryEnabled: true,
     retryAttempts: 5,
@@ -182,6 +252,43 @@ export function createInitialAppSettings(): AppSettings {
       injectL1: true,
       allowModelRead: true,
       allowModelWrite: false,
+    },
+    knowledge: {
+      enabled: true,
+      autoRetrieve: false,
+      defaultScope: "library",
+      retrievalMode: "lexical",
+      embeddingProvider: "",
+      embeddingModel: "",
+      chunkTargetChars: 1_600,
+      chunkMaxChars: 2_400,
+      chunkOverlapChars: 200,
+      topK: 8,
+      contextMaxBytes: 64 * 1024,
+      includeAnnotations: false,
+      groundedWork: true,
+      mineruCloudEnabled: true,
+      mineruEndpoint: "https://mineru.net/api/v4",
+      mineruModel: "vlm",
+      mineruOcrEnabled: true,
+      mineruFormulaEnabled: true,
+      mineruTableEnabled: true,
+      mineruFigureEnabled: true,
+      mineruLanguage: "ch",
+      mineruConsentMode: "ask",
+      autoParseImportedPdf: false,
+      allowLocalTextFallback: true,
+      remotePageBudgetPerDay: 1_000,
+      remoteTaskBudgetPerDay: 20,
+      batchStrategy: "pageBatches",
+      networkTimeoutSeconds: 120,
+      indexConcurrency: 2,
+      markdownAssetsEnabled: true,
+      embeddingEnabled: false,
+      hybridEnabled: false,
+      allowRemoteEmbedding: false,
+      externalMcpEnabled: false,
+      debugRetrieval: false,
     },
   };
 }

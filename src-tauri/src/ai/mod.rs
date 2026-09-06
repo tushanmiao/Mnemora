@@ -11,4 +11,4 @@ pub mod providers;
 pub mod stream;
 pub mod types;
 
-mod http;
+pub(crate) mod http;

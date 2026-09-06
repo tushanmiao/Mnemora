@@ -49,11 +49,17 @@ pub async fn library_import_pdfs(
     paths: Vec<String>,
     collection_id: Option<String>,
 ) -> Result<LibraryImportResult, String> {
-    let _write_guard = state.library_operations.lock().await;
-    let repository = state.library_repository.clone();
-    tauri::async_runtime::spawn_blocking(move || repository.import_pdfs(paths, collection_id))
-        .await
-        .map_err(join_error)?
+    let result = {
+        let _write_guard = state.library_operations.lock().await;
+        let repository = state.library_repository.clone();
+        tauri::async_runtime::spawn_blocking(move || repository.import_pdfs(paths, collection_id))
+            .await
+            .map_err(join_error)??
+    };
+    for item in result.imported.iter().chain(result.duplicates.iter()) {
+        super::knowledge::schedule_literature_enqueue(state.inner(), item.id.clone());
+    }
+    Ok(result)
 }
 
 #[tauri::command]
@@ -61,11 +67,15 @@ pub async fn library_update_item(
     state: State<'_, AppState>,
     update: LibraryItemUpdate,
 ) -> Result<LibraryItem, String> {
-    let _write_guard = state.library_operations.lock().await;
-    let repository = state.library_repository.clone();
-    tauri::async_runtime::spawn_blocking(move || repository.update_item(update))
-        .await
-        .map_err(join_error)?
+    let item = {
+        let _write_guard = state.library_operations.lock().await;
+        let repository = state.library_repository.clone();
+        tauri::async_runtime::spawn_blocking(move || repository.update_item(update))
+            .await
+            .map_err(join_error)??
+    };
+    super::knowledge::schedule_literature_enqueue(state.inner(), item.id.clone());
+    Ok(item)
 }
 
 #[tauri::command]
@@ -86,11 +96,16 @@ pub async fn library_move_to_trash(
     state: State<'_, AppState>,
     item_id: String,
 ) -> Result<LibraryItem, String> {
-    let _write_guard = state.library_operations.lock().await;
-    let repository = state.library_repository.clone();
-    tauri::async_runtime::spawn_blocking(move || repository.move_to_trash(&item_id))
-        .await
-        .map_err(join_error)?
+    let source_id = item_id.clone();
+    let item = {
+        let _write_guard = state.library_operations.lock().await;
+        let repository = state.library_repository.clone();
+        tauri::async_runtime::spawn_blocking(move || repository.move_to_trash(&item_id))
+            .await
+            .map_err(join_error)??
+    };
+    super::knowledge::schedule_source_deleted(state.inner(), "literature", source_id);
+    Ok(item)
 }
 
 #[tauri::command]
@@ -98,11 +113,16 @@ pub async fn library_restore_item(
     state: State<'_, AppState>,
     item_id: String,
 ) -> Result<LibraryItem, String> {
-    let _write_guard = state.library_operations.lock().await;
-    let repository = state.library_repository.clone();
-    tauri::async_runtime::spawn_blocking(move || repository.restore_from_trash(&item_id))
-        .await
-        .map_err(join_error)?
+    let source_id = item_id.clone();
+    let item = {
+        let _write_guard = state.library_operations.lock().await;
+        let repository = state.library_repository.clone();
+        tauri::async_runtime::spawn_blocking(move || repository.restore_from_trash(&item_id))
+            .await
+            .map_err(join_error)??
+    };
+    super::knowledge::schedule_literature_enqueue(state.inner(), source_id);
+    Ok(item)
 }
 
 #[tauri::command]
@@ -110,11 +130,18 @@ pub async fn library_delete_permanently(
     state: State<'_, AppState>,
     item_id: String,
 ) -> Result<bool, String> {
-    let _write_guard = state.library_operations.lock().await;
-    let repository = state.library_repository.clone();
-    tauri::async_runtime::spawn_blocking(move || repository.delete_permanently(&item_id))
-        .await
-        .map_err(join_error)?
+    let source_id = item_id.clone();
+    let removed = {
+        let _write_guard = state.library_operations.lock().await;
+        let repository = state.library_repository.clone();
+        tauri::async_runtime::spawn_blocking(move || repository.delete_permanently(&item_id))
+            .await
+            .map_err(join_error)??
+    };
+    if removed {
+        super::knowledge::schedule_source_deleted(state.inner(), "literature", source_id);
+    }
+    Ok(removed)
 }
 
 #[tauri::command]
@@ -244,9 +271,10 @@ pub async fn library_list_notes(
     let repository = state.library_repository.clone();
     let maintenance_repository = repository.clone();
     let maintenance_operations = state.library_operations.clone();
-    let notes = tauri::async_runtime::spawn_blocking(move || repository.list_notes(item_id.as_deref()))
-        .await
-        .map_err(join_error)??;
+    let notes =
+        tauri::async_runtime::spawn_blocking(move || repository.list_notes(item_id.as_deref()))
+            .await
+            .map_err(join_error)??;
     tauri::async_runtime::spawn(async move {
         let _maintenance_guard = maintenance_operations.lock().await;
         let _ = tauri::async_runtime::spawn_blocking(move || {
@@ -290,11 +318,15 @@ pub async fn library_create_note(
     state: State<'_, AppState>,
     create: LibraryNoteCreate,
 ) -> Result<LibraryNote, String> {
-    let _write_guard = state.library_operations.lock().await;
-    let repository = state.library_repository.clone();
-    tauri::async_runtime::spawn_blocking(move || repository.create_note(create))
-        .await
-        .map_err(join_error)?
+    let note = {
+        let _write_guard = state.library_operations.lock().await;
+        let repository = state.library_repository.clone();
+        tauri::async_runtime::spawn_blocking(move || repository.create_note(create))
+            .await
+            .map_err(join_error)??
+    };
+    super::knowledge::schedule_note_sync(state.inner(), note.id.clone());
+    Ok(note)
 }
 
 #[tauri::command]
@@ -303,13 +335,17 @@ pub async fn library_create_note_with_sources(
     create: LibraryNoteCreate,
     sources: Vec<NoteSourceCreate>,
 ) -> Result<LibraryNote, String> {
-    let _write_guard = state.library_operations.lock().await;
-    let repository = state.library_repository.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        repository.create_note_with_sources(create, sources)
-    })
-    .await
-    .map_err(join_error)?
+    let note = {
+        let _write_guard = state.library_operations.lock().await;
+        let repository = state.library_repository.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            repository.create_note_with_sources(create, sources)
+        })
+        .await
+        .map_err(join_error)??
+    };
+    super::knowledge::schedule_note_sync(state.inner(), note.id.clone());
+    Ok(note)
 }
 
 #[tauri::command]
@@ -328,11 +364,17 @@ pub async fn library_import_markdown_notes(
     state: State<'_, AppState>,
     paths: Vec<String>,
 ) -> Result<LibraryNoteImportResult, String> {
-    let _write_guard = state.library_operations.lock().await;
-    let repository = state.library_repository.clone();
-    tauri::async_runtime::spawn_blocking(move || repository.import_markdown_notes(paths))
-        .await
-        .map_err(join_error)?
+    let result = {
+        let _write_guard = state.library_operations.lock().await;
+        let repository = state.library_repository.clone();
+        tauri::async_runtime::spawn_blocking(move || repository.import_markdown_notes(paths))
+            .await
+            .map_err(join_error)??
+    };
+    for note in &result.imported {
+        super::knowledge::schedule_note_sync(state.inner(), note.id.clone());
+    }
+    Ok(result)
 }
 
 #[tauri::command]
@@ -340,11 +382,15 @@ pub async fn library_update_note(
     state: State<'_, AppState>,
     update: LibraryNoteUpdate,
 ) -> Result<LibraryNote, String> {
-    let _write_guard = state.library_operations.lock().await;
-    let repository = state.library_repository.clone();
-    tauri::async_runtime::spawn_blocking(move || repository.update_note(update))
-        .await
-        .map_err(join_error)?
+    let note = {
+        let _write_guard = state.library_operations.lock().await;
+        let repository = state.library_repository.clone();
+        tauri::async_runtime::spawn_blocking(move || repository.update_note(update))
+            .await
+            .map_err(join_error)??
+    };
+    super::knowledge::schedule_note_sync(state.inner(), note.id.clone());
+    Ok(note)
 }
 
 #[tauri::command]
@@ -352,11 +398,15 @@ pub async fn library_rename_note(
     state: State<'_, AppState>,
     rename: LibraryNoteRename,
 ) -> Result<LibraryNote, String> {
-    let _write_guard = state.library_operations.lock().await;
-    let repository = state.library_repository.clone();
-    tauri::async_runtime::spawn_blocking(move || repository.rename_note(rename))
-        .await
-        .map_err(join_error)?
+    let note = {
+        let _write_guard = state.library_operations.lock().await;
+        let repository = state.library_repository.clone();
+        tauri::async_runtime::spawn_blocking(move || repository.rename_note(rename))
+            .await
+            .map_err(join_error)??
+    };
+    super::knowledge::schedule_note_sync(state.inner(), note.id.clone());
+    Ok(note)
 }
 
 #[tauri::command]
@@ -364,11 +414,18 @@ pub async fn library_delete_note(
     state: State<'_, AppState>,
     note_id: String,
 ) -> Result<bool, String> {
-    let _write_guard = state.library_operations.lock().await;
-    let repository = state.library_repository.clone();
-    tauri::async_runtime::spawn_blocking(move || repository.delete_note(&note_id))
-        .await
-        .map_err(join_error)?
+    let source_id = note_id.clone();
+    let removed = {
+        let _write_guard = state.library_operations.lock().await;
+        let repository = state.library_repository.clone();
+        tauri::async_runtime::spawn_blocking(move || repository.delete_note(&note_id))
+            .await
+            .map_err(join_error)??
+    };
+    if removed {
+        super::knowledge::schedule_source_deleted(state.inner(), "note", source_id);
+    }
+    Ok(removed)
 }
 
 #[tauri::command]

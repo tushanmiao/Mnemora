@@ -5,6 +5,7 @@ import type {
   ChineseFontFamily,
   FontPreset,
   LatinFontFamily,
+  NoteEditorSettings,
 } from "../../../types/appSettings";
 import { useI18n } from "../../../i18n/I18nProvider";
 import { NOTE_FONT_PRESET_VALUES } from "../utils/fontSettings";
@@ -48,6 +49,7 @@ export function NoteSettingsPanel({
   const update = <Key extends keyof AppSettings>(key: Key, value: AppSettings[Key]) => {
     preview({ ...draft, [key]: value });
   };
+  const updateEditor = <Key extends keyof NoteEditorSettings>(key: Key, value: NoteEditorSettings[Key]) => update("noteEditor", { ...draft.noteEditor, [key]: value });
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -96,6 +98,18 @@ export function NoteSettingsPanel({
             并排还解决了一个实际问题——预览原先在很下面，拖滑块时看不见效果。 */}
         <div className="note-settings-layout">
         <section className="settings-section">
+          <div className="settings-section-head"><Type size={16} /><h3>Markdown</h3></div>
+          <SettingRow label={t("noteEditor.defaultMode")}>
+            <select className="settings-input settings-select general-control" value={draft.noteEditor.defaultMode} onChange={(event) => updateEditor("defaultMode", event.target.value as NoteEditorSettings["defaultMode"])}>
+              <option value="live">{t("noteEditor.live")}</option><option value="source">{t("noteEditor.source")}</option><option value="read">{t("noteEditor.read")}</option>
+            </select>
+          </SettingRow>
+          {(["autosaveEnabled", "lineNumbers", "wordWrap", "focusMode", "typewriterMode", "spellcheck"] as const).map((key) => <SettingRow key={key} label={t(`noteEditor.${key}`)}>
+            <input type="checkbox" checked={draft.noteEditor[key]} aria-label={t(`noteEditor.${key}`)} onChange={(event) => updateEditor(key, event.target.checked)} />
+          </SettingRow>)}
+          <SettingRow label={t("noteEditor.autosaveDelayMs")}><EditableRangeControl value={draft.noteEditor.autosaveDelayMs} min={300} max={5000} step={100} suffix="ms" ariaLabel={t("noteEditor.autosaveDelayMs")} onChange={(value) => updateEditor("autosaveDelayMs", value)} /></SettingRow>
+          <SettingRow label={t("noteEditor.tabSize")}><select className="settings-input settings-select general-control" value={draft.noteEditor.tabSize} onChange={(event) => updateEditor("tabSize", Number(event.target.value) as 2 | 4 | 8)}>{[2,4,8].map((size) => <option key={size} value={size}>{size}</option>)}</select></SettingRow>
+          <SettingRow label={t("noteEditor.renderPolicy")}><select className="settings-input settings-select general-control" value={draft.noteEditor.renderPolicy} onChange={(event) => updateEditor("renderPolicy", event.target.value as "auto" | "sourceOnly")}><option value="auto">{t("noteEditor.auto")}</option><option value="sourceOnly">{t("noteEditor.source")}</option></select></SettingRow>
           <div className="settings-section-head">
             <Type size={16} />
             <h3>{t("notesSettings.typography")}</h3>

@@ -12,7 +12,7 @@ import {
   appendStreamingDelta,
   appendStreamingReasoningDelta,
   consumeStreamingMessage,
-  resetAllStreamingMessages,
+  discardStreamingMessage,
   startStreamingMessage,
 } from "../stores/streamingStore";
 import { workflowSummaryForMessage } from "../agent/projections/workflowProjection";
@@ -43,6 +43,15 @@ export function useStreamingRun({
 }: UseStreamingRunOptions) {
   const [stopRequested, setStopRequested] = useState(false);
   const activeRunRef = useRef<ActiveStreamRun | null>(null);
+  /**
+   * 本运行时自己创建的流式条目。
+   *
+   * `streamingStore` 是按 messageId 的模块级 Map，多个 Chat 运行时共享它。卸载时**只能**
+   * 清理自己这几条：早先这里调的是 `resetAllStreamingMessages()`，一旦有第二个运行时
+   * （副窗），关掉副窗就会静默掐断主窗正在跑的流，而且只在"关副窗时主窗正在生成"这个
+   * 时序下出现，极难复现。
+   */
+  const ownedStreamingMessageIdsRef = useRef(new Set<string>());
 
   const finalizeRun = useCallback((
     run: ActiveStreamRun,
@@ -53,6 +62,7 @@ export function useStreamingRun({
     },
   ) => {
     const streamedMessage = consumeStreamingMessage(run.messageId);
+    ownedStreamingMessageIdsRef.current.delete(run.messageId);
     const conversation = conversationsRef.current.find((item) => item.id === run.conversationId);
     if (!conversation) return;
     const updatedAt = Date.now();
@@ -227,6 +237,7 @@ export function useStreamingRun({
   }, [finalizeRun, updateMessageMetadata]);
 
   const prepareStreamingMessage = useCallback((messageId: string) => {
+    ownedStreamingMessageIdsRef.current.add(messageId);
     startStreamingMessage(messageId);
   }, []);
 
@@ -272,7 +283,11 @@ export function useStreamingRun({
   useEffect(() => () => {
     const activeRun = activeRunRef.current;
     activeRunRef.current = null;
-    resetAllStreamingMessages();
+    // 只丢弃本运行时创建的条目，不碰其他 Chat 运行时正在跑的流。
+    for (const messageId of ownedStreamingMessageIdsRef.current) {
+      discardStreamingMessage(messageId);
+    }
+    ownedStreamingMessageIdsRef.current.clear();
     if (activeRun && !activeRun.terminalReceived) {
       void cancelChatStream(activeRun.runId).catch(() => undefined);
     }

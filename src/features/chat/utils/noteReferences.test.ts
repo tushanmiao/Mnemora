@@ -19,10 +19,11 @@ function input(index = 1) {
 
 describe("note references", () => {
   it("creates structured references and formats model context", () => {
-    const reference = createNoteReference(input());
+    const reference = createNoteReference({ ...input(), noteVersion: "4", rangeEncoding: "utf8CanonicalLf", byteStart: 3, byteEnd: 12 });
     expect(reference).not.toBeNull();
     expect(formatNoteReferencesForModel([reference!])).toContain("笔记 1");
     expect(formatNoteReferencesForModel([reference!])).toContain("第 1-2 行");
+    expect(formatNoteReferencesForModel([reference!])).toContain("源码字节范围：3-12");
   });
 
   it("deduplicates and enforces the per-message limit", () => {

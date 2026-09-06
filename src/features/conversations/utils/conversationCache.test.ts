@@ -39,9 +39,27 @@ function conversation(id: string, content = id): Conversation {
 }
 
 describe("trimConversationCache", () => {
-  it("uses a small default cache for inactive conversations", () => {
-    expect(MAX_CACHED_CONVERSATIONS).toBe(2);
-    expect(MAX_CACHED_TEXT_BYTES).toBe(4 * 1024 * 1024);
+  it("budgets one slot for the main conversation, one for the side window and one spare", () => {
+    expect(MAX_CACHED_CONVERSATIONS).toBe(3);
+    expect(MAX_CACHED_TEXT_BYTES).toBe(6 * 1024 * 1024);
+  });
+
+  it("keeps both the main and the side window conversation even when the budget is exhausted", () => {
+    // 主对话与副窗对话都在 protected 集合里，必须同时存活；预算只约束余量那一格。
+    const candidates = [
+      conversation("main"),
+      conversation("side"),
+      conversation("stale-1"),
+      conversation("stale-2"),
+    ];
+    const result = trimConversationCache(candidates, {
+      currentConversationId: "main",
+      protectedConversationIds: new Set(["side"]),
+      maxCount: 1,
+      maxTextBytes: 1,
+    });
+
+    expect(result.map((item) => item.id)).toEqual(["main", "side"]);
   });
 
   it("keeps the current conversation and applies the count limit", () => {

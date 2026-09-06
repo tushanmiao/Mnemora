@@ -50,6 +50,11 @@ export function createNoteReference(input: NoteReferenceInput): NoteReference | 
     noteId,
     noteTitle,
     revisionHash,
+    noteVersion: input.noteVersion && /^[1-9][0-9]{0,18}$/.test(input.noteVersion) ? input.noteVersion : undefined,
+    ...(input.rangeEncoding === "utf8CanonicalLf" && selectedText === input.selectedText
+      && Number.isSafeInteger(input.byteStart) && Number.isSafeInteger(input.byteEnd)
+      && input.byteStart! >= 0 && input.byteEnd! > input.byteStart! && input.byteEnd! <= 2 * 1024 * 1024
+      ? { rangeEncoding: input.rangeEncoding, byteStart: input.byteStart, byteEnd: input.byteEnd } : {}),
     startLine,
     endLine,
     selectedText,
@@ -89,7 +94,8 @@ export function formatNoteReferencesForModel(references: readonly NoteReference[
     ...references.map((reference, index) => [
       `[笔记引用 ${index + 1}]`,
       `笔记：${reference.noteTitle}`,
-      `版本：${reference.revisionHash}`,
+      `版本：${reference.noteVersion ? `${reference.noteVersion} / ` : ""}${reference.revisionHash}`,
+      reference.rangeEncoding === "utf8CanonicalLf" ? `源码字节范围：${reference.byteStart}-${reference.byteEnd}（规范 LF / UTF-8）` : "",
       reference.startLine ? `位置：第 ${reference.startLine}${reference.endLine && reference.endLine !== reference.startLine ? `-${reference.endLine}` : ""} 行` : "",
       "内容：",
       reference.selectedText,

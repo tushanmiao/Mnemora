@@ -172,8 +172,12 @@ export interface NoteReference {
   id: string;
   noteId: string;
   noteTitle: string;
-  /** 引用时的笔记更新时间快照，用于提示内容可能已经变化。 */
+  /** 新引用使用提交正文 SHA-256；兼容读取旧时间戳身份。 */
   revisionHash: string;
+  noteVersion?: string;
+  rangeEncoding?: "utf8CanonicalLf";
+  byteStart?: number;
+  byteEnd?: number;
   startLine?: number;
   endLine?: number;
   selectedText: string;

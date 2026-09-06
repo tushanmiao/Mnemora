@@ -33,8 +33,23 @@ async function renderWindow() {
     setStartupStage("ready");
     return;
   }
+  if (window.location.hash === "#quick-chat") {
+    const { default: QuickChatWindow } = await import(
+      "./features/chat/components/QuickChatWindow"
+    );
+    setStartupStage("render-window");
+    root.render(
+      <RootErrorBoundary title="快速聊天启动失败">
+        <QuickChatWindow />
+      </RootErrorBoundary>,
+    );
+    setStartupStage("ready");
+    return;
+  }
 
   const { default: App } = await import("./App");
+  const { installNoteEditorCloseGuard } = await import("./features/notes/runtime/noteEditorClose");
+  await installNoteEditorCloseGuard();
   setStartupStage("render-window");
   root.render(
     <React.StrictMode>

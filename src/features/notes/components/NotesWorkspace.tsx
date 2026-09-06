@@ -20,14 +20,15 @@ import {
   listLibraryNotes,
   renameLibraryNote,
   setLibraryNoteGroup,
-  updateLibraryNote,
 } from "../../library/api/library";
 import type { LibraryNote, LibraryNoteGroup, LibraryNoteSummary } from "../../library/types";
 import type { NoteReference } from "../../../types/chat";
-import {
-  extractMarkdownOutline,
-  type MarkdownOutlineItem,
-} from "../../chat/markdown/utils/outline";
+import type { MarkdownOutlineItem } from "../../chat/markdown/utils/outline";
+import { noteOutline } from "../editor/markdownRanges";
+import { getNoteEditSession, useNoteEditSession } from "../runtime/noteEditSession";
+import { prepareNoteSelection } from "../runtime/noteSelection";
+import type { NoteEditorMode } from "../api/noteEditing";
+import { getNoteEditorPreferences } from "../runtime/noteEditorPreferences";
 import { NotesBrowser, type GroupFilter, type NoteSort } from "./NotesBrowser";
 import { chooseLocalNoteSourceFiles } from "../api/localNoteSource";
 import { NoteEditor, type NoteSelectionMenu } from "./NoteEditor";
@@ -37,12 +38,10 @@ import {
   loadNotesLayout,
   noteStats,
   persistNotesLayout,
-  revisionHash,
   type NotesLayout,
 } from "../utils/notesWorkspace";
 import "../styles/notes-workspace.css";
 
-const AUTOSAVE_DELAY_MS = 700;
 const MAX_SELECTION_CHARACTERS = 16_000;
 /** v4 之前分组存放在 localStorage；首次进入时一次性迁入 SQLite 后移除。 */
 const LEGACY_NOTE_GROUPS_STORAGE_KEY = "mnemora.notes.groups.v1";
@@ -126,8 +125,6 @@ export default function NotesWorkspace({
 }: NotesWorkspaceProps) {
   const editorRef = useRef<MarkdownSourceEditorHandle>(null);
   const previewRef = useRef<HTMLDivElement>(null);
-  const saveTimerRef = useRef<number | null>(null);
-  const savedTimerRef = useRef<number | null>(null);
   const saveChainRef = useRef<Promise<void>>(Promise.resolve());
   const activeNoteRef = useRef<LibraryNote | null>(null);
   const titleRef = useRef("");
@@ -137,14 +134,17 @@ export default function NotesWorkspace({
   const [groups, setGroups] = useState<LibraryNoteGroup[]>([]);
   const [groupFilter, setGroupFilter] = useState<GroupFilter>("all");
   const [activeNote, setActiveNote] = useState<LibraryNote | null>(null);
-  const [title, setTitle] = useState("");
-  const [content, setContent] = useState("");
+  const document = useNoteEditSession(activeNote?.id ?? null);
+  const title = document.base ? document.title : activeNote?.title ?? "";
+  const content = document.base ? document.content : activeNote?.content ?? "";
+  const setTitle = (title: string) => document.session?.edit({ title });
+  const setContent = (content: string) => document.session?.edit({ content });
   const [query, setQuery] = useState("");
   const [sort, setSortState] = useState<NoteSort>(loadNoteSort);
-  const [mode, setMode] = useState<"source" | "preview">("source");
+  const [mode, setMode] = useState<NoteEditorMode>(() => getNoteEditorPreferences().defaultMode);
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
+  const saving = document.phase === "saving";
+  const saved = !!document.base && !document.session?.dirty;
   const [error, setError] = useState("");
   const [selectionMenu, setSelectionMenu] = useState<NoteSelectionMenu | null>(null);
   /** 列表行三点菜单当前打开的笔记 ID。 */
@@ -178,27 +178,13 @@ export default function NotesWorkspace({
     lastOpenNoteId = activeNote?.id ?? null;
   }, [activeNote?.id]);
 
-  const clearSaveTimer = useCallback(() => {
-    if (saveTimerRef.current === null) return;
-    window.clearTimeout(saveTimerRef.current);
-    saveTimerRef.current = null;
-  }, []);
+  const clearSaveTimer = useCallback(() => activeNoteRef.current && getNoteEditSession(activeNoteRef.current.id).releaseTimers(), []);
 
   const queueSave = useCallback((note: LibraryNote, nextTitle: string, nextContent: string) => {
-    const normalizedTitle = nextTitle.trim() || "未命名笔记";
-    if (mountedRef.current) {
-      setSaving(true);
-      setSaved(false);
-      setError("");
-    }
-    const operation = saveChainRef.current
-      .catch(() => undefined)
-      .then(async () => {
-        const updated = await updateLibraryNote({
-          noteId: note.id,
-          title: normalizedTitle,
-          content: nextContent,
-        });
+    const session = getNoteEditSession(note.id);
+    session.edit({ title: nextTitle, content: nextContent });
+    const operation = session.save().then(() => {
+        const updated = session.snapshot().base!.note;
         if (!mountedRef.current || activeNoteRef.current?.id !== updated.id) return;
 
         setActiveNote(updated);
@@ -211,21 +197,12 @@ export default function NotesWorkspace({
           updatedAt: updated.updatedAt,
         } : item));
 
-        // 只规范化当前仍未继续编辑的标题，避免旧请求覆盖保存期间的新输入。
-        if (titleRef.current === nextTitle) setTitle(updated.title);
-        if (titleRef.current === nextTitle && contentRef.current === nextContent) {
-          setSaved(true);
-          if (savedTimerRef.current !== null) window.clearTimeout(savedTimerRef.current);
-          savedTimerRef.current = window.setTimeout(() => setSaved(false), 1_200);
-        }
       })
       .catch((saveError) => {
         if (mountedRef.current) {
           setError(saveError instanceof Error ? saveError.message : String(saveError));
         }
-      })
-      .finally(() => {
-        if (mountedRef.current && saveChainRef.current === operation) setSaving(false);
+        throw saveError;
       });
     saveChainRef.current = operation;
     return operation;
@@ -235,7 +212,7 @@ export default function NotesWorkspace({
     clearSaveTimer();
     const note = activeNoteRef.current;
     if (!note || (titleRef.current === note.title && contentRef.current === note.content)) {
-      return saveChainRef.current.catch(() => undefined);
+      return saveChainRef.current;
     }
     return queueSave(note, titleRef.current, contentRef.current);
   }, [clearSaveTimer, queueSave]);
@@ -256,20 +233,14 @@ export default function NotesWorkspace({
       setNotes(nextNotes);
       if (!preferredId) {
         setActiveNote(null);
-        setTitle("");
-        setContent("");
         return;
       }
       try {
         const note = await getLibraryNote(preferredId);
         setActiveNote(note);
-        setTitle(note.title);
-        setContent(note.content);
       } catch (openError) {
         // 恢复场景（如笔记刚被删除）静默回到列表；主动打开的失败仍然提示。
         setActiveNote(null);
-        setTitle("");
-        setContent("");
         if (!quiet) throw openError;
       }
     } catch (loadError) {
@@ -322,25 +293,14 @@ export default function NotesWorkspace({
     return () => {
       mountedRef.current = false;
       clearSaveTimer();
-      if (savedTimerRef.current !== null) window.clearTimeout(savedTimerRef.current);
       const note = activeNoteRef.current;
       if (note && (titleRef.current !== note.title || contentRef.current !== note.content)) {
-        void queueSave(note, titleRef.current, contentRef.current);
+        void getNoteEditSession(note.id).checkpoint().catch(() => undefined);
       }
     };
     // 仅挂载时执行一次；loadNotes 的依赖都是稳定引用。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clearSaveTimer, queueSave]);
-
-  useEffect(() => {
-    if (!activeNote || (title === activeNote.title && content === activeNote.content)) return;
-    clearSaveTimer();
-    saveTimerRef.current = window.setTimeout(() => {
-      saveTimerRef.current = null;
-      void queueSave(activeNote, title, content);
-    }, AUTOSAVE_DELAY_MS);
-    return clearSaveTimer;
-  }, [activeNote, clearSaveTimer, content, queueSave, title]);
 
   const createNote = async () => {
     if (saving) return;
@@ -354,7 +314,7 @@ export default function NotesWorkspace({
         groupName: typeof groupFilter === "object" ? groupFilter.group : null,
       });
       await loadNotes(note.id);
-      setMode("source");
+      setMode("live");
       window.setTimeout(() => editorRef.current?.focus(), 0);
     } catch (createError) {
       setError(createError instanceof Error ? createError.message : String(createError));
@@ -363,14 +323,12 @@ export default function NotesWorkspace({
 
   const openNote = async (noteId: string) => {
     if (activeNote?.id === noteId || saving) return;
-    await flushActiveDraft();
     setSelectionMenu(null);
     setLoading(true);
     try {
+      await flushActiveDraft();
       const note = await getLibraryNote(noteId);
       setActiveNote(note);
-      setTitle(note.title);
-      setContent(note.content);
     } catch (openError) {
       setError(openError instanceof Error ? openError.message : String(openError));
     } finally {
@@ -381,10 +339,8 @@ export default function NotesWorkspace({
   const closeNote = () => {
     void flushActiveDraft().then(() => {
       setActiveNote(null);
-      setTitle("");
-      setContent("");
       setSelectionMenu(null);
-    });
+    }).catch((error: unknown) => setError(String(error)));
   };
 
   const removeNote = async () => {
@@ -394,8 +350,6 @@ export default function NotesWorkspace({
       await saveChainRef.current.catch(() => undefined);
       await deleteLibraryNote(activeNote.id);
       setActiveNote(null);
-      setTitle("");
-      setContent("");
       await loadNotes();
     } catch (deleteError) {
       setError(deleteError instanceof Error ? deleteError.message : String(deleteError));
@@ -406,8 +360,8 @@ export default function NotesWorkspace({
   useEffect(() => {
     if (!rowMenu) return;
     const hide = () => setRowMenu(null);
-    document.addEventListener("mousedown", hide);
-    return () => document.removeEventListener("mousedown", hide);
+    window.document.addEventListener("mousedown", hide);
+    return () => window.document.removeEventListener("mousedown", hide);
   }, [rowMenu]);
 
   /** 列表行内删除：不经过编辑器，删除后刷新列表与分组计数。 */
@@ -435,7 +389,7 @@ export default function NotesWorkspace({
       } : item));
       if (activeNoteRef.current?.id === updated.id) {
         setActiveNote(updated);
-        setTitle(updated.title);
+        void getNoteEditSession(updated.id).load();
       }
       return true;
     } catch (renameError) {
@@ -506,13 +460,13 @@ export default function NotesWorkspace({
   // 大纲随输入实时更新；用 deferred 值避免大文档下每次击键都同步重算。
   const deferredContent = useDeferredValue(content);
   const outline = useMemo<MarkdownOutlineItem[]>(
-    () => (activeNote ? extractMarkdownOutline(deferredContent, `note-${activeNote.id}`) : []),
+    () => (activeNote ? noteOutline(deferredContent, `note-${activeNote.id}`) : []),
     [activeNote, deferredContent],
   );
 
   const jumpToOutlineItem = (item: MarkdownOutlineItem) => {
-    if (mode === "preview") {
-      document.getElementById(item.id)?.scrollIntoView({ behavior: "smooth", block: "start" });
+    if (mode === "read") {
+      window.document.getElementById(item.id)?.scrollIntoView({ behavior: "smooth", block: "start" });
       return;
     }
     const editor = editorRef.current;
@@ -537,8 +491,8 @@ export default function NotesWorkspace({
       left: Math.min(rect.width - 170, Math.max(12, event.clientX - rect.left)),
       top: Math.min(rect.height - 42, Math.max(12, event.clientY - rect.top + 10)),
       text: selectedText.slice(0, MAX_SELECTION_CHARACTERS),
-      startLine: lineAtOffset(content, selected.from),
-      endLine: lineAtOffset(content, selected.to),
+      startLine: lineAtOffset(editor.getText(), selected.from),
+      endLine: lineAtOffset(editor.getText(), selected.to),
     });
   };
 
@@ -560,23 +514,19 @@ export default function NotesWorkspace({
     });
   };
 
-  const askSelection = () => {
-    if (!activeNote || !selectionMenu) return;
-    onAskSelection({
-      id: crypto.randomUUID(),
-      noteId: activeNote.id,
-      noteTitle: title.trim() || activeNote.title,
-      revisionHash: revisionHash({ ...activeNote, title, content }),
-      startLine: selectionMenu.startLine,
-      endLine: selectionMenu.endLine,
-      selectedText: selectionMenu.text,
-    });
+  const askSelection = async () => {
+    if (!activeNote || !selectionMenu || !document.session) return;
+    try { onAskSelection(await prepareNoteSelection(document.session, selectionMenu.text)); }
+    catch (error) { setError(String(error)); return; }
     setSelectionMenu(null);
     window.getSelection()?.removeAllRanges();
   };
 
-  const editSelection = () => {
+  const editSelection = async () => {
     if (!activeNote || !selectionMenu) return;
+    const generation = document.generation;
+    try { await flushActiveDraft(); } catch { return; }
+    if (document.session?.snapshot().generation !== generation) { setError("笔记已变化，请重新选择修改范围。"); return; }
     const lines = content.split(/\r?\n/);
     const beforeSelection = selectionMenu.startLine
       ? lines.slice(0, selectionMenu.startLine)
@@ -628,11 +578,11 @@ export default function NotesWorkspace({
 
   return (
     <NoteEditor
-      activeNote={activeNote}
+      activeNote={document.base?.note ?? activeNote}
       title={title}
       content={content}
       mode={mode}
-      loading={loading}
+      loading={loading || document.phase === "loading"}
       saving={saving}
       saved={saved}
       error={error}
@@ -658,8 +608,8 @@ export default function NotesWorkspace({
       onSourceSelection={showSourceSelection}
       onPreviewSelection={showPreviewSelection}
       onSelectionClear={() => setSelectionMenu(null)}
-      onAskSelection={askSelection}
-      onEditSelection={editSelection}
+      onAskSelection={() => void askSelection()}
+      onEditSelection={() => { if (mode === "read") setMode("live"); void editSelection(); }}
       onOpenSourceConversation={onOpenSourceConversation}
     />
   );

@@ -36,6 +36,14 @@ export type ChatCompletionRequest = {
     role: MessageRole;
     content: string;
     attachments?: ChatAttachment[];
+    /**
+     * 这条助手消息没有交付完整回答（上游失败或被用户中断）。
+     *
+     * 它仍然要发给后端：丢掉它会让 user/assistant 交替断开，尾部堆积多条未被回答的
+     * 用户消息，模型可能去回答其中最早的那一条。后端计算「未答尾部」时会跳过它，
+     * 这样失败轮次里用户贴的图片仍然按本轮附件内联。
+     */
+    failed?: boolean;
   }>;
   options?: {
     temperature?: number;

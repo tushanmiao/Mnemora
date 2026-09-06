@@ -37,6 +37,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
 sha2 = "0.10"
+pulldown-cmark = { version = "0.13", default-features = false }
+percent-encoding = "2"
 rusqlite = { version = "0.32", features = ["bundled"] }
 rs-fsrs = { version = "1.2.1", features = ["serde"] }
 chrono = { version = "0.4.23", features = ["serde"] }
@@ -46,7 +48,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 reqwest13 = { package = "reqwest", version = "0.13.2", default-features = false, features = ["json", "native-tls", "stream"] }
 keyring = "4.1.5"
 zeroize = "1"
-tokio = { version = "1", features = ["macros", "process", "rt", "sync", "time"] }
+tokio = { version = "1", features = ["macros", "process", "rt", "sync", "time", "net", "io-util"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 futures = "0.3"
 uuid = { version = "1", features = ["v4"] }

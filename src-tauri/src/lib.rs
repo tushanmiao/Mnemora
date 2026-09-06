@@ -6,6 +6,7 @@ mod commands;
 mod diagnostics;
 mod english;
 mod html_preview;
+mod knowledge;
 mod library;
 mod mcp;
 mod memory;
@@ -44,7 +45,11 @@ pub fn run() {
             Some(vec![AUTOSTART_ARG]),
         ))
         .on_window_event(|window, event| match event {
-            tauri::WindowEvent::CloseRequested { .. } if window.label() == "main" => {
+            tauri::WindowEvent::CloseRequested { api, .. } if window.label() == "main" => {
+                if window_lifecycle::request_editor_close(window.app_handle(), false) {
+                    api.prevent_close();
+                    return;
+                }
                 // 先清理后台任务，再让 Tauri 默认关闭流程销毁 WebView。
                 window_lifecycle::cleanup_before_main_window_close(window.app_handle());
             }
@@ -64,6 +69,8 @@ pub fn run() {
             }
             tauri::WindowEvent::Destroyed => {
                 if window.label() == "main" {
+                    window_lifecycle::NOTE_EDITOR_CLOSE_GUARD
+                        .store(false, std::sync::atomic::Ordering::Release);
                     html_preview::destroy_all(window.app_handle());
                 } else {
                     html_preview::cleanup_destroyed_window(window.app_handle(), window.label());
@@ -122,6 +129,7 @@ pub fn run() {
             }
             app.manage(app_state);
             app.manage(html_preview::HtmlPreviewState::default());
+            knowledge::worker::start(app.handle());
             window_lifecycle::setup_tray(app.handle()).map_err(std::io::Error::other)?;
             let pet_settings = app
                 .state::<state::AppState>()
@@ -169,6 +177,7 @@ pub fn run() {
             commands::chat::chat_stream_start,
             commands::chat::chat_stream_cancel,
             commands::chat::chat_tool_approval_resolve,
+            commands::quick_chat::quick_chat_open,
             commands::chat::chat_tool_question_resolve,
             commands::attachments::inspect_chat_attachments,
             commands::attachments::save_pasted_chat_attachment,
@@ -240,6 +249,20 @@ pub fn run() {
             commands::library::library_delete_annotation,
             commands::library::library_list_notes,
             commands::library::library_get_note,
+            commands::note_editing::note_editor_load,
+            commands::note_editing::note_editor_validate_selection,
+            commands::note_editing::note_editor_register_close,
+            commands::note_editing::note_editor_finish_close,
+            commands::note_editing::note_editor_save,
+            commands::note_editing::note_editor_checkpoint,
+            commands::note_editing::note_editor_discard_draft,
+            commands::note_editing::note_editor_stage_image,
+            commands::note_editing::note_editor_versions,
+            commands::note_editing::note_editor_pin_version,
+            commands::note_editing::note_editor_copy_version,
+            commands::note_editing::note_editor_read_asset,
+            commands::note_editing::note_editor_open_attachment,
+            commands::note_editing::note_editor_export_bundle,
             commands::library::library_export_note,
             commands::library::library_create_note,
             commands::library::library_create_note_with_sources,
@@ -256,6 +279,25 @@ pub fn run() {
             commands::library::library_create_collection,
             commands::library::library_rename_collection,
             commands::library::library_delete_collection,
+            commands::knowledge::knowledge_overview,
+            commands::knowledge::knowledge_list_documents,
+            commands::knowledge::knowledge_list_jobs,
+            commands::knowledge::knowledge_rebuild_all,
+            commands::knowledge::knowledge_rebuild_embeddings,
+            commands::knowledge::knowledge_rebuild_note,
+            commands::knowledge::knowledge_enqueue_literature,
+            commands::knowledge::knowledge_search,
+            commands::knowledge::knowledge_read_chunk,
+            commands::knowledge::knowledge_cancel_job,
+            commands::knowledge::knowledge_get_mineru_token_status,
+            commands::knowledge::knowledge_set_mineru_token,
+            commands::knowledge::knowledge_delete_mineru_token,
+            commands::knowledge::knowledge_grant_literature_consent,
+            commands::knowledge::knowledge_grant_global_literature_consent,
+            commands::knowledge::knowledge_revoke_literature_consent,
+            commands::knowledge::knowledge_revoke_global_literature_consent,
+            commands::knowledge::knowledge_global_literature_consent_status,
+            commands::knowledge::knowledge_literature_consent_status,
             commands::memory::memory_load,
             commands::memory::memory_save,
             commands::memory::memory_clear,
@@ -341,7 +383,11 @@ pub fn run() {
                     api.prevent_exit();
                     return;
                 }
+                if window_lifecycle::request_editor_close(app_handle,true) { api.prevent_exit(); return; }
                 let state = app_handle.state::<state::AppState>();
+                let cancelled_knowledge =
+                    tauri::async_runtime::block_on(state.cancel_all_knowledge_jobs());
+                state.stop_knowledge_worker();
                 let cancelled = tauri::async_runtime::block_on(state.cancel_all_chat_runs());
                 let cancelled_note_pipelines =
                     tauri::async_runtime::block_on(state.cancel_all_note_pipeline_runs());
@@ -353,6 +399,11 @@ pub fn run() {
                 tauri::async_runtime::block_on(state.discard_pending_signed_update());
                 if cancelled > 0 {
                     eprintln!("Cancelled {cancelled} active chat run(s) on application exit.");
+                }
+                if cancelled_knowledge > 0 {
+                    eprintln!(
+                        "Cancelled {cancelled_knowledge} active knowledge job(s) on application exit."
+                    );
                 }
                 if cancelled_note_pipelines > 0 {
                     eprintln!(

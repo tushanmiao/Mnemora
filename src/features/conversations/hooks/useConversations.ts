@@ -10,6 +10,7 @@ import {
   renameStoredConversation,
   removeStoredConversation,
 } from "../api/conversations";
+import { createChatBusyRegistry } from "../utils/chatBusyRegistry";
 import { trimConversationCache } from "../utils/conversationCache";
 
 const DEFAULT_CONVERSATION_TITLE = "新对话";
@@ -95,6 +96,11 @@ function mergeConversationListItems(
 
 const initialConversation = createConversation();
 
+type ConversationOptions = {
+  /** 快速聊天窗口只创建一条新会话，不恢复主窗口最近会话。 */
+  startFresh?: boolean;
+};
+
 type PendingConversationSave = {
   latest: Conversation;
   requestedVersion: number;
@@ -102,16 +108,24 @@ type PendingConversationSave = {
   promise: Promise<void>;
 };
 
-export function useConversations(onNavigateToChat: () => void) {
+export function useConversations(
+  onNavigateToChat: () => void,
+  options: ConversationOptions = {},
+) {
+  const startFresh = options.startFresh === true;
+  const browserInitialConversation = useMemo(
+    () => (startFresh ? createConversation() : initialConversation),
+    [startFresh],
+  );
   const [conversations, setConversations] = useState<Conversation[]>(() => (
-    STARTS_IN_TAURI ? [] : [initialConversation]
+    STARTS_IN_TAURI ? [] : [browserInitialConversation]
   ));
-  const conversationsRef = useRef<Conversation[]>(STARTS_IN_TAURI ? [] : [initialConversation]);
+  const conversationsRef = useRef<Conversation[]>(STARTS_IN_TAURI ? [] : [browserInitialConversation]);
   const [conversationListItems, setConversationListItems] = useState<ConversationListItem[]>(() => (
-    STARTS_IN_TAURI ? [] : [toConversationListItem(initialConversation)]
+    STARTS_IN_TAURI ? [] : [toConversationListItem(browserInitialConversation)]
   ));
   const conversationListItemsRef = useRef<ConversationListItem[]>(
-    STARTS_IN_TAURI ? [] : [toConversationListItem(initialConversation)],
+    STARTS_IN_TAURI ? [] : [toConversationListItem(browserInitialConversation)],
   );
   const [conversationListLoading, setConversationListLoading] = useState(STARTS_IN_TAURI);
   const [conversationListError, setConversationListError] = useState("");
@@ -124,14 +138,15 @@ export function useConversations(onNavigateToChat: () => void) {
   const nextConversationOffsetRef = useRef(0);
   const conversationPageRequestRef = useRef(false);
   const [currentConversationId, setCurrentConversationId] = useState<string | null>(
-    STARTS_IN_TAURI ? null : initialConversation.id,
+    STARTS_IN_TAURI ? null : browserInitialConversation.id,
   );
   const [currentConversationLoading, setCurrentConversationLoading] = useState(false);
   const currentConversationIdRef = useRef<string | null>(
-    STARTS_IN_TAURI ? null : initialConversation.id,
+    STARTS_IN_TAURI ? null : browserInitialConversation.id,
   );
   const protectedConversationIdsRef = useRef(new Set<string>());
-  const requestInFlightRef = useRef(false);
+  /** 按会话记录生成状态；允许主对话与副窗对话并发，见 `chatBusyRegistry`。 */
+  const chatBusyRef = useRef(createChatBusyRegistry());
   const selectionVersionRef = useRef(0);
   const activeConversationLoadRef = useRef<{ id: string; promise: Promise<boolean> } | null>(null);
   const pendingConversationSavesRef = useRef(new Map<string, PendingConversationSave>());
@@ -247,7 +262,7 @@ export function useConversations(onNavigateToChat: () => void) {
     if (
       !STARTS_IN_TAURI
       || !conversationId
-      || requestInFlightRef.current
+      || chatBusyRef.current.isBusy(conversationId)
       || protectedConversationIdsRef.current.has(conversationId)
     ) return false;
     const current = conversationsRef.current.find((conversation) => conversation.id === conversationId);
@@ -333,8 +348,21 @@ export function useConversations(onNavigateToChat: () => void) {
   ]);
 
   useEffect(() => {
-    if (!STARTS_IN_TAURI) return;
     let cancelled = false;
+    if (startFresh) {
+      if (!STARTS_IN_TAURI) {
+        setConversationListLoading(false);
+        return () => { cancelled = true; };
+      }
+      const conversation = createConversation();
+      currentConversationIdRef.current = conversation.id;
+      cacheConversation(conversation);
+      setCurrentConversationId(conversation.id);
+      saveStableConversation(conversation);
+      setConversationListLoading(false);
+      return () => { cancelled = true; };
+    }
+    if (!STARTS_IN_TAURI) return () => { cancelled = true; };
     void (async () => {
       try {
         const page = await listStoredConversations(0, CONVERSATION_PAGE_SIZE);
@@ -378,6 +406,7 @@ export function useConversations(onNavigateToChat: () => void) {
     cacheConversation,
     replaceConversationListItems,
     saveStableConversation,
+    startFresh,
     updateConversationListHasMore,
     updateConversationListTotal,
   ]);
@@ -412,7 +441,7 @@ export function useConversations(onNavigateToChat: () => void) {
   const deleteConversation = useCallback((conversationId: string) => {
     if (
       protectedConversationIdsRef.current.has(conversationId)
-      || (requestInFlightRef.current && currentConversationId === conversationId)
+      || chatBusyRef.current.isBusy(conversationId)
     ) return;
     const deletedIndex = conversationListItems.findIndex((item) => item.id === conversationId);
     const remainingItems = conversationListItems.filter((item) => item.id !== conversationId);
@@ -482,7 +511,8 @@ export function useConversations(onNavigateToChat: () => void) {
   }, [upsertConversationListItem]);
 
   const clearConversations = useCallback(() => {
-    if (requestInFlightRef.current) return;
+    // 清空影响全部会话，所以这里必须问「有没有任意会话在跑」。
+    if (chatBusyRef.current.isAnyBusy()) return;
     selectionVersionRef.current += 1;
     activeConversationLoadRef.current = null;
     conversationsRef.current = [];
@@ -513,7 +543,7 @@ export function useConversations(onNavigateToChat: () => void) {
     const conversationId = currentConversationIdRef.current;
     if (
       !conversationId
-      || requestInFlightRef.current
+      || chatBusyRef.current.isBusy(conversationId)
       || protectedConversationIdsRef.current.has(conversationId)
     ) return false;
 
@@ -557,7 +587,7 @@ export function useConversations(onNavigateToChat: () => void) {
 
   return {
     conversationsRef,
-    requestInFlightRef,
+    chatBusy: chatBusyRef.current,
     conversationListItems,
     conversationListLoading,
     conversationListError,

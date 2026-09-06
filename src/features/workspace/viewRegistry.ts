@@ -1,5 +1,5 @@
 import type { ComponentType, LazyExoticComponent } from "react";
-import { BookOpenText, BrainCircuit, Languages, LayoutDashboard, MessageCircle, NotebookPen, type LucideIcon } from "lucide-react";
+import { BookOpenCheck, BookOpenText, BrainCircuit, Languages, LayoutDashboard, MessageCircle, NotebookPen, type LucideIcon } from "lucide-react";
 import { retryLazy } from "../../bootstrap/retryLazy";
 import type { WorkspaceMode } from "./types";
 import type { TranslationKey } from "../../i18n/translations";
@@ -72,6 +72,16 @@ export const WORKSPACE_VIEWS: readonly WorkspaceViewDefinition[] = [
     component: retryLazy(() => import("./views/WorkView")),
     contextSidebar: true,
     aiPanel: "panel",
+  },
+  {
+    id: "knowledge",
+    labelKey: "view.knowledge",
+    icon: BookOpenCheck,
+    order: 4.5,
+    component: retryLazy(() => import("./views/KnowledgeView")),
+    contextSidebar: false,
+    aiPanel: "panel",
+    showInActivityBar: false,
   },
   {
     id: "english",

@@ -409,6 +409,32 @@ pub fn configure_model_request(
     request.tools = tools;
 }
 
+/// `AskEveryTime` 下收窄首轮披露：只保留导航与 Skill 命名空间的能力，业务工具一律
+/// 等模型走完三段式再逐次授权。
+///
+/// 判据用 `namespace` 而不是工具名白名单，是因为白名单出过一次事故：它先落地，
+/// 后来新增的 `ask_user_question` 没被补进去，于是最严格的权限模式反而拿不到澄清
+/// 歧义的手段，只能靠猜。这暴露了一个更普遍的问题——`AlwaysAsk` 只能保证「披露之后
+/// 不被自动通过」，它保护不了「压根没被披露」，因为权限判定只在工具被模型提出时才
+/// 有机会运行。`namespace` 是工具登记时就固定的结构属性，新增 Discovery/Skill 工具
+/// 会自动保留，新增业务工具会自动排除，同一类漏登记不会再发生。
+///
+/// 查不到登记的工具一并丢弃，与 `requires_approval` 对未知工具返回 `true` 是同一个
+/// fail-safe 取向。
+pub fn restrict_initial_disclosure(request: &mut ModelRequest, context: &ToolRuntimeContext) {
+    if context.permission_mode != AiPermissionMode::AskEveryTime {
+        return;
+    }
+    request.tools.retain(|tool| {
+        context.capabilities.find(&tool.name).is_some_and(|entry| {
+            matches!(
+                entry.namespace,
+                ToolNamespace::Discovery | ToolNamespace::Skill
+            )
+        })
+    });
+}
+
 /// 工具采用与 Skill 相同的渐进式披露：首轮只提供名称、用途和命名空间，
 /// 参数 Schema 仍由 search_tools -> inspect_tool 两层命中后披露。这样模型能主动命中附件、记忆
 /// 等能力，又不会把全部契约塞进每一轮上下文。
@@ -2488,10 +2514,11 @@ mod tests {
         append_skill_catalog_prompt, apply_tool_disclosures, configure_model_request,
         execute_skill, execute_tool, execute_tool_inspect, execute_tool_search,
         fit_text_window_end, parallel_safe, read_complete_text_content, read_pdf,
-        render_skill_arguments, requires_approval, truncate_head_tail, truncate_utf8_bytes,
-        validate_disclosed_tool_calls, validate_tool_arguments, SkillRunCache, ToolRuntimeContext,
+        render_skill_arguments, requires_approval, restrict_initial_disclosure, truncate_head_tail,
+        truncate_utf8_bytes, validate_disclosed_tool_calls, validate_tool_arguments, SkillRunCache,
+        ToolRuntimeContext, ASK_USER_TOOL_NAME,
     };
-    use crate::ai::types::{ModelOptions, ModelRequest, ModelToolCall};
+    use crate::ai::types::{ModelOptions, ModelRequest, ModelTool, ModelToolCall};
     use crate::chat::agent::catalog::{find_tool, CapabilityRegistry};
     use crate::chat::conversation_types::AiPermissionMode;
     use crate::mcp::McpManager;
@@ -2649,6 +2676,67 @@ mod tests {
             .tools
             .push(find_tool("workspace_read").unwrap().model_tool());
         validate_disclosed_tool_calls(&request, &[guessed]).unwrap();
+    }
+
+    #[test]
+    fn ask_every_time_keeps_the_question_tool_and_drops_business_tools() {
+        // 这个测试钉的是「收窄首轮披露不能连提问工具一起吞掉」。原实现用工具名白名单，
+        // 后加的 ask_user_question 没被补进去，最严格的权限模式反而没法澄清歧义。
+        // 断言写成 Discovery/Skill 命名空间在、业务工具不在，而不是钉死一份名单 ——
+        // 否则以后新增导航工具时又是这里先红。
+        let ask_every = ToolRuntimeContext::disabled(AiPermissionMode::AskEveryTime);
+        let disclosed = || {
+            vec![
+                find_tool("search_tools").unwrap().model_tool(),
+                find_tool(ASK_USER_TOOL_NAME).unwrap().model_tool(),
+                find_tool("read_skill_resource").unwrap().model_tool(),
+                // 业务工具正常不会出现在首轮，放进来是为了断言收窄规则真的按命名空间生效。
+                find_tool("workspace_read").unwrap().model_tool(),
+            ]
+        };
+        let build = |tools: Vec<ModelTool>| ModelRequest {
+            model: "test-model".to_string(),
+            system_prompt: None,
+            messages: Vec::new(),
+            options: ModelOptions::default(),
+            tools,
+        };
+
+        let mut request = build(disclosed());
+        restrict_initial_disclosure(&mut request, &ask_every);
+        let names = request
+            .tools
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>();
+        assert!(names.contains(&ASK_USER_TOOL_NAME));
+        assert!(names.contains(&"search_tools"));
+        assert!(names.contains(&"read_skill_resource"));
+        assert!(!names.contains(&"workspace_read"));
+
+        // 另外两种权限模式不收窄：业务工具能否执行由 requires_approval 逐次判定，
+        // 不该在披露阶段就被摘掉。
+        for mode in [AiPermissionMode::AskSensitive, AiPermissionMode::FullAccess] {
+            let mut request = build(disclosed());
+            restrict_initial_disclosure(&mut request, &ToolRuntimeContext::disabled(mode));
+            assert_eq!(request.tools.len(), 4, "{mode:?} 不应收窄首轮披露");
+        }
+    }
+
+    #[test]
+    fn ask_every_time_still_requires_approval_for_the_question_tool() {
+        // 保留披露 ≠ 自动放行：提问工具是 AlwaysAsk，三种模式都要弹给用户。
+        let question = tool_call(ASK_USER_TOOL_NAME, json!({ "questions": [] }));
+        for mode in [
+            AiPermissionMode::AskEveryTime,
+            AiPermissionMode::AskSensitive,
+            AiPermissionMode::FullAccess,
+        ] {
+            assert!(requires_approval(
+                &ToolRuntimeContext::disabled(mode),
+                &question
+            ));
+        }
     }
 
     #[test]

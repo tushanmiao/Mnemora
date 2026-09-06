@@ -7,7 +7,7 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    sync::{oneshot, Mutex, Semaphore},
+    sync::{oneshot, Mutex, Notify, Semaphore},
     task::AbortHandle,
 };
 use tokio_util::sync::CancellationToken;
@@ -16,6 +16,7 @@ use crate::ai::concurrency::ProviderConcurrencyPool;
 use crate::chat::agent::{ToolInterruptKind, ToolQuestionAnswer};
 use crate::chat::storage::ConversationRepository;
 use crate::english::{learning::EnglishLearningRepository, EnglishRepository};
+use crate::knowledge::{embedding::EmbeddingProviderSpec, KnowledgeRepository};
 use crate::library::LibraryRepository;
 use crate::mcp::McpManager;
 use crate::memory::MemoryRepository;
@@ -44,6 +45,9 @@ pub struct AppState {
     pub model_settings_repository: ModelSettingsRepository,
     pub secrets: SecretStore,
     pub active_chat_runs: Mutex<HashMap<String, CancellationToken>>,
+    pub active_knowledge_jobs: Mutex<HashMap<String, CancellationToken>>,
+    pub knowledge_worker_shutdown: CancellationToken,
+    pub knowledge_worker_notify: Arc<Notify>,
     pub active_note_pipeline_runs: Mutex<HashMap<String, ActiveNotePipelineRun>>,
     pub pending_tool_approvals: Mutex<HashMap<String, PendingToolApproval>>,
     pub active_attachment_tasks: StdMutex<HashMap<String, CancellationToken>>,
@@ -58,6 +62,7 @@ pub struct AppState {
     pub english_audio_operations: Mutex<()>,
     pub conversation_writes: Mutex<()>,
     pub library_repository: LibraryRepository,
+    pub knowledge_repository: KnowledgeRepository,
     pub library_operations: Arc<Mutex<()>>,
     pub sync_settings: RwLock<SyncSettings>,
     pub sync_settings_repository: SyncSettingsRepository,
@@ -214,6 +219,10 @@ impl AppState {
         if let Err(error) = library_repository.recover_stale_agent_runs() {
             eprintln!("Failed to recover stale Agent runs: {error}");
         }
+        let knowledge_repository = KnowledgeRepository::new(&library_repository);
+        if let Err(error) = knowledge_repository.recover_stale_jobs() {
+            eprintln!("Failed to recover stale knowledge jobs: {error}");
+        }
         let conversation_repository = ConversationRepository::new(app_data_dir.clone());
         let plugin_manager = PluginManager::new(
             app_data_dir.clone(),
@@ -255,6 +264,9 @@ impl AppState {
             model_settings_repository,
             secrets,
             active_chat_runs: Mutex::new(HashMap::new()),
+            active_knowledge_jobs: Mutex::new(HashMap::new()),
+            knowledge_worker_shutdown: CancellationToken::new(),
+            knowledge_worker_notify: Arc::new(Notify::new()),
             active_note_pipeline_runs: Mutex::new(HashMap::new()),
             pending_tool_approvals: Mutex::new(HashMap::new()),
             active_attachment_tasks: StdMutex::new(HashMap::new()),
@@ -269,6 +281,7 @@ impl AppState {
             english_audio_operations: Mutex::new(()),
             conversation_writes: Mutex::new(()),
             library_repository,
+            knowledge_repository,
             library_operations: Arc::new(Mutex::new(())),
             sync_settings: RwLock::new(sync_settings),
             sync_settings_repository,
@@ -312,6 +325,166 @@ impl AppState {
             );
         }
         cancel_chat_run_tokens(&runs)
+    }
+
+    /// Register the in-memory cancellation handle only after the durable
+    /// knowledge queue has granted a lease.  The worker still re-checks the
+    /// durable row before every terminal write, so this map is an accelerator
+    /// for user/application cancellation rather than a second source of truth.
+    pub async fn register_knowledge_job(&self, job_id: String) -> CancellationToken {
+        let mut jobs = self.active_knowledge_jobs.lock().await;
+        if let Some(token) = jobs.get(&job_id) {
+            return token.clone();
+        }
+        let token = CancellationToken::new();
+        jobs.insert(job_id, token.clone());
+        token
+    }
+
+    pub async fn finish_knowledge_job(&self, job_id: &str) {
+        self.active_knowledge_jobs.lock().await.remove(job_id);
+    }
+
+    pub async fn cancel_registered_knowledge_tokens(&self) {
+        let jobs = self.active_knowledge_jobs.lock().await;
+        for token in jobs.values() {
+            token.cancel();
+        }
+    }
+
+    pub async fn cancel_knowledge_job(&self, job_id: &str) -> Result<bool, String> {
+        let token = self.active_knowledge_jobs.lock().await.get(job_id).cloned();
+        let _guard = self.library_operations.lock().await;
+        let repository = self.knowledge_repository.clone();
+        let job_id = job_id.to_string();
+        let changed = tauri::async_runtime::spawn_blocking(move || repository.cancel_job(&job_id))
+            .await
+            .map_err(|error| format!("Knowledge cancellation task failed: {error}"))??;
+        if changed {
+            if let Some(token) = token {
+                token.cancel();
+            }
+            self.knowledge_worker_notify.notify_one();
+        }
+        Ok(changed)
+    }
+
+    /// Request cancellation in SQLite before cancelling the local token.  A
+    /// provider request may be between two cancellation checks; persisting the
+    /// request first makes its eventual result fail the lease CAS instead of
+    /// becoming visible after shutdown.
+    pub async fn cancel_all_knowledge_jobs(&self) -> usize {
+        let job_ids = self
+            .active_knowledge_jobs
+            .lock()
+            .await
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        let tokens = self
+            .active_knowledge_jobs
+            .lock()
+            .await
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        let repository = self.knowledge_repository.clone();
+        let result = async {
+            let _guard = self.library_operations.lock().await;
+            tauri::async_runtime::spawn_blocking(move || {
+                let mut changed = 0usize;
+                for job_id in job_ids {
+                    if repository.cancel_job(&job_id)? {
+                        changed = changed.saturating_add(1);
+                    }
+                }
+                Ok::<usize, String>(changed)
+            })
+            .await
+            .map_err(|error| format!("Knowledge shutdown cancellation task failed: {error}"))?
+        }
+        .await;
+        for token in tokens {
+            token.cancel();
+        }
+        self.knowledge_worker_notify.notify_waiters();
+        result.unwrap_or(0)
+    }
+
+    pub fn notify_knowledge_worker(&self) {
+        self.knowledge_worker_notify.notify_one();
+    }
+
+    /// Reconcile durable embedding work after a knowledge/model/credential
+    /// setting change.  Jobs for an obsolete route are cancelled before the
+    /// worker is woken; a valid route with an available credential is queued
+    /// immediately instead of waiting for the periodic discovery pass.
+    ///
+    /// A credential-store failure is treated conservatively as unavailable:
+    /// no document text is sent while the credential status cannot be proven.
+    pub async fn reconcile_embedding_jobs(&self) -> Result<(), String> {
+        let knowledge_settings = self
+            .app_settings
+            .read()
+            .map_err(|_| "Knowledge settings lock is unavailable".to_string())?
+            .knowledge
+            .clone();
+        let model_settings = self
+            .model_settings
+            .read()
+            .map_err(|_| "Model settings lock is unavailable".to_string())?
+            .clone();
+
+        let spec = match EmbeddingProviderSpec::resolve(&knowledge_settings, &model_settings) {
+            Ok(spec) => {
+                let provider_id = spec.provider_id.clone();
+                let secrets = self.secrets;
+                let available =
+                    tauri::async_runtime::spawn_blocking(move || secrets.has_api_key(&provider_id))
+                        .await
+                        .ok()
+                        .and_then(Result::ok)
+                        .unwrap_or(false);
+                available.then_some(spec)
+            }
+            Err(_) => None,
+        };
+        let keep_embedding_key = spec.as_ref().map(|value| value.embedding_key.clone());
+
+        let _guard = self.library_operations.lock().await;
+        let repository = self.knowledge_repository.clone();
+        let cancelled_job_ids = tauri::async_runtime::spawn_blocking(move || {
+            let job_ids =
+                repository.active_embedding_job_ids_except(keep_embedding_key.as_deref())?;
+            for job_id in &job_ids {
+                // A job that is already cancelling is still returned above so
+                // its in-memory token is cancelled below; `cancel_job` is
+                // intentionally idempotent for that state.
+                let _ = repository.cancel_job(job_id)?;
+            }
+            if let Some(spec) = spec {
+                repository.enqueue_embedding_jobs(&spec, None, false)?;
+            }
+            Ok::<Vec<String>, String>(job_ids)
+        })
+        .await
+        .map_err(|error| format!("Embedding settings reconciliation task failed: {error}"))??;
+
+        if !cancelled_job_ids.is_empty() {
+            let jobs = self.active_knowledge_jobs.lock().await;
+            for job_id in &cancelled_job_ids {
+                if let Some(token) = jobs.get(job_id) {
+                    token.cancel();
+                }
+            }
+        }
+        self.knowledge_worker_notify.notify_waiters();
+        Ok(())
+    }
+
+    pub fn stop_knowledge_worker(&self) {
+        self.knowledge_worker_shutdown.cancel();
+        self.knowledge_worker_notify.notify_waiters();
     }
 
     pub async fn register_note_pipeline_run(

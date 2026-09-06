@@ -4,7 +4,7 @@
 //! 导入完成后只把不含密钥的设置结构返回前端。保存基础设置时同步 Windows 开机启动状态。
 
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
 };
@@ -139,6 +139,9 @@ pub async fn save_application_settings(
             let _ = crate::window_lifecycle::destroy_pet_window(&app);
         });
     }
+    if let Err(error) = state.reconcile_embedding_jobs().await {
+        eprintln!("Failed to reconcile embedding jobs after app settings save: {error}");
+    }
     Ok(settings)
 }
 
@@ -233,6 +236,14 @@ pub async fn import_settings_bundle(
         .read()
         .map_err(|_| "App settings lock is unavailable".to_string())?
         .clone();
+    let previous_credential_revisions = state
+        .model_settings
+        .read()
+        .map_err(|_| "Model settings lock is unavailable".to_string())?
+        .providers
+        .iter()
+        .map(|provider| (provider.id.clone(), provider.credential_revision))
+        .collect::<HashMap<_, _>>();
     let app_repository = state.app_settings_repository.clone();
     let model_repository = state.model_settings_repository.clone();
     let memory_repository = state.memory_repository.clone();
@@ -241,6 +252,22 @@ pub async fn import_settings_bundle(
         let mut file_bundle = read_bundle_file(&path)?;
         file_bundle.app_settings = file_bundle.app_settings.normalize_and_validate()?;
         file_bundle.model_settings = file_bundle.model_settings.normalize_and_validate()?;
+        let imported_credentials = file_bundle.provider_api_keys.is_some();
+        for provider in &mut file_bundle.model_settings.providers {
+            let previous_revision = previous_credential_revisions
+                .get(&provider.id)
+                .copied()
+                .unwrap_or(0);
+            // Never trust a revision serialized in a backup.  Importing a
+            // credential set creates a new route identity even when the
+            // provider ID is unchanged, preventing old vectors from being
+            // reused under a different account.
+            provider.credential_revision = if imported_credentials {
+                previous_revision.saturating_add(1)
+            } else {
+                previous_revision
+            };
+        }
 
         if let Some(provider_api_keys) = &file_bundle.provider_api_keys {
             let provider_ids = file_bundle
@@ -308,6 +335,9 @@ pub async fn import_settings_bundle(
         .write()
         .map_err(|_| "Model settings lock is unavailable".to_string())? =
         bundle.model_settings.clone();
+    if let Err(error) = state.reconcile_embedding_jobs().await {
+        eprintln!("Failed to reconcile embedding jobs after settings import: {error}");
+    }
     if bundle.app_settings.pet.enabled {
         if previous_app_settings.pet.enabled {
             crate::window_lifecycle::update_pet_window_runtime(&app, &bundle.app_settings.pet)?;

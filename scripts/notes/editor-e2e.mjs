@@ -1,0 +1,48 @@
+import { chromium } from "@playwright/test";
+import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+
+const artifacts = new URL("../../.artifacts/plan16/", import.meta.url);
+await fs.mkdir(artifacts, { recursive: true });
+const browser = await chromium.launch({ channel: "msedge", headless: true });
+const page = await browser.newPage({ viewport: { width: 1366, height: 768 } });
+const errors = [];
+const capture = (name) => process.argv.includes("--skip-screenshots") ? Promise.resolve() : page.screenshot({ path: fileURLToPath(new URL(name, artifacts)) });
+page.on("pageerror", (error) => errors.push(error.message));
+try {
+  await page.goto(`${process.env.NOTE_TEST_URL ?? "http://localhost:1422"}/scripts/notes/editor-harness.html`);
+  await page.getByRole("textbox", { name: "Markdown 笔记正文", exact: true }).waitFor();
+  await page.getByRole("textbox", { name: "表头，第 1 列", exact: true }).waitFor();
+  await page.getByRole("textbox", { name: "第 1 行，第 1 列", exact: true }).fill("方法 C");
+  await page.waitForFunction(() => window.noteFixture.session.snapshot().content.includes("方法 C"));
+  await page.getByRole("button", { name: "源码", exact: true }).click();
+  const editor = page.getByRole("textbox", { name: "Markdown 笔记正文", exact: true });
+  await editor.click(); await page.keyboard.press("Control+End"); await page.keyboard.type("\nEditable sentinel");
+  const beforeModes = await page.evaluate(() => window.noteFixture.session.snapshot().content);
+  await page.getByRole("button", { name: "阅读", exact: true }).click();
+  await page.locator(".note-editor-reading").waitFor();
+  assert.equal(await page.locator(".note-editor-reading input[type=checkbox]:not(:disabled)").count(), 0);
+  await page.getByRole("button", { name: "实时编辑", exact: true }).click();
+  assert.equal(await page.evaluate(() => window.noteFixture.session.snapshot().content), beforeModes);
+  await page.getByRole("button", { name: "撤销", exact: true }).click();
+  await page.waitForFunction((before) => window.noteFixture.session.snapshot().content !== before, beforeModes);
+  await page.getByRole("button", { name: "保存笔记", exact: true }).click();
+  await page.waitForFunction(() => !window.noteFixture.session.dirty);
+  await page.getByRole("button", { name: "阅读", exact: true }).click();
+  await page.locator(".note-editor-reading").evaluate((element) => { element.scrollTop = 0; });
+  await page.locator(".note-editor-reading svg").first().waitFor({ timeout: 20000 });
+  await capture("desktop-read.png");
+  await page.getByRole("button", { name: "实时编辑", exact: true }).click();
+  await page.locator(".cm-scroller").evaluate((element) => { element.scrollTop = 0; });
+  await capture("desktop-live.png");
+  await page.getByLabel("合成测试入口").selectOption("literature");
+  await page.getByRole("textbox", { name: "Markdown 笔记正文", exact: true }).waitFor();
+  await page.setViewportSize({ width: 720, height: 768 });
+  await page.getByRole("button", { name: "收起笔记大纲" }).click();
+  await capture("narrow-work.png");
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth);
+  assert.equal(overflow, false, "page overflow");
+  assert.deepEqual(errors, []);
+  console.log(JSON.stringify({ result: "passed", checks: ["table editing", "shared ordinary/literature", "mode roundtrip", "read-only tasks", "undo after read", "save", "narrow overflow"], screenshots: artifacts.pathname }));
+} finally { await browser.close(); }

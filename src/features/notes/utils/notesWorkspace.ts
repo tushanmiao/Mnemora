@@ -1,4 +1,6 @@
 import type { LibraryNote } from "../../library/types";
+import { sha256 } from "@noble/hashes/sha256";
+import { bytesToHex } from "@noble/hashes/utils";
 
 const NOTES_LAYOUT_STORAGE_KEY = "mnemora.notes.layout.v1";
 export const OUTLINE_DEFAULT_WIDTH = 232;
@@ -33,7 +35,7 @@ export function persistNotesLayout(layout: NotesLayout) {
 }
 
 export function revisionHash(note: LibraryNote) {
-  return `${note.updatedAt.toString(36)}-${note.content.length.toString(36)}`;
+  return bytesToHex(sha256(new TextEncoder().encode(note.content)));
 }
 
 export function lineAtOffset(content: string, offset: number) {
@@ -41,7 +43,7 @@ export function lineAtOffset(content: string, offset: number) {
 }
 
 export function noteStats(content: string) {
-  const characters = Array.from(content).length;
+  const characters = /[\uD800-\uDBFF]/.test(content) ? Array.from(content).length : content.length;
   const words = content.trim() ? content.trim().split(/\s+/).filter(Boolean).length : 0;
   const readingMinutes = characters === 0 ? 0 : Math.max(1, Math.ceil(characters / 400));
   return { characters, words, readingMinutes };

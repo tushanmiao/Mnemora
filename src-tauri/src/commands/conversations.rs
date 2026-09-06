@@ -188,21 +188,25 @@ pub async fn save_conversation_as_note(
     state: State<'_, AppState>,
     conversation_id: String,
 ) -> Result<LibraryNote, String> {
-    let _write_guard = state.library_operations.lock().await;
-    let conversations = state.conversation_repository.clone();
-    let library = state.library_repository.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let conversation = conversations.load(&conversation_id)?;
-        let markdown = conversation_to_markdown(&conversation);
-        library.create_note(LibraryNoteCreate {
-            item_id: None,
-            title: note_title_from_conversation(&conversation.title),
-            content: clamp_note_content(markdown),
-            group_name: None,
+    let note = {
+        let _write_guard = state.library_operations.lock().await;
+        let conversations = state.conversation_repository.clone();
+        let library = state.library_repository.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            let conversation = conversations.load(&conversation_id)?;
+            let markdown = conversation_to_markdown(&conversation);
+            library.create_note(LibraryNoteCreate {
+                item_id: None,
+                title: note_title_from_conversation(&conversation.title),
+                content: clamp_note_content(markdown),
+                group_name: None,
+            })
         })
-    })
-    .await
-    .map_err(join_error)?
+        .await
+        .map_err(join_error)??
+    };
+    super::knowledge::schedule_note_sync(state.inner(), note.id.clone());
+    Ok(note)
 }
 
 /// 把本地文件复制到一个隐藏的来源会话，再交给既有深度笔记管线处理。

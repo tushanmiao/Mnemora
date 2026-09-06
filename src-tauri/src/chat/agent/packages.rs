@@ -141,12 +141,17 @@ pub(super) async fn search_remote_packages(
         }
     });
 
-    let content = serde_json::to_string(&payload)
-        .map_err(|error| ModelError::invalid_configuration(format!("序列化搜索结果失败：{error}")))?;
+    let content = serde_json::to_string(&payload).map_err(|error| {
+        ModelError::invalid_configuration(format!("序列化搜索结果失败：{error}"))
+    })?;
     let preview = if candidates.is_empty() {
         format!("没有找到匹配的{kind_text}仓库")
     } else {
-        format!("找到 {} 个候选（共 {} 个结果）", candidates.len(), outcome.total_count)
+        format!(
+            "找到 {} 个候选（共 {} 个结果）",
+            candidates.len(),
+            outcome.total_count
+        )
     };
     let output_chars = content.chars().count();
     Ok(ToolExecution {

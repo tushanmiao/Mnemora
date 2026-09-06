@@ -128,6 +128,32 @@ pub fn database_supports_reasoning(api_model: &str) -> Option<bool> {
     database_capability(api_model, "reasoning")
 }
 
+/// 数据库中该模型是否支持文本 embedding。
+///
+/// 与视觉、工具等对话能力不同，embedding 模型在内置数据库中是一个
+/// 明确的模型类别。命中数据库但没有 `embedding: true` 时返回 `Some(false)`，
+/// 这样可以阻止把普通聊天模型误配置为 embedding；完全未知的模型仍返回
+/// `None`，为自定义中转站和新模型保留兼容性。
+pub fn database_supports_embedding(api_model: &str) -> Option<bool> {
+    let entry = database_entry(api_model)?;
+    Some(
+        entry
+            .get("capabilities")
+            .and_then(|capabilities| capabilities.get("embedding"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+    )
+}
+
+/// 返回内置模型数据库声明的 embedding 维度。未知模型或没有可靠维度时返回 `None`。
+pub fn database_embedding_dimensions(api_model: &str) -> Option<usize> {
+    database_entry(api_model)?
+        .get("dimensions")
+        .and_then(Value::as_u64)
+        .and_then(|dimensions| usize::try_from(dimensions).ok())
+        .filter(|dimensions| *dimensions > 0 && *dimensions <= 65_536)
+}
+
 /// 名称家族启发式（参考 cherry-studio 的 vision 白/黑名单设计）：数据库未命中时
 /// 按模型名家族兜底判定。只收录高置信家族，拿不准时返回 `None` 交给上层放行，
 /// 避免误伤中转站上的新模型。
@@ -221,6 +247,28 @@ mod tests {
         assert_eq!(database_supports_vision("gpt-5.5"), Some(true));
         assert_eq!(database_supports_function_calling("gpt-5.5"), Some(true));
         assert_eq!(database_supports_reasoning("gpt-5.5"), Some(true));
+    }
+
+    #[test]
+    fn embedding_metadata_distinguishes_known_and_unknown_models() {
+        assert_eq!(
+            database_supports_embedding("text-embedding-3-small"),
+            Some(true)
+        );
+        assert_eq!(
+            database_embedding_dimensions("text-embedding-3-small"),
+            Some(1536)
+        );
+        assert_eq!(database_supports_embedding("gpt-5.5"), Some(false));
+        assert_eq!(database_embedding_dimensions("gpt-5.5"), None);
+        assert_eq!(
+            database_supports_embedding("totally-unknown-model-xyz"),
+            None
+        );
+        assert_eq!(
+            database_embedding_dimensions("totally-unknown-model-xyz"),
+            None
+        );
     }
 
     #[test]

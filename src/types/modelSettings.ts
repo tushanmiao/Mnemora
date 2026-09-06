@@ -48,6 +48,8 @@ export interface ModelCapabilities {
   functionCalling?: boolean;
   /** 是否支持独立 reasoning/thinking 输出。 */
   reasoning?: boolean;
+  /** 是否支持文本 embedding；缺省时跟随内置模型数据库。 */
+  embedding?: boolean;
   /** 是否支持流式响应；保留为模型能力快照。 */
   streaming?: boolean;
   /** 当前模型与供应商组合是否支持原生 Tool Search。 */

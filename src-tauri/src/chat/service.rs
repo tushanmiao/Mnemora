@@ -541,6 +541,46 @@ fn append_agent_runtime_prompt(request: &mut ModelRequest, max_agent_rounds: u16
     ));
 }
 
+/// Agent note writes use the same durable library tables as the note editor,
+/// but they do not pass through a Tauri command.  Keep indexing as a detached
+/// side effect of a *successful explicit* note tool call.  The tool result is
+/// parsed rather than inferred from the arguments so a failed or malformed
+/// tool response can never enqueue an unrelated source.
+fn agent_note_id_for_indexing(
+    call: &ModelToolCall,
+    execution: &agent::ToolExecution,
+) -> Option<String> {
+    if execution.is_error || !matches!(call.name.as_str(), "note_create" | "note_update") {
+        return None;
+    }
+    let Ok(payload) = serde_json::from_str::<serde_json::Value>(&execution.content) else {
+        return None;
+    };
+    let status_is_write = matches!(
+        payload.get("status").and_then(serde_json::Value::as_str),
+        Some("created") | Some("updated")
+    );
+    let Some(note_id) = payload
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return None;
+    };
+    status_is_write.then(|| note_id.to_string())
+}
+
+fn schedule_agent_note_sync(
+    state: &AppState,
+    call: &ModelToolCall,
+    execution: &agent::ToolExecution,
+) {
+    if let Some(note_id) = agent_note_id_for_indexing(call, execution) {
+        crate::commands::knowledge::schedule_note_sync(state, note_id);
+    }
+}
+
 async fn execute_parallel_safe_tools(
     state: &AppState,
     context: &ToolRuntimeContext,
@@ -689,6 +729,7 @@ async fn execute_parallel_safe_tools(
     }
     while let Some(joined) = tasks.join_next().await {
         if let Ok((index, execution, duration_ms)) = joined {
+            schedule_agent_note_sync(state, &calls[index], &execution);
             results[index] = Some(ParallelToolExecution {
                 execution,
                 duration_ms,
@@ -713,21 +754,7 @@ async fn run_agent_complete(
     parent_operation: &str,
     execution: &CompleteExecution<'_>,
 ) -> Result<AgentCompleteResult, ModelError> {
-    if tool_context.permission_mode
-        == crate::chat::conversation_types::AiPermissionMode::AskEveryTime
-    {
-        request.tools.retain(|tool| {
-            matches!(
-                tool.name.as_str(),
-                "activate_skill"
-                    | "inspect_skill"
-                    | "search_tools"
-                    | "inspect_tool"
-                    | "search_skills"
-                    | "read_skill_resource"
-            )
-        });
-    }
+    agent::restrict_initial_disclosure(&mut request, tool_context);
     let run_id = uuid::Uuid::new_v4().to_string();
     let mut run_usage = ModelUsage {
         call_count: 0,
@@ -1044,6 +1071,7 @@ async fn run_agent_complete(
                 }
             };
             let execution = result.execution;
+            schedule_agent_note_sync(state, &call, &execution);
             tool_traces.push(ToolTraceSnapshot {
                 call_id: call.id.clone(),
                 name: call.name.clone(),
@@ -1122,21 +1150,7 @@ async fn run_agent_stream(
     response_preview: &mut String,
     reasoning_preview: &mut String,
 ) -> Result<ModelStreamOutcome, ModelError> {
-    if tool_context.permission_mode
-        == crate::chat::conversation_types::AiPermissionMode::AskEveryTime
-    {
-        request.tools.retain(|tool| {
-            matches!(
-                tool.name.as_str(),
-                "activate_skill"
-                    | "inspect_skill"
-                    | "search_tools"
-                    | "inspect_tool"
-                    | "search_skills"
-                    | "read_skill_resource"
-            )
-        });
-    }
+    agent::restrict_initial_disclosure(&mut request, tool_context);
     let mut run_usage = ModelUsage {
         call_count: 0,
         ..ModelUsage::default()
@@ -1757,6 +1771,7 @@ async fn execute_agent_tool(
     .await
     {
         Ok(result) => {
+            schedule_agent_note_sync(state, call, &result);
             let terminal_event = if result.is_error {
                 ToolCallEvent::Failed
             } else {
@@ -2073,11 +2088,7 @@ async fn stream_inner(
     loop {
         let permit = state
             .provider_concurrency
-            .acquire(
-                provider_id,
-                ProviderRequestClass::Interactive,
-                cancellation,
-            )
+            .acquire(provider_id, ProviderRequestClass::Interactive, cancellation)
             .await?;
         let mut emit = |chunk: ModelStreamChunk| match chunk {
             ModelStreamChunk::TextDelta(delta) => {
@@ -2133,18 +2144,23 @@ async fn stream_inner(
     }
 }
 
+/// 本轮实际会送给模型的附件种类，用于能力校验。
+///
+/// 尾部判据与 `into_model_request` 的 `in_unanswered_tail` 必须保持一致：跳过失败或
+/// 被中断的助手占位，否则「校验说本轮有图片」和「实际发送了哪些图片」会不一致。
 fn unanswered_tail_attachment_flags(request: &ChatCompletionRequest) -> (bool, bool) {
-    let last_assistant_index = request
+    let last_delivered_assistant_index = request
         .messages
         .iter()
-        .rposition(|message| message.role == ModelRole::Assistant);
+        .rposition(|message| message.role == ModelRole::Assistant && !message.failed);
     request
         .messages
         .iter()
         .enumerate()
         .filter(|(index, message)| {
             message.role == ModelRole::User
-                && last_assistant_index.is_none_or(|assistant_index| *index > assistant_index)
+                && last_delivered_assistant_index
+                    .is_none_or(|assistant_index| *index > assistant_index)
         })
         .flat_map(|(_, message)| message.attachments.iter())
         .fold((false, false), |(has_image, has_document), attachment| {
@@ -2819,7 +2835,7 @@ mod tests {
         },
     };
     use crate::chat::{
-        agent::types::ToolQuestionAnswer,
+        agent::{types::ToolQuestionAnswer, ToolExecution},
         conversation_types::{AiPermissionMode, StoredChatAttachment},
         types::{ChatCompletionRequest, ChatModelMessage, ChatWorkspaceMode},
     };
@@ -2840,6 +2856,48 @@ mod tests {
             capabilities: None,
             enabled: true,
         });
+    }
+
+    #[test]
+    fn only_successful_explicit_note_writes_schedule_indexing() {
+        let call = ModelToolCall {
+            id: "call-1".to_string(),
+            name: "note_create".to_string(),
+            arguments: serde_json::json!({}),
+            provider_signature: None,
+        };
+        let success = ToolExecution {
+            content: serde_json::json!({
+                "status": "created",
+                "id": "note-123"
+            })
+            .to_string(),
+            preview: String::new(),
+            is_error: false,
+            activated_skill_id: None,
+            output_chars: 0,
+            output_truncated: false,
+        };
+        assert_eq!(
+            super::agent_note_id_for_indexing(&call, &success).as_deref(),
+            Some("note-123")
+        );
+
+        let failed = ToolExecution {
+            is_error: true,
+            ..success.clone()
+        };
+        assert!(super::agent_note_id_for_indexing(&call, &failed).is_none());
+
+        let mut wrong_tool = call.clone();
+        wrong_tool.name = "note_read".to_string();
+        assert!(super::agent_note_id_for_indexing(&wrong_tool, &success).is_none());
+
+        let malformed = ToolExecution {
+            content: "not-json".to_string(),
+            ..success
+        };
+        assert!(super::agent_note_id_for_indexing(&call, &malformed).is_none());
     }
 
     fn tool_calls(name: &str, count: usize) -> Vec<ModelToolCall> {
@@ -2885,29 +2943,48 @@ mod tests {
         }
     }
 
+    fn user_message(content: &str, attachments: Vec<StoredChatAttachment>) -> ChatModelMessage {
+        ChatModelMessage {
+            role: ModelRole::User,
+            content: content.to_string(),
+            attachments,
+            failed: false,
+        }
+    }
+
+    fn assistant_message(content: &str) -> ChatModelMessage {
+        ChatModelMessage {
+            role: ModelRole::Assistant,
+            content: content.to_string(),
+            attachments: Vec::new(),
+            failed: false,
+        }
+    }
+
+    /// 上游失败或被用户中断的助手占位：进上下文维持交替，但不消费用户附件。
+    fn failed_assistant_message() -> ChatModelMessage {
+        ChatModelMessage {
+            role: ModelRole::Assistant,
+            content: "（这一轮回复失败，没有产生回答：HTTP 429）".to_string(),
+            attachments: Vec::new(),
+            failed: true,
+        }
+    }
+
     #[test]
     fn attachment_capability_gate_ignores_answered_history() {
         let request = attachment_request(vec![
-            ChatModelMessage {
-                role: ModelRole::User,
-                content: "读取旧文档".to_string(),
-                attachments: vec![attachment(
+            user_message(
+                "读取旧文档",
+                vec![attachment(
                     "old-document",
                     "file",
                     "old.pdf",
                     "application/pdf",
                 )],
-            },
-            ChatModelMessage {
-                role: ModelRole::Assistant,
-                content: "旧回答".to_string(),
-                attachments: Vec::new(),
-            },
-            ChatModelMessage {
-                role: ModelRole::User,
-                content: "新的纯文本问题".to_string(),
-                attachments: Vec::new(),
-            },
+            ),
+            assistant_message("旧回答"),
+            user_message("新的纯文本问题", Vec::new()),
         ]);
 
         assert_eq!(
@@ -2919,17 +2996,54 @@ mod tests {
     }
 
     #[test]
+    fn attachment_capability_gate_looks_past_failed_turns() {
+        // 上游 429 之后用户换了个问题：那一轮的图片仍属于本轮（模型从未真正看过），
+        // 所以能力校验必须把它算进来。判据若写成「最后一条助手消息」，失败占位会被
+        // 误当成"已回答"，图片被降级成文字说明后静默丢失。
+        let request = attachment_request(vec![
+            user_message(
+                "看这张图",
+                vec![attachment("pending-image", "image", "a.png", "image/png")],
+            ),
+            failed_assistant_message(),
+            user_message("识别网址", Vec::new()),
+        ]);
+
+        assert_eq!(
+            super::unanswered_tail_attachment_flags(&request),
+            (true, false)
+        );
+        let error =
+            super::validate_attachment_capabilities(&request, Some(false), true, "Text Model")
+                .expect_err("images stranded by a failed turn still need a vision-capable model");
+        assert_eq!(error.kind, ModelErrorKind::InvalidConfiguration);
+
+        // 反向对照：同一组消息，若那一轮是成功回答，图片就不再属于本轮。
+        let answered = attachment_request(vec![
+            user_message(
+                "看这张图",
+                vec![attachment("pending-image", "image", "a.png", "image/png")],
+            ),
+            assistant_message("图里是一张时序图"),
+            user_message("识别网址", Vec::new()),
+        ]);
+        assert_eq!(
+            super::unanswered_tail_attachment_flags(&answered),
+            (false, false)
+        );
+    }
+
+    #[test]
     fn attachment_capability_gate_rejects_current_unsupported_inputs() {
-        let document_request = attachment_request(vec![ChatModelMessage {
-            role: ModelRole::User,
-            content: "读取文档".to_string(),
-            attachments: vec![attachment(
+        let document_request = attachment_request(vec![user_message(
+            "读取文档",
+            vec![attachment(
                 "new-document",
                 "file",
                 "current.docx",
                 "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             )],
-        }]);
+        )]);
         let error = super::validate_attachment_capabilities(
             &document_request,
             Some(true),
@@ -2940,11 +3054,10 @@ mod tests {
         assert_eq!(error.kind, ModelErrorKind::InvalidConfiguration);
         assert!(error.message.contains("文档附件"));
 
-        let image_request = attachment_request(vec![ChatModelMessage {
-            role: ModelRole::User,
-            content: "查看图片".to_string(),
-            attachments: vec![attachment("new-image", "image", "current.png", "image/png")],
-        }]);
+        let image_request = attachment_request(vec![user_message(
+            "查看图片",
+            vec![attachment("new-image", "image", "current.png", "image/png")],
+        )]);
         let error = super::validate_attachment_capabilities(
             &image_request,
             Some(false),

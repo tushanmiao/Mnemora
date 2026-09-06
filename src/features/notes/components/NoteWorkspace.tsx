@@ -1,21 +1,17 @@
 import {
   lazy,
   Suspense,
-  useCallback,
   useDeferredValue,
   useEffect,
   useMemo,
   useRef,
   useState,
   type CSSProperties,
-  type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
 } from "react";
 import {
   Bot,
   Copy,
-  Eye,
-  FileCode2,
   FileText,
   LoaderCircle,
   ListTree,
@@ -27,8 +23,6 @@ import {
 } from "lucide-react";
 import {
   deleteLibraryNote,
-  getLibraryNote,
-  updateLibraryNote,
 } from "../../library/api/library";
 import type { LibraryNote } from "../../library/types";
 import type { NoteReference } from "../../../types/chat";
@@ -45,14 +39,21 @@ import {
   persistNotesLayout,
   revisionHash,
 } from "../utils/notesWorkspace";
-import { extractMarkdownOutline, type MarkdownOutlineItem } from "../../chat/markdown/utils/outline";
+import type { MarkdownOutlineItem } from "../../chat/markdown/utils/outline";
+import { noteOutline } from "../editor/markdownRanges";
+import { useNoteEditSession } from "../runtime/noteEditSession";
+import { prepareNoteSelection } from "../runtime/noteSelection";
+import type { NoteEditorMode } from "../api/noteEditing";
+import { getNoteEditorPreferences } from "../runtime/noteEditorPreferences";
+import type { MarkdownSourceEditorHandle } from "./MarkdownSourceEditor";
 import { PanelResizeHandle } from "../../layout/components/PanelResizeHandle";
 import { NoteSourcesBar } from "./NoteSourcesBar";
+import { NoteOutline } from "./NoteOutline";
 import type { NoteSelectionMenu } from "./NoteEditor";
 import "../styles/notes.css";
 import "../styles/notes-workspace.css";
 
-const MarkdownNotePreview = lazy(() => import("./MarkdownNotePreview"));
+const NoteMarkdownEditor = lazy(() => import("./NoteMarkdownEditor").then((module) => ({ default: module.NoteMarkdownEditor })));
 const MAX_SELECTION_CHARACTERS = 16_000;
 const MAX_NOTE_SNAPSHOT_BYTES = 32 * 1024;
 const textEncoder = new TextEncoder();
@@ -119,67 +120,32 @@ export function NoteWorkspace({
   onOpenSourcePdf,
 }: NoteWorkspaceProps) {
   const previewRef = useRef<HTMLDivElement>(null);
-  const sourceRef = useRef<HTMLTextAreaElement>(null);
+  const sourceRef = useRef<MarkdownSourceEditorHandle>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const lastContextRef = useRef<ActiveWorkNoteContext | null>(null);
-  const loadRequestRef = useRef(0);
-  const [note, setNote] = useState<LibraryNote | null>(null);
-  const [title, setTitle] = useState("");
-  const [content, setContent] = useState("");
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
+  const editing = useNoteEditSession(noteId);
+  const { session, title, content } = editing;
+  const note = editing.base?.note ?? null;
+  const loading = editing.phase === "loading";
+  const saving = editing.phase === "saving";
+  const setTitle = (title: string) => session?.edit({ title });
+  const setContent = (content: string) => session?.edit({ content });
   const [error, setError] = useState("");
-  const [mode, setMode] = useState<"source" | "preview">("source");
+  const [mode, setMode] = useState<NoteEditorMode>(() => getNoteEditorPreferences().defaultMode);
   const [outlineLayout, setOutlineLayout] = useState(loadNotesLayout);
   const [selectionMenu, setSelectionMenu] = useState<NoteSelectionMenu | null>(null);
   const deferredContent = useDeferredValue(content);
   const outline = useMemo(
-    () => extractMarkdownOutline(deferredContent, `note-${noteId}`),
+    () => noteOutline(deferredContent, `note-${noteId}`),
     [deferredContent, noteId],
   );
 
-  const loadNote = useCallback(async ({
-    quiet = false,
-    reset = false,
-  }: {
-    quiet?: boolean;
-    reset?: boolean;
-  } = {}) => {
-    const requestId = ++loadRequestRef.current;
-    if (!quiet) setLoading(true);
-    if (reset) {
-      setNote(null);
-      setTitle("");
-      setContent("");
-      setSelectionMenu(null);
-    }
-    setError("");
-    try {
-      const next = await getLibraryNote(noteId);
-      if (requestId !== loadRequestRef.current) return;
-      setNote(next);
-      setTitle(next.title);
-      setContent(next.content);
-      onUpdated(next);
-    } catch (loadError) {
-      if (requestId !== loadRequestRef.current) return;
-      setError(loadError instanceof Error ? loadError.message : String(loadError));
-    } finally {
-      if (requestId === loadRequestRef.current) setLoading(false);
-    }
-  }, [noteId, onUpdated]);
-
-  useEffect(() => {
-    void loadNote({ reset: true });
-    return () => {
-      loadRequestRef.current += 1;
-    };
-  }, [loadNote]);
+  useEffect(() => { if (note) onUpdated(note); }, [note, onUpdated]);
 
   useEffect(() => {
     if (refreshVersion <= 0) return;
-    void loadNote({ quiet: true });
-  }, [loadNote, refreshVersion]);
+    void session?.load();
+  }, [session, refreshVersion]);
 
   useEffect(() => {
     if (!note) {
@@ -209,43 +175,33 @@ export function NoteWorkspace({
 
   const save = async () => {
     if (!title.trim() || saving) return;
-    setSaving(true);
     setError("");
     try {
-      const updated = await updateLibraryNote({ noteId, title, content });
-      setNote(updated);
-      setTitle(updated.title);
-      setContent(updated.content);
-      onUpdated(updated);
+      await session?.save();
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : String(saveError));
-    } finally {
-      setSaving(false);
     }
   };
 
   const showSourceSelection = (
-    event: ReactMouseEvent<HTMLTextAreaElement> | ReactKeyboardEvent<HTMLTextAreaElement>,
+    event: ReactMouseEvent<HTMLElement>,
   ) => {
     const editor = event.currentTarget;
-    const selectedText = editor.value.slice(editor.selectionStart, editor.selectionEnd).trim();
+    const selected = sourceRef.current?.getSelection();
+    if (!selected) return;
+    const selectedText = selected.text.trim();
     if (!selectedText) {
       setSelectionMenu(null);
       return;
     }
     const rect = editor.getBoundingClientRect();
     const bodyRect = bodyRef.current?.getBoundingClientRect() ?? rect;
-    const keyboardEvent = "key" in event;
     setSelectionMenu({
-      left: keyboardEvent
-        ? Math.max(18, rect.left - bodyRect.left + 18)
-        : Math.min(bodyRect.width - 224, Math.max(12, event.clientX - bodyRect.left)),
-      top: keyboardEvent
-        ? 18
-        : Math.min(bodyRect.height - 44, Math.max(12, event.clientY - bodyRect.top + 10)),
+      left: Math.max(0, Math.min(bodyRect.width - 224, Math.max(12, event.clientX - bodyRect.left))),
+      top: Math.max(0, Math.min(bodyRect.height - 44, Math.max(12, event.clientY - bodyRect.top + 10))),
       text: selectedText.slice(0, MAX_SELECTION_CHARACTERS),
-      startLine: lineAtOffset(editor.value, editor.selectionStart),
-      endLine: lineAtOffset(editor.value, editor.selectionEnd),
+      startLine: lineAtOffset(sourceRef.current!.getText(), selected.from),
+      endLine: lineAtOffset(sourceRef.current!.getText(), selected.to),
     });
   };
 
@@ -272,39 +228,28 @@ export function NoteWorkspace({
     window.getSelection()?.removeAllRanges();
   };
 
-  const askSelection = () => {
-    if (!note || !selectionMenu) return;
-    onAskSelection({
-      id: crypto.randomUUID(),
-      noteId: note.id,
-      noteTitle: title.trim() || note.title,
-      revisionHash: revisionHash({ ...note, title, content }),
-      startLine: selectionMenu.startLine,
-      endLine: selectionMenu.endLine,
-      selectedText: selectionMenu.text,
-    });
+  const askSelection = async () => {
+    if (!note || !selectionMenu || !session) return;
+    try { onAskSelection(await prepareNoteSelection(session, selectionMenu.text)); }
+    catch (error) { setError(String(error)); return; }
     clearSelection();
   };
 
   const editSelection = async () => {
     if (!note || !selectionMenu || saving) return;
+    const generation = editing.generation;
     let editNote = note;
     if (title !== note.title || content !== note.content) {
-      setSaving(true);
       setError("");
       try {
-        editNote = await updateLibraryNote({ noteId, title, content });
-        setNote(editNote);
-        setTitle(editNote.title);
-        setContent(editNote.content);
-        onUpdated(editNote);
+        await session!.save();
+        editNote = session!.snapshot().base!.note;
       } catch (saveError) {
         setError(saveError instanceof Error ? saveError.message : String(saveError));
-        setSaving(false);
         return;
       }
-      setSaving(false);
     }
+    if (session?.snapshot().generation !== generation) { setError("笔记已变化，请重新选择修改范围。"); return; }
     const lines = content.split(/\r?\n/);
     const beforeSelection = selectionMenu.startLine
       ? lines.slice(0, selectionMenu.startLine)
@@ -314,13 +259,14 @@ export function NoteWorkspace({
       .find((line) => /^##\s+/.test(line))
       ?.replace(/^##\s+/, "")
       .trim() ?? "";
+    if (mode === "read") setMode("live");
     onEditSelection({ noteId: editNote.id, selectedText: selectionMenu.text, sectionHeading });
     clearSelection();
   };
 
   const jumpToOutline = (item: MarkdownOutlineItem) => {
     setSelectionMenu(null);
-    if (mode === "preview") {
+    if (mode === "read") {
       const host = previewRef.current;
       const heading = host?.querySelector<HTMLElement>(`#${CSS.escape(item.id)}`);
       if (host && heading) {
@@ -333,13 +279,10 @@ export function NoteWorkspace({
     }
     const editor = sourceRef.current;
     if (!editor) return;
-    const style = window.getComputedStyle(editor);
-    const lineHeight = Number.parseFloat(style.lineHeight) || 26;
-    const paddingTop = Number.parseFloat(style.paddingTop) || 0;
     const line = lineAtOffset(content, item.offset);
-    editor.focus({ preventScroll: true });
-    editor.setSelectionRange(item.offset, item.offset);
-    editor.scrollTop = Math.max(0, (line - 1) * lineHeight + paddingTop - 18);
+    editor.focus();
+    editor.setSelection(item.offset, item.offset);
+    editor.scrollToLine(line);
   };
 
   const previewOutlineWidth = (width: number) => {
@@ -380,10 +323,6 @@ export function NoteWorkspace({
           ) : <span title={note.itemTitle ?? "全局笔记"}>{note.itemTitle ?? "全局笔记"}</span>}
         </div>
         <div>
-          <button type="button" title={mode === "source" ? "切换为预览" : "切换为 Markdown 源码"} onClick={() => { setSelectionMenu(null); setMode((current) => current === "source" ? "preview" : "source"); }}>
-            {mode === "source" ? <Eye size={15} /> : <FileCode2 size={15} />}
-            <span>{mode === "source" ? "预览" : "Markdown"}</span>
-          </button>
           <button className={outlineLayout.outlineOpen ? "is-active" : ""} type="button" title={outlineLayout.outlineOpen ? "收起笔记大纲" : "展开笔记大纲"} aria-pressed={outlineLayout.outlineOpen} onClick={toggleOutline}>
             <ListTree size={15} /><span>大纲</span>
           </button>
@@ -408,7 +347,7 @@ export function NoteWorkspace({
       {error ? <p className="note-workspace-error" role="alert">{error}</p> : null}
       <NoteSourcesBar noteId={note.id} />
       <div className="note-workspace-document">
-        <input className="note-workspace-title" value={title} maxLength={500} aria-label="笔记标题" onChange={(event) => setTitle(event.target.value)} />
+        <input className="note-workspace-title" value={title} readOnly={mode === "read"} maxLength={500} aria-label="笔记标题" onChange={(event) => setTitle(event.target.value)} />
         <div
           ref={bodyRef}
           className="note-workspace-body"
@@ -419,17 +358,7 @@ export function NoteWorkspace({
             <aside className="note-workspace-outline" aria-label="笔记大纲">
               <header><ListTree size={14} /><strong>大纲</strong><span>{outline.length}</span></header>
               <nav>
-                {outline.length > 0 ? outline.map((item) => (
-                  <button
-                    type="button"
-                    key={item.id}
-                    title={item.title}
-                    style={{ paddingInlineStart: `${12 + (item.level - 1) * 13}px` }}
-                    onClick={() => jumpToOutline(item)}
-                  >
-                    {item.title}
-                  </button>
-                )) : <p>没有检测到标题。使用 “#” 开头的标题行即可建立大纲。</p>}
+                <NoteOutline items={outline} onJump={jumpToOutline} />
               </nav>
               <PanelResizeHandle
                 edge="right"
@@ -444,30 +373,17 @@ export function NoteWorkspace({
             </aside>
           ) : null}
           <div className="note-workspace-surface">
-            {mode === "source" ? (
-              <textarea
-                ref={sourceRef}
-                className="note-workspace-content"
-                value={content}
-                maxLength={500_000}
-                aria-label="Markdown 笔记正文"
-                onMouseUp={showSourceSelection}
-                onKeyUp={showSourceSelection}
-                onScroll={() => setSelectionMenu(null)}
-                onChange={(event) => setContent(event.target.value)}
-              />
-            ) : (
-              <div ref={previewRef} className="note-workspace-preview" onMouseUp={showPreviewSelection} onScroll={() => setSelectionMenu(null)}>
-                <Suspense fallback={<div className="work-library-state" role="status"><LoaderCircle className="work-library-spinner" size={20} /><span>正在加载预览</span></div>}>
-                  <MarkdownNotePreview noteId={note.id} content={content} directoryPath={note.directoryPath} />
-                </Suspense>
-              </div>
-            )}
+            <Suspense fallback={<div className="work-library-state" role="status">正在加载编辑器</div>}>
+              <NoteMarkdownEditor key={note.id} ref={sourceRef} noteId={note.id} value={content}
+                directoryPath={note.directoryPath} mode={mode} onModeChange={setMode}
+                onChange={setContent} onMouseUp={showSourceSelection} onSelectionChange={() => setSelectionMenu(null)}
+                previewRef={previewRef} onPreviewMouseUp={showPreviewSelection} />
+            </Suspense>
           </div>
           {selectionMenu ? (
             <div className="notes-selection-menu note-workspace-selection-menu" style={{ left: selectionMenu.left, top: selectionMenu.top }} onMouseDown={(event) => event.preventDefault()}>
               <button type="button" onClick={() => { void navigator.clipboard?.writeText(selectionMenu.text); clearSelection(); }}><Copy size={13} />复制</button>
-              <button type="button" onClick={askSelection}><Quote size={13} />引用提问</button>
+              <button type="button" onClick={() => void askSelection()}><Quote size={13} />引用提问</button>
               <button type="button" onClick={() => void editSelection()}><WandSparkles size={13} />AI 修改</button>
             </div>
           ) : null}

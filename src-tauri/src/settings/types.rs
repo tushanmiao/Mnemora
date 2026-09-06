@@ -74,6 +74,9 @@ pub struct ModelCapabilities {
     /// 是否支持独立 reasoning/thinking 输出。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<bool>,
+    /// 是否支持文本 embedding。未设置时跟随内置模型数据库。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embedding: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub streaming: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -87,6 +90,7 @@ impl ModelCapabilities {
         self.vision.is_none()
             && self.function_calling.is_none()
             && self.reasoning.is_none()
+            && self.embedding.is_none()
             && self.streaming.is_none()
             && self.native_tool_search.is_none()
             && self.native_compaction.is_none()

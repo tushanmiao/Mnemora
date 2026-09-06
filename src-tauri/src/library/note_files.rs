@@ -193,7 +193,7 @@ pub fn refresh_note_directory(
         .or_insert_with(|| serde_json::json!([]));
     meta.insert("updatedAt".to_string(), serde_json::json!(updated_at));
     let meta = serde_json::to_vec_pretty(&serde_json::Value::Object(meta))
-    .map_err(|error| format!("序列化笔记元数据失败：{error}"))?;
+        .map_err(|error| format!("序列化笔记元数据失败：{error}"))?;
     replace_file(&directory.join(NOTE_META_FILE), &meta)?;
     sync_directory(&directory)?;
     Ok(PreparedNoteDirectory {
@@ -442,7 +442,7 @@ fn write_and_sync(path: &Path, bytes: &[u8]) -> Result<(), String> {
         .map_err(|error| format!("同步笔记文件失败：{error}"))
 }
 
-fn replace_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
+pub(super) fn replace_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let parent = path
         .parent()
         .ok_or_else(|| "笔记文件缺少父目录。".to_string())?;

@@ -71,7 +71,7 @@ export function useChatReferences({
   const clearQuotes = useCallback(() => setQuotes([]), []);
 
   const updateLinkedLibraryItemIds = useCallback((itemIds: string[]) => {
-    if (conversations.requestInFlightRef.current) {
+    if (conversations.chatBusy.isBusy(conversations.currentConversationId)) {
       setLiteratureReferenceError("AI 正在生成，结束后再修改文献范围。");
       return;
     }
@@ -87,7 +87,7 @@ export function useChatReferences({
   }, [conversations]);
 
   const commitLiteratureReference = useCallback((reference: LiteratureReference) => {
-    if (conversations.requestInFlightRef.current) {
+    if (conversations.chatBusy.isBusy(conversations.currentConversationId)) {
       setLiteratureReferenceError("AI 正在生成，结束后再加入新的文献引用。");
       return;
     }
@@ -137,7 +137,7 @@ export function useChatReferences({
   }, []);
 
   const commitNoteReference = useCallback((reference: NoteReference) => {
-    if (conversations.requestInFlightRef.current) {
+    if (conversations.chatBusy.isBusy(conversations.currentConversationId)) {
       window.alert("AI 正在生成，结束后再加入新的笔记引用。");
       return false;
     }
@@ -149,7 +149,7 @@ export function useChatReferences({
     noteReferencesRef.current = result.references;
     setNoteReferences(result.references);
     return true;
-  }, [conversations.requestInFlightRef]);
+  }, [conversations.chatBusy, conversations.currentConversationId]);
 
   const createConversationWithNoteReference = useCallback((reference: NoteReference) => {
     if (!commitNoteReference(reference)) {
@@ -238,7 +238,7 @@ export function useChatReferences({
       || !workContextPanelOpen
       || workContextView !== "chat"
       || !conversations.currentConversation
-      || conversations.requestInFlightRef.current
+      || conversations.chatBusy.isBusy(conversations.currentConversationId)
     ) return;
     if (workScopeInitializedConversationRef.current === conversations.currentConversation.id) return;
     if ((conversations.currentConversation.linkedLibraryItemIds?.length ?? 0) > 0) {

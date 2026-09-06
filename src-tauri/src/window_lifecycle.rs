@@ -14,9 +14,22 @@ use crate::{settings::app_types::PetSettings, state::AppState};
 
 const MAIN_WINDOW_LABEL: &str = "main";
 pub const PET_WINDOW_LABEL: &str = "pet";
+pub const QUICK_CHAT_WINDOW_LABEL: &str = "quick-chat";
 const TRAY_ID: &str = "main-tray";
 const MENU_OPEN_ID: &str = "open-main-window";
 const MENU_QUIT_ID: &str = "quit-application";
+pub static NOTE_EDITOR_CLOSE_GUARD: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+pub fn request_editor_close(app: &AppHandle, exit: bool) -> bool {
+    if !NOTE_EDITOR_CLOSE_GUARD.load(std::sync::atomic::Ordering::Acquire) {
+        return false;
+    }
+    let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+        return false;
+    };
+    window.emit("mnemora://note-editor-close", exit).is_ok()
+}
 
 pub fn ensure_main_window(app: &AppHandle) -> Result<WebviewWindow, String> {
     if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
@@ -138,11 +151,24 @@ pub fn destroy_pet_window(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+pub fn destroy_quick_chat_window(app: &AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window(QUICK_CHAT_WINDOW_LABEL) {
+        window
+            .destroy()
+            .map_err(|error| format!("Failed to destroy the quick chat window: {error}"))?;
+    }
+    Ok(())
+}
+
 pub fn cleanup_before_main_window_close(app: &AppHandle) {
     if let Err(error) = destroy_pet_window(app) {
         eprintln!("{error}");
     }
+    if let Err(error) = destroy_quick_chat_window(app) {
+        eprintln!("{error}");
+    }
     let state = app.state::<AppState>();
+    let cancelled_knowledge = tauri::async_runtime::block_on(state.cancel_all_knowledge_jobs());
     let cancelled_chat_runs = tauri::async_runtime::block_on(state.cancel_all_chat_runs());
     let cancelled_approvals = tauri::async_runtime::block_on(state.cancel_all_tool_approvals());
     let cancelled_sync = tauri::async_runtime::block_on(state.cancel_sync_run());
@@ -156,9 +182,10 @@ pub fn cleanup_before_main_window_close(app: &AppHandle) {
         || removed_staged_attachments > 0
         || cancelled_sync
         || cancelled_update
+        || cancelled_knowledge > 0
     {
         eprintln!(
-            "Background cleanup cancelled {cancelled_chat_runs} chat run(s), {cancelled_approvals} tool approval(s), {cancelled_attachment_tasks} attachment task(s), sync={cancelled_sync}, update={cancelled_update}, and removed {removed_staged_attachments} staged attachment(s)."
+            "Background cleanup cancelled {cancelled_chat_runs} chat run(s), {cancelled_approvals} tool approval(s), {cancelled_knowledge} knowledge job(s), {cancelled_attachment_tasks} attachment task(s), sync={cancelled_sync}, update={cancelled_update}, and removed {removed_staged_attachments} staged attachment(s)."
         );
     }
 }

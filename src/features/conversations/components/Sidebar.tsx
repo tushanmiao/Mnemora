@@ -65,6 +65,7 @@ type SidebarProps = {
   onClearConversations: () => void;
   onLoadMoreConversations: () => void;
   onOpenSkills: () => void;
+  onOpenKnowledge: () => void;
   onOpenPlugins: () => void;
   onWorkLibraryViewChange: (view: WorkLibraryView) => void;
   onWorkSearchQueryChange: (query: string) => void;
@@ -105,6 +106,7 @@ export function Sidebar({
   onClearConversations,
   onLoadMoreConversations,
   onOpenSkills,
+  onOpenKnowledge,
   onOpenPlugins,
   onWorkLibraryViewChange,
   onWorkSearchQueryChange,
@@ -407,6 +409,10 @@ export function Sidebar({
                     closeSidebarPopover();
                     onOpenSkills();
                   }}
+                  onOpenKnowledge={() => {
+                    closeSidebarPopover();
+                    onOpenKnowledge();
+                  }}
                   onOpenPlugins={() => {
                     closeSidebarPopover();
                     onOpenPlugins();
@@ -422,12 +428,12 @@ export function Sidebar({
                     className="extension-item"
                     type="button"
                     key={id}
-                    disabled={id === "knowledge"}
-                    onClick={id !== "knowledge" ? () => {
+                    onClick={() => {
                       setExtensionsOpen(false);
                       if (id === "skills") onOpenSkills();
+                      if (id === "knowledge") onOpenKnowledge();
                       if (id === "plugins") onOpenPlugins();
-                    } : undefined}
+                    }}
                   >
                     <Icon size={15} />
                     <span>{label}</span>
@@ -692,10 +698,12 @@ type ExtensionPickerItem = {
 function ExtensionPicker({
   items,
   onOpenSkills,
+  onOpenKnowledge,
   onOpenPlugins,
 }: {
   items: ExtensionPickerItem[];
   onOpenSkills: () => void;
+  onOpenKnowledge: () => void;
   onOpenPlugins: () => void;
 }) {
   const { t } = useI18n();
@@ -716,12 +724,10 @@ function ExtensionPicker({
           <button
             type="button"
             key={id}
-            disabled={id === "knowledge"}
-            onClick={id === "skills" ? onOpenSkills : id === "plugins" ? onOpenPlugins : undefined}
+            onClick={id === "skills" ? onOpenSkills : id === "knowledge" ? onOpenKnowledge : onOpenPlugins}
           >
             <Icon size={17} />
             <span>{label}</span>
-            {id === "knowledge" ? <small>{t("sidebar.comingSoon")}</small> : null}
           </button>
         ))}
       </div>

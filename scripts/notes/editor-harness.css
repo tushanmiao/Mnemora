@@ -1,0 +1,5 @@
+html, body, #root { height: 100%; margin: 0; font-family: "Segoe UI", "Microsoft YaHei", sans-serif; }
+.harness { height: 100%; display: flex; flex-direction: column; --note-font-family: "Segoe UI", "Microsoft YaHei", sans-serif; --note-font-size: 16px; --note-line-height: 1.85; }
+.fixture-control { display: flex; flex: none; flex-wrap: wrap; gap: 16px; align-items: center; padding: 8px 14px; font-size: 12px; color: var(--color-text); background: var(--color-surface); border-bottom: 1px solid var(--color-border); }
+.fixture-workspace { flex: 1; min-height: 0; min-width: 0; }
+button, input, select, textarea { box-sizing: border-box; }
